@@ -79,8 +79,29 @@ impl Locale {
                 return locale;
             }
         }
-        Self::En
+        if windows_ui_is_chinese() {
+            Self::Zh
+        } else {
+            Self::En
+        }
     }
+}
+
+/// Reports whether the Windows display language is a Chinese variant.
+/// Unix uses `LC_ALL`/`LC_MESSAGES`/`LANG`; Windows has no such variables, so
+/// "auto" would otherwise always fall back to English on a Chinese system.
+#[cfg(windows)]
+fn windows_ui_is_chinese() -> bool {
+    // SAFETY: `GetUserDefaultUILanguage` takes no arguments and has no
+    // preconditions; it returns a LANGID whose low 10 bits are the primary
+    // language. 0x04 is `LANG_CHINESE` (covers zh-CN, zh-TW, zh-HK, zh-SG).
+    let langid = unsafe { windows_sys::Win32::Globalization::GetUserDefaultUILanguage() };
+    langid & 0x03FF == 0x0004
+}
+
+#[cfg(not(windows))]
+fn windows_ui_is_chinese() -> bool {
+    false
 }
 
 static UI_LOCALE: OnceLock<Locale> = OnceLock::new();
