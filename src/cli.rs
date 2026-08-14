@@ -3486,6 +3486,8 @@ fn default_export_name() -> String {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
+        .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "miyu".to_string());
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     format!("miyu-export-{host}-{stamp}.tar.gz")
@@ -6604,12 +6606,12 @@ async fn run_workspace_command(paths: &MiyuPaths, args: WorkspaceArgs) -> Result
 
 /// Expands a leading `~` or `~/…` to the user's home directory.
 fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(home) = std::env::var_os("HOME") {
+    if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {
         if path == "~" {
-            return PathBuf::from(home);
+            return home;
         }
         if let Some(rest) = path.strip_prefix("~/") {
-            return PathBuf::from(home).join(rest);
+            return home.join(rest);
         }
     }
     PathBuf::from(path)

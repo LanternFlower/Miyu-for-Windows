@@ -255,11 +255,10 @@ fn required_path(value: &Value, key: &str) -> Result<PathBuf> {
         .map(str::trim)
         .filter(|path| !path.is_empty())
         .with_context(|| format!("{key} is required"))?;
-    let path = if let Some(home) = raw.strip_prefix("~/") {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("~"))
-            .join(home)
+    let path = if let Some(rest) = raw.strip_prefix("~/") {
+        directories::BaseDirs::new()
+            .map(|dirs| dirs.home_dir().join(rest))
+            .unwrap_or_else(|| PathBuf::from(raw))
     } else {
         PathBuf::from(raw)
     };

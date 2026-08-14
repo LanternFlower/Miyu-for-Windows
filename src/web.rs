@@ -3738,9 +3738,9 @@ async fn media_stream(
 ) -> std::result::Result<Response, ApiError> {
     require_auth(&headers, &state)?;
     let raw = if let Some(rest) = query.path.strip_prefix("~/") {
-        let home = std::env::var_os("HOME")
-            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "media not found"))?;
-        std::path::Path::new(&home).join(rest)
+        directories::BaseDirs::new()
+            .map(|dirs| dirs.home_dir().join(rest))
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "media not found"))?
     } else {
         std::path::PathBuf::from(&query.path)
     };

@@ -3945,8 +3945,8 @@ fn artifact_candidate_paths(tool_name: &str, output: &str) -> Vec<PathBuf> {
 
 fn resolve_tool_output_path(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(rest);
+        if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {
+            return home.join(rest);
         }
     }
     let path = PathBuf::from(path);

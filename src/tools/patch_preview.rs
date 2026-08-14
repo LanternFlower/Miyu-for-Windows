@@ -1,7 +1,7 @@
 use super::ToolProgress;
 use anyhow::Result;
 use serde_json::{json, Map, Value};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub(crate) fn write_with_patch_preview(
     path: &Path,
@@ -44,8 +44,7 @@ pub(crate) fn display_path(path: &Path) -> String {
     if let Ok(stripped) = absolute.strip_prefix(super::workspace::effective_workdir()) {
         return stripped.display().to_string();
     }
-    if let Ok(home) = std::env::var("HOME") {
-        let home = PathBuf::from(home);
+    if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {
         if let Ok(stripped) = absolute.strip_prefix(home) {
             return format!("~/{}", stripped.display());
         }
