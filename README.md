@@ -94,10 +94,18 @@ miyu config
 
 - shell hook 终端集成
 
-  最好的集成效果要求使用 `fish`，`zsh` 和`bash` 只能做到单行对话，`fish` 可以完整无缝集成。
-  
+  最好的集成效果要求使用 `fish`，`zsh` 和 `bash` 只能做到单行对话，`fish` 可以完整无缝集成。
+
   ```
   miyu fish-init
+  miyu bash-init
+  miyu zsh-init
+  ```
+
+  Windows 的 PowerShell 7.2+ 也可集成，装好后在终端直接输入自然语言即可对话：
+
+  ```
+  miyu powershell-init
   ```
 
 ### 会话的三条车道

@@ -10,3 +10,9 @@
 *.pkg.tar.zst
 *.part
 *.old
+
+# 防止误提交本地配置与密钥
+.miyu/
+config.jsonc
+*.jsonc.bak
+.env
