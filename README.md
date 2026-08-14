@@ -2,11 +2,11 @@
   <img src="pics/miyu-logo.png" alt="Miyu" width="180">
 </p>
 
-# Miyu
+# Miyu for Windows
 
 一个活在终端里的二次元少女。开箱即用的开源 AI 助手，支持接入通讯平台。
 
->暂时
+> 本仓库是 [Miyu](https://github.com/SHORiN-KiWATA/Miyu) 的 **Windows 移植版**，面向 Windows 用户。原版（Arch Linux 优先）请见上游仓库。
 
 ## 谁是 Miyu？
 
@@ -16,7 +16,7 @@ Miyu 是从我曾经很喜欢的动画中的角色身上汲取灵感制作的虚
 
 `miyu` 由大模型驱动，默认接入了 [opencode](https://github.com/anomalyco/opencode) 的公共模型服务，你也可以配置自己的大模型服务。除了 Coding，她还可以完成聊天日常、游戏娱乐、系统排障、天气查询、汇率换算、二手市场行情查询等日用场景。
 
-`miyu` 可以与 `fish`、`zsh`、`bash` 集成，终端打字直接无缝对话！
+`miyu` 可以与 `PowerShell`（Windows）以及 `fish`、`zsh`、`bash`（Linux/macOS）集成，终端打字直接无缝对话！
 
 ![](./pics/shell-init.png)
 
@@ -32,7 +32,7 @@ miyu config
 
 ![](./pics/tui.png)
 
-还有 WebUI 
+还有 WebUI
 
 ![](./pics/webui.png)
 
@@ -45,40 +45,58 @@ miyu config
 
 ## 如何安装？
 
-- Arch Linux
+### Windows（推荐）
 
-  ```
-  yay -S miyu
-  ```
+1. 安装 [Rust](https://rustup.rs/)（rustup 在 Windows 上默认安装的就是 `x86_64-pc-windows-msvc` 工具链）。
 
-- 从源码构建
+2. 克隆并构建：
 
-  ```
-  git clone https://github.com/SHORiN-KiWATA/Miyu.git
-  cd Miyu
-  cargo build --release
-  ```
+   ```
+   git clone https://github.com/LanternFlower/Miyu-for-Windows.git
+   cd Miyu-for-Windows
+   cargo build --release
+   ```
 
-- Windows (MSVC)
+   生成的二进制在 `target\release\miyu.exe`。建议把它所在目录加进 `PATH`，方便在任意终端里直接运行 `miyu`。
 
-  需要 [Rust](https://rustup.rs/) 的 `x86_64-pc-windows-msvc` 工具链（rustup 在 Windows 上默认安装的就是它）。
+3. 初始化（可省略，`miyu daemon start` 首次启动会自动初始化）：
 
-  ```
-  git clone https://github.com/LanternFlower/Miyu-for-Windows.git
-  cd Miyu-for-Windows
-  cargo build --release
-  ```
+   ```
+   miyu init
+   miyu daemon start
+   ```
 
-  生成的二进制在 `target\release\miyu.exe`。搜索工具 `glob_files` 与 `grep_text` 运行时依赖 [ripgrep](https://github.com/BurntSushi/ripgrep)（`rg`），未安装时这两个功能不可用，其余功能不受影响。
+4. （可选）集成 PowerShell 7.2+，之后在终端直接输入自然语言即可对话：
 
+   ```
+   miyu powershell-init
+   ```
 
-安装完成后可以运行 `miyu init` 初始化配置和状态文件；也可以直接运行 `miyu daemon start`，首次启动会自动初始化。
+> 说明：
+> - 配置与数据目录默认在 `%USERPROFILE%\.miyu`（可用 `MIYU_HOME` 环境变量覆盖）。下文中的 `~/.miyu` 在 Windows 上即指这个目录。
+> - 搜索工具 `glob_files` 与 `grep_text` 运行时需要 [ripgrep](https://github.com/BurntSushi/ripgrep)（`rg`），未安装时这两个功能不可用，其余功能不受影响。
 
-> Windows 说明：配置与数据目录默认在 `%USERPROFILE%\.miyu`（可用 `MIYU_HOME` 环境变量覆盖）。Windows 上可运行 `miyu powershell-init` 集成到 PowerShell 7.2+，之后在终端直接输入自然语言即可对话。`fish-init`/`bash-init`/`zsh-init` 为 Unix 专属。终端 LaTeX 渲染与 kitty 图像协议等终端特性同样只在 Unix 终端可用。
+### Linux / macOS
+
+原版面向 Arch Linux，优先使用 AUR 安装：
+
+```
+yay -S miyu
+```
+
+从源码构建：
+
+```
+git clone https://github.com/SHORiN-KiWATA/Miyu.git
+cd Miyu
+cargo build --release
+```
+
+> `fish-init`/`bash-init`/`zsh-init` 为 Unix 专属；终端 LaTeX 渲染、kitty 图像协议等终端特性也只在 Unix 终端可用。
 
 ## 如何使用？
 
-> 与 `miyu` 运行最适配的是 `kitty`终端
+> Windows 上推荐使用 [Windows Terminal](https://github.com/microsoft/terminal) 或 PowerShell；Linux 上最适配的是 `kitty` 终端。
 
 - REPL TUI 交互模式
 
@@ -86,7 +104,7 @@ miyu config
   miyu
   ```
 
-- webui 局域网网页
+- WebUI 局域网网页
 
   ```
   miyu web
@@ -94,18 +112,18 @@ miyu config
 
 - shell hook 终端集成
 
-  最好的集成效果要求使用 `fish`，`zsh` 和 `bash` 只能做到单行对话，`fish` 可以完整无缝集成。
+  Windows 上集成到 PowerShell 7.2+，装好后在终端直接输入自然语言即可对话：
+
+  ```
+  miyu powershell-init
+  ```
+
+  Linux/macOS 上可集成 `fish`、`zsh`、`bash`（最好的集成效果要求 `fish`，`zsh` 和 `bash` 只能单行对话）：
 
   ```
   miyu fish-init
   miyu bash-init
   miyu zsh-init
-  ```
-
-  Windows 的 PowerShell 7.2+ 也可集成，装好后在终端直接输入自然语言即可对话：
-
-  ```
-  miyu powershell-init
   ```
 
 ### 会话的三条车道
@@ -158,29 +176,31 @@ miyu import miyu-export-*.tar.gz
 
 - 自定义提示词
 
-  `miyu`的默认提示词是无法修改的。你可以在`自定义提示词`中新建属于自己的 AI 人格，还可以配置 `用户身份` 让对话更加沉浸。 
+  `miyu` 的默认提示词是无法修改的。你可以在`自定义提示词`中新建属于自己的 AI 人格，还可以配置 `用户身份` 让对话更加沉浸。
 
 ### 用户资源与 Skill
 
-Miyu 将配置与用户资源分开保存：`~/.miyu/config` 存放 `config.jsonc`、主题和 shell 集成；`~/.miyu/data` 存放 prompts、identities、persona-avatars、scripts 和 skills；运行状态与 Skill 草稿位于 `~/.miyu/state`。
+Miyu 将配置与用户资源分开保存（`~/.miyu`，Windows 下为 `%USERPROFILE%\.miyu`）：`config` 存放 `config.jsonc`、主题和 shell 集成；`data` 存放 prompts、identities、persona-avatars、scripts 和 skills；运行状态与 Skill 草稿位于 `state`。
 
 ### 内置插件
+
+> 以下大部分插件跨平台可用；标注「Linux」的插件（ProtonDB、Linux 游戏兼容性、Man 手册、Arch Linux 相关、Linux 输入法诊断、Fcitx5 wiki 等）主要服务 Linux 用户，Windows 上仍可调用，只是实用价值有限。
 
 <details><summary>[展开/收起] 具体介绍</summary>
 <br>
 
 - 表情包
-  
+
   表情包毫无疑问是聊天时最重要的部分，在对话时，Miyu 会根据情景自主发送符合情境的表情包。除了自主发送，设置里还可以设置概率、置信度和冷却时间。
 
   ![](./pics/nvidiafuckyou.png)
 
-  Miyu 自带了一些表情，存放在`/usr/share/miyu`，对应的用户空间目录位于`~/.miyu/data`。表情库是跟随人格的，如果你在设置里新建了自己的人格，那么就无法使用 Miyu 的默认表情。你可以准备一些图片，把路径给 Ai，让其保存到表情库。届时会自动调用识图模型对图片进行分析并保存。Miyu 默认使用 opencode 公共模型服务中的多模态模型进行识图，所以即使不配置自己的多模态模型也可以看图片。
+  Miyu 自带了一些表情（Linux 下存放在 `/usr/share/miyu`），对应的用户空间目录位于 `~/.miyu/data`。表情库是跟随人格的，如果你在设置里新建了自己的人格，那么就无法使用 Miyu 的默认表情。你可以准备一些图片，把路径给 Ai，让其保存到表情库。届时会自动调用识图模型对图片进行分析并保存。Miyu 默认使用 opencode 公共模型服务中的多模态模型进行识图，所以即使不配置自己的多模态模型也可以看图片。
 
 - 玄学算命
 
   >心理学。
-  
+
   算命就像看天气预报一般稀松平常。Miyu 自带了周易六十四卦、吉凶占、塔罗牌抽取等玄学功能。
 
   ![](./pics/玄学.png)
@@ -198,7 +218,7 @@ Miyu 将配置与用户资源分开保存：`~/.miyu/config` 存放 `config.json
 - 闹钟
 
   >要我说，这比GNOME时钟的闹钟好用多了
-  
+
   Miyu 自带了闹钟，日常泡泡面、番茄钟学习、计时任务什么的都很实用。内置了闹钟音频，你还可以通过路径传入你想要在到点后播放的“闹钟”。
 
   ![](./pics/set_alarm.png)
@@ -211,11 +231,11 @@ Miyu 将配置与用户资源分开保存：`~/.miyu/config` 存放 `config.json
 
   ![](./pics/kb.png)
 
-- ProtonDB 查询
+- ProtonDB 查询（Linux）
 
   可以查询 ProtonDB 上的游戏信息和相应的评论，为 Linux 玩游戏提供参考建议。
 
-- Linux 游戏兼容性调查
+- Linux 游戏兼容性调查（Linux）
 
   >这个游戏 Linux 能玩吗？
 
@@ -231,7 +251,7 @@ Miyu 将配置与用户资源分开保存：`~/.miyu/config` 存放 `config.json
 
 - 搜图
 
-  Miyu 还能帮你找图片喔！搜图会根据网络环境并行使用多个来源，并通过视觉模型筛选相关且安全的结果。图片会默认保存至`~/.miyu/data/pictures/web-images`。
+  Miyu 还能帮你找图片喔！搜图会根据网络环境并行使用多个来源，并通过视觉模型筛选相关且安全的结果。图片会默认保存至 `~/.miyu/data/pictures/web-images`。
 
   >NSFW 禁止！
 
@@ -239,7 +259,7 @@ Miyu 将配置与用户资源分开保存：`~/.miyu/config` 存放 `config.json
 
 - 生图
 
-  支持 OpenAI 的画图服务喔。图片会默认保存至`~/.miyu/data/pictures/generated-images`。
+  支持 OpenAI 的画图服务喔。图片会默认保存至 `~/.miyu/data/pictures/generated-images`。
 
   >这个功能默认用不了，要自己在插件设置里开启并配置 API
 
@@ -257,15 +277,15 @@ Miyu 将配置与用户资源分开保存：`~/.miyu/config` 存放 `config.json
 
   ![](./pics/汇率.png)
 
-- Man 手册查询
+- Man 手册查询（Linux）
 
   >Man！
 
   专门的手册查询工具，虽然网络搜索也能做到，但这值得做成单独的插件。
-  
+
   ![](./pics/man.png)
 
-- Arch Linux相关
+- Arch Linux 相关（Linux）
 
   Arch Linux 是桌面 Linux 的热门之选，Miyu 有一系列插件可以帮助提高 Arch Linux 的日用体验。
 
@@ -323,11 +343,11 @@ Miyu 将配置与用户资源分开保存：`~/.miyu/config` 存放 `config.json
 
   ![](./pics/深度研究.png)
 
-- Linux 输入法问题诊断
+- Linux 输入法问题诊断（Linux）
 
   从 Linux 输入法实现原理出发，对软件输入法问题进行深度诊断。
 
-- Fcitx5 wiki 查询
+- Fcitx5 wiki 查询（Linux）
 
   阅读 Fcitx5 wiki，为输入法问题提供参考。
 
@@ -337,12 +357,12 @@ Miyu 将配置与用户资源分开保存：`~/.miyu/config` 存放 `config.json
 
 #### 功能参考
 
-- [Opencode](https://github.com/anomalyco/opencode) 
+- [Opencode](https://github.com/anomalyco/opencode)
 - [Claude Code](https://github.com/anthropics/claude-code)
 - [Pi](https://github.com/earendil-works/pi)
 - [Deepseek-Reasonix](https://github.com/esengine/deepseek-reasonix)
-- [Astrbot](https://github.com/AstrBotDevs/AstrBot) 
-- [NapCatQQ](https://github.com/NapNeko/NapCatQQ) 
+- [Astrbot](https://github.com/AstrBotDevs/AstrBot)
+- [NapCatQQ](https://github.com/NapNeko/NapCatQQ)
 
 
 #### 插件设计参考
