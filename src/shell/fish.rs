@@ -2,7 +2,7 @@ use crate::i18n::text as t;
 use crate::paths::MiyuPaths;
 use anyhow::Result;
 
-fn completion_entries() -> [(&'static str, &'static str); 16] {
+fn completion_entries() -> [(&'static str, &'static str); 17] {
     [
         (
             "ask",
@@ -50,6 +50,13 @@ fn completion_entries() -> [(&'static str, &'static str); 16] {
             t(
                 "Integrate with zsh for natural-language terminal conversations",
                 "集成到 zsh，集成后可在终端直接使用自然语言交流。",
+            ),
+        ),
+        (
+            "powershell-init",
+            t(
+                "Integrate with PowerShell for natural-language terminal conversations",
+                "集成到 PowerShell，集成后可在终端直接使用自然语言交流。",
             ),
         ),
         (

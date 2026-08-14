@@ -242,6 +242,10 @@ impl MiyuPaths {
         self.cache_dir.join("logs")
     }
 
+    pub fn powershell_hook_file(&self) -> PathBuf {
+        self.config_dir.join("shell/miyu.ps1")
+    }
+
     pub fn runtime_dir(&self) -> PathBuf {
         match std::env::var_os("XDG_RUNTIME_DIR") {
             Some(runtime_dir) => runtime_dir_for(
@@ -347,6 +351,11 @@ impl MiyuPaths {
             "{}: {}",
             t("zsh hook file", "zsh hook 文件"),
             self.zsh_hook_file.display()
+        );
+        println!(
+            "{}: {}",
+            t("powershell hook file", "PowerShell hook 文件"),
+            self.powershell_hook_file().display()
         );
         println!(
             "{}: {}",

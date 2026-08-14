@@ -597,6 +597,11 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
             "集成到 zsh，集成后可在终端直接使用自然语言交流。",
         ),
         (
+            "powershell-init",
+            "Integrate with PowerShell so you can chat in natural language directly in the terminal",
+            "集成到 PowerShell，集成后可在终端直接使用自然语言交流。",
+        ),
+        (
             "remove-shell-hook",
             "Safely remove installed Miyu shell hooks",
             "安全删除已安装的 Miyu shell hook",
@@ -991,6 +996,8 @@ pub enum Command {
     FishInit,
     BashInit,
     ZshInit,
+    #[command(name = "powershell-init")]
+    PowerShellInit,
     RemoveShellHook,
     History(HistoryArgs),
     Pop(PopArgs),
@@ -1377,6 +1384,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                 | Some(Command::FishInit)
                 | Some(Command::BashInit)
                 | Some(Command::ZshInit)
+                | Some(Command::PowerShellInit)
                 | Some(Command::RemoveShellHook)
                 | Some(Command::Paths)
                 | Some(Command::Import(_))
@@ -1453,6 +1461,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
         Some(Command::FishInit) => shell::fish::install(&paths),
         Some(Command::BashInit) => shell::bash::install(&paths),
         Some(Command::ZshInit) => shell::zsh::install(&paths),
+        Some(Command::PowerShellInit) => shell::powershell::install(&paths),
         Some(Command::RemoveShellHook) => remove_shell_hooks(&paths),
         Some(Command::History(args)) => run_history(&paths, args),
         Some(Command::Pop(args)) => {
@@ -2558,6 +2567,7 @@ fn remove_shell_hooks(paths: &MiyuPaths) -> Result<()> {
     let removed = shell::fish::uninstall(paths)?;
     let removed = shell::bash::uninstall(paths)? || removed;
     let removed = shell::zsh::uninstall(paths)? || removed;
+    let removed = shell::powershell::uninstall(paths)? || removed;
     if !removed {
         println!(
             "{}",
@@ -4568,7 +4578,7 @@ fn shell_message_from_input(use_stdin: bool, message: Vec<String>) -> Result<Str
 }
 
 fn run_shell_classify(shell_name: &str, message: &str) -> Result<()> {
-    if !matches!(shell_name, "fish" | "bash" | "zsh") {
+    if !matches!(shell_name, "fish" | "bash" | "zsh" | "powershell") {
         std::process::exit(2);
     }
     if shell::is_shell_command(message, shell_name) {
@@ -4578,7 +4588,7 @@ fn run_shell_classify(shell_name: &str, message: &str) -> Result<()> {
 }
 
 async fn run_shell_intercept(paths: &MiyuPaths, shell_name: &str, message: String) -> Result<()> {
-    if !matches!(shell_name, "fish" | "bash" | "zsh") {
+    if !matches!(shell_name, "fish" | "bash" | "zsh" | "powershell") {
         bail!("{}: {shell_name}", t("unsupported shell", "不支持的 shell"));
     }
     if message.trim().is_empty() {

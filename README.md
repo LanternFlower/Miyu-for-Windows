@@ -74,7 +74,7 @@ miyu config
 
 安装完成后可以运行 `miyu init` 初始化配置和状态文件；也可以直接运行 `miyu daemon start`，首次启动会自动初始化。
 
-> Windows 说明：配置与数据目录默认在 `%USERPROFILE%\.miyu`（可用 `MIYU_HOME` 环境变量覆盖）。shell hook 终端集成（`fish-init`/`bash-init`/`zsh-init`）为 Unix 专属，Windows 上请使用 REPL（`miyu`）或 WebUI（`miyu web`）。终端 LaTeX 渲染与 kitty 图像协议等终端特性同样只在 Unix 终端可用。
+> Windows 说明：配置与数据目录默认在 `%USERPROFILE%\.miyu`（可用 `MIYU_HOME` 环境变量覆盖）。Windows 上可运行 `miyu powershell-init` 集成到 PowerShell 7.2+，之后在终端直接输入自然语言即可对话。`fish-init`/`bash-init`/`zsh-init` 为 Unix 专属。终端 LaTeX 渲染与 kitty 图像协议等终端特性同样只在 Unix 终端可用。
 
 ## 如何使用？
 

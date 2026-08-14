@@ -1,5 +1,6 @@
 pub mod bash;
 pub mod fish;
+pub mod powershell;
 pub mod zsh;
 
 use crate::i18n::text as t;
@@ -169,6 +170,10 @@ pub fn print_reload_hint(shell: &str, hook_file: &Path) {
     let source = match shell {
         "fish" => format!("source {}", fish_quote(hook_file)),
         "bash" | "zsh" => format!("source {}", shell_quote(hook_file)),
+        "powershell" => format!(
+            ". '{}'",
+            hook_file.display().to_string().replace('\'', "''")
+        ),
         _ => return,
     };
     if current_parent_shell().as_deref() == Some(shell) {
