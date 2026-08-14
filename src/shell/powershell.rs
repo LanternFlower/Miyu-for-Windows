@@ -18,30 +18,33 @@ pub fn hook() -> String {
 # Forwards unrecognized natural-language commands to the assistant instead of
 # failing with `CommandNotFoundException`.
 
-$script:__miyu_lookup_guard = $false
+$global:__miyu_lookup_guard = $false
 
 $ExecutionContext.InvokeCommand.PreCommandLookupAction = {
     param($sender, $eventArgs)
 
-    if ($script:__miyu_lookup_guard) { return }
+    if ($global:__miyu_lookup_guard) { return }
     if ($eventArgs.CommandOrigin -ne [System.Management.Automation.CommandOrigin]::Runspace) { return }
 
     $name = $eventArgs.CommandName
     if ([string]::IsNullOrWhiteSpace($name)) { return }
+    # Never intercept the miyu command itself: if miyu fell out of PATH the
+    # forwarded command would look it up again and recurse forever.
+    if ($name -ieq 'miyu') { return }
 
-    $script:__miyu_lookup_guard = $true
+    $global:__miyu_lookup_guard = $true
     try {
         $isCommand = $null -ne (Get-Command $name -ErrorAction SilentlyContinue)
     } finally {
-        $script:__miyu_lookup_guard = $false
+        $global:__miyu_lookup_guard = $false
     }
     if ($isCommand) { return }
 
     # Not a real command: rebuild the typed text and hand it to miyu. The
     # replacement script block receives the trailing arguments in `$args`.
-    $script:__miyu_intercept_name = $name
+    $global:__miyu_intercept_name = $name
     $eventArgs.CommandScriptBlock = {
-        $text = $script:__miyu_intercept_name
+        $text = $global:__miyu_intercept_name
         if ($args.Count -gt 0) {
             $text = "$text $($args -join ' ')"
         }
@@ -213,6 +216,13 @@ mod tests {
         assert!(hook.contains("--shell-intercept"));
         assert!(hook.contains("__miyu_lookup_guard"));
         assert!(hook.contains("Get-Command"));
+        // Scope must be `$global:`: the event handler runs in a detached scope
+        // where `$script:` is empty (and under StrictMode that throws).
+        assert!(hook.contains("$global:__miyu_lookup_guard"));
+        assert!(hook.contains("$global:__miyu_intercept_name"));
+        assert!(!hook.contains("$script:"));
+        // Never intercept the miyu command itself.
+        assert!(hook.contains("$name -ieq 'miyu'"));
     }
 
     #[test]
