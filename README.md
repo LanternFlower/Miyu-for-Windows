@@ -59,8 +59,22 @@ miyu config
   cargo build --release
   ```
 
+- Windows (MSVC)
+
+  需要 [Rust](https://rustup.rs/) 的 `x86_64-pc-windows-msvc` 工具链（rustup 在 Windows 上默认安装的就是它）。
+
+  ```
+  git clone https://github.com/LanternFlower/Miyu-for-Windows.git
+  cd Miyu-for-Windows
+  cargo build --release
+  ```
+
+  生成的二进制在 `target\release\miyu.exe`。搜索工具 `glob_files` 与 `grep_text` 运行时依赖 [ripgrep](https://github.com/BurntSushi/ripgrep)（`rg`），未安装时这两个功能不可用，其余功能不受影响。
+
 
 安装完成后可以运行 `miyu init` 初始化配置和状态文件；也可以直接运行 `miyu daemon start`，首次启动会自动初始化。
+
+> Windows 说明：配置与数据目录默认在 `%USERPROFILE%\.miyu`（可用 `MIYU_HOME` 环境变量覆盖）。shell hook 终端集成（`fish-init`/`bash-init`/`zsh-init`）为 Unix 专属，Windows 上请使用 REPL（`miyu`）或 WebUI（`miyu web`）。终端 LaTeX 渲染与 kitty 图像协议等终端特性同样只在 Unix 终端可用。
 
 ## 如何使用？
 
