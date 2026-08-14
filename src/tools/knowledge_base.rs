@@ -911,12 +911,16 @@ impl KnowledgeBase {
     fn safe_file_path(&self, rel: &str) -> Result<PathBuf> {
         let rel = normalize_relative_path(rel)?;
         let path = self.files_dir.join(&rel);
+        let parent = path.parent().unwrap_or(&self.files_dir);
+        std::fs::create_dir_all(parent)?;
+        // Canonicalize after the parent exists: on Windows the on-disk casing
+        // (or a junction in the temp path) can differ from the raw path, and
+        // comparing a canonical path against a raw one then misclassifies a
+        // legitimate path as escaping the files dir.
         let base = self
             .files_dir
             .canonicalize()
             .unwrap_or_else(|_| self.files_dir.clone());
-        let parent = path.parent().unwrap_or(&self.files_dir);
-        std::fs::create_dir_all(parent)?;
         let resolved_parent = parent.canonicalize()?;
         if !resolved_parent.starts_with(&base) {
             bail!("knowledge base path escapes files dir")

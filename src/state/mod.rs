@@ -16,7 +16,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{Cursor, Write};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
@@ -1062,7 +1061,14 @@ impl StateStore {
         let (mime, kind) = artifact_media_type(&canonical);
         let source_key = canonical.to_string_lossy().to_string();
         let session_id = self.session();
+        // `canonicalize` the managed directory too: on Windows the on-disk
+        // casing (or a junction in the temp path) can differ from the raw
+        // path, and a raw `starts_with` then misclassifies the artifact as
+        // turn-scoped instead of session-scoped.
         let managed_session_dir = self.artifacts_dir.join(session_id.as_ref());
+        let managed_session_dir = managed_session_dir
+            .canonicalize()
+            .unwrap_or_else(|_| managed_session_dir.clone());
         let identity_scope = if canonical.starts_with(&managed_session_dir) {
             session_id.as_ref()
         } else {
@@ -1721,7 +1727,7 @@ impl StateStore {
             }
             Err(error) => return Err(error.into()),
         }
-        std::fs::set_permissions(&session_dir, std::fs::Permissions::from_mode(0o700))?;
+        crate::sys::set_mode(&session_dir, 0o700)?;
         let canonical_dir = session_dir.canonicalize()?;
         let managed_target = |source_key: &str| -> Option<PathBuf> {
             let source = Path::new(source_key);
@@ -1741,6 +1747,7 @@ impl StateStore {
                 continue;
             };
             let mut temp = tempfile::NamedTempFile::new_in(&canonical_dir)?;
+            #[cfg(unix)]
             temp.as_file_mut()
                 .set_permissions(std::fs::Permissions::from_mode(0o600))?;
             temp.write_all(&artifact.bytes)?;

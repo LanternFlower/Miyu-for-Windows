@@ -1,11 +1,10 @@
 use crate::i18n::text as t;
+use crate::sys;
 use anyhow::{bail, Context, Result};
 use directories::{BaseDirs, UserDirs};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
-use std::os::unix::fs::{symlink, DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 
 const LAYOUT_MARKER: &str = ".layout-v1";
@@ -518,7 +517,7 @@ fn resource_runtime_dir(layout: &Layout) -> PathBuf {
 }
 
 fn daemon_is_running_at(runtime_dir: &Path, current_process_is_daemon: bool) -> bool {
-    std::os::unix::net::UnixStream::connect(runtime_dir.join("core.sock")).is_ok()
+    sys::ipc_probe(&runtime_dir.join("core.sock"))
         || runtime_lock_is_held(&runtime_dir.join("core.lock"))
         || (!current_process_is_daemon && runtime_lock_is_held(&runtime_dir.join("starter.lock")))
 }
@@ -659,7 +658,7 @@ fn try_acquire_resource_daemon_guard(
     let Some(core) = try_acquire_runtime_lock(&runtime_dir.join("core.lock"))? else {
         return Ok(None);
     };
-    if std::os::unix::net::UnixStream::connect(runtime_dir.join("core.sock")).is_ok() {
+    if sys::ipc_probe(&runtime_dir.join("core.sock")) {
         return Ok(None);
     }
     Ok(Some(ResourceDaemonGuard {
@@ -669,24 +668,15 @@ fn try_acquire_resource_daemon_guard(
 }
 
 fn try_acquire_runtime_lock(path: &Path) -> Result<Option<File>> {
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .mode(0o600)
-        .open(path)?;
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if result == 0 {
-        return Ok(Some(file));
-    }
-    let error = std::io::Error::last_os_error();
-    if matches!(error.raw_os_error(), Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN)
-    {
-        Ok(None)
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    sys::apply_mode(&mut options, 0o600);
+    let file = options.open(path)?;
+    Ok(if sys::try_lock_exclusive(&file)? {
+        Some(file)
     } else {
-        Err(error.into())
-    }
+        None
+    })
 }
 
 fn preflight_resource_entries(layout: &Layout, entries: &[ResourceMigrationEntry]) -> Result<()> {
@@ -830,10 +820,10 @@ fn write_resource_journal(layout: &Layout, journal: &ResourceMigrationJournal) -
         std::process::id(),
         rand::random::<u64>()
     ));
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    sys::apply_mode(&mut options, 0o600);
+    let mut file = options
         .open(&temporary)
         .with_context(|| format!("creating {}", temporary.display()))?;
     serde_json::to_writer_pretty(&mut file, journal)?;
@@ -945,9 +935,7 @@ struct MigrationLease(File);
 
 impl Drop for MigrationLease {
     fn drop(&mut self) {
-        unsafe {
-            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
-        }
+        sys::unlock(&self.0);
     }
 }
 
@@ -969,7 +957,7 @@ fn legacy_daemon_is_running_at(legacy: &LegacyLayout, xdg_runtime_dir: Option<&P
         .into_iter()
         .map(|runtime_dir| runtime_dir.join("miyu"))
         .any(|runtime_dir| {
-            std::os::unix::net::UnixStream::connect(runtime_dir.join("core.sock")).is_ok()
+            sys::ipc_probe(&runtime_dir.join("core.sock"))
                 || runtime_lock_is_held(&runtime_dir.join("core.lock"))
                 || runtime_lock_is_held(&runtime_dir.join("starter.lock"))
         })
@@ -982,14 +970,12 @@ fn runtime_lock_is_held(path: &Path) -> bool {
         // Failure to inspect an existing lock must not authorize migration.
         Err(_) => return true,
     };
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if result == 0 {
-        unsafe {
-            libc::flock(file.as_raw_fd(), libc::LOCK_UN);
+    match sys::try_lock_exclusive(&file) {
+        Ok(true) => {
+            sys::unlock(&file);
+            false
         }
-        false
-    } else {
-        true
+        _ => true,
     }
 }
 
@@ -1118,14 +1104,11 @@ fn entry_exists(path: &Path) -> Result<bool> {
 }
 
 fn acquire_migration_lock(root: &Path) -> Result<MigrationLease> {
-    // Lock the directory itself so a failed preflight never leaves a lock file
-    // behind in an otherwise untouched destination layout.
-    let file = File::open(root)
+    // Lock the directory itself (on Windows, a delete-on-close lock file
+    // inside it) so a failed preflight never leaves a lock file behind in an
+    // otherwise untouched destination layout.
+    let file = sys::lock_directory_exclusive(root)
         .with_context(|| format!("opening migration lock directory {}", root.display()))?;
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-    if result != 0 {
-        return Err(std::io::Error::last_os_error()).context("locking Miyu directory migration");
-    }
     Ok(MigrationLease(file))
 }
 
@@ -1133,14 +1116,13 @@ fn ensure_private_dir(path: &Path) -> Result<()> {
     ensure_existing_directory(path)?;
     if !entry_exists(path)? {
         let mut builder = fs::DirBuilder::new();
-        builder.recursive(true).mode(0o700);
+        builder.recursive(true);
         builder
             .create(path)
             .with_context(|| format!("creating {}", path.display()))?;
     }
     ensure_existing_directory(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-        .with_context(|| format!("securing {}", path.display()))?;
+    sys::set_mode(path, 0o700).with_context(|| format!("securing {}", path.display()))?;
     Ok(())
 }
 
@@ -1183,10 +1165,10 @@ fn write_marker(path: &Path) -> Result<()> {
         std::process::id(),
         rand::random::<u64>()
     ));
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    sys::apply_mode(&mut options, 0o600);
+    let mut file = options
         .open(&temporary)
         .with_context(|| format!("creating {}", temporary.display()))?;
     file.write_all(b"1\n")?;
@@ -1475,7 +1457,7 @@ fn migrate_entry_unchecked(source: &Path, destination: &Path) -> Result<()> {
             }
             Ok(())
         }
-        Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
+        Err(error) if is_cross_device_error(&error) => {
             copy_entry(source, &source_meta, destination)?;
             remove_entry(source, &source_meta)
         }
@@ -1483,10 +1465,22 @@ fn migrate_entry_unchecked(source: &Path, destination: &Path) -> Result<()> {
     }
 }
 
+fn is_cross_device_error(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(libc::EXDEV)
+    }
+    #[cfg(windows)]
+    {
+        // ERROR_NOT_SAME_DEVICE
+        error.raw_os_error() == Some(17)
+    }
+}
+
 fn copy_entry(source: &Path, metadata: &fs::Metadata, destination: &Path) -> Result<()> {
     if metadata.file_type().is_symlink() {
         let target = fs::read_link(source)?;
-        symlink(target, destination)?;
+        sys::symlink_or_copy(&target, destination)?;
         sync_parent(destination)?;
         return Ok(());
     }
@@ -1502,7 +1496,7 @@ fn copy_entry(source: &Path, metadata: &fs::Metadata, destination: &Path) -> Res
                 &destination.join(entry.file_name()),
             )?;
         }
-        File::open(destination)?.sync_all()?;
+        sys::sync_parent(destination)?;
         sync_parent(destination)?;
         return Ok(());
     }
@@ -1515,11 +1509,10 @@ fn copy_entry(source: &Path, metadata: &fs::Metadata, destination: &Path) -> Res
         rand::random::<u64>()
     ));
     let mut input = File::open(source)?;
-    let mut output = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(metadata.permissions().mode())
-        .open(&temporary)?;
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    sys::apply_mode(&mut options, sys::mode_of(&metadata.permissions()));
+    let mut output = options.open(&temporary)?;
     std::io::copy(&mut input, &mut output)?;
     output.sync_all()?;
     fs::rename(&temporary, destination)?;
@@ -1529,7 +1522,7 @@ fn copy_entry(source: &Path, metadata: &fs::Metadata, destination: &Path) -> Res
 
 fn sync_parent(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
-        File::open(parent)?.sync_all()?;
+        sys::sync_parent(parent)?;
     }
     Ok(())
 }
@@ -1548,7 +1541,8 @@ fn entries_identical(
     if !left_meta.is_file()
         || !right_meta.is_file()
         || left_meta.len() != right_meta.len()
-        || left_meta.permissions().mode() & 0o7777 != right_meta.permissions().mode() & 0o7777
+        || sys::mode_of(&left_meta.permissions()) & 0o7777
+            != sys::mode_of(&right_meta.permissions()) & 0o7777
     {
         return Ok(false);
     }
@@ -1758,7 +1752,7 @@ mod tests {
         fs::create_dir_all(&layout.data_dir).unwrap();
         fs::create_dir_all(&outside).unwrap();
         fs::write(layout.config_dir.join("system-prompt.md"), "system").unwrap();
-        symlink(&outside, layout.data_dir.join("prompts")).unwrap();
+        sys::symlink_or_copy(&outside, layout.data_dir.join("prompts")).unwrap();
 
         let error = migrate_resource_layout(&layout).unwrap_err();
 
@@ -1778,7 +1772,7 @@ mod tests {
         fs::create_dir_all(skill_file.parent().unwrap()).unwrap();
         fs::create_dir_all(layout.config_dir.join("prompts")).unwrap();
         fs::write(&skill_file, "skill").unwrap();
-        symlink(
+        sys::symlink_or_copy(
             &skill_file,
             layout.config_dir.join("prompts/linked-skill.md"),
         )
@@ -1845,6 +1839,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn unified_layout_merges_xdg_documents_and_both_picture_directories() {
         let temp = tempfile::tempdir().unwrap();
@@ -1972,6 +1967,7 @@ mod tests {
         assert!(next.marker().exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn unified_layout_discards_cache_with_relative_symlink() {
         let temp = tempfile::tempdir().unwrap();
@@ -1980,7 +1976,7 @@ mod tests {
         fs::create_dir_all(legacy.cache_dir.join("blobs")).unwrap();
         fs::write(legacy.config_dir.join("config.jsonc"), "config").unwrap();
         fs::write(legacy.cache_dir.join("blobs/blob"), "blob").unwrap();
-        symlink("blobs/blob", legacy.cache_dir.join("snapshot")).unwrap();
+        sys::symlink_or_copy("blobs/blob", legacy.cache_dir.join("snapshot")).unwrap();
 
         migrate_legacy_layout(&legacy, &next).unwrap();
 
@@ -1993,6 +1989,7 @@ mod tests {
         assert!(next.marker().exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn unified_layout_discards_symlinked_cache_without_touching_its_target() {
         let temp = tempfile::tempdir().unwrap();
@@ -2002,7 +1999,7 @@ mod tests {
         let target = temp.path().join("real-cache");
         fs::create_dir_all(&target).unwrap();
         fs::write(target.join("cache.bin"), "keep me").unwrap();
-        symlink("../real-cache", &legacy.cache_dir).unwrap();
+        sys::symlink_or_copy("../real-cache", &legacy.cache_dir).unwrap();
 
         migrate_legacy_layout(&legacy, &next).unwrap();
 
@@ -2014,6 +2011,7 @@ mod tests {
         assert!(next.marker().exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn unified_layout_discards_cache_whose_absolute_symlink_target_moves() {
         let temp = tempfile::tempdir().unwrap();
@@ -2023,7 +2021,7 @@ mod tests {
         fs::create_dir_all(&legacy.cache_dir).unwrap();
         fs::write(legacy.config_dir.join("config.jsonc"), "config").unwrap();
         fs::write(legacy.data_dir.join("data.bin"), "data").unwrap();
-        symlink(
+        sys::symlink_or_copy(
             legacy.data_dir.join("data.bin"),
             legacy.cache_dir.join("link"),
         )
@@ -2039,6 +2037,7 @@ mod tests {
         assert!(next.marker().exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn unified_layout_still_refuses_relative_symlink_outside_cache() {
         let temp = tempfile::tempdir().unwrap();
@@ -2047,7 +2046,7 @@ mod tests {
         fs::create_dir_all(&legacy.cache_dir).unwrap();
         fs::write(legacy.config_dir.join("config.jsonc"), "config").unwrap();
         fs::write(legacy.cache_dir.join("cache.bin"), "cache").unwrap();
-        symlink("config.jsonc", legacy.config_dir.join("alias")).unwrap();
+        sys::symlink_or_copy("config.jsonc", legacy.config_dir.join("alias")).unwrap();
 
         let error = migrate_legacy_layout(&legacy, &next).unwrap_err();
 
@@ -2060,6 +2059,7 @@ mod tests {
         assert!(!next.root_dir.exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn unified_layout_cross_source_conflict_has_zero_migration_writes() {
         let temp = tempfile::tempdir().unwrap();
@@ -2151,6 +2151,7 @@ mod tests {
         assert!(next.marker().exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn migration_rejects_relative_symbolic_links() {
         let temp = tempfile::tempdir().unwrap();
@@ -2159,7 +2160,7 @@ mod tests {
         fs::create_dir_all(&source).unwrap();
         fs::create_dir_all(temp.path().join("outside")).unwrap();
         fs::write(temp.path().join("outside/value"), "value").unwrap();
-        symlink("../outside/value", source.join("link")).unwrap();
+        sys::symlink_or_copy("../outside/value", source.join("link")).unwrap();
 
         let error = migrate_entry(&source, &destination).unwrap_err();
 
@@ -2168,6 +2169,7 @@ mod tests {
         assert!(!destination.exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn migration_rejects_symlinked_destination_root_and_marker() {
         let temp = tempfile::tempdir().unwrap();
@@ -2177,7 +2179,7 @@ mod tests {
         let outside = temp.path().join("outside");
         fs::create_dir_all(&outside).unwrap();
 
-        symlink(&outside, &next.root_dir).unwrap();
+        sys::symlink_or_copy(&outside, &next.root_dir).unwrap();
         let root_error = migrate_legacy_layout(&legacy, &next).unwrap_err();
         assert!(root_error.to_string().contains("symbolic-link directory"));
         fs::remove_file(&next.root_dir).unwrap();
@@ -2185,7 +2187,7 @@ mod tests {
         fs::create_dir_all(&next.root_dir).unwrap();
         let marker_target = temp.path().join("marker-target");
         fs::write(&marker_target, "1\n").unwrap();
-        symlink(&marker_target, next.marker()).unwrap();
+        sys::symlink_or_copy(&marker_target, next.marker()).unwrap();
         let marker_error = migrate_legacy_layout(&legacy, &next).unwrap_err();
         assert!(marker_error.to_string().contains("layout marker"));
     }
@@ -2290,15 +2292,10 @@ mod tests {
             .write(true)
             .open(runtime_dir.join("core.lock"))
             .unwrap();
-        assert_eq!(
-            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            0
-        );
+        assert!(sys::try_lock_exclusive(&lock).unwrap());
 
         assert!(legacy_daemon_is_running_at(&legacy, None));
-        unsafe {
-            libc::flock(lock.as_raw_fd(), libc::LOCK_UN);
-        }
+        sys::unlock(&lock);
         assert!(!legacy_daemon_is_running_at(&legacy, None));
     }
 
@@ -2315,15 +2312,10 @@ mod tests {
             .write(true)
             .open(runtime_dir.join("starter.lock"))
             .unwrap();
-        assert_eq!(
-            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            0
-        );
+        assert!(sys::try_lock_exclusive(&lock).unwrap());
 
         assert!(legacy_daemon_is_running_at(&legacy, None));
-        unsafe {
-            libc::flock(lock.as_raw_fd(), libc::LOCK_UN);
-        }
+        sys::unlock(&lock);
         assert!(!legacy_daemon_is_running_at(&legacy, None));
     }
 
@@ -2339,10 +2331,7 @@ mod tests {
             .write(true)
             .open(runtime_dir.join("starter.lock"))
             .unwrap();
-        assert_eq!(
-            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            0
-        );
+        assert!(sys::try_lock_exclusive(&lock).unwrap());
 
         assert!(daemon_is_running_at(&runtime_dir, false));
         assert!(!daemon_is_running_at(&runtime_dir, true));
@@ -2363,10 +2352,7 @@ mod tests {
             .write(true)
             .open(runtime_dir.join("starter.lock"))
             .unwrap();
-        assert_eq!(
-            unsafe { libc::flock(starter.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            0
-        );
+        assert!(sys::try_lock_exclusive(&starter).unwrap());
 
         assert!(!try_migrate_resource_layout(&layout, false).unwrap());
         assert!(layout.config_dir.join("skills/demo/SKILL.md").is_file());

@@ -72,6 +72,16 @@ ratex-layout = "0.1.12"
 ratex-types = "0.1.12"
 ratex-render = { version = "0.1.12", features = ["embed-fonts"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
 [build-dependencies]
 base64 = "0.22"
 fst = "0.4"

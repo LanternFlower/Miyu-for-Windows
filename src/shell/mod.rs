@@ -3,11 +3,11 @@ pub mod fish;
 pub mod zsh;
 
 use crate::i18n::text as t;
+use crate::sys;
 use anyhow::{bail, Context, Result};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 const BASH_BEGIN_MARKER: &str = "# >>> miyu bash hook >>>";
@@ -97,29 +97,27 @@ fn write_text_atomically(path: &Path, contents: &str) -> Result<()> {
         .context("shell startup file has no parent directory")?;
     let mode = fs::symlink_metadata(path)
         .ok()
-        .map(|metadata| metadata.permissions().mode() & 0o7777)
+        .map(|metadata| sys::mode_of(&metadata.permissions()) & 0o7777)
         .unwrap_or(0o600);
     let temporary = parent.join(format!(
         ".miyu-hook-{}-{}",
         std::process::id(),
         rand::random::<u64>()
     ));
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(mode)
-        .open(&temporary)
-        .with_context(|| {
-            format!(
-                "creating temporary shell startup file {}",
-                temporary.display()
-            )
-        })?;
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    sys::apply_mode(&mut options, mode);
+    let mut file = options.open(&temporary).with_context(|| {
+        format!(
+            "creating temporary shell startup file {}",
+            temporary.display()
+        )
+    })?;
     file.write_all(contents.as_bytes())?;
     file.sync_all()?;
     fs::rename(&temporary, path)
         .with_context(|| format!("installing updated shell startup file {}", path.display()))?;
-    fs::File::open(parent)?.sync_all()?;
+    sys::sync_parent(parent)?;
     Ok(())
 }
 
@@ -452,10 +450,7 @@ fn command_exists_in_path(command: &str) -> bool {
 }
 
 fn is_executable_file(path: &Path) -> bool {
-    let Ok(metadata) = fs::metadata(path) else {
-        return false;
-    };
-    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+    sys::is_executable(path)
 }
 
 #[cfg(test)]
@@ -496,6 +491,7 @@ mod tests {
         assert!(!looks_like_natural_language("第一行\n第二行"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn classifies_commands_as_shell() {
         assert!(is_shell_command("echo hi", "fish"));

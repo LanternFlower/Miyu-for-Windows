@@ -144,20 +144,27 @@ async fn fetch_aur_metadata(package: &str) -> Result<Value> {
 }
 
 async fn aur_helper() -> Option<String> {
-    for helper in ["paru", "yay"] {
-        if Command::new("sh")
-            .arg("-lc")
-            .arg(format!("command -v {helper}"))
-            .stdin(Stdio::null())
-            .output()
-            .await
-            .ok()
-            .is_some_and(|output| output.status.success())
-        {
-            return Some(helper.to_string());
-        }
+    #[cfg(not(unix))]
+    {
+        return None;
     }
-    None
+    #[cfg(unix)]
+    {
+        for helper in ["paru", "yay"] {
+            if Command::new("sh")
+                .arg("-lc")
+                .arg(format!("command -v {helper}"))
+                .stdin(Stdio::null())
+                .output()
+                .await
+                .ok()
+                .is_some_and(|output| output.status.success())
+            {
+                return Some(helper.to_string());
+            }
+        }
+        None
+    }
 }
 
 async fn fetch_with_helper(helper: &str, package: &str, root: &Path) -> Result<()> {

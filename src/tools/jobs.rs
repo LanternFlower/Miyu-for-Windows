@@ -273,14 +273,12 @@ fn next_job_id() -> String {
     }
 }
 
-fn signal_process_group(pid: u32, signal: i32) {
-    unsafe {
-        libc::killpg(pid as i32, signal);
-    }
+fn signal_process_group(pid: u32, force: bool) {
+    crate::sys::terminate_process_tree(pid, force);
 }
 
 fn process_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
+    crate::sys::process_alive(pid)
 }
 
 /// Kill process groups recorded by predecessors that are no longer alive.
@@ -313,7 +311,7 @@ pub fn sweep_stale_jobs(paths: &MiyuPaths) {
                     "清理已死亡 Miyu 进程遗留的后台任务"
                 )
             );
-            signal_process_group(entry.pid, libc::SIGKILL);
+            signal_process_group(entry.pid, true);
         }
     }
     let _ = write_ledger(paths, &kept);
@@ -395,7 +393,7 @@ pub fn shutdown_all() {
     for kind in &running {
         match kind {
             JobKind::Command { pid } => {
-                signal_process_group(*pid, libc::SIGTERM);
+                signal_process_group(*pid, false);
                 pids.push(*pid);
             }
             JobKind::Subagent { abort } => abort.abort(),
@@ -405,7 +403,7 @@ pub fn shutdown_all() {
         std::thread::sleep(Duration::from_millis(300));
         for pid in pids {
             if process_alive(pid) {
-                signal_process_group(pid, libc::SIGKILL);
+                signal_process_group(pid, true);
             }
         }
     }
@@ -441,14 +439,16 @@ pub async fn spawn_background(
     let log = std::fs::File::create(&log_path)
         .with_context(|| format!("failed to create job log {}", log_path.display()))?;
     let workspace = super::workspace::effective_workdir();
-    let mut process = Command::new("sh");
+    let (shell, shell_flag) = crate::sys::shell_command();
+    let mut process = Command::new(shell);
     process
-        .arg("-lc")
+        .arg(shell_flag)
         .arg(command)
         .current_dir(&workspace)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(log.try_clone()?))
         .stderr(std::process::Stdio::from(log));
+    #[cfg(unix)]
     process.process_group(0);
     let mut child = process.spawn().context("failed to spawn the background job")?;
     let pid = child.id().context("background job has no pid")?;
@@ -976,14 +976,14 @@ async fn stop_one(job_id: &str) -> Result<String> {
             // SIGKILL escalation are detached — waiting them out inline is
             // what made Ctrl+C feel frozen, and it bought nothing: the job was
             // marked terminal above and has already left `overview()`.
-            signal_process_group(pid, libc::SIGTERM);
+            signal_process_group(pid, false);
             tokio::spawn(async move {
                 let deadline = Instant::now() + STOP_GRACE;
                 while process_alive(pid) && Instant::now() < deadline {
                     tokio::time::sleep(STATUS_POLL).await;
                 }
                 if process_alive(pid) {
-                    signal_process_group(pid, libc::SIGKILL);
+                    signal_process_group(pid, true);
                 }
             });
         }
@@ -1104,6 +1104,7 @@ mod tests {
         panic!("job {job_id} did not finish in time");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn background_job_lifecycle() {
         shared_init();
@@ -1138,6 +1139,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn stopping_returns_without_waiting_out_the_grace_period() {
         shared_init();
@@ -1396,6 +1398,7 @@ mod tests {
             .contains("工作中"));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn job_stop_terminates_a_running_job() {
         shared_init();
@@ -1410,6 +1413,7 @@ mod tests {
         assert_eq!(status["status"], "stopped");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn incremental_output_reads_from_offset() {
         shared_init();

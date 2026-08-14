@@ -22,7 +22,7 @@ use crate::platforms::plugins::{
 use crate::state::StateStore;
 use anyhow::{bail, Result};
 use crossterm::cursor::{Hide, MoveTo, Show};
-use crossterm::event::{self, Event, KeyCode, KeyEvent};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use crossterm::style::{Attribute, Print, SetAttribute};
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, queue};
@@ -7884,7 +7884,12 @@ fn read_key_with_timeout(timeout: Option<Duration>) -> Result<Option<KeyCode>> {
                 return Ok(None);
             }
         }
-        if let Event::Key(KeyEvent { code, .. }) = event::read()? {
+        if let Event::Key(KeyEvent { code, kind, .. }) = event::read()? {
+            // Windows 每个按键都会产生 Press + Release 两个事件,
+            // 只响应按下,否则方向键等会执行两次。
+            if kind == KeyEventKind::Release {
+                continue;
+            }
             return Ok(Some(code));
         }
     }

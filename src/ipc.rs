@@ -1,5 +1,6 @@
 use crate::paths::MiyuPaths;
 use crate::question::QuestionAnswers;
+use crate::sys::{self, IpcStream};
 use anyhow::{bail, Context, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
@@ -7,14 +8,13 @@ use serde_json::Value;
 use std::ffi::OsString;
 #[cfg(target_os = "linux")]
 use std::os::unix::ffi::OsStringExt;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::{
-    fs::File, fs::OpenOptions, os::fd::AsRawFd, os::unix::fs::OpenOptionsExt,
-    os::unix::fs::PermissionsExt, os::unix::process::CommandExt, path::PathBuf, process::Stdio,
-    time::Duration,
+    fs::File, fs::OpenOptions, path::PathBuf, process::Stdio, time::Duration,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::UnixStream;
 
 pub const PROTOCOL_VERSION: u16 = 3;
 pub const DEFAULT_WEB_PORT: u16 = 8300;
@@ -145,20 +145,20 @@ struct StarterLease {
 
 impl Drop for DirectCoreLease {
     fn drop(&mut self) {
-        unlock(&self.lock_file);
+        sys::unlock(&self.lock_file);
     }
 }
 
 impl Drop for WebCoreLease {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.socket_path);
-        unlock(&self.lock_file);
+        sys::unlock(&self.lock_file);
     }
 }
 
 impl Drop for StarterLease {
     fn drop(&mut self) {
-        unlock(&self.lock_file);
+        sys::unlock(&self.lock_file);
     }
 }
 
@@ -183,7 +183,7 @@ pub fn acquire_web_core(paths: &MiyuPaths) -> Result<WebCoreLease> {
 fn prepare_runtime_dir(paths: &MiyuPaths) -> Result<()> {
     let runtime_dir = paths.runtime_dir();
     std::fs::create_dir_all(&runtime_dir)?;
-    std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o700))?;
+    sys::set_mode(&runtime_dir, 0o700)?;
     Ok(())
 }
 
@@ -200,16 +200,10 @@ fn acquire_lock(lock_path: PathBuf) -> Result<File> {
         .read(true)
         .write(true)
         .open(lock_path)?;
-    let result = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if result != 0 {
-        bail!("Miyu Web core is starting or temporarily unavailable");
-    }
-    Ok(lock_file)
-}
-
-fn unlock(lock_file: &File) {
-    unsafe {
-        libc::flock(lock_file.as_raw_fd(), libc::LOCK_UN);
+    match sys::try_lock_exclusive(&lock_file) {
+        Ok(true) => Ok(lock_file),
+        Ok(false) => bail!("Miyu Web core is starting or temporarily unavailable"),
+        Err(error) => bail!("Miyu Web core is starting or temporarily unavailable: {error}"),
     }
 }
 
@@ -431,8 +425,8 @@ impl Frame {
     }
 }
 
-pub async fn connect(path: &Path) -> Result<UnixStream> {
-    UnixStream::connect(path)
+pub async fn connect(path: &Path) -> Result<IpcStream> {
+    sys::ipc_connect(path)
         .await
         .with_context(|| format!("connecting to Miyu core at {}", path.display()))
 }
@@ -641,7 +635,7 @@ fn remap_managed_password(
 fn write_private_state(path: &Path, contents: &[u8]) -> Result<()> {
     let parent = path.parent().context("Miyu state file has no parent")?;
     std::fs::create_dir_all(parent)?;
-    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+    sys::set_mode(parent, 0o700)?;
     let temporary = parent.join(format!(
         ".{}.tmp-{}-{}",
         path.file_name().unwrap_or_default().to_string_lossy(),
@@ -649,15 +643,14 @@ fn write_private_state(path: &Path, contents: &[u8]) -> Result<()> {
         rand::random::<u64>()
     ));
     let result = (|| -> Result<()> {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .open(&temporary)?;
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        sys::apply_mode(&mut options, 0o600);
+        let mut file = options.open(&temporary)?;
         std::io::Write::write_all(&mut file, contents)?;
         file.sync_all()?;
         std::fs::rename(&temporary, path)?;
-        let directory_sync = File::open(parent).and_then(|directory| directory.sync_all());
+        let directory_sync = sys::sync_parent(parent);
         finish_private_state_commit(parent, directory_sync)
     })();
     if result.is_err() {
@@ -1013,8 +1006,8 @@ fn daemon_process_matches(process: DaemonProcessIdentity) -> bool {
 }
 
 #[cfg(not(unix))]
-fn daemon_process_matches(_process: DaemonProcessIdentity) -> bool {
-    false
+fn daemon_process_matches(process: DaemonProcessIdentity) -> bool {
+    sys::process_alive(process.pid)
 }
 
 #[cfg(target_os = "linux")]
@@ -1042,10 +1035,7 @@ fn acquire_starter(paths: &MiyuPaths) -> Result<StarterLease> {
         .read(true)
         .write(true)
         .open(paths.daemon_start_lock())?;
-    let result = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX) };
-    if result != 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
+    sys::lock_exclusive(&lock_file)?;
     Ok(StarterLease { lock_file })
 }
 
@@ -1069,6 +1059,7 @@ fn start_daemon_process(
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
+    #[cfg(unix)]
     unsafe {
         command.pre_exec(|| {
             if libc::setsid() < 0 {
@@ -1076,6 +1067,13 @@ fn start_daemon_process(
             }
             Ok(())
         });
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // DETACHED_PROCESS | CREATE_NO_WINDOW: the daemon logs to a file and
+        // must not flash a console window when the CLI spawns it.
+        command.creation_flags(0x0000_0008 | 0x0800_0000);
     }
     command.spawn().context("starting Miyu daemon")
 }
@@ -1098,7 +1096,7 @@ fn append_daemon_process_args(command: &mut std::process::Command, launch: &Daem
     }
 }
 
-pub async fn send<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<()> {
+pub async fn send<T: Serialize>(stream: &mut IpcStream, value: &T) -> Result<()> {
     let bytes = serde_json::to_vec(value)?;
     if bytes.len() > MAX_FRAME_BYTES {
         bail!("IPC frame exceeds the 24 MiB limit");
@@ -1109,7 +1107,7 @@ pub async fn send<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<()
     Ok(())
 }
 
-pub async fn receive<T: DeserializeOwned>(stream: &mut UnixStream) -> Result<Option<T>> {
+pub async fn receive<T: DeserializeOwned>(stream: &mut IpcStream) -> Result<Option<T>> {
     let length = match stream.read_u32().await {
         Ok(length) => length as usize,
         Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
@@ -1247,22 +1245,26 @@ mod tests {
         assert_eq!(load_daemon_launch_config(&paths).unwrap(), config);
         let state = std::fs::read_to_string(paths.daemon_launch_state_file()).unwrap();
         assert!(!state.contains("very-secret"));
-        assert_eq!(
-            std::fs::metadata(password_path)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
-        assert_eq!(
-            std::fs::metadata(paths.daemon_launch_state_file())
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(password_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(paths.daemon_launch_state_file())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
     }
 
     #[test]
@@ -1461,8 +1463,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn framed_protocol_round_trips_over_unix_socket() {
-        let (mut left, mut right) = UnixStream::pair().unwrap();
+    async fn framed_protocol_round_trips_over_ipc_stream() {
+        let (mut left, mut right) = sys::ipc_pair().await.unwrap();
         let request = Request::new(Command::StartTurn {
             content: "hello".to_string(),
             mode: "normal".to_string(),
@@ -1498,7 +1500,7 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_frame_is_rejected_before_writing() {
-        let (mut left, _right) = UnixStream::pair().unwrap();
+        let (mut left, _right) = sys::ipc_pair().await.unwrap();
         let request = Request::new(Command::StartTurn {
             content: "x".repeat(MAX_FRAME_BYTES),
             mode: "normal".to_string(),

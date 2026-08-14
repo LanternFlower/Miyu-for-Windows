@@ -4,7 +4,6 @@ use crate::paths::MiyuPaths;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::path::{Component, Path};
 
@@ -209,6 +208,7 @@ fn create_artifact(
         }
     }
     let mut temp = tempfile::NamedTempFile::new_in(&session_dir)?;
+    #[cfg(unix)]
     temp.as_file_mut()
         .set_permissions(std::fs::Permissions::from_mode(0o600))?;
     temp.write_all(content.as_bytes())?;
@@ -293,7 +293,7 @@ fn ensure_private_dir(path: &Path) -> Result<()> {
             path.display()
         );
     }
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    crate::sys::set_mode(path, 0o700)?;
     Ok(())
 }
 
@@ -330,10 +330,14 @@ mod tests {
         assert_eq!(payload["published"], true);
         let path = temp.path().join("sess_test/report.md");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "# Report\n");
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
         assert!(matches!(
             receiver.try_recv().unwrap(),
             super::super::ToolProgressEvent::Artifact { path: event_path, .. } if event_path == path

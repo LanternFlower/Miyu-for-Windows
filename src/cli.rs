@@ -12,6 +12,7 @@ use crate::paths::MiyuPaths;
 use crate::render;
 use crate::shell;
 use crate::state::{QueuedPrompt, QueuedPromptAttachment, StateStore, Turn, TurnStatus};
+use crate::sys;
 use crate::tools;
 use anyhow::{bail, Context, Result};
 use base64::Engine;
@@ -2896,9 +2897,12 @@ fn inline_pop_select(turns: &[Turn]) -> Result<Option<Vec<bool>>> {
             &query,
         )?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code, modifiers, kind, ..
         }) = event::read()?
         {
+            if kind == KeyEventKind::Release {
+                continue;
+            }
             match code {
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                     clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
@@ -3806,9 +3810,12 @@ fn inline_fuzzy_select(items: &[String], mut active: Vec<bool>) -> Result<Option
             &active,
         )?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code, modifiers, kind, ..
         }) = event::read()?
         {
+            if kind == KeyEventKind::Release {
+                continue;
+            }
             match code {
                 KeyCode::Char('c')
                     if modifiers.contains(KeyModifiers::CONTROL)
@@ -3892,9 +3899,12 @@ fn inline_fuzzy_select_single(items: &[String], initial: usize) -> Result<Option
             &active,
         )?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code, modifiers, kind, ..
         }) = event::read()?
         {
+            if kind == KeyEventKind::Release {
+                continue;
+            }
             match code {
                 KeyCode::Char('c')
                     if modifiers.contains(KeyModifiers::CONTROL)
@@ -4211,11 +4221,14 @@ fn inline_single_select_deletable(
             confirm_label,
         )?;
         let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code, modifiers, kind, ..
         }) = event::read()?
         else {
             continue;
         };
+        if kind == KeyEventKind::Release {
+            continue;
+        }
         if let Some(index) = confirming {
             // Only an explicit yes deletes; every other key backs out.
             let confirmed = matches!(code, KeyCode::Char('y') | KeyCode::Char('Y'));
@@ -4502,7 +4515,7 @@ fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
                 if link_path.exists() || link_path.is_symlink() {
                     std::fs::remove_file(&link_path)?;
                 }
-                std::os::unix::fs::symlink(&path, &link_path)?;
+                sys::symlink_or_copy(Path::new(&path), &link_path)?;
             }
             print!("[Image 1: {}]", filename);
             io::stdout().flush()?;
@@ -4782,33 +4795,42 @@ async fn run_chat_with_images(
 }
 
 fn drain_stdin() {
-    use std::os::fd::AsRawFd;
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
 
-    let stdin = io::stdin();
-    if !stdin.is_terminal() {
-        return;
-    }
-    let fd = stdin.as_raw_fd();
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags < 0 {
-        return;
-    }
-    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-        return;
-    }
+        let stdin = io::stdin();
+        if !stdin.is_terminal() {
+            return;
+        }
+        let fd = stdin.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 {
+            return;
+        }
+        if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return;
+        }
 
-    let mut handle = stdin.lock();
-    let mut buffer = [0_u8; 4096];
-    loop {
-        match handle.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(_) => continue,
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
-            Err(_) => break,
+        let mut handle = stdin.lock();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            match handle.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(_) => continue,
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
+                Err(_) => break,
+            }
+        }
+
+        let _ = unsafe { libc::fcntl(fd, libc::F_SETFL, flags) };
+    }
+    #[cfg(not(unix))]
+    {
+        if io::stdin().is_terminal() {
+            sys::flush_stdin();
         }
     }
-
-    let _ = unsafe { libc::fcntl(fd, libc::F_SETFL, flags) };
 }
 
 const STDIN_MAX_CHARS: usize = 50_000;
@@ -4818,53 +4840,19 @@ async fn append_stdin_if_piped(message: String) -> String {
     if io::stdin().is_terminal() {
         return message;
     }
-    // The reader thread bounds itself with poll() deadlines instead of being
-    // abandoned by an outer timeout: a thread stuck in a blocking read(0)
-    // would make the tokio runtime hang forever on shutdown (the process
-    // then never exits when stdin is a never-closing pipe).
-    let read_result = tokio::task::spawn_blocking(|| -> std::io::Result<String> {
-        use std::os::fd::AsRawFd;
-        let stdin = std::io::stdin();
-        let fd = stdin.as_raw_fd();
-        let mut buf: Vec<u8> = Vec::new();
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_secs(STDIN_TIMEOUT_SECS);
-        loop {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() || buf.len() >= STDIN_MAX_CHARS {
-                break;
-            }
-            let mut pollfd = libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            let timeout_ms = remaining.as_millis().min(i32::MAX as u128) as i32;
-            let ready = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
-            if ready <= 0 {
-                break;
-            }
-            let mut chunk = [0u8; 8192];
-            let count = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
-            if count < 0 {
-                let error = std::io::Error::last_os_error();
-                if error.kind() == std::io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(error);
-            }
-            if count == 0 {
-                break;
-            }
-            buf.extend_from_slice(&chunk[..count as usize]);
-        }
-        buf.truncate(STDIN_MAX_CHARS);
-        Ok(String::from_utf8_lossy(&buf).into_owned())
+    // The reader thread bounds itself with poll/pipe deadlines instead of
+    // being abandoned by an outer timeout: a thread stuck in a blocking
+    // read would make the tokio runtime hang forever on shutdown (the
+    // process then never exits when stdin is a never-closing pipe).
+    let read_result = tokio::task::spawn_blocking(move || {
+        sys::read_stdin_with_timeout(STDIN_MAX_CHARS, Duration::from_secs(STDIN_TIMEOUT_SECS))
     })
     .await;
 
     let stdin_content = match read_result {
-        Ok(Ok(content)) if !content.trim().is_empty() => content.trim().to_string(),
+        Ok(Ok(content)) if !content.is_empty() => {
+            String::from_utf8_lossy(&content).trim().to_string()
+        }
         _ => return message,
     };
 
@@ -6975,6 +6963,7 @@ async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMode) -> Result<()> {
     {
         let paths = paths.clone();
         let feed = jobs_shared.clone();
+        #[cfg(unix)]
         tokio::spawn(async move {
             use tokio::signal::unix::{signal, SignalKind};
             let (Ok(mut hangup), Ok(mut terminate)) = (
@@ -6991,6 +6980,23 @@ async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMode) -> Result<()> {
             if let Some(session_id) = session {
                 // 超时保底:daemon 正在重启/无响应时也必须退出,
                 // 否则挂在这里的同时主循环还在对死终端空转。
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    send_ipc_admin(&paths, IpcCommand::StopSessionJobs { session_id }),
+                )
+                .await;
+            }
+            std::process::exit(0);
+        });
+        // Windows console close (CTRL_CLOSE_EVENT) still reaches Ctrl+C
+        // handling; best-effort cleanup on Ctrl+C as a fallback.
+        #[cfg(not(unix))]
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_err() {
+                return;
+            }
+            let session = { feed.repl_session.lock().unwrap().clone() };
+            if let Some(session_id) = session {
                 let _ = tokio::time::timeout(
                     Duration::from_secs(2),
                     send_ipc_admin(&paths, IpcCommand::StopSessionJobs { session_id }),
@@ -8651,9 +8657,12 @@ fn inline_variant_select(
             variant_scroll,
         )?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code, modifiers, kind, ..
         }) = event::read()?
         {
+            if kind == KeyEventKind::Release {
+                continue;
+            }
             match code {
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                     clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
@@ -8707,9 +8716,12 @@ fn inline_single_variant_select(
         scroll = inline_fuzzy_scroll(item.cursor, scroll, visible.min(item.options.len()));
         draw_inline_single_variant(&mut session.stdout, anchor_y, menu_lines, &item, scroll)?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code, modifiers, kind, ..
         }) = event::read()?
         {
+            if kind == KeyEventKind::Release {
+                continue;
+            }
             match code {
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                     clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
@@ -11053,9 +11065,7 @@ fn spawn_hangup_watchdog() {
 }
 
 fn terminal_hangup() -> bool {
-    let mut pollfd = libc::pollfd { fd: libc::STDIN_FILENO, events: 0, revents: 0 };
-    let ready = unsafe { libc::poll(&mut pollfd, 1, 0) };
-    ready == 1 && (pollfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL)) != 0
+    sys::stdin_hung_up()
 }
 
 enum LiveReplOutcome {
@@ -11092,11 +11102,7 @@ fn read_live_repl_input(
         // 等待权自持:PTY 死亡后 crossterm 的 poll 会在内部对 HUP fd
         // 无限自旋、永不返回(实测),所以不能把"等 80ms"交给它——用裸
         // poll 等待并率先识别挂断,有输入就绪时才让 crossterm 取事件。
-        let mut pollfd = libc::pollfd { fd: libc::STDIN_FILENO, events: libc::POLLIN, revents: 0 };
-        let ready = unsafe { libc::poll(&mut pollfd, 1, 80) };
-        if ready == 1
-            && (pollfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL)) != 0
-        {
+        if sys::wait_stdin(Duration::from_millis(80)) == sys::StdinWait::HungUp {
             return Ok(LiveReplOutcome::Exit);
         }
         // 就绪判定必须问 crossterm(它的内部缓冲对裸 poll 不可见):
@@ -11747,6 +11753,10 @@ fn read_repl_input(
     )?;
     loop {
         match event::read()? {
+            Event::Key(KeyEvent {
+                kind: KeyEventKind::Release,
+                ..
+            }) => {}
             Event::Paste(text) => {
                 insert_pasted_text_at_cursor(&mut input, &mut cursor, text, &mut pasted_texts);
                 history_clean_index = None;
@@ -13332,7 +13342,6 @@ fn truncate_visible_width(value: &str, max_width: usize) -> String {
 mod repl_input_tests {
     use super::*;
     use crate::llm::ChatStreamKind;
-    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -13704,14 +13713,18 @@ mod repl_input_tests {
             std::fs::read_to_string(&password_file).unwrap(),
             "very-secret"
         );
-        assert_eq!(
-            std::fs::metadata(password_file)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(password_file)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
     }
 
     #[test]
@@ -13879,7 +13892,7 @@ mod repl_input_tests {
     async fn config_reload_retries_coded_busy_frames_over_ipc() {
         let temp = tempfile::tempdir().unwrap();
         let socket = temp.path().join("reload.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let listener = sys::ipc_bind(&socket).unwrap();
         let server = tokio::spawn(async move {
             for attempt in 1..=3 {
                 let (mut stream, _) = listener.accept().await.unwrap();
@@ -13909,7 +13922,7 @@ mod repl_input_tests {
     async fn config_reload_request_times_out_when_daemon_does_not_respond() {
         let temp = tempfile::tempdir().unwrap();
         let socket = temp.path().join("reload-timeout.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let listener = sys::ipc_bind(&socket).unwrap();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = ipc::receive::<IpcRequest>(&mut stream)

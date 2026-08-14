@@ -20,6 +20,7 @@ use crate::state::{
     ArtifactAsset, ImageAsset, PlatformPluginScopeKey, QueuedPrompt, StateStore, Turn,
     TurnFollowup, TurnStatus, UsageSnapshot, UserAttachment,
 };
+use crate::sys;
 use crate::tools::{self, CommandOutputStream};
 use anyhow::{bail, Context, Result};
 use axum::body::Bytes;
@@ -47,7 +48,6 @@ use std::convert::Infallible;
 use std::future::IntoFuture;
 use std::io::{self, IsTerminal, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path as FilePath, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1978,9 +1978,9 @@ fn start_ipc_server(
     let lease = ipc::acquire_web_core(&state.paths)
         .context("another Miyu core is already running or starting")?;
     let socket_path = state.paths.ipc_socket();
-    let listener = tokio::net::UnixListener::bind(&socket_path)
+    let listener = sys::ipc_bind(&socket_path)
         .with_context(|| format!("binding Miyu IPC socket at {}", socket_path.display()))?;
-    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
+    sys::set_mode(&socket_path, 0o600)?;
 
     let server_state = state.clone();
     let permits = Arc::new(Semaphore::new(32));
@@ -2022,7 +2022,7 @@ fn start_ipc_server(
 
 async fn handle_ipc_connection(
     state: DaemonState,
-    mut stream: tokio::net::UnixStream,
+    mut stream: sys::IpcStream,
 ) -> Result<()> {
     let Some(request) = tokio::time::timeout(
         Duration::from_secs(5),
@@ -3275,7 +3275,7 @@ fn resolve_turn_session(
 #[allow(clippy::too_many_arguments)]
 async fn handle_ipc_turn(
     state: &DaemonState,
-    stream: &mut tokio::net::UnixStream,
+    stream: &mut sys::IpcStream,
     content: String,
     mode: String,
     images: Vec<Option<ImageAttachment>>,
@@ -3433,7 +3433,7 @@ async fn handle_ipc_turn(
 /// forwards its event frames until terminal, without owning the run.
 async fn follow_run(
     state: &DaemonState,
-    stream: &mut tokio::net::UnixStream,
+    stream: &mut sys::IpcStream,
     run_id: String,
 ) -> Result<()> {
     let mut subscription = state.events.subscribe_after(state.events.latest_id());
@@ -3996,10 +3996,15 @@ async fn store_persona_asset(
     match write_result {
         Ok(()) => {
             let _ = tokio::fs::remove_file(&temporary).await;
-            let directory = tokio::fs::File::open(directory)
-                .await
-                .map_err(ApiError::internal)?;
-            directory.sync_all().await.map_err(ApiError::internal)?;
+            // Opening a directory for syncing is a Unix capability; Windows
+            // cannot `File::open` a directory, so skip the durability flush.
+            #[cfg(unix)]
+            {
+                let directory = tokio::fs::File::open(directory)
+                    .await
+                    .map_err(ApiError::internal)?;
+                directory.sync_all().await.map_err(ApiError::internal)?;
+            }
             Ok(())
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -10518,7 +10523,7 @@ mod tests {
         let expected = next_config.display.show_token_usage;
         next_config.save(&state.paths).unwrap();
 
-        let (mut client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (mut client, server) = sys::ipc_pair().await.unwrap();
         let server_state = state.clone();
         let task = tokio::spawn(async move { handle_ipc_connection(server_state, server).await });
         ipc::send(&mut client, &IpcRequest::new(IpcCommand::ReloadConfig))
@@ -10555,7 +10560,7 @@ mod tests {
         candidate.display.show_token_usage = !runtime_value;
         candidate.save(&state.paths).unwrap();
 
-        let (mut client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (mut client, server) = sys::ipc_pair().await.unwrap();
         let server_state = state.clone();
         let task = tokio::spawn(async move { handle_ipc_connection(server_state, server).await });
         ipc::send(&mut client, &IpcRequest::new(IpcCommand::ReloadConfig))
@@ -10601,7 +10606,7 @@ mod tests {
         // snapshot); only a concurrent admin operation does.
         state.manager.lock().unwrap().admin_busy = true;
 
-        let (mut client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (mut client, server) = sys::ipc_pair().await.unwrap();
         let server_state = state.clone();
         let task = tokio::spawn(async move { handle_ipc_connection(server_state, server).await });
         ipc::send(&mut client, &IpcRequest::new(IpcCommand::ReloadConfig))
@@ -10654,7 +10659,7 @@ mod tests {
             },
         );
 
-        let (mut client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (mut client, server) = sys::ipc_pair().await.unwrap();
         let server_state = state.clone();
         let task = tokio::spawn(async move { handle_ipc_connection(server_state, server).await });
         ipc::send(&mut client, &IpcRequest::new(IpcCommand::ReloadConfig))

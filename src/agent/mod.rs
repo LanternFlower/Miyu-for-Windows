@@ -6688,10 +6688,12 @@ mod tests {
         assert!(hint.contains("vision_analyze"));
         let tools = agent.tools.lock().unwrap().clone();
         assert!(tools.contains("vision_analyze"));
-        let error = tools
-            .call("vision_analyze", r#"{"image":"/etc/passwd"}"#)
-            .await
-            .unwrap_err();
+        // A real but unattached local file must be rejected. Use a temp file
+        // rather than a Unix path so the test also passes on Windows.
+        let foreign = temp.path().join("foreign-image.png");
+        std::fs::write(&foreign, b"not an attached image").unwrap();
+        let request = serde_json::json!({ "image": foreign.display().to_string() }).to_string();
+        let error = tools.call("vision_analyze", &request).await.unwrap_err();
         assert!(error
             .to_string()
             .contains("image is not attached to the current platform turn"));

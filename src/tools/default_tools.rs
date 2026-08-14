@@ -528,9 +528,10 @@ async fn run_command(args: Value, allowed: bool, progress: ToolProgress) -> Resu
 }
 
 async fn execute_command(command: &str, timeout: u64, progress: ToolProgress) -> Result<String> {
-    let mut command_process = Command::new("sh");
+    let (shell, shell_flag) = crate::sys::shell_command();
+    let mut command_process = Command::new(shell);
     command_process
-        .arg("-lc")
+        .arg(shell_flag)
         .arg(command)
         // Explicit cwd: shell commands must run in the turn workspace, not
         // whatever the daemon process cwd happens to be.
@@ -587,6 +588,7 @@ struct CommandProcessGroup {
 }
 
 impl CommandProcessGroup {
+    #[cfg_attr(not(unix), allow(unused_variables))]
     fn new(child_id: Option<u32>) -> Self {
         Self {
             #[cfg(unix)]
@@ -990,6 +992,16 @@ fn required(args: &Value, key: &str) -> Result<String> {
 mod tests {
     use super::*;
 
+    fn ripgrep_available() -> bool {
+        std::process::Command::new("rg")
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
     fn fake_trash(args: Value) -> Result<String> {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         trash_paths_with(
@@ -1007,6 +1019,7 @@ mod tests {
         )
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn command_execution_streams_stdout_and_stderr() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1137,6 +1150,9 @@ mod tests {
 
     #[tokio::test]
     async fn glob_files_matches_filename_case_insensitively() {
+        if !ripgrep_available() {
+            return;
+        }
         let cwd = std::env::current_dir().unwrap();
         let temp = tempfile::tempdir_in(cwd).unwrap();
         let path = temp.path().join("ai测试题.txt");
@@ -1154,6 +1170,9 @@ mod tests {
 
     #[tokio::test]
     async fn grep_no_matches_is_successful_empty_result() {
+        if !ripgrep_available() {
+            return;
+        }
         let cwd = std::env::current_dir().unwrap();
         let temp = tempfile::tempdir_in(cwd).unwrap();
         std::fs::write(temp.path().join("sample.txt"), "hello").unwrap();

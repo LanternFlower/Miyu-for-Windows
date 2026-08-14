@@ -15,7 +15,6 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Write};
-use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -539,15 +538,12 @@ fn lock_thinking_variant_preferences(paths: &MiyuPaths) -> Result<File> {
                 lock_path.display()
             )
         })?;
-    let result = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) };
-    if result != 0 {
-        return Err(std::io::Error::last_os_error()).with_context(|| {
-            format!(
-                "failed to lock thinking variant state: {}",
-                lock_path.display()
-            )
-        });
-    }
+    crate::sys::lock_exclusive(&lock).with_context(|| {
+        format!(
+            "failed to lock thinking variant state: {}",
+            lock_path.display()
+        )
+    })?;
     Ok(lock)
 }
 
@@ -7628,6 +7624,28 @@ mod tests {
             let read = stream.read(&mut byte).await.unwrap();
             assert_ne!(read, 0, "connection closed before request headers");
             request.push(byte[0]);
+        }
+        // Drain a Content-Length request body so the socket closes with FIN
+        // instead of RST. Windows resets a connection whose receive buffer
+        // still holds unread data, which breaks the failover tests that rely
+        // on a truncated stream being followed by a clean retry.
+        let headers = String::from_utf8_lossy(&request);
+        let content_length = headers.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if name.eq_ignore_ascii_case("content-length") {
+                value.trim().parse::<usize>().ok()
+            } else {
+                None
+            }
+        });
+        if let Some(mut remaining) = content_length {
+            let mut buffer = [0u8; 1024];
+            while remaining > 0 {
+                let take = remaining.min(buffer.len());
+                let read = stream.read(&mut buffer[..take]).await.unwrap();
+                assert_ne!(read, 0, "connection closed before request body");
+                remaining -= read;
+            }
         }
     }
 

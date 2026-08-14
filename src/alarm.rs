@@ -121,31 +121,14 @@ pub fn cleanup_dead(paths: &MiyuPaths) -> Result<Vec<AlarmRecord>> {
 }
 
 pub fn stop_process(pid: u32) -> Result<()> {
-    #[cfg(unix)]
-    {
-        let status = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
-        if status != 0 && process_exists(pid) {
-            bail!("failed to stop alarm process {pid}")
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        bail!("alarm cancellation is not supported on this platform")
+    if process_exists(pid) {
+        crate::sys::terminate_process(pid, false);
     }
     Ok(())
 }
 
 pub fn process_exists(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        true
-    }
+    crate::sys::process_alive(pid)
 }
 
 fn seconds_until_clock(value: &str) -> Result<u64> {

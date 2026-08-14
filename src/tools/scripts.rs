@@ -648,6 +648,7 @@ fn clip_output(value: &str) -> String {
     }
 }
 
+#[cfg_attr(not(unix), allow(unused_variables))]
 fn make_executable(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {

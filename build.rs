@@ -9,6 +9,16 @@ use base64::{engine::general_purpose, Engine as _};
 const PROMPT_MASK: &[u8] = b"MiyuPromptMask";
 
 fn main() {
+    // Windows gives the main thread a 1 MiB stack by default, a fraction of the
+    // 8 MiB a Unix kernel reserves. Several of Miyu's async entry points (the
+    // CLI dispatcher most of all) compile to large futures that overflow that
+    // 1 MiB at startup, so match the Unix default on the MSVC toolchain.
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    if target_os == "windows" && target_env == "msvc" {
+        println!("cargo:rustc-link-arg=/STACK:8388608");
+    }
+
     println!("cargo:rerun-if-changed=src/prompts/miyu.md");
     println!("cargo:rerun-if-changed=src/prompts/plan.md");
     println!("cargo:rerun-if-changed=src/prompts/chat.md");

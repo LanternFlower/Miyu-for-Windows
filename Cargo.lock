@@ -2147,6 +2147,7 @@ dependencies = [
  "unicode-width 0.2.2",
  "urlencoding",
  "vte",
+ "windows-sys 0.61.2",
  "yaml-rust2",
 ]
 

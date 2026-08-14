@@ -401,7 +401,7 @@ pub fn publish_draft(paths: &MiyuPaths, draft_id: &str) -> Result<PublishedSkill
                     target.display()
                 )
             })?;
-            if let Err(error) = File::open(parent).and_then(|directory| directory.sync_all()) {
+            if let Err(error) = crate::sys::sync_parent(parent) {
                 tracing::warn!(path = %parent.display(), error = %error, "failed to sync published skill directory");
             }
             staged_guard.disarm();
@@ -473,7 +473,7 @@ pub fn delete_skill(
     validate_skill_package(&target, name)?;
     fs::remove_dir_all(&target)?;
     if let Some(parent) = target.parent() {
-        if let Err(error) = File::open(parent).and_then(|directory| directory.sync_all()) {
+        if let Err(error) = crate::sys::sync_parent(parent) {
             tracing::warn!(path = %parent.display(), error = %error, "failed to sync deleted skill directory");
         }
     }
@@ -1165,7 +1165,7 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
         secure_directory(destination)?;
         copy_tree_inner(source, destination, 0, &mut stats)?;
         if let Some(parent) = destination.parent() {
-            File::open(parent)?.sync_all()?;
+            crate::sys::sync_parent(parent)?;
         }
         Ok(())
     })();
@@ -1209,12 +1209,15 @@ fn copy_tree_inner(
                 bail!("skill package exceeds file-count or total-size limits");
             }
             fs::copy(entry.path(), &target)?;
-            File::open(&target)?.sync_all()?;
+            // `File::open` is read-only; on Windows `sync_all` maps to
+            // FlushFileBuffers, which requires write access and would fail
+            // with ERROR_ACCESS_DENIED on a read-only handle.
+            File::options().read(true).write(true).open(&target)?.sync_all()?;
         } else {
             bail!("skill package contains an unsupported file type");
         }
     }
-    File::open(destination)?.sync_all()?;
+    crate::sys::sync_parent(destination)?;
     Ok(())
 }
 
@@ -1294,7 +1297,7 @@ fn exchange_skill_directories(staged: &Path, target: &Path) -> Result<()> {
         )
     })?;
     if let Some(parent) = target.parent() {
-        if let Err(error) = File::open(parent).and_then(|directory| directory.sync_all()) {
+        if let Err(error) = crate::sys::sync_parent(parent) {
             tracing::warn!(path = %parent.display(), error = %error, "failed to sync updated skill directory");
         }
     }
@@ -1422,8 +1425,30 @@ fn exchange_directories(left: &Path, right: &Path) -> Result<()> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn exchange_directories(_left: &Path, _right: &Path) -> Result<()> {
-    bail!("atomic skill updates are unsupported on this platform")
+fn exchange_directories(left: &Path, right: &Path) -> Result<()> {
+    // No RENAME_EXCHANGE on this platform: swap the two names with a
+    // three-step rename dance. Not atomic against a concurrent reader, but
+    // the publish lock already excludes other writers.
+    let parent = left.parent().context("staged skill has no parent")?;
+    if right.parent() != Some(parent) {
+        bail!("atomic skill exchange requires a shared parent directory");
+    }
+    let temporary = parent.join(format!(
+        ".miyu-skill-swap-{}-{:016x}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    fs::rename(right, &temporary)?;
+    if let Err(error) = fs::rename(left, right) {
+        let _ = fs::rename(&temporary, right);
+        return Err(error.into());
+    }
+    if let Err(error) = fs::rename(&temporary, left) {
+        let _ = fs::rename(right, &temporary);
+        let _ = fs::rename(left, right);
+        return Err(error.into());
+    }
+    Ok(())
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1861,6 +1886,7 @@ mod tests {
         assert!(!paths.skills_dir.join("sample-skill").exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn expired_draft_cannot_be_published_directly() {
         fn set_modified_recursive(path: &Path, modified: SystemTime) {
@@ -1917,6 +1943,7 @@ mod tests {
         assert!(!paths.skill_drafts_dir().join(&draft.id).exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn future_draft_timestamps_are_not_treated_as_expired() {
         fn set_modified_recursive(path: &Path, modified: SystemTime) {
