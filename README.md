@@ -170,6 +170,10 @@ miyu import miyu-export-*.tar.gz
 
 运行 `miyu config` 命令打开配置 TUI。
 
+- 界面语言
+
+  默认自动跟随系统：Windows 读取系统 UI 语言，Linux/macOS 读取 `LC_ALL`/`LC_MESSAGES`/`LANG`。可用环境变量 `MIYU_LANG` 临时覆盖（`zh` / `en` / `auto`），或在配置 TUI 中设置。
+
 - 供应商和模型
 
   `miyu` 默认使用 opencode 的公共 API，推荐配置自己的 API。
