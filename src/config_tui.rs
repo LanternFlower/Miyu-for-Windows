@@ -7437,6 +7437,37 @@ fn parse_provider_model_choice(value: &str) -> (String, String) {
     (value.to_string(), String::new())
 }
 
+/// Opens `path` in an external text editor, blocking until it exits.
+/// Prefers `$VISUAL`/`$EDITOR` (which may include arguments such as
+/// `code --wait`), then falls back to `notepad` on Windows and
+/// `vim`/`nano`/`vi` on Unix.
+fn open_text_editor(path: &std::path::Path) -> std::io::Result<()> {
+    for var in ["VISUAL", "EDITOR"] {
+        if let Some(command) = std::env::var(var).ok().filter(|v| !v.trim().is_empty()) {
+            let mut parts = command.split_whitespace();
+            if let Some(program) = parts.next() {
+                if Command::new(program).args(parts).arg(path).status().is_ok() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+    let candidates: &[&str] = if cfg!(windows) {
+        &["notepad"]
+    } else {
+        &["vim", "nano", "vi"]
+    };
+    for editor in candidates {
+        if Command::new(*editor).arg(path).status().is_ok() {
+            return Ok(());
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "no text editor found (set $VISUAL or $EDITOR)",
+    ))
+}
+
 fn edit_textarea(stdout: &mut io::Stdout, value: &mut String) -> Result<()> {
     execute!(
         stdout,
@@ -7450,11 +7481,7 @@ fn edit_textarea(stdout: &mut io::Stdout, value: &mut String) -> Result<()> {
     let mut file = tempfile::NamedTempFile::new()?;
     file.write_all(value.as_bytes())?;
     let path = file.path().to_path_buf();
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
-    let status = Command::new(&editor)
-        .arg(&path)
-        .status()
-        .or_else(|_| Command::new("nano").arg(&path).status());
+    let status = open_text_editor(&path);
     if let Err(err) = status {
         if is_zh() {
             eprintln!("无法打开编辑器: {err}");
