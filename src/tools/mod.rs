@@ -366,7 +366,11 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     calculator::register(&mut registry);
     deepseek_status::register(&mut registry);
     if config.plugins.api_quota.enabled {
-        api_quota::register(&mut registry, config.plugins.api_quota.clone());
+        api_quota::register(
+            &mut registry,
+            config.plugins.api_quota.clone(),
+            config.providers.clone(),
+        );
     }
     vision::register_print(&mut registry, config.clone());
     if config.plugins.memes.enabled {

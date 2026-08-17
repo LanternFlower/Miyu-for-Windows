@@ -1,5 +1,7 @@
 use super::{ToolRegistry, ToolSpec};
-use crate::config::{ApiQuotaAccountConfig, ApiQuotaPluginConfig, ApiQuotaProviderConfig};
+use crate::config::{
+    ApiQuotaAccountConfig, ApiQuotaPluginConfig, ApiQuotaProviderConfig, ProviderConfig,
+};
 use crate::i18n::{is_zh, text as t};
 use anyhow::{bail, Context, Result};
 use futures_util::StreamExt;
@@ -13,7 +15,40 @@ const DEEPSEEK_BALANCE_URL: &str = "https://api.deepseek.com/user/balance";
 const OPENROUTER_KEY_URL: &str = "https://openrouter.ai/api/v1/key";
 static HTTP_CONCURRENCY: Semaphore = Semaphore::const_new(4);
 
-pub fn register(registry: &mut ToolRegistry, config: ApiQuotaPluginConfig) {
+#[derive(Clone, Copy)]
+enum QuotaProvider {
+    DeepSeek,
+    OpenRouter,
+}
+
+impl QuotaProvider {
+    fn id(self) -> &'static str {
+        match self {
+            Self::DeepSeek => "deepseek",
+            Self::OpenRouter => "openrouter",
+        }
+    }
+
+    fn default_endpoint(self) -> &'static str {
+        match self {
+            Self::DeepSeek => DEEPSEEK_BALANCE_URL,
+            Self::OpenRouter => OPENROUTER_KEY_URL,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct QuotaAccount {
+    name: String,
+    api_key: String,
+    endpoint: String,
+}
+
+pub fn register(
+    registry: &mut ToolRegistry,
+    config: ApiQuotaPluginConfig,
+    providers: Vec<ProviderConfig>,
+) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
@@ -39,7 +74,8 @@ pub fn register(registry: &mut ToolRegistry, config: ApiQuotaPluginConfig) {
         move |args| {
             let client = client.clone();
             let config = config.clone();
-            async move { query_api_quota(&client, &config, args).await }
+            let providers = providers.clone();
+            async move { query_api_quota(&client, &config, &providers, args).await }
         },
     ));
 }
@@ -47,6 +83,7 @@ pub fn register(registry: &mut ToolRegistry, config: ApiQuotaPluginConfig) {
 async fn query_api_quota(
     client: &reqwest::Client,
     config: &ApiQuotaPluginConfig,
+    providers: &[ProviderConfig],
     args: Value,
 ) -> Result<String> {
     let provider = args
@@ -55,9 +92,9 @@ async fn query_api_quota(
         .unwrap_or("all");
     let account = args.get("account").and_then(Value::as_str);
     match provider {
-        "deepseek" => query_deepseek(client, &config.deepseek, account).await,
-        "openrouter" => query_openrouter(client, &config.openrouter, account).await,
-        "all" => query_all(client, config, account).await,
+        "deepseek" => query_deepseek(client, &config.deepseek, providers, account).await,
+        "openrouter" => query_openrouter(client, &config.openrouter, providers, account).await,
+        "all" => query_all(client, config, providers, account).await,
         other => bail!("unsupported API quota provider: {other}"),
     }
 }
@@ -65,10 +102,13 @@ async fn query_api_quota(
 async fn query_all(
     client: &reqwest::Client,
     config: &ApiQuotaPluginConfig,
+    providers: &[ProviderConfig],
     account: Option<&str>,
 ) -> Result<String> {
-    let deepseek_configured = has_configured_account(&config.deepseek);
-    let openrouter_configured = has_configured_account(&config.openrouter);
+    let deepseek_configured =
+        has_configured_account(&config.deepseek, providers, QuotaProvider::DeepSeek);
+    let openrouter_configured =
+        has_configured_account(&config.openrouter, providers, QuotaProvider::OpenRouter);
     if !deepseek_configured && !openrouter_configured {
         bail!("no DeepSeek or OpenRouter API key is configured")
     }
@@ -76,8 +116,8 @@ async fn query_all(
     match (deepseek_configured, openrouter_configured) {
         (true, true) => {
             let (deepseek, openrouter) = tokio::join!(
-                query_deepseek(client, &config.deepseek, account),
-                query_openrouter(client, &config.openrouter, account)
+                query_deepseek(client, &config.deepseek, providers, account),
+                query_openrouter(client, &config.openrouter, providers, account)
             );
             match (deepseek, openrouter) {
                 (Err(deepseek), Err(openrouter)) => bail!(
@@ -89,8 +129,8 @@ async fn query_all(
                 ])),
             }
         }
-        (true, false) => query_deepseek(client, &config.deepseek, account).await,
-        (false, true) => query_openrouter(client, &config.openrouter, account).await,
+        (true, false) => query_deepseek(client, &config.deepseek, providers, account).await,
+        (false, true) => query_openrouter(client, &config.openrouter, providers, account).await,
         (false, false) => unreachable!(),
     }
 }
@@ -112,17 +152,15 @@ fn format_query_results<const N: usize>(results: [(&str, Result<String>); N]) ->
 async fn query_deepseek(
     client: &reqwest::Client,
     config: &ApiQuotaProviderConfig,
+    providers: &[ProviderConfig],
     account: Option<&str>,
 ) -> Result<String> {
-    let accounts = selected_accounts(config, account)?;
-    let api_keys = accounts
-        .iter()
-        .map(|account| account.api_key.clone())
-        .collect::<Vec<_>>();
+    let accounts = selected_accounts(config, providers, QuotaProvider::DeepSeek, account)?;
     let results = futures_util::stream::iter(
-        api_keys
-            .into_iter()
-            .map(|api_key| async move { query_deepseek_account(client, &api_key).await }),
+        accounts
+            .iter()
+            .cloned()
+            .map(|account| async move { query_deepseek_account(client, &account).await }),
     )
     .buffered(4)
     .collect::<Vec<_>>()
@@ -155,9 +193,12 @@ async fn query_deepseek(
     Ok(lines.join("\n"))
 }
 
-async fn query_deepseek_account(client: &reqwest::Client, api_key: &str) -> Result<String> {
+async fn query_deepseek_account(
+    client: &reqwest::Client,
+    account: &QuotaAccount,
+) -> Result<String> {
     let response: DeepSeekBalance =
-        get_json(client, DEEPSEEK_BALANCE_URL, api_key, "DeepSeek").await?;
+        get_json(client, &account.endpoint, &account.api_key, "DeepSeek").await?;
     format_deepseek_balance(response)
 }
 
@@ -185,17 +226,15 @@ fn format_deepseek_balance(response: DeepSeekBalance) -> Result<String> {
 async fn query_openrouter(
     client: &reqwest::Client,
     config: &ApiQuotaProviderConfig,
+    providers: &[ProviderConfig],
     account: Option<&str>,
 ) -> Result<String> {
-    let accounts = selected_accounts(config, account)?;
-    let api_keys = accounts
-        .iter()
-        .map(|account| account.api_key.clone())
-        .collect::<Vec<_>>();
+    let accounts = selected_accounts(config, providers, QuotaProvider::OpenRouter, account)?;
     let results = futures_util::stream::iter(
-        api_keys
-            .into_iter()
-            .map(|api_key| async move { query_openrouter_account(client, &api_key).await }),
+        accounts
+            .iter()
+            .cloned()
+            .map(|account| async move { query_openrouter_account(client, &account).await }),
     )
     .buffered(4)
     .collect::<Vec<_>>()
@@ -219,9 +258,12 @@ async fn query_openrouter(
     Ok(lines.join("\n"))
 }
 
-async fn query_openrouter_account(client: &reqwest::Client, api_key: &str) -> Result<String> {
+async fn query_openrouter_account(
+    client: &reqwest::Client,
+    account: &QuotaAccount,
+) -> Result<String> {
     let response: OpenRouterKeyResponse =
-        get_json(client, OPENROUTER_KEY_URL, api_key, "OpenRouter").await?;
+        get_json(client, &account.endpoint, &account.api_key, "OpenRouter").await?;
     let data = response.data;
     let mut lines = Vec::new();
     if let Some(label) = data.label.filter(|label| !label.trim().is_empty()) {
@@ -256,42 +298,168 @@ async fn query_openrouter_account(client: &reqwest::Client, api_key: &str) -> Re
     Ok(lines.join("\n"))
 }
 
-fn has_configured_account(config: &ApiQuotaProviderConfig) -> bool {
-    effective_accounts(config)
+fn has_configured_account(
+    config: &ApiQuotaProviderConfig,
+    providers: &[ProviderConfig],
+    provider: QuotaProvider,
+) -> bool {
+    effective_accounts(config, providers, provider)
         .iter()
         .any(|account| !account.api_key.trim().is_empty())
 }
 
-fn effective_accounts(config: &ApiQuotaProviderConfig) -> Vec<ApiQuotaAccountConfig> {
-    if config.accounts.is_empty() {
-        return vec![ApiQuotaAccountConfig {
+fn effective_accounts(
+    config: &ApiQuotaProviderConfig,
+    providers: &[ProviderConfig],
+    provider: QuotaProvider,
+) -> Vec<QuotaAccount> {
+    let endpoint = configured_quota_endpoint(providers, provider);
+    let configured_accounts = if config.accounts.is_empty() {
+        vec![ApiQuotaAccountConfig {
             id: "account-1".to_string(),
             name: "默认账号".to_string(),
             api_key: config.api_key.clone(),
-        }];
-    }
-    config
-        .accounts
-        .iter()
+        }]
+    } else {
+        config.accounts.clone()
+    };
+    let mut accounts = configured_accounts
+        .into_iter()
         .enumerate()
-        .map(|(index, account)| ApiQuotaAccountConfig {
-            id: account.id.clone(),
+        .filter(|(_, account)| !account.api_key.trim().is_empty())
+        .map(|(index, account)| QuotaAccount {
             name: if account.name.trim().is_empty() {
                 format!("账号 {}", index + 1)
             } else {
                 account.name.trim().to_string()
             },
-            api_key: account.api_key.clone(),
+            api_key: account.api_key,
+            endpoint: endpoint.clone(),
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    for configured_provider in matching_providers(providers, provider) {
+        let Some(raw_keys) = configured_provider.api_key.as_deref() else {
+            continue;
+        };
+        for raw_key in split_provider_api_keys(raw_keys) {
+            if accounts
+                .iter()
+                .any(|account| account.api_key.trim() == raw_key)
+            {
+                continue;
+            }
+            let base_name = if configured_provider.display_name.trim().is_empty() {
+                configured_provider.id.trim()
+            } else {
+                configured_provider.display_name.trim()
+            };
+            let name = unique_account_name(
+                &accounts,
+                if base_name.is_empty() {
+                    provider.id()
+                } else {
+                    base_name
+                },
+            );
+            accounts.push(QuotaAccount {
+                name,
+                api_key: raw_key.to_string(),
+                endpoint: quota_endpoint(provider, &configured_provider.base_url),
+            });
+        }
+    }
+    accounts
+}
+
+fn matching_providers(
+    providers: &[ProviderConfig],
+    provider: QuotaProvider,
+) -> impl Iterator<Item = &ProviderConfig> {
+    providers.iter().filter(move |configured| {
+        configured.id.trim().eq_ignore_ascii_case(provider.id())
+            || provider_base_url_matches(provider, &configured.base_url)
+    })
+}
+
+fn provider_base_url_matches(provider: QuotaProvider, base_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(base_url.trim()) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    match provider {
+        QuotaProvider::DeepSeek => host.eq_ignore_ascii_case("api.deepseek.com"),
+        QuotaProvider::OpenRouter => host.eq_ignore_ascii_case("openrouter.ai"),
+    }
+}
+
+fn configured_quota_endpoint(providers: &[ProviderConfig], provider: QuotaProvider) -> String {
+    matching_providers(providers, provider)
+        .find(|configured| {
+            configured.id.trim().eq_ignore_ascii_case(provider.id())
+                && !configured.base_url.trim().is_empty()
+        })
+        .or_else(|| {
+            matching_providers(providers, provider)
+                .find(|configured| !configured.base_url.trim().is_empty())
+        })
+        .map(|configured| quota_endpoint(provider, &configured.base_url))
+        .unwrap_or_else(|| provider.default_endpoint().to_string())
+}
+
+fn quota_endpoint(provider: QuotaProvider, base_url: &str) -> String {
+    let base_url = base_url.trim().trim_end_matches('/');
+    if base_url.is_empty() {
+        return provider.default_endpoint().to_string();
+    }
+    match provider {
+        QuotaProvider::DeepSeek => {
+            if base_url.ends_with("/user/balance") {
+                base_url.to_string()
+            } else {
+                let base_url = base_url.strip_suffix("/v1").unwrap_or(base_url);
+                format!("{base_url}/user/balance")
+            }
+        }
+        QuotaProvider::OpenRouter => {
+            if base_url.ends_with("/key") {
+                base_url.to_string()
+            } else {
+                format!("{base_url}/key")
+            }
+        }
+    }
+}
+
+fn split_provider_api_keys(raw: &str) -> impl Iterator<Item = &str> {
+    raw.lines()
+        .flat_map(|line| line.split(','))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn unique_account_name(accounts: &[QuotaAccount], base: &str) -> String {
+    if accounts.iter().all(|account| account.name != base) {
+        return base.to_string();
+    }
+    for number in 2usize.. {
+        let candidate = format!("{base} {number}");
+        if accounts.iter().all(|account| account.name != candidate) {
+            return candidate;
+        }
+    }
+    unreachable!()
 }
 
 fn selected_accounts(
     config: &ApiQuotaProviderConfig,
+    providers: &[ProviderConfig],
+    provider: QuotaProvider,
     selected: Option<&str>,
-) -> Result<Vec<ApiQuotaAccountConfig>> {
-    let mut accounts = effective_accounts(config);
-    accounts.retain(|account| !account.api_key.trim().is_empty());
+) -> Result<Vec<QuotaAccount>> {
+    let mut accounts = effective_accounts(config, providers, provider);
     if let Some(selected) = selected.map(str::trim).filter(|value| !value.is_empty()) {
         accounts.retain(|account| account.name == selected);
         if accounts.is_empty() {
@@ -440,10 +608,70 @@ mod tests {
             api_key: "legacy".to_string(),
             accounts: Vec::new(),
         };
-        let accounts = effective_accounts(&config);
+        let accounts = effective_accounts(&config, &[], QuotaProvider::DeepSeek);
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].name, "默认账号");
         assert_eq!(accounts[0].api_key, "legacy");
+        assert_eq!(accounts[0].endpoint, DEEPSEEK_BALANCE_URL);
+    }
+
+    #[test]
+    fn provider_config_supplies_quota_key_and_endpoint() {
+        let mut providers = ProviderConfig::default_templates();
+        let deepseek = providers
+            .iter_mut()
+            .find(|provider| provider.id == "deepseek")
+            .unwrap();
+        deepseek.base_url = "https://quota.example/v1/".to_string();
+        deepseek.api_key = Some("provider-key".to_string());
+
+        let accounts = effective_accounts(
+            &ApiQuotaProviderConfig::default(),
+            &providers,
+            QuotaProvider::DeepSeek,
+        );
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].name, "DeepSeek");
+        assert_eq!(accounts[0].api_key, "provider-key");
+        assert_eq!(accounts[0].endpoint, "https://quota.example/user/balance");
+    }
+
+    #[test]
+    fn plugin_and_provider_keys_are_deduplicated() {
+        let mut providers = ProviderConfig::default_templates();
+        let deepseek = providers
+            .iter_mut()
+            .find(|provider| provider.id == "deepseek")
+            .unwrap();
+        deepseek.base_url = "https://api.deepseek.com/v1".to_string();
+        deepseek.api_key = Some("same-key".to_string());
+        let mut quota = ApiQuotaProviderConfig::default();
+        quota.accounts[0].api_key = "same-key".to_string();
+
+        let accounts = effective_accounts(&quota, &providers, QuotaProvider::DeepSeek);
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].name, "默认账号");
+        assert_eq!(accounts[0].endpoint, DEEPSEEK_BALANCE_URL);
+    }
+
+    #[test]
+    fn provider_config_supports_multiple_keys() {
+        let mut providers = ProviderConfig::default_templates();
+        let openrouter = providers
+            .iter_mut()
+            .find(|provider| provider.id == "openrouter")
+            .unwrap();
+        openrouter.api_key = Some("first-key, second-key\nthird-key".to_string());
+
+        let accounts = effective_accounts(
+            &ApiQuotaProviderConfig::default(),
+            &providers,
+            QuotaProvider::OpenRouter,
+        );
+        assert_eq!(accounts.len(), 3);
+        assert_eq!(accounts[0].endpoint, OPENROUTER_KEY_URL);
+        assert_eq!(accounts[1].name, "OpenRouter 2");
+        assert_eq!(accounts[2].name, "OpenRouter 3");
     }
 
     #[test]
