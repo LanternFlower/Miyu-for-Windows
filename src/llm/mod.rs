@@ -1,5 +1,7 @@
 mod cache_log;
 mod openai_compatible;
+pub mod request_log;
+pub(crate) mod provider_capabilities;
 
 pub(crate) use openai_compatible::{
     thinking_variant_options_for_model, ThinkingVariantPreferences,
@@ -401,6 +403,15 @@ pub fn is_context_overflow_message(message: &str) -> bool {
 
 pub fn is_context_overflow_error(error: &anyhow::Error) -> bool {
     is_context_overflow_message(&format!("{error:#}"))
+}
+
+/// Responses 续传不被上游支持的签名错误:第二步只发增量(带
+/// previous_response_id),而上游没有服务端会话状态,就找不到
+/// function_call_output 对应的 function_call。窄匹配上游原文,
+/// 命中即触发"清续传+全量重发+持久记 false"自愈(任务#16)。
+pub fn is_responses_continuation_unsupported_error(error: &anyhow::Error) -> bool {
+    let text = format!("{error:#}");
+    text.contains("No tool call found for tool output")
 }
 
 #[cfg(test)]

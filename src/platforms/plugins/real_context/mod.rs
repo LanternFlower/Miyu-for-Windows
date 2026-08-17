@@ -12,7 +12,7 @@ use crate::config::{
 use crate::i18n::{text_for, Locale};
 use crate::platforms::{
     AdaptiveResponseTargetPolicy, BotSendAvailability, ConversationKind, OutboundBody,
-    OutboundMessage, OutboundOrigin, OutboundSegment, PlatformInboundEvent,
+    OutboundMessage, OutboundOrigin, OutboundSegment, PlatformContextFileRef, PlatformInboundEvent,
     PlatformInboundEventKind, PlatformMediaKind, PlatformMention, PlatformTurnContext,
     ResponseTarget, SendReceipt, TriggerDecision,
 };
@@ -44,6 +44,7 @@ const MAX_ACTIVE_SUPPLEMENT_MESSAGES: usize = 5;
 const MAX_ACTIVE_CURRENT_CONTENT_BYTES: usize = 16 * 1024;
 const MAX_ACTIVE_TARGET_PROMPT_BYTES: usize = 128 * 1024;
 const MAX_CONTEXT_IMAGE_REFS: usize = 8;
+const MAX_CONTEXT_FILE_REFS: usize = 8;
 const REPLY_WATERMARK_KEY: &str = "reply_ingress_watermark";
 /// How far back `vision_analyze` can still reach. Deliberately independent of
 /// what this turn rendered: the log is incremental now, so a block usually
@@ -53,6 +54,7 @@ const REPLY_WATERMARK_KEY: &str = "reply_ingress_watermark";
 /// mints exactly the ids already written down in earlier turns.
 const CONTEXT_IMAGE_LOOKBACK_MESSAGES: usize = 200;
 const MAX_CONTEXT_IMAGES_PER_MESSAGE: usize = 4;
+const MAX_CONTEXT_FILES_PER_MESSAGE: usize = 4;
 
 pub(super) struct RealContextPlugin {
     settings_cache: Mutex<
@@ -938,6 +940,7 @@ impl RealContextPlugin {
             80_000,
             context.config.platforms.qq.user_identification,
             MAX_CONTEXT_IMAGE_REFS,
+            MAX_CONTEXT_FILE_REFS,
         );
         let injected_messages = formatted.message_count;
         tracing::debug!(
@@ -949,6 +952,7 @@ impl RealContextPlugin {
             injected_messages,
             history_chars = formatted.text.chars().count(),
             context_images = formatted.images.len(),
+            context_files = formatted.files.len(),
             quoted_message = context
                 .inbound_event()
                 .is_some_and(|event| event.reply_to_message_id.is_some()),
@@ -1005,6 +1009,7 @@ impl RealContextPlugin {
             })
             .unwrap_or_else(|_| formatted.images.clone());
         input.context_images = resolvable;
+        input.context_files = formatted.files.clone();
         // Advance only on the messages actually rendered; a turn that showed
         // nothing must not skip the ones it never displayed.
         let rendered_high = history
@@ -2441,7 +2446,7 @@ fn safe_prompt_string(value: &str) -> String {
         .replace('>', "\\u003e")
 }
 
-fn safe_prompt_field(value: &str) -> String {
+pub(crate) fn safe_prompt_field(value: &str) -> String {
     let encoded = safe_prompt_string(value);
     encoded
         .strip_prefix('"')
@@ -2560,12 +2565,13 @@ pub(super) fn format_history(
     maximum_bytes: usize,
     show_user_ids: bool,
 ) -> String {
-    format_history_internal(messages, maximum_bytes, show_user_ids, 0, false).text
+    format_history_internal(messages, maximum_bytes, show_user_ids, 0, 0, false).text
 }
 
 struct FormattedHistory {
     text: String,
     images: Vec<crate::platforms::PlatformContextImageRef>,
+    files: Vec<PlatformContextFileRef>,
     message_count: usize,
 }
 
@@ -2574,8 +2580,16 @@ fn format_history_for_turn(
     maximum_bytes: usize,
     show_user_ids: bool,
     maximum_images: usize,
+    maximum_files: usize,
 ) -> FormattedHistory {
-    format_history_internal(messages, maximum_bytes, show_user_ids, maximum_images, false)
+    format_history_internal(
+        messages,
+        maximum_bytes,
+        show_user_ids,
+        maximum_images,
+        maximum_files,
+        false,
+    )
 }
 
 /// 只收图片引用的入口:与 `format_history_for_turn(...).images` 逐项一致
@@ -2586,26 +2600,39 @@ fn context_image_refs(
     show_user_ids: bool,
     maximum_images: usize,
 ) -> Vec<crate::platforms::PlatformContextImageRef> {
-    format_history_internal(messages, maximum_bytes, show_user_ids, maximum_images, true).images
+    format_history_internal(
+        messages,
+        maximum_bytes,
+        show_user_ids,
+        maximum_images,
+        0,
+        true,
+    )
+    .images
 }
 
+#[allow(clippy::too_many_arguments)]
 fn format_history_internal(
     messages: &[HistoryMessage],
     maximum_bytes: usize,
     show_user_ids: bool,
     maximum_images: usize,
+    maximum_files: usize,
     stop_when_images_full: bool,
 ) -> FormattedHistory {
     let mut lines = Vec::with_capacity(messages.len());
     let mut used_bytes = 0_usize;
     let mut images = Vec::new();
+    let mut files = Vec::new();
     let mut source_ids = HashMap::<(String, usize), String>::new();
     for message in messages.iter().rev() {
         // 预算触底即 break(:超限检查),唯一需要撤销的就是触底那一条:记下
         // 本条新增,失败时截回去——替代原先每条消息克隆两份集合的 O(n²)。
         let images_before = images.len();
+        let files_before = files.len();
         let mut added_sources = Vec::new();
         let mut image_index = 0_usize;
+        let mut file_index = 0_usize;
         let media = message
             .content
             .media
@@ -2614,7 +2641,7 @@ fn format_history_internal(
                 let image_id = if media.kind == MediaKind::Image {
                     image_index += 1;
                     if image_index > MAX_CONTEXT_IMAGES_PER_MESSAGE {
-                        return format_history_media(media, None);
+                        return format_history_media(media, None, None);
                     }
                     let source = (message.message_id.clone(), image_index);
                     source_ids.get(&source).cloned().or_else(|| {
@@ -2646,7 +2673,36 @@ fn format_history_internal(
                 } else {
                     None
                 };
-                format_history_media(media, image_id.as_deref())
+                let file_id = if media.kind == MediaKind::File {
+                    file_index += 1;
+                    if file_index > MAX_CONTEXT_FILES_PER_MESSAGE {
+                        return format_history_media(media, image_id.as_deref(), None);
+                    }
+                    media.media_id.as_deref().and_then(|provider_id| {
+                        (files.len() < maximum_files).then(|| {
+                            let id = format!(
+                                "file_{}_{}",
+                                safe_prompt_field(&message.message_id),
+                                file_index
+                            );
+                            files.push(PlatformContextFileRef {
+                                id: id.clone(),
+                                message_id: message.message_id.clone(),
+                                file_index,
+                                file_id: provider_id.to_string(),
+                                file_name: media
+                                    .label
+                                    .clone()
+                                    .unwrap_or_else(|| provider_id.to_string()),
+                                url: None,
+                            });
+                            id
+                        })
+                    })
+                } else {
+                    None
+                };
+                format_history_media(media, image_id.as_deref(), file_id.as_deref())
             })
             .collect::<Vec<_>>();
         let sender = if message.is_bot {
@@ -2693,6 +2749,7 @@ fn format_history_internal(
         line.push('\n');
         if used_bytes.saturating_add(line.len()) > maximum_bytes {
             images.truncate(images_before);
+            files.truncate(files_before);
             for source in added_sources {
                 source_ids.remove(&source);
             }
@@ -2713,12 +2770,18 @@ fn format_history_internal(
     FormattedHistory {
         text: lines.concat().trim_end().to_string(),
         images,
+        files,
         message_count,
     }
 }
 
-fn format_history_media(media: &MediaPlaceholder, image_id: Option<&str>) -> String {
-    match (image_id, media.label.as_deref()) {
+fn format_history_media(
+    media: &MediaPlaceholder,
+    image_id: Option<&str>,
+    file_id: Option<&str>,
+) -> String {
+    let id = image_id.or(file_id);
+    match (id, media.label.as_deref()) {
         (Some(id), Some(label)) => format!(
             "[{} id={}, label={}]",
             media_label(media.kind),
@@ -3338,6 +3401,7 @@ mod tests {
             system_context: Vec::new(),
             turn_system_context: Vec::new(),
             context_images: Vec::new(),
+            context_files: Vec::new(),
         };
         plugin
             .inject_context(&context, &mut input, &RealContextPluginSettings::default())
@@ -3435,7 +3499,7 @@ mod tests {
             .map(|_| MediaPlaceholder::new(MediaKind::Image, None::<String>, None::<String>))
             .collect();
 
-        let full = format_history_for_turn(&[old.clone(), newest.clone()], usize::MAX, true, 8);
+        let full = format_history_for_turn(&[old.clone(), newest.clone()], usize::MAX, true, 8, 8);
         assert_eq!(full.images.len(), 8);
         // Ids follow the message they came from, so a reference written down in
         // one turn still names the same picture in the next.
@@ -3449,9 +3513,9 @@ mod tests {
 
         let newest_plain = history_message("newest", "最新消息");
         let newest_only =
-            format_history_for_turn(std::slice::from_ref(&newest_plain), usize::MAX, true, 8);
+            format_history_for_turn(std::slice::from_ref(&newest_plain), usize::MAX, true, 8, 8);
         let truncated =
-            format_history_for_turn(&[old, newest_plain], newest_only.text.len() + 1, true, 8);
+            format_history_for_turn(&[old, newest_plain], newest_only.text.len() + 1, true, 8, 8);
         assert!(!truncated.text.contains("[msg=old]"));
         assert!(truncated.images.is_empty());
 
@@ -3467,9 +3531,28 @@ mod tests {
             usize::MAX,
             true,
             8,
+            8,
         );
         assert_eq!(duplicated.images.len(), 1);
         assert_eq!(duplicated.text.matches("id=img_same_1").count(), 2);
+    }
+
+    #[test]
+    fn file_media_with_a_provider_id_renders_a_resolvable_file_ref() {
+        let mut message = history_message("m-file", "文件说明");
+        message.content.media =
+            vec![
+                MediaPlaceholder::new(MediaKind::File, Some("配置.txt"), None::<String>)
+                    .with_media_id(Some("/file-id")),
+            ];
+        let rendered =
+            format_history_for_turn(std::slice::from_ref(&message), usize::MAX, true, 8, 8);
+        assert!(rendered
+            .text
+            .contains("[文件 id=file_m-file_1, label=配置.txt]"));
+        assert_eq!(rendered.files.len(), 1);
+        assert_eq!(rendered.files[0].file_id, "/file-id");
+        assert_eq!(rendered.files[0].file_name, "配置.txt");
     }
 
     #[test]
@@ -3493,21 +3576,21 @@ mod tests {
         let many = (0..20)
             .map(|index| with_image(&format!("m{index}")))
             .collect::<Vec<_>>();
-        let full = format_history_for_turn(&many, usize::MAX, true, 8);
+        let full = format_history_for_turn(&many, usize::MAX, true, 8, 8);
         assert_eq!(full.images.len(), 8);
         assert_eq!(key(&context_image_refs(&many, usize::MAX, true, 8)), key(&full.images));
         // 情形二:预算只装得下最新一条 → 旧消息连同其图片被排除(回滚),
         // 两条路径同样只剩最新一张
         let pair = vec![with_image("older"), with_image("newest")];
         let newest_only =
-            format_history_for_turn(std::slice::from_ref(&pair[1]), usize::MAX, true, 8);
+            format_history_for_turn(std::slice::from_ref(&pair[1]), usize::MAX, true, 8, 8);
         let tight = newest_only.text.len() + 1;
-        let full = format_history_for_turn(&pair, tight, true, 8);
+        let full = format_history_for_turn(&pair, tight, true, 8, 8);
         assert_eq!(full.images.len(), 1);
         assert_eq!(full.images[0].message_id, "newest");
         assert_eq!(key(&context_image_refs(&pair, tight, true, 8)), key(&full.images));
         // 情形三:预算不足以容纳任何一条 → 双方皆空(带图消息的图被完整回滚)
-        let full = format_history_for_turn(&pair, 1, true, 8);
+        let full = format_history_for_turn(&pair, 1, true, 8, 8);
         assert!(full.images.is_empty());
         assert!(context_image_refs(&pair, 1, true, 8).is_empty());
     }
@@ -3531,8 +3614,8 @@ mod tests {
             None::<String>,
         )];
 
-        let before = format_history_for_turn(std::slice::from_ref(&first), usize::MAX, true, 8);
-        let after = format_history_for_turn(&[first, second], usize::MAX, true, 8);
+        let before = format_history_for_turn(std::slice::from_ref(&first), usize::MAX, true, 8, 8);
+        let after = format_history_for_turn(&[first, second], usize::MAX, true, 8, 8);
 
         let id_of = |rendered: &FormattedHistory, message_id: &str| {
             rendered

@@ -16,6 +16,24 @@ const BASH_END_MARKER: &str = "# <<< miyu bash hook <<<";
 const ZSH_BEGIN_MARKER: &str = "# >>> miyu zsh hook >>>";
 const ZSH_END_MARKER: &str = "# <<< miyu zsh hook <<<";
 
+/// 原子写用户 shell 启动文件:写回瞬间崩溃不能把 .bashrc/.zshrc 留成
+/// 截断的半个文件。保留原文件权限。
+pub(super) fn write_rc_atomic(rc_path: &Path, content: &str) -> Result<()> {
+    let parent = rc_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let temp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating a temp file next to {}", rc_path.display()))?;
+    fs::write(temp.path(), content)?;
+    if let Ok(metadata) = fs::metadata(rc_path) {
+        let _ = fs::set_permissions(temp.path(), metadata.permissions());
+    }
+    temp.persist(rc_path)
+        .map(|_| ())
+        .with_context(|| format!("updating shell startup file {}", rc_path.display()))
+}
+
 pub(super) fn upsert_source_block(
     rc_path: &Path,
     begin: &str,
@@ -26,8 +44,7 @@ pub(super) fn upsert_source_block(
     let block = source_block(begin, end, hook_file);
     if let Some(updated) = replace_marked_block(&existing, begin, end, &block)? {
         if updated != existing {
-            fs::write(rc_path, updated)
-                .with_context(|| format!("updating shell startup file {}", rc_path.display()))?;
+            write_rc_atomic(rc_path, &updated)?;
         }
         return Ok(());
     }

@@ -3,6 +3,19 @@ use serde::de::DeserializeOwned;
 
 pub(super) const MAX_HTML_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
 
+/// 进程级共享 HTTP 客户端：连接池/TLS 会话复用，避免各工具每次调用重建。
+/// 客户端级 60s 总超时兜底；单个请求可用 `RequestBuilder::timeout` 覆盖。
+pub(super) fn shared_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
+
 pub(super) async fn read_text(response: reqwest::Response, max_bytes: usize) -> Result<String> {
     let bytes = read_bytes(response, max_bytes).await?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())

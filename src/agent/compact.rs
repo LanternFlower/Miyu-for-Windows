@@ -1,7 +1,7 @@
 use crate::llm::{
     ChatMessage, ChatResult, ChatStreamChunk, OpenAiCompatibleClient, ToolDefinition, Usage,
 };
-use crate::prompts::{COMPACT_CHAT_SYSTEM_PROMPT, COMPACT_SYSTEM_PROMPT};
+use crate::prompts::COMPACT_SYSTEM_PROMPT;
 use crate::state::{StateStore, Turn};
 use anyhow::{bail, Result};
 
@@ -40,7 +40,10 @@ pub struct Compactor {
     tail_budget_tokens: usize,
     /// Chat mode uses the persona/social summary template instead of the
     /// coding one.
-    chat_mode: bool,
+    /// 折叠前缀开头的预设对话对数(begin_dialogs)。它们为对齐实况请求的
+    /// 缓存字节而留在前缀里,但不是真实会话——摘要指令按这个数量明确
+    /// 排除,防止样板对话被总结成伪造的会话事实。
+    preset_dialog_pairs: usize,
 }
 
 pub struct CompactResult {
@@ -65,7 +68,7 @@ impl Compactor {
         context_window: usize,
         reserved_tokens: usize,
         tail_budget_tokens: usize,
-        chat_mode: bool,
+        preset_dialog_pairs: usize,
     ) -> Self {
         // Safety cap: on a small window the tail itself must stay well under
         // the trigger watermark or compaction can never win.
@@ -82,16 +85,12 @@ impl Compactor {
             context_window,
             reserved_tokens,
             tail_budget_tokens,
-            chat_mode,
+            preset_dialog_pairs,
         }
     }
 
     fn system_prompt(&self) -> &'static str {
-        if self.chat_mode {
-            COMPACT_CHAT_SYSTEM_PROMPT
-        } else {
-            COMPACT_SYSTEM_PROMPT
-        }
+        COMPACT_SYSTEM_PROMPT
     }
 
     /// Fork summarization: the live conversation prefix (same bytes, same
@@ -118,11 +117,20 @@ impl Compactor {
         } else {
             ""
         };
+        let preset_note = if self.preset_dialog_pairs > 0 {
+            format!(
+                "The first {} user/assistant exchange(s) at the very top of the conversation are scripted persona example dialogs, NOT part of the real session — exclude them entirely from the summary. ",
+                self.preset_dialog_pairs,
+            )
+        } else {
+            String::new()
+        };
         messages.push(ChatMessage::plain(
             "user",
             format!(
-                "IMPORTANT: The conversation stops here. Do NOT reply to the messages above and do NOT call any tools — a tool call fails this task. You are now acting under the summarization instructions below.\n\n{}\n\n{}Summarize the entire conversation above now, following the output structure exactly.",
+                "IMPORTANT: The conversation stops here. Do NOT reply to the messages above and do NOT call any tools — a tool call fails this task. You are now acting under the summarization instructions below.\n\n{}\n\n{}{}Summarize the entire conversation above now, following the output structure exactly.",
                 self.system_prompt(),
+                preset_note,
                 anchor_note,
             ),
         ));
@@ -505,6 +513,28 @@ fn add_usage(total: &mut Usage, usage: &Usage) {
     total.total_tokens = total
         .total_tokens
         .saturating_add(usage.effective_total_tokens());
+    // 缓存字段曾被丢弃:fork 式折叠明明大量命中,summary 轮与用量史却
+    // 记 0,Σ 命中率随折叠次数被系统性低估(deepseek 报告 P1 实证)。
+    if let Some(hit) = usage.prompt_cache_hit_tokens {
+        total.prompt_cache_hit_tokens =
+            Some(total.prompt_cache_hit_tokens.unwrap_or(0).saturating_add(hit));
+    }
+    if let Some(miss) = usage.prompt_cache_miss_tokens {
+        total.prompt_cache_miss_tokens = Some(
+            total
+                .prompt_cache_miss_tokens
+                .unwrap_or(0)
+                .saturating_add(miss),
+        );
+    }
+    if let Some(details) = usage.prompt_tokens_details.as_ref() {
+        if let Some(cached) = details.cached_tokens {
+            let slot = total
+                .prompt_tokens_details
+                .get_or_insert_with(Default::default);
+            slot.cached_tokens = Some(slot.cached_tokens.unwrap_or(0).saturating_add(cached));
+        }
+    }
 }
 
 fn turns_to_text(turns: &[&Turn]) -> String {
@@ -698,6 +728,19 @@ fn turn_to_text(turn: &Turn) -> String {
     if let Some(reasoning) = &turn.assistant_reasoning {
         output.push_str(reasoning);
     }
+    // v20+ 工具密集回合的主体在 tool_flow 里(reports 多为空):漏计它,
+    // 压缩预算会把"40 轮"当成保尾额度塞进 16K,压后必然仍超。
+    for round in &turn.tool_flow {
+        output.push_str(&round.assistant_content);
+        if let Some(reasoning) = &round.assistant_reasoning {
+            output.push_str(reasoning);
+        }
+        for call in &round.calls {
+            output.push_str(&call.name);
+            output.push_str(&call.arguments);
+            output.push_str(&call.output);
+        }
+    }
     for report in &turn.tool_reports {
         output.push_str(report);
     }
@@ -816,6 +859,7 @@ mod tests {
             assistant_timestamp: None,
             status: TurnStatus::Completed,
             tool_reports: Vec::new(),
+            tool_flow: Vec::new(),
             question_exchanges: Vec::new(),
             followups: Vec::new(),
             attachments: Vec::new(),

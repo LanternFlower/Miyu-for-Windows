@@ -36,7 +36,12 @@ const ASPECT_TIE_EPSILON: f32 = 0.01;
 const TABLE_CELL_PADDING: u32 = 14;
 const WORKER_IDLE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const RENDER_TIMEOUT: Duration = Duration::from_secs(60);
+// debug 二进制未优化可到 550MB+,光映射自身就会撞 512MB 上限,worker
+// 秒死只留下一句 "communication failed"——开发构建放宽到 2GB。
+#[cfg(not(debug_assertions))]
 const WORKER_ADDRESS_SPACE_LIMIT: u64 = 512 * 1024 * 1024;
+#[cfg(debug_assertions)]
+const WORKER_ADDRESS_SPACE_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_REQUEST_FRAME_BYTES: usize = 512 * 1024;
 const MAX_ERROR_FRAME_BYTES: usize = 64 * 1024;
 const MAX_RESPONSE_IMAGES: usize = 1;
@@ -406,6 +411,9 @@ fn renderer_fonts_dir() -> Result<PathBuf> {
             candidates.push(workspace.join("assets/fonts"));
         }
     }
+    // 兜底:发行版 noto-fonts-cjk 的标准安装路径。miyu 专用字体目录缺失
+    // (比如误装了不带字体的 release 资产包)时,长文转图靠系统字体继续工作。
+    candidates.push(PathBuf::from("/usr/share/fonts/noto-cjk"));
     for candidate in &candidates {
         if candidate.join(CJK_FONT_FILE).is_file() {
             return Ok(candidate.clone());
@@ -2743,7 +2751,11 @@ mod tests {
         assert_eq!(MAX_CACHED_GLYPHS, 2048);
         assert_eq!(WORKER_IDLE_TIMEOUT, Duration::from_secs(60 * 60));
         assert_eq!(RENDER_TIMEOUT, Duration::from_secs(60));
+        // debug 二进制 550MB+,光映射自身就撞 512MB;开发构建放宽。
+        #[cfg(not(debug_assertions))]
         assert_eq!(WORKER_ADDRESS_SPACE_LIMIT, 512 * 1024 * 1024);
+        #[cfg(debug_assertions)]
+        assert_eq!(WORKER_ADDRESS_SPACE_LIMIT, 2 * 1024 * 1024 * 1024);
     }
 
     #[test]

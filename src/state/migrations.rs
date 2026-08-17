@@ -116,10 +116,35 @@ const MIGRATIONS: &[Migration] = &[
         name: "session_cache_tokens",
         apply: apply_v19_session_cache_tokens,
     },
+    Migration {
+        version: 20,
+        name: "turn_tool_flow",
+        apply: apply_v20_turn_tool_flow,
+    },
+    Migration {
+        version: 21,
+        name: "rename_default_session",
+        apply: apply_v21_rename_default_session,
+    },
+    Migration {
+        version: 22,
+        name: "session_goals",
+        apply: apply_v22_session_goals,
+    },
+    Migration {
+        version: 23,
+        name: "retire_session_archiving",
+        apply: apply_v23_retire_session_archiving,
+    },
+    Migration {
+        version: 24,
+        name: "retire_session_goals",
+        apply: apply_v24_retire_session_goals,
+    },
 ];
 
 /// Latest schema version this build produces.
-pub const LATEST_VERSION: i64 = 19;
+pub const LATEST_VERSION: i64 = 24;
 
 /// Returns the schema version currently recorded in the database.
 pub fn current_version(conn: &Connection) -> Result<i64> {
@@ -351,7 +376,7 @@ fn apply_v2_sessions(conn: &Connection) -> Result<()> {
          VALUES (?1, '', ?2, 'user', ?3, ?3)",
         rusqlite::params![
             DEFAULT_SESSION_ID,
-            crate::i18n::text("Default session", "默认会话"),
+            crate::i18n::text("Terminal session", "终端集成会话"),
             now
         ],
     )?;
@@ -828,6 +853,46 @@ fn apply_v18_turn_cache_tokens(conn: &Connection) -> Result<()> {
 /// and out of the rate.
 fn apply_v19_session_cache_tokens(conn: &Connection) -> Result<()> {
     add_column_if_missing(conn, "sessions", "cache_read_tokens", "INTEGER")
+}
+
+/// v20:回合的结构化工具流(JSON)。照抄 dsh 的结构保真原则:assistant 的
+/// tool_calls(含模型原样 JSON 参数)与各调用的模型侧输出逐字保留,回放时
+/// 还原为原生 tool_calls + role:"tool" 消息,不再压扁成系统备忘。
+fn apply_v20_turn_tool_flow(conn: &Connection) -> Result<()> {
+    add_column_if_missing(conn, "turns", "tool_flow", "TEXT")
+}
+
+/// 「默认会话」实为 shellhook/CLI 快捷入口专属的 lane,改叫「终端集成
+/// 会话」;只重命名仍叫旧默认名的行,用户手动改过的名字不动。
+fn apply_v21_rename_default_session(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "UPDATE sessions SET name = ?1
+         WHERE session_id = ?2 AND name IN ('默认会话', 'Default session')",
+        rusqlite::params![
+            crate::i18n::text("Terminal session", "终端集成会话"),
+            DEFAULT_SESSION_ID
+        ],
+    )?;
+    Ok(())
+}
+
+/// v22 曾建 goals 表;goal 功能于 08-16 整体移除,此迁移改为空操作
+/// (老库的表由 v24 落掉,新库从未建过)。
+fn apply_v22_session_goals(_conn: &Connection) -> Result<()> {
+    Ok(())
+}
+
+/// 归档会话功能整体移除:解冻所有存量归档行,否则它们在没有解档入口的
+/// 新版里永远不可见。列本身保留(0 值),避免无谓的表重建。
+fn apply_v23_retire_session_archiving(conn: &Connection) -> Result<()> {
+    conn.execute("UPDATE sessions SET archived = 0 WHERE archived != 0", [])?;
+    Ok(())
+}
+
+/// goal 功能整体移除:老库落掉 goals 表。
+fn apply_v24_retire_session_goals(conn: &Connection) -> Result<()> {
+    conn.execute("DROP TABLE IF EXISTS goals", [])?;
+    Ok(())
 }
 
 fn add_column_if_missing(

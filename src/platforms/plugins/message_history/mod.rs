@@ -134,7 +134,7 @@ impl MessageHistoryPlugin {
         )?;
         let store = store_for_paths(paths);
         match event.kind {
-            PlatformInboundEventKind::Message => {
+            PlatformInboundEventKind::Message | PlatformInboundEventKind::GroupFileUpload => {
                 // Media has to survive into history, or an image-only message
                 // renders later as "[无文字内容]" and the model cannot tell that
                 // a picture was ever posted — nor can it be handed a
@@ -143,11 +143,16 @@ impl MessageHistoryPlugin {
                     .media
                     .iter()
                     .map(|media| {
-                        MediaPlaceholder::new(
+                        let placeholder = MediaPlaceholder::new(
                             media_kind(media.kind),
                             media.name.clone().or_else(|| media.id.clone()),
                             None::<String>,
-                        )
+                        );
+                        if media.kind == PlatformMediaKind::File {
+                            placeholder.with_media_id(media.id.clone())
+                        } else {
+                            placeholder
+                        }
                     })
                     .collect();
                 let mut content = SanitizedContent::new(event.text.clone(), media);

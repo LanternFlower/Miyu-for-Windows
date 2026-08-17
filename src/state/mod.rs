@@ -1,6 +1,7 @@
 mod conversation_db;
 mod migrations;
-mod usage;
+pub use migrations::DEFAULT_SESSION_ID;
+pub(crate) mod usage;
 
 /// Newest `conversation.db` schema this build can open — the gate an import
 /// checks before restoring a database written by a newer Miyu.
@@ -30,12 +31,17 @@ pub use conversation_db::{
     TurnJournalEvent,
     TurnRedoCheckpointPayload, TurnStatus, UserAttachment, UserAttachmentData,
     GLOBAL_PLATFORM_ACCOUNT_SCOPE,
+    ToolFlowCall, ToolFlowRound,
 };
 pub use usage::{UsageMeta, UsageRange, UsageSnapshot, UsageStats};
 
 /// The only session kind users can list, name, switch to, or bind a platform
 /// to. Everything else is infrastructure and stays out of the session list.
 pub const USER_SESSION_KIND: &str = "user";
+/// Build/Dev 模式的保留人格 scope:dev 会话全部挂在它名下,借现有
+/// 按人格隔离机制白拿会话/记忆/REPL 指针的分家;模式由会话的
+/// persona==DEV_PERSONA 推导,无需迁移。
+pub const DEV_PERSONA: &str = "dev";
 /// Backs a one-shot `miyu ask` / `miyu '<message>'` turn: created just before
 /// the turn, deleted right after, and invisible to every listing in between.
 pub const ASK_SESSION_KIND: &str = "ask";
@@ -451,7 +457,7 @@ impl StateStore {
     pub fn delete_persona_scope(&self, scope: &str) -> Result<()> {
         let session_ids = self
             .conv_db
-            .list_sessions(scope, true)?
+            .list_sessions(scope)?
             .into_iter()
             .map(|session| session.record.session_id)
             .collect::<Vec<_>>();
@@ -463,20 +469,12 @@ impl StateStore {
         self.conv_db.session_record(session_id)
     }
 
-    pub fn list_sessions(
-        &self,
-        persona: &str,
-        include_archived: bool,
-    ) -> Result<Vec<SessionOverview>> {
-        self.conv_db.list_sessions(persona, include_archived)
+    pub fn list_sessions(&self, persona: &str) -> Result<Vec<SessionOverview>> {
+        self.conv_db.list_sessions(persona)
     }
 
-    pub fn list_local_sessions(
-        &self,
-        persona: &str,
-        include_archived: bool,
-    ) -> Result<Vec<SessionOverview>> {
-        self.conv_db.list_local_sessions(persona, include_archived)
+    pub fn list_local_sessions(&self, persona: &str) -> Result<Vec<SessionOverview>> {
+        self.conv_db.list_local_sessions(persona)
     }
 
     pub fn background_report_replies_after(
@@ -490,6 +488,14 @@ impl StateStore {
 
     pub fn latest_turn_seq(&self, session_id: &str) -> Result<i64> {
         self.conv_db.latest_turn_seq(session_id)
+    }
+
+    pub fn oldest_visible_turn_timestamp(
+        &self,
+        excluding_turn_id: &str,
+    ) -> Result<Option<String>> {
+        self.conv_db
+            .oldest_visible_turn_timestamp(&self.session(), excluding_turn_id)
     }
 
     pub fn is_platform_session(&self, session_id: &str) -> Result<bool> {
@@ -560,10 +566,6 @@ impl StateStore {
         };
         self.conv_db
             .set_session_model_override(session_id, encoded.as_deref())
-    }
-
-    pub fn set_session_archived(&self, session_id: &str, archived: bool) -> Result<()> {
-        self.conv_db.set_session_archived(session_id, archived)
     }
 
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
@@ -899,6 +901,14 @@ impl StateStore {
     /// Archives the transient system tail that was sent after the user message
     /// of this turn (v7 append-only fossilization). Replayed verbatim by
     /// history rendering so the byte stream stays a pure extension.
+    pub fn set_turn_tool_flow(
+        &self,
+        turn_id: &str,
+        flow: &[conversation_db::ToolFlowRound],
+    ) -> Result<()> {
+        self.conv_db.set_turn_tool_flow(turn_id, flow)
+    }
+
     pub fn set_turn_context_messages(
         &self,
         turn_id: &str,
@@ -1837,8 +1847,19 @@ impl StateStore {
         self.state_dir.join("usage-history.jsonl")
     }
 
-    pub fn usage_stats(&self, range: UsageRange) -> Result<usage::UsageStats> {
-        usage::usage_stats(&self.usage_history_file(), range)
+    /// `config` 提供时按 models.dev 单价做计费估算;None 则费用字段全零。
+    pub fn usage_stats(
+        &self,
+        range: UsageRange,
+        config: Option<&crate::config::AppConfig>,
+    ) -> Result<usage::UsageStats> {
+        match config {
+            Some(config) => {
+                let price = crate::models_cache::pricing_resolver(config);
+                usage::usage_stats(&self.usage_history_file(), range, &price)
+            }
+            None => usage::usage_stats(&self.usage_history_file(), range, &|_, _| None),
+        }
     }
 
     pub fn usage_details(
@@ -1846,8 +1867,15 @@ impl StateStore {
         limit: usize,
         src: Option<&str>,
         model: Option<&str>,
+        config: Option<&crate::config::AppConfig>,
     ) -> Result<Vec<usage::UsageRecord>> {
-        usage::usage_details(&self.usage_history_file(), limit, src, model)
+        match config {
+            Some(config) => {
+                let price = crate::models_cache::pricing_resolver(config);
+                usage::usage_details(&self.usage_history_file(), limit, src, model, &price)
+            }
+            None => usage::usage_details(&self.usage_history_file(), limit, src, model, &|_, _| None),
+        }
     }
 
     #[allow(dead_code)]
@@ -2170,6 +2198,77 @@ mod tests {
         let turns = store.load_turns().unwrap();
         assert_eq!(turns[0].status, TurnStatus::Interrupted);
         assert_eq!(turns[0].assistant_content, interrupted_text());
+    }
+
+    /// 并发回合完成序追加:与已完成回合重叠的回合在完成/中断时移到
+    /// 会话末尾,已完成历史跨请求 append-only,不再出现插入型缓存
+    /// 断点;无重叠回合与 redo 修订保持原位。
+    #[test]
+    fn overlapping_turns_reorder_to_completion_order() {
+        let (_temp, store) = test_store();
+        // A 先开跑,B 后开但先答完(群聊并发形态)——回放顺序按完成序。
+        store.start_turn("turn_a", "先来的", 999999).unwrap();
+        store.start_turn("turn_b", "后来的", 999999).unwrap();
+        store.complete_turn("turn_b", "B 先答完", None).unwrap();
+        store.complete_turn("turn_a", "A 后答完", None).unwrap();
+        let turns = store.load_turns().unwrap();
+        let order = turns
+            .iter()
+            .map(|turn| turn.turn_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(order, ["turn_b", "turn_a"]);
+
+        // 无重叠的后续回合不发生无谓跳位。
+        store.start_turn("turn_c", "单独回合", 999999).unwrap();
+        store.complete_turn("turn_c", "顺序完成", None).unwrap();
+        let turns = store.load_turns().unwrap();
+        assert_eq!(turns[2].turn_id, "turn_c");
+        assert_eq!(turns[2].seq, turns[1].seq + 1);
+
+        // 中断同样是"首次变为可回放",一样追加到末尾。
+        store.start_turn("turn_d", "被打断的", 999999).unwrap();
+        store.start_turn("turn_e", "插队的", 999999).unwrap();
+        store.complete_turn("turn_e", "插队先完", None).unwrap();
+        store.interrupt_turn("turn_d").unwrap();
+        let turns = store.load_turns().unwrap();
+        let order = turns
+            .iter()
+            .map(|turn| turn.turn_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(order, ["turn_b", "turn_a", "turn_c", "turn_e", "turn_d"]);
+
+        // redo 修订原位改写:turn_d 重跑完成后位置不动。
+        let candidate = store.redo_candidate().unwrap().unwrap();
+        assert_eq!(candidate.turn_id, "turn_d");
+        let redo = store
+            .begin_redo(
+                "turn_d",
+                "turn_d",
+                RedoInputKind::Initial,
+                candidate.revision,
+                "重打的输入",
+                "重打的输入",
+                std::process::id(),
+            )
+            .unwrap();
+        store
+            .complete_turn_revision_with_usage_and_model(
+                "turn_d",
+                redo.revision,
+                "重答",
+                None,
+                None,
+                None,
+                TurnTokens::default(),
+                false,
+            )
+            .unwrap();
+        let turns = store.load_turns().unwrap();
+        let order = turns
+            .iter()
+            .map(|turn| turn.turn_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(order, ["turn_b", "turn_a", "turn_c", "turn_e", "turn_d"]);
     }
 
     #[test]
@@ -2729,7 +2828,7 @@ mod tests {
         let reopened = StateStore::new(&test_paths(temp.path())).unwrap();
         assert_eq!(&*reopened.session_id(), created.session_id.as_str());
 
-        let listed = store.list_sessions("miyu", false).unwrap();
+        let listed = store.list_sessions("miyu").unwrap();
         assert_eq!(listed.len(), 2);
         let default_overview = listed
             .iter()
@@ -2748,16 +2847,11 @@ mod tests {
             .unwrap()
             .is_none());
 
-        store
-            .set_session_archived(&created.session_id, true)
-            .unwrap();
-        assert_eq!(store.list_sessions("miyu", false).unwrap().len(), 1);
-        assert_eq!(store.list_sessions("miyu", true).unwrap().len(), 2);
 
         // Deleting a session cascades its turns away.
         store.delete_session(&default_id).unwrap();
         assert!(store.session_record(&default_id).unwrap().is_none());
-        assert_eq!(store.list_sessions("miyu", true).unwrap().len(), 1);
+        assert_eq!(store.list_sessions("miyu").unwrap().len(), 1);
 
         // A dangling pointer self-heals back to a default session.
         store.delete_session(&created.session_id).unwrap();
@@ -2774,17 +2868,13 @@ mod tests {
         store.adopt_sessions_for_persona("miyu").unwrap();
         let current = store.session_id().to_string();
         let local = store.create_session("miyu", "local", "user", None).unwrap();
-        let archived = store
-            .create_session("miyu", "archived", "user", None)
-            .unwrap();
-        store
-            .set_session_archived(&archived.session_id, true)
+        let second = store
+            .create_session("miyu", "second", "user", None)
             .unwrap();
         let other_persona = store
             .create_session("other", "other", "user", None)
             .unwrap();
         let qq = store.create_session("miyu", "qq", "user", None).unwrap();
-        store.set_session_archived(&qq.session_id, true).unwrap();
         store
             .bind_platform_session(
                 &PlatformSessionBindingKey {
@@ -2801,23 +2891,18 @@ mod tests {
         let subagent = store
             .create_session("miyu", "child", "subagent", Some(&local.session_id))
             .unwrap();
-        let archived_child = store
-            .create_session(
-                "miyu",
-                "archived-child",
-                "subagent",
-                Some(&archived.session_id),
-            )
+        let second_child = store
+            .create_session("miyu", "second-child", "subagent", Some(&second.session_id))
             .unwrap();
 
         let sessions = [
             current.clone(),
             local.session_id.clone(),
-            archived.session_id.clone(),
+            second.session_id.clone(),
             other_persona.session_id.clone(),
             qq.session_id.clone(),
             subagent.session_id.clone(),
-            archived_child.session_id.clone(),
+            second_child.session_id.clone(),
         ];
         for (index, session_id) in sessions.iter().enumerate() {
             let pinned = store.pinned(session_id);
@@ -2833,8 +2918,9 @@ mod tests {
         assert!(targets.contains(&local.session_id));
         assert!(targets.contains(&qq.session_id));
         assert!(targets.contains(&subagent.session_id));
-        assert!(!targets.contains(&archived.session_id));
-        assert!(!targets.contains(&archived_child.session_id));
+        // 归档豁免已随功能移除:普通本地会话及其子代理一并进重置范围。
+        assert!(targets.contains(&second.session_id));
+        assert!(targets.contains(&second_child.session_id));
         assert!(!targets.contains(&other_persona.session_id));
 
         let cleared = store.reset_persona_contexts("miyu", "onebot").unwrap();
@@ -2844,14 +2930,12 @@ mod tests {
             &local.session_id,
             &qq.session_id,
             &subagent.session_id,
+            &second.session_id,
+            &second_child.session_id,
         ] {
             assert!(store.pinned(session_id).load_turns().unwrap().is_empty());
         }
-        for session_id in [
-            &archived.session_id,
-            &archived_child.session_id,
-            &other_persona.session_id,
-        ] {
+        for session_id in [&other_persona.session_id] {
             assert_eq!(store.pinned(session_id).load_turns().unwrap().len(), 1);
         }
         assert_eq!(
@@ -3007,7 +3091,7 @@ mod tests {
             .unwrap();
 
         let all_ids = store
-            .list_sessions("miyu", false)
+            .list_sessions("miyu")
             .unwrap()
             .into_iter()
             .map(|overview| overview.record.session_id)
@@ -3016,7 +3100,7 @@ mod tests {
         assert!(all_ids.contains(&platform.session_id));
 
         let local_ids = store
-            .list_local_sessions("miyu", false)
+            .list_local_sessions("miyu")
             .unwrap()
             .into_iter()
             .map(|overview| overview.record.session_id)
@@ -3169,7 +3253,7 @@ mod tests {
             Some(platform.session_id.clone())
         );
         assert!(!store
-            .list_local_sessions("miyu", false)
+            .list_local_sessions("miyu")
             .unwrap()
             .iter()
             .any(|entry| entry.record.session_id == platform.session_id));
@@ -3520,7 +3604,7 @@ mod tests {
 
         // Hidden from the user-facing session list.
         assert!(store
-            .list_sessions("miyu", true)
+            .list_sessions("miyu")
             .unwrap()
             .iter()
             .all(|overview| overview.record.session_id != audit.session_id));
@@ -3655,7 +3739,7 @@ mod tests {
 
         // Never listed, never findable by name — only the client holding the
         // freshly minted id can address it.
-        let listed = store.list_sessions("miyu", true).unwrap();
+        let listed = store.list_sessions("miyu").unwrap();
         assert!(listed
             .iter()
             .any(|overview| overview.record.session_id == user.session_id));
@@ -3701,12 +3785,8 @@ mod tests {
         // Moving the REPL lane must not drag the terminal lane along.
         assert_eq!(&*store.session_id(), terminal.as_str());
 
-        // Archived, then deleted: both make the pointer stale rather than
-        // returning a session the REPL must not land on.
-        store.set_session_archived(&repl.session_id, true).unwrap();
-        assert!(store.repl_session("miyu").unwrap().is_none());
-        store.set_session_archived(&repl.session_id, false).unwrap();
-        assert!(store.repl_session("miyu").unwrap().is_some());
+        // Deleted: the pointer goes stale rather than returning a session
+        // the REPL must not land on.
         store.delete_session(&repl.session_id).unwrap();
         assert!(store.repl_session("miyu").unwrap().is_none());
     }

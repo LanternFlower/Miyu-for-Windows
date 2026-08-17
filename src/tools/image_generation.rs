@@ -197,6 +197,7 @@ fn resolve_size(
 ) -> Option<String> {
     if plugin.provider_type == "rightcode" {
         return match (aspect_ratio, resolution) {
+            ("1:1", "2K" | "4K") => Some("2048x2048".to_string()),
             ("1:1", _) => Some("1024x1024".to_string()),
             ("3:2", "2K" | "4K") => Some("2048x1365".to_string()),
             ("16:9", "2K" | "4K") => Some("2048x1152".to_string()),

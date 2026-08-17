@@ -77,7 +77,7 @@ fn remove_source_block(rc_path: &Path, begin: &str, end: &str) -> Result<bool> {
     let mut updated = String::new();
     updated.push_str(&existing[..begin_index]);
     updated.push_str(&existing[end_index..]);
-    std::fs::write(rc_path, updated)?;
+    super::write_rc_atomic(rc_path, &updated)?;
     Ok(true)
 }
 

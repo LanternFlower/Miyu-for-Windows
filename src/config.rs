@@ -10,6 +10,12 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub const MAX_COMMAND_OUTPUT_LINES: usize = 1_000;
+
+/// Dev 模式提示词文件名(config 目录下,可编辑;清空=回退内置默认)。
+pub const DEV_PROMPT_FILE: &str = "dev-prompt.md";
+/// Dev 模式内置默认提示词。dsh 极简变体同款措辞——贴近编码 RL 训练分布
+/// 是它强的主因(08-15 与用户讨论定稿,修正了社区传言的拼写错误)。
+pub const DEFAULT_DEV_SYSTEM_PROMPT: &str = "You are a helpful software engineer assistant.";
 /// Replay redraws whole turns, so a large value floods the screen on startup.
 pub const MAX_REPL_REPLAY_TURNS: usize = 20;
 pub const CURRENT_CONFIG_VERSION: u32 = 2;
@@ -49,6 +55,10 @@ pub struct AppConfig {
     pub memory: MemoryConfig,
     #[serde(default)]
     pub system_prompt_file: Option<String>,
+    /// 裸 `miyu` 的默认模式:"normal" | "dev";空(默认)=打印带模式说明的
+    /// 帮助,逼一次显式选择。`miyu normal` / `miyu dev` 子命令始终可用。
+    #[serde(default)]
+    pub default_mode: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "SubagentTiersConfig::is_empty")]
@@ -327,6 +337,9 @@ impl PlatformsConfig {
         if let Some(instance) = self.qq.plugins.get_mut(REAL_CONTEXT_PLUGIN_ID) {
             normalize_real_context_instance(instance);
         }
+        if let Some(instance) = self.qq.plugins.get_mut(QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID) {
+            normalize_group_join_approval_instance(instance);
+        }
         self.qq
             .plugins
             .retain(|name, instance| !name.trim().is_empty() && !instance.is_empty());
@@ -346,6 +359,12 @@ impl PlatformsConfig {
                 }
                 normalize_route_pool(pool);
             }
+        });
+        mutate_group_join_approval_settings(&mut self.qq.plugins, |settings| {
+            if let Some(models) = &mut settings.text_models {
+                models.retain(|model| active_model_exists(providers, model));
+            }
+            normalize_route_pool(&mut settings.text_models);
         });
         self.normalize_model_routes();
     }
@@ -373,6 +392,13 @@ impl PlatformsConfig {
                 }
                 normalize_route_pool(pool);
             }
+        });
+        mutate_group_join_approval_settings(&mut self.qq.plugins, |settings| {
+            if let Some(models) = &mut settings.text_models {
+                models
+                    .retain(|entry| !(entry.provider_id == provider_id && entry.model == model));
+            }
+            normalize_route_pool(&mut settings.text_models);
         });
         self.normalize_model_routes();
     }
@@ -404,6 +430,12 @@ impl PlatformsConfig {
                 normalize_route_pool(pool);
             }
         });
+        mutate_group_join_approval_settings(&mut self.qq.plugins, |settings| {
+            if let Some(models) = &mut settings.text_models {
+                models.retain(|entry| entry.provider_id != provider_id);
+            }
+            normalize_route_pool(&mut settings.text_models);
+        });
         self.normalize_model_routes();
     }
 
@@ -428,6 +460,12 @@ impl PlatformsConfig {
                 }
                 normalize_route_pool(pool);
             }
+        });
+        mutate_group_join_approval_settings(&mut self.qq.plugins, |settings| {
+            if let Some(models) = &mut settings.text_models {
+                rename_provider_in_pool(models, old_id, new_id);
+            }
+            normalize_route_pool(&mut settings.text_models);
         });
     }
 
@@ -460,6 +498,16 @@ impl PlatformsConfig {
                 }
                 normalize_route_pool(pool);
             }
+        });
+        mutate_group_join_approval_settings(&mut self.qq.plugins, |settings| {
+            if let Some(models) = &mut settings.text_models {
+                for entry in models {
+                    if entry.provider_id == provider_id && entry.model == old {
+                        entry.model = new.to_string();
+                    }
+                }
+            }
+            normalize_route_pool(&mut settings.text_models);
         });
     }
 }
@@ -509,6 +557,7 @@ pub const QQ_MESSAGE_HISTORY_PLUGIN_ID: &str = "qq_message_history";
 pub const QQ_GROUP_MANAGEMENT_PLUGIN_ID: &str = "qq_group_management";
 pub const QQ_MESSAGE_RECALL_PLUGIN_ID: &str = "qq_message_recall";
 pub const QQ_MEME_COLLECTOR_PLUGIN_ID: &str = "qq_meme_collector";
+pub const QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID: &str = "qq_group_join_approval";
 
 const PLATFORM_PLUGIN_VALIDATORS: &[(&str, PlatformPluginConfigValidator)] = &[
     ("reply_processor", validate_reply_processor_plugin_config),
@@ -528,6 +577,10 @@ const PLATFORM_PLUGIN_VALIDATORS: &[(&str, PlatformPluginConfigValidator)] = &[
     (
         QQ_MEME_COLLECTOR_PLUGIN_ID,
         validate_qq_meme_collector_plugin_config,
+    ),
+    (
+        QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID,
+        validate_qq_group_join_approval_plugin_config,
     ),
 ];
 
@@ -654,6 +707,111 @@ impl QqMemeCollectorPluginSettings {
         serde_json::from_value(serde_json::Value::Object(instance.settings.clone()))
             .context("invalid qq_meme_collector plugin settings")
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QqGroupJoinApprovalGroupConfig {
+    pub group_id: i64,
+    pub approve_condition: String,
+}
+
+/// Configuration contract for the built-in QQ group-join approval plugin.
+///
+/// Like the real-context plugin, values stay flat in the generic
+/// platform-plugin map. `text_models` follows the same rule as
+/// `RealContextPluginSettings::text_models`: `None` inherits the QQ-wide
+/// text model pool, `Some` pins an explicit approval model pool.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QqGroupJoinApprovalPluginSettings {
+    /// Wall-clock deadline for one approval decision, including retries.
+    pub timeout_seconds: u64,
+    /// Extra attempts only after an unparsable JSON response.
+    pub max_retries: usize,
+    /// None inherits the QQ platform text model pool.
+    pub text_models: Option<Vec<ActiveProviderModelConfig>>,
+    pub groups: Vec<QqGroupJoinApprovalGroupConfig>,
+}
+
+impl Default for QqGroupJoinApprovalPluginSettings {
+    fn default() -> Self {
+        Self {
+            timeout_seconds: 60,
+            max_retries: 1,
+            text_models: None,
+            groups: Vec::new(),
+        }
+    }
+}
+
+impl QqGroupJoinApprovalPluginSettings {
+    pub fn from_instance(instance: &PlatformPluginInstanceConfig) -> Result<Self> {
+        serde_json::from_value(serde_json::Value::Object(instance.settings.clone()))
+            .context("invalid qq_group_join_approval plugin settings")
+    }
+
+    pub fn normalize(&mut self) {
+        normalize_route_pool(&mut self.text_models);
+        for group in &mut self.groups {
+            group.approve_condition = group.approve_condition.trim().to_string();
+        }
+        self.groups.sort_unstable_by_key(|group| group.group_id);
+        let mut indexes = HashMap::with_capacity(self.groups.len());
+        let mut unique = Vec::with_capacity(self.groups.len());
+        for group in self.groups.drain(..) {
+            if let Some(index) = indexes.get(&group.group_id).copied() {
+                unique[index] = group;
+            } else {
+                indexes.insert(group.group_id, unique.len());
+                unique.push(group);
+            }
+        }
+        self.groups = unique;
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if !(1..=3_600).contains(&self.timeout_seconds) {
+            bail!(
+                "platform plugin qq_group_join_approval.timeout_seconds must be between 1 and 3600"
+            );
+        }
+        if self.max_retries > 3 {
+            bail!("platform plugin qq_group_join_approval.max_retries must be between 0 and 3");
+        }
+        if let Some(models) = &self.text_models {
+            if models.is_empty() {
+                bail!("platform plugin qq_group_join_approval.text_models must be omitted instead of empty");
+            }
+            let mut seen = HashSet::with_capacity(models.len());
+            if models.iter().any(|model| {
+                model.provider_id.trim().is_empty()
+                    || model.model.trim().is_empty()
+                    || !seen.insert((&model.provider_id, &model.model))
+            }) {
+                bail!("platform plugin qq_group_join_approval.text_models must contain unique, non-empty model references");
+            }
+        }
+        let mut group_ids = HashSet::with_capacity(self.groups.len());
+        if self.groups.len() > 10_000
+            || self.groups.iter().any(|group| {
+                group.group_id <= 0
+                    || group.approve_condition.is_empty()
+                    || group.approve_condition.trim() != group.approve_condition
+                    || group.approve_condition.chars().count() > 200_000
+                    || group.approve_condition.chars().any(char::is_control)
+                    || !group_ids.insert(group.group_id)
+            })
+        {
+            bail!("platform plugin qq_group_join_approval.groups must contain unique positive group ids and valid approval conditions");
+        }
+        Ok(())
+    }
+}
+
+fn validate_qq_group_join_approval_plugin_config(
+    instance: &PlatformPluginInstanceConfig,
+) -> Result<()> {
+    QqGroupJoinApprovalPluginSettings::from_instance(instance)?.validate()
 }
 
 fn validate_qq_group_management_plugin_config(
@@ -1259,6 +1417,35 @@ fn normalize_real_context_instance(instance: &mut PlatformPluginInstanceConfig) 
     merge_real_context_settings(instance, &settings);
 }
 
+fn normalize_group_join_approval_instance(instance: &mut PlatformPluginInstanceConfig) {
+    let Ok(mut settings) = QqGroupJoinApprovalPluginSettings::from_instance(instance) else {
+        return;
+    };
+    settings.normalize();
+    merge_group_join_approval_settings(instance, &settings);
+}
+
+pub(crate) fn merge_group_join_approval_settings(
+    instance: &mut PlatformPluginInstanceConfig,
+    settings: &QqGroupJoinApprovalPluginSettings,
+) {
+    let Ok(serde_json::Value::Object(known)) = serde_json::to_value(settings) else {
+        return;
+    };
+    let Ok(serde_json::Value::Object(defaults)) =
+        serde_json::to_value(QqGroupJoinApprovalPluginSettings::default())
+    else {
+        return;
+    };
+    for (key, value) in known {
+        if defaults.get(&key) == Some(&value) {
+            instance.settings.remove(&key);
+        } else {
+            instance.settings.insert(key, value);
+        }
+    }
+}
+
 fn migrate_message_history_instance(plugins: &mut PlatformPluginsConfig) {
     if plugins
         .get(QQ_MESSAGE_HISTORY_PLUGIN_ID)
@@ -1384,6 +1571,23 @@ fn migrate_real_context_settings_map(settings: &mut serde_json::Map<String, serd
     for key in DEPRECATED_REAL_CONTEXT_SETTINGS {
         settings.remove(*key);
     }
+}
+
+/// 与 [`mutate_real_context_settings`] 同构:入群审批插件的 `text_models`
+/// 也持有 provider/model 引用,provider 删除/改名的引用维护必须覆盖它,
+/// 否则悬空引用会让审批模型静默失效。
+fn mutate_group_join_approval_settings(
+    plugins: &mut PlatformPluginsConfig,
+    mutate: impl FnOnce(&mut QqGroupJoinApprovalPluginSettings),
+) {
+    let Some(instance) = plugins.get_mut(QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID) else {
+        return;
+    };
+    let Ok(mut settings) = QqGroupJoinApprovalPluginSettings::from_instance(instance) else {
+        return;
+    };
+    mutate(&mut settings);
+    merge_group_join_approval_settings(instance, &settings);
 }
 
 fn mutate_real_context_settings(
@@ -2282,6 +2486,11 @@ pub struct NotificationsConfig {
     /// Notify when a reply finishes and Miyu is waiting on you again.
     #[serde(default = "default_true")]
     pub on_turn_complete: bool,
+    /// shellhook/单次 CLI 触发的后台任务完成后,把跟进回复写回触发它的那个
+    /// 终端。仅在该 shell 仍活着、停在同一 tty 的前台提示符时才写;写不了退化
+    /// 为桌面通知。
+    #[serde(default = "default_true")]
+    pub job_writeback_to_terminal: bool,
 }
 
 impl Default for NotificationsConfig {
@@ -2289,6 +2498,7 @@ impl Default for NotificationsConfig {
         Self {
             enabled: true,
             on_turn_complete: true,
+            job_writeback_to_terminal: true,
         }
     }
 }
@@ -2380,8 +2590,15 @@ pub struct ProviderConfig {
     pub models: Vec<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub model_context_window: HashMap<String, usize>,
+    /// 按模型温度覆盖;缺项回退 `temperature`(供应商默认)。验收:模型
+    /// 菜单里的温度曾误写供应商全局,牵连所有模型。
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub model_temperature: HashMap<String, f32>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub model_modalities: HashMap<String, Vec<String>>,
+    /// 手动模型价格,键为模型名;设了就覆盖 models.dev 目录价。
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub model_costs: HashMap<String, ModelCostConfig>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub default_model: String,
     #[serde(
@@ -2421,6 +2638,18 @@ pub struct PromptConfig {
     pub active_persona: String,
     #[serde(default)]
     pub active_identity: String,
+    /// 防失忆提醒(自动蒸馏,见 persona_hint 模块)。08-16 起改为
+    /// 化石注入:每隔 `persona_reminder_interval` 轮进一次历史,纯追加
+    /// 不再掰前缀缓存。A/B 实证干净体制下预设对话已足够→默认禁用。
+    #[serde(default)]
+    pub persona_reminder: bool,
+    /// 相邻两次防失忆提醒之间至少间隔的轮数(>=1)。
+    #[serde(default = "default_persona_reminder_interval")]
+    pub persona_reminder_interval: u32,
+}
+
+fn default_persona_reminder_interval() -> u32 {
+    3
 }
 
 /// Identifies who a model prompt is acting for. Only trusted local operator
@@ -2555,6 +2784,11 @@ impl EmbeddingConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextConfig {
+    /// 工具输出的模型侧内联上限(UTF-8 字节)。超限的纯文本输出全文外溢到
+    /// 会话级 spill 文件,模型只看头尾预览+取回提示(read_file/rg 按需读回)。
+    /// 0 = 关闭外溢。照抄 dsh 默认 50KB。
+    #[serde(default = "default_tool_output_spill_bytes")]
+    pub tool_output_spill_bytes: usize,
     #[serde(default = "default_trim_at_ratio")]
     pub trim_at_ratio: f32,
     #[serde(default = "default_trim_batch_ratio")]
@@ -2616,6 +2850,15 @@ pub struct ToolsConfig {
     /// How many `task` subagents from one tool batch may run concurrently.
     #[serde(default = "default_subagent_concurrency")]
     pub subagent_concurrency: usize,
+    /// 工具执行兜底超时（秒），0=关闭。防没有自管超时的工具（MCP/web/生图
+    /// 等）把回合无限挂死；run_command/task/deep_research 等自管或长跑工具
+    /// 在 descriptions JSON 里以 timeout_seconds=0 豁免。
+    #[serde(default = "default_tools_timeout_secs")]
+    pub default_timeout_secs: u64,
+    /// run_command 命令拒绝子串。命中即拒（guard 层，回给模型 tool error）。
+    /// 防提示注入与模型手滑；默认只收录几乎不可能误伤的毁灭性模式。
+    #[serde(default = "default_command_deny")]
+    pub command_deny: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2892,10 +3135,39 @@ pub struct MemesPluginConfig {
     pub search_max_results: usize,
     #[serde(default)]
     pub allow_gif_animation: bool,
-    #[serde(default)]
+    /// 终端/WebUI 会话的自动提示发送表情,默认开。
+    #[serde(default = "default_true")]
     pub auto_send_enabled: bool,
+    /// 通讯平台会话的自动提示发送表情:与终端/WebUI 的 auto_send_enabled
+    /// 独立,默认开——表情包本来就是平台聊天的语言。
+    #[serde(default = "default_true")]
+    pub auto_send_platform_enabled: bool,
     #[serde(default = "default_memes_auto_send_probability")]
     pub auto_send_probability: f32,
+}
+
+/// 手动模型价格(每 1M tokens):目录查不到价的中转/赠送端点用它,
+/// 设了就覆盖 models.dev 的价目。缓存价缺省时按输入价计。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ModelCostConfig {
+    #[serde(default)]
+    pub currency: CostCurrency,
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub output: f64,
+    #[serde(default, alias = "cache", skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<f64>,
+}
+
+/// 手动价格的币种。统计聚合统一折算成 USD 展示。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum CostCurrency {
+    #[default]
+    #[serde(rename = "USD", alias = "usd")]
+    Usd,
+    #[serde(rename = "CNY", alias = "cny", alias = "rmb", alias = "¥")]
+    Cny,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3080,6 +3352,7 @@ impl Default for AppConfig {
             plugins: PluginsConfig::default(),
             memory: MemoryConfig::default(),
             system_prompt_file: Some("system-prompt.md".to_string()),
+            default_mode: String::new(),
             system_prompt: None,
             subagent_tiers: SubagentTiersConfig::default(),
             platforms: PlatformsConfig::default(),
@@ -3095,6 +3368,8 @@ impl Default for PromptConfig {
             user_identity_file: default_user_identity_file(),
             active_persona: String::new(),
             active_identity: String::new(),
+            persona_reminder: false,
+            persona_reminder_interval: default_persona_reminder_interval(),
         }
     }
 }
@@ -3288,7 +3563,8 @@ impl Default for MemesPluginConfig {
             max_image_mb: default_memes_max_image_mb(),
             search_max_results: default_memes_search_max_results(),
             allow_gif_animation: false,
-            auto_send_enabled: false,
+            auto_send_enabled: true,
+            auto_send_platform_enabled: true,
             auto_send_probability: default_memes_auto_send_probability(),
         }
     }
@@ -3365,6 +3641,8 @@ impl Default for ToolsConfig {
             loading_mode: default_tools_loading_mode(),
             persist_loaded_tools: default_true(),
             subagent_concurrency: default_subagent_concurrency(),
+            default_timeout_secs: default_tools_timeout_secs(),
+            command_deny: default_command_deny(),
         }
     }
 }
@@ -3410,6 +3688,7 @@ impl Default for MemoryConfig {
 impl Default for ContextConfig {
     fn default() -> Self {
         Self {
+            tool_output_spill_bytes: default_tool_output_spill_bytes(),
             trim_at_ratio: default_trim_at_ratio(),
             trim_batch_ratio: default_trim_batch_ratio(),
             on_overflow: default_on_overflow(),
@@ -3426,6 +3705,15 @@ impl Default for ContextConfig {
 }
 
 impl ProviderConfig {
+    /// 当前选中模型(`default_model`)的有效温度:按模型覆盖优先,缺项
+    /// 回退供应商默认。
+    pub fn effective_temperature(&self) -> f32 {
+        self.model_temperature
+            .get(&self.default_model)
+            .copied()
+            .unwrap_or(self.temperature)
+    }
+
     pub fn default_opencodezen() -> Self {
         Self {
             id: OPENCODE_PROVIDER_ID.to_string(),
@@ -3435,7 +3723,9 @@ impl ProviderConfig {
             api_key: None,
             models: vec![OPENCODE_DEFAULT_CHAT_MODEL.to_string()],
             model_context_window: HashMap::new(),
+            model_temperature: HashMap::new(),
             model_modalities: HashMap::new(),
+            model_costs: HashMap::new(),
             default_model: OPENCODE_DEFAULT_CHAT_MODEL.to_string(),
             timeout_seconds: default_timeout(),
             temperature: default_temperature(),
@@ -3453,7 +3743,9 @@ impl ProviderConfig {
             api_key: Some("$env:ANTHROPIC_API_KEY".to_string()),
             models: Vec::new(),
             model_context_window: HashMap::new(),
+            model_temperature: HashMap::new(),
             model_modalities: HashMap::new(),
+            model_costs: HashMap::new(),
             default_model: String::new(),
             timeout_seconds: default_timeout(),
             temperature: default_temperature(),
@@ -3465,6 +3757,7 @@ impl ProviderConfig {
     pub fn default_templates() -> Vec<Self> {
         let mut providers = vec![Self::default_opencodezen()];
         providers.extend([
+            Self::template("opencodego", "OpenCode Go", "https://opencode.ai/zen/go/v1"),
             Self::template("openai", "OpenAI", "https://api.openai.com/v1"),
             Self::default_anthropic(),
             Self::template("deepseek", "DeepSeek", "https://api.deepseek.com"),
@@ -3495,7 +3788,9 @@ impl ProviderConfig {
             api_key: None,
             models: Vec::new(),
             model_context_window: HashMap::new(),
+            model_temperature: HashMap::new(),
             model_modalities: HashMap::new(),
+            model_costs: HashMap::new(),
             default_model: String::new(),
             timeout_seconds: default_timeout(),
             temperature: default_temperature(),
@@ -3513,7 +3808,9 @@ impl ProviderConfig {
             api_key: None,
             models: Vec::new(),
             model_context_window: HashMap::new(),
+            model_temperature: HashMap::new(),
             model_modalities: HashMap::new(),
+            model_costs: HashMap::new(),
             default_model: String::new(),
             timeout_seconds: default_timeout(),
             temperature: default_temperature(),
@@ -3718,7 +4015,23 @@ impl AppConfig {
         if !paths.config_file.exists() {
             Self::default().save(paths)?;
         }
+        // Dev 模式提示词:一行、可编辑、不混淆(与 Miyu 人格提示词的内嵌
+        // 不可编辑形成对照)。缺失时写默认;用户改成什么都以文件为准。
+        let dev_prompt = paths.config_dir.join(DEV_PROMPT_FILE);
+        if !dev_prompt.exists() {
+            std::fs::write(&dev_prompt, format!("{DEFAULT_DEV_SYSTEM_PROMPT}\n"))?;
+        }
         Ok(())
+    }
+
+    /// Dev 模式系统提示词:读 `config/dev-prompt.md`,缺失或清空回退内置
+    /// 默认一行(极简原则 + 贴近训练分布的措辞,见 08-15 实验记录)。
+    pub fn dev_system_prompt(&self, paths: &MiyuPaths) -> Result<String> {
+        let path = paths.config_dir.join(DEV_PROMPT_FILE);
+        match std::fs::read_to_string(&path) {
+            Ok(content) if !content.trim().is_empty() => Ok(content.trim().to_string()),
+            _ => Ok(DEFAULT_DEV_SYSTEM_PROMPT.to_string()),
+        }
     }
 
     pub fn save(&self, paths: &MiyuPaths) -> Result<()> {
@@ -3757,7 +4070,14 @@ impl AppConfig {
             config.system_prompt_file = Some("system-prompt.md".to_string());
         }
         let raw = serde_json::to_string_pretty(&config)?;
-        std::fs::write(&paths.config_file, format!("{raw}\n"))?;
+        // 原子写:写回瞬间断电/崩溃不能让 config.json 留下截断的半个 JSON。
+        let config_dir = paths
+            .config_file
+            .parent()
+            .context("config file has no parent directory")?;
+        let temp = tempfile::NamedTempFile::new_in(config_dir)?;
+        std::fs::write(temp.path(), format!("{raw}\n"))?;
+        temp.persist(&paths.config_file)?;
         Ok(())
     }
 
@@ -4057,6 +4377,19 @@ impl AppConfig {
                 );
             }
         }
+        for provider in &self.providers {
+            for (model, cost) in &provider.model_costs {
+                if cost.input < 0.0
+                    || cost.output < 0.0
+                    || cost.cache_read.is_some_and(|price| price < 0.0)
+                {
+                    bail!(
+                        "provider {} model {model} price must be non-negative",
+                        provider.id
+                    );
+                }
+            }
+        }
         if !(0.0..=1.0).contains(&self.plugins.memes.auto_send_probability) {
             bail!("plugins.memes.auto_send_probability must be between 0.0 and 1.0");
         }
@@ -4265,6 +4598,17 @@ impl AppConfig {
                     )?;
                 }
             }
+            if plugin_id == QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID {
+                let settings = QqGroupJoinApprovalPluginSettings::from_instance(instance)?;
+                if let Some(models) = settings.text_models.as_deref() {
+                    validate_unique_existing_pool(
+                        &self.providers,
+                        "group-join-approval text",
+                        models,
+                        false,
+                    )?;
+                }
+            }
         }
         Ok(())
     }
@@ -4463,6 +4807,9 @@ impl AppConfig {
         if self.plugins.knowledge_base.embedding_provider_id == old_id {
             self.plugins.knowledge_base.embedding_provider_id = new_id.to_string();
         }
+        if self.embedding.provider_id == old_id {
+            self.embedding.provider_id = new_id.to_string();
+        }
     }
 
     /// Removes references after a provider has been deleted from `providers`.
@@ -4482,6 +4829,10 @@ impl AppConfig {
         if self.plugins.knowledge_base.embedding_provider_id == provider_id {
             self.plugins.knowledge_base.embedding_provider_id.clear();
             self.plugins.knowledge_base.embedding_model.clear();
+        }
+        if self.embedding.provider_id == provider_id {
+            self.embedding.provider_id.clear();
+            self.embedding.model.clear();
         }
         if self.active_provider == provider_id {
             self.active_provider = self
@@ -4702,6 +5053,10 @@ impl AppConfig {
         {
             self.plugins.knowledge_base.embedding_provider_id.clear();
             self.plugins.knowledge_base.embedding_model.clear();
+        }
+        if self.embedding.provider_id == provider_id && self.embedding.model == model {
+            self.embedding.provider_id.clear();
+            self.embedding.model.clear();
         }
         retain_nonempty_pool(&mut self.active_provider_models);
         retain_nonempty_pool(&mut self.active_multimodal_provider_models);
@@ -5169,6 +5524,15 @@ impl AppConfig {
         persona_scope_name(self.prompt.active_persona.trim())
     }
 
+    /// Dev 模式的作用域配置:人格指针换成保留人格 "dev",记忆/技能目录
+    /// 随之落入独立命名空间。键是常量人格名而非提示词内容——编辑
+    /// dev-prompt.md 只改提示词,永远不会切库丢记忆。
+    pub fn dev_scoped(&self) -> AppConfig {
+        let mut config = self.clone();
+        config.prompt.active_persona = crate::state::DEV_PERSONA.to_string();
+        config
+    }
+
     pub fn active_persona_memory_data_dir(&self, paths: &MiyuPaths) -> PathBuf {
         self.persona_memory_data_dir(paths, self.prompt.active_persona.trim())
     }
@@ -5463,6 +5827,23 @@ fn default_subagent_concurrency() -> usize {
     4
 }
 
+fn default_tools_timeout_secs() -> u64 {
+    180
+}
+
+fn default_command_deny() -> Vec<String> {
+    [
+        "rm -rf /",
+        "rm -rf ~",
+        "mkfs.",
+        "dd if=/dev/zero of=/dev/",
+        ":(){ :|:& };:",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
 fn default_display_language() -> String {
     "auto".to_string()
 }
@@ -5568,7 +5949,7 @@ fn default_memes_search_max_results() -> usize {
 }
 
 fn default_memes_auto_send_probability() -> f32 {
-    0.2
+    0.05
 }
 
 fn default_web_search_max_results() -> usize {
@@ -5793,6 +6174,10 @@ fn default_calculator_backend() -> String {
 
 /// Compact trigger watermark. 0.8 (was 0.9) leaves room between the trigger
 /// and the force watermark for the cheap mechanical layer to act first.
+fn default_tool_output_spill_bytes() -> usize {
+    50_000
+}
+
 fn default_trim_at_ratio() -> f32 {
     0.8
 }
@@ -5824,6 +6209,19 @@ fn default_on_overflow() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_temperature_override_beats_provider_default() {
+        let mut provider = ProviderConfig::default_opencodezen();
+        provider.temperature = 0.6;
+        provider.default_model = "a".to_string();
+        assert_eq!(provider.effective_temperature(), 0.6);
+        provider.model_temperature.insert("a".to_string(), 0.1);
+        assert_eq!(provider.effective_temperature(), 0.1);
+        // 别的模型不受覆盖牵连(验收:曾把供应商全局温度当模型温度写)。
+        provider.default_model = "b".to_string();
+        assert_eq!(provider.effective_temperature(), 0.6);
+    }
 
     #[test]
     fn a_stale_xdg_output_dir_is_healed_and_its_files_follow() {
@@ -6944,6 +7342,180 @@ mod tests {
     }
 
     #[test]
+    fn qq_group_join_approval_defaults_are_safe() {
+        let settings = QqGroupJoinApprovalPluginSettings::default();
+
+        assert_eq!(settings.timeout_seconds, 60);
+        assert_eq!(settings.max_retries, 1);
+        assert!(settings.text_models.is_none());
+        assert!(settings.groups.is_empty());
+        assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn qq_group_join_approval_settings_are_validated() {
+        let mut config = route_test_config();
+        config.platforms.qq.plugins.insert(
+            QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID.to_string(),
+            PlatformPluginInstanceConfig {
+                enabled: Some(true),
+                settings: serde_json::json!({
+                    "timeout_seconds": 60,
+                    "max_retries": 1,
+                    "groups": [
+                        {"group_id": 130515298, "approve_condition": "Arch 相关通过"}
+                    ]
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            },
+        );
+        assert!(config.validate().is_ok());
+
+        config
+            .platforms
+            .qq
+            .plugins
+            .get_mut(QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID)
+            .unwrap()
+            .settings["groups"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "group_id": 130515298,
+                "approve_condition": "duplicate"
+            }));
+        assert!(config.validate().is_err());
+
+        let instance = config
+            .platforms
+            .qq
+            .plugins
+            .get_mut(QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID)
+            .unwrap();
+        instance.settings = serde_json::json!({
+            "timeout_seconds": 60,
+            "max_retries": 1,
+            "groups": [{"group_id": 0, "approve_condition": "invalid group"}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(config.validate().is_err());
+
+        let instance = config
+            .platforms
+            .qq
+            .plugins
+            .get_mut(QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID)
+            .unwrap();
+        instance.settings = serde_json::json!({
+            "timeout_seconds": 0,
+            "groups": []
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(config.validate().is_err());
+
+        let instance = config
+            .platforms
+            .qq
+            .plugins
+            .get_mut(QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID)
+            .unwrap();
+        instance.settings = serde_json::json!({
+            "max_retries": 4,
+            "groups": []
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn qq_group_join_approval_rejects_invalid_conditions_and_unknown_fields_pass() {
+        let mut config = route_test_config();
+        let long = "x".repeat(200_001);
+        for condition in [
+            String::new(),
+            "  padded  ".to_string(),
+            format!("bad\0condition"),
+            long,
+        ] {
+            config.platforms.qq.plugins.insert(
+                QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID.to_string(),
+                PlatformPluginInstanceConfig {
+                    enabled: None,
+                    settings: serde_json::json!({
+                        "groups": [{"group_id": 1, "approve_condition": condition}]
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                },
+            );
+            assert!(
+                config.validate().is_err(),
+                "condition should fail: {condition:?}"
+            );
+        }
+
+        config.platforms.qq.plugins.insert(
+            QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID.to_string(),
+            PlatformPluginInstanceConfig {
+                enabled: None,
+                settings: serde_json::json!({
+                    "future_option": 1,
+                    "groups": [{"group_id": 1, "approve_condition": "valid"}]
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            },
+        );
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn qq_group_join_approval_normalizes_groups_and_merges_defaults() {
+        let mut config = route_test_config();
+        config.platforms.qq.plugins.insert(
+            QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID.to_string(),
+            PlatformPluginInstanceConfig {
+                enabled: Some(true),
+                settings: serde_json::json!({
+                    "timeout_seconds": 60,
+                    "max_retries": 1,
+                    "groups": [
+                        {"group_id": 2, "approve_condition": "  second  "},
+                        {"group_id": 1, "approve_condition": " first "},
+                        {"group_id": 2, "approve_condition": " replaced "}
+                    ]
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            },
+        );
+
+        config.normalize_platform_model_routes();
+
+        let instance = &config.platforms.qq.plugins[QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID];
+        assert_eq!(instance.enabled, Some(true));
+        assert!(instance.settings.get("timeout_seconds").is_none());
+        assert!(instance.settings.get("max_retries").is_none());
+        let settings = QqGroupJoinApprovalPluginSettings::from_instance(instance).unwrap();
+        assert_eq!(settings.groups.len(), 2);
+        assert_eq!(settings.groups[0].group_id, 1);
+        assert_eq!(settings.groups[0].approve_condition, "first");
+        assert_eq!(settings.groups[1].approve_condition, "replaced");
+        assert!(settings.validate().is_ok());
+    }
+
+    #[test]
     fn legacy_real_context_history_limits_move_to_message_history() {
         let mut config = AppConfig::default();
         config.platforms.qq.plugins.insert(
@@ -7839,9 +8411,10 @@ mod tests {
             memes.library_for_persona("Custom Persona"),
             "custom-persona"
         );
-        assert!(!memes.auto_send_enabled);
+        assert!(memes.auto_send_enabled);
+        assert!(memes.auto_send_platform_enabled);
         assert_eq!(memes.search_max_results, 1);
-        assert_eq!(memes.auto_send_probability, 0.2);
+        assert_eq!(memes.auto_send_probability, 0.05);
     }
 
     #[test]
@@ -7854,7 +8427,9 @@ mod tests {
             api_key: None,
             models: vec![],
             model_context_window: HashMap::new(),
+            model_temperature: HashMap::new(),
             model_modalities: HashMap::new(),
+            model_costs: HashMap::new(),
             default_model: String::new(),
             timeout_seconds: 60,
             temperature: 1.0,

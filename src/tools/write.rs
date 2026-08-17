@@ -41,7 +41,14 @@ fn write_file(args: Value, progress: ToolProgress) -> Result<String> {
 
     let existed = path.exists();
     let original = if existed {
-        std::fs::read_to_string(&path).unwrap_or_default()
+        // 读不出 UTF-8 就拒绝覆盖:把二进制原文当空串会让 diff 显示"全文
+        // 新增",真实旧内容被无提示地覆盖掉。
+        std::fs::read_to_string(&path).map_err(|error| {
+            anyhow::anyhow!(
+                "refusing to overwrite {}: the existing file is not readable UTF-8 text ({error})",
+                path.display()
+            )
+        })?
     } else {
         String::new()
     };

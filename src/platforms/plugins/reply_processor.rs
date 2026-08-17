@@ -1321,6 +1321,7 @@ mod tests {
             system_context: Vec::new(),
             turn_system_context: Vec::new(),
             context_images: Vec::new(),
+            context_files: Vec::new(),
         };
         plugin.before_turn(&context, &mut input).await.unwrap();
         assert_eq!(input.content, "next");

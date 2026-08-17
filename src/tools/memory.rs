@@ -98,7 +98,10 @@ pub(crate) fn register_readonly_with_context(
     if !config.memory_config().enabled {
         return;
     }
-    if config.memory_config().evicted_context_enabled && config.context.on_overflow != "compact" {
+    // 不再按 on_overflow 门控:compact 体制下 CLI `miyu pop` 照样把弹出
+    // 轮归档进外溢库,没有这把工具模型就永远找不回它们(验收三轮:pop
+    // 去留之争的答案是"补检索",不是删命令)。
+    if config.memory_config().evicted_context_enabled {
         registry.register(ToolSpec::new(
             "search_evicted_context",
             t("Search conversation turns that were moved out of the active context window. Use this when the current context appears to be missing earlier discussion.", "搜索已经移出当前上下文窗口的对话轮次。当当前上下文明显缺少早前讨论时使用。"),
@@ -437,17 +440,19 @@ mod tests {
     }
 
     #[test]
-    fn search_evicted_context_is_hidden_for_compact_overflow() {
+    fn search_evicted_context_registers_whenever_archiving_is_enabled() {
+        // compact 体制下 CLI pop 也会归档,检索工具必须在(验收三轮)。
         let paths = test_paths();
         let compact_config = AppConfig::default();
+        assert_eq!(compact_config.context.on_overflow, "compact");
         let mut compact_registry = ToolRegistry::new();
         register_readonly(&mut compact_registry, compact_config, paths.clone());
-        assert!(!tool_names(&compact_registry).contains("search_evicted_context"));
+        assert!(tool_names(&compact_registry).contains("search_evicted_context"));
 
-        let mut pop_config = AppConfig::default();
-        pop_config.context.on_overflow = "pop".to_string();
-        let mut pop_registry = ToolRegistry::new();
-        register_readonly(&mut pop_registry, pop_config, paths);
-        assert!(tool_names(&pop_registry).contains("search_evicted_context"));
+        let mut disabled_config = AppConfig::default();
+        disabled_config.memory.evicted_context_enabled = false;
+        let mut disabled_registry = ToolRegistry::new();
+        register_readonly(&mut disabled_registry, disabled_config, paths);
+        assert!(!tool_names(&disabled_registry).contains("search_evicted_context"));
     }
 }

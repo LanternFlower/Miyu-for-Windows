@@ -29,5 +29,6 @@
   "load_policy": "group",
   "groups": [
     "research"
-  ]
+  ],
+  "timeout_seconds": 0
 }

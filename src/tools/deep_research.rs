@@ -367,7 +367,9 @@ async fn run_deep_research(
         path.display()
     ));
     Ok(serde_json::to_string_pretty(&json!({
-        "ok": true,
+        // thinker 空产出时报告体也是空的:标成 ok 会让模型把空报告当成
+        // 研究结论直接交付用户。
+        "ok": stop_reason != "thinker_failed",
         "kind": "deep_research",
         "topic": topic,
         "topic_title": topic_title(&state, &topic),
@@ -518,45 +520,10 @@ fn parse_review(content: &str) -> Value {
 
 fn parse_json_object(content: &str) -> Option<Value> {
     let trimmed = content.trim();
-    serde_json::from_str(trimmed)
-        .ok()
-        .or_else(|| extract_json_object(trimmed).and_then(|json| serde_json::from_str(json).ok()))
-}
-
-fn extract_json_object(content: &str) -> Option<&str> {
-    let start = content.find('{')?;
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    for (offset, ch) in content[start..].char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' && in_string {
-            escaped = true;
-            continue;
-        }
-        if ch == '"' {
-            in_string = !in_string;
-            continue;
-        }
-        if in_string {
-            continue;
-        }
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    let end = start + offset + ch.len_utf8();
-                    return Some(&content[start..end]);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
+    serde_json::from_str(trimmed).ok().or_else(|| {
+        crate::json_extract::extract_json_object(trimmed)
+            .and_then(|json| serde_json::from_str(json).ok())
+    })
 }
 
 fn normalize_final_answer(draft: &str, state: &Arc<Mutex<ResearchState>>) -> Result<String> {

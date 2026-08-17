@@ -517,7 +517,7 @@ async fn geocode_location(
         }
         bail!("no geocoding results for {}", request.location);
     }
-    write_cache(geocoding_cache(), cache_key, results.clone());
+    write_cache(geocoding_cache(), cache_key, results.clone(), GEOCODING_CACHE_TTL);
     Ok(results)
 }
 
@@ -643,7 +643,7 @@ async fn fetch_forecast(
         .json()
         .await?;
 
-    write_cache(forecast_cache(), cache_key, response.clone());
+    write_cache(forecast_cache(), cache_key, response.clone(), FORECAST_CACHE_TTL);
     Ok(response)
 }
 
@@ -669,8 +669,10 @@ fn read_cache<T: Clone>(
     }
 }
 
-fn write_cache<T>(cache: &Mutex<HashMap<String, CacheEntry<T>>>, key: String, value: T) {
+fn write_cache<T>(cache: &Mutex<HashMap<String, CacheEntry<T>>>, key: String, value: T, ttl: Duration) {
     if let Ok(mut cache) = cache.lock() {
+        // 读取只判过期不删;写入时顺手清掉,常驻 daemon 不积死条目。
+        cache.retain(|_, entry| entry.inserted_at.elapsed() <= ttl);
         cache.insert(
             key,
             CacheEntry {
@@ -1271,6 +1273,19 @@ fn wind_direction_label(degrees: f64) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 回归(PR#31):读取只判过期不删,缓存无界增长;写入时应清扫。
+    #[test]
+    fn write_cache_sweeps_expired_entries() {
+        let cache: Mutex<HashMap<String, CacheEntry<u32>>> = Mutex::new(HashMap::new());
+        write_cache(&cache, "old".to_string(), 1, Duration::from_secs(3600));
+        std::thread::sleep(Duration::from_millis(5));
+        // 用 1ns TTL 触发清扫:5ms 前写入的 old 必然过期,new 本身刚插入。
+        write_cache(&cache, "new".to_string(), 2, Duration::from_nanos(1));
+        let cache = cache.lock().unwrap();
+        assert!(!cache.contains_key("old"));
+        assert!(cache.contains_key("new"));
+    }
 
     #[test]
     fn parses_args_with_defaults_and_clamps_days() {

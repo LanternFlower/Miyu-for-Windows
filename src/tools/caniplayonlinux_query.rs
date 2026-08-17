@@ -719,12 +719,13 @@ fn strip_tags(value: &str) -> String {
 }
 
 fn decode_entities(value: &str) -> String {
+    // `&amp;` 必须最后解:排第一会把字面 `&amp;lt;` 双重解码成 `<`。
     value
-        .replace("&amp;", "&")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
+        .replace("&amp;", "&")
         .trim()
         .to_string()
 }

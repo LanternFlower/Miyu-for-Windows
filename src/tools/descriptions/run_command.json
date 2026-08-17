@@ -1,7 +1,7 @@
 {
   "name": "run_command",
   "display_name": "运行命令",
-  "description": "运行 shell 命令或复杂 shell 脚本，用于测试、构建、检查和脚本化任务。长时命令（构建、dev server、批处理）用 background=true 后台运行并附一个短 title：立即返回短 job_id，用 job_status 查询进度和输出、job_stop 停止；命令完成后系统会自动通知你跟进。编辑文件优先使用 apply_patch；不要用 shell heredoc/cat/tee 写源代码文件，除非用户明确要求。",
+  "description": "运行 shell 命令或复杂 shell 脚本，用于测试、构建、检查和脚本化任务。长时命令（构建、dev server、批处理）用 background=true 后台运行并附一个短 title：立即返回短 job_id，用 job_status 查询进度和输出、job_stop 停止；命令完成后系统会自动通知你跟进。编辑文件优先使用 apply_patch；不要用 shell heredoc/cat/tee 写源代码文件，除非用户明确要求。脚本内可用 `miyu tool-call <name> --stdin` 以本会话身份调用结构化工具,--list 列出的就是本会话可调用的集合,--describe 查参数合同——bash 循环+管道即编排层,中间数据不经模型上下文。内层调用在 daemon 侧的会话工作区执行:不继承脚本的环境变量与当前目录,跨工具传数据走参数 JSON 或文件。",
   "parameters": {
     "type": "object",
     "properties": {
@@ -31,5 +31,6 @@
   "load_policy": "summary",
   "groups": [
     "shell"
-  ]
+  ],
+  "timeout_seconds": 0
 }

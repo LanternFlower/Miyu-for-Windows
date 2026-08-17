@@ -24,10 +24,6 @@
   const DEFAULT_BOARD_TITLE = "今天想聊些什么？";
   const DEFAULT_BOARD_SUBTITLE = "从一个问题、计划或此刻的想法开始。";
   const DEFAULT_STARTER_PROMPTS = ["查询今天的天气", "分析一个问题", "发表情包打个招呼吧", "搜索一张图片"];
-  const CONVERSATION_MODES = [
-    { id: "normal", label: "普通" },
-    { id: "chat", label: "闲聊" }
-  ];
   const THINKING_VARIANT_LABELS = Object.freeze({
     default: "默认",
     none: "关闭",
@@ -58,6 +54,21 @@
     brain: [["path", { d: "M9.5 4A2.5 2.5 0 0 1 12 6.5v11a2.5 2.5 0 0 1-4.96.44A2.5 2.5 0 0 1 5.5 13a3 3 0 0 1 .34-5.98A2.5 2.5 0 0 1 9.5 4Z" }], ["path", { d: "M14.5 4A2.5 2.5 0 0 0 12 6.5v11a2.5 2.5 0 0 0 4.96.44A2.5 2.5 0 0 0 18.5 13a3 3 0 0 0-.34-5.98A2.5 2.5 0 0 0 14.5 4Z" }]],
     check: [["path", { d: "M20 6 9 17l-5-5" }]],
     "chevron-down": [["path", { d: "m6 9 6 6 6-6" }]],
+    terminal: [["polyline", { points: "4 17 10 11 4 5" }], ["line", { x1: "12", x2: "20", y1: "19", y2: "19" }]],
+    target: [["circle", { cx: "12", cy: "12", r: "10" }], ["circle", { cx: "12", cy: "12", r: "6" }], ["circle", { cx: "12", cy: "12", r: "2" }]],
+    bot: [["path", { d: "M12 8V4H8" }], ["rect", { x: "4", y: "8", width: "16", height: "12", rx: "2" }], ["path", { d: "M2 14h2" }], ["path", { d: "M20 14h2" }], ["path", { d: "M15 13v2" }], ["path", { d: "M9 13v2" }]],
+    "book-open": [["path", { d: "M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" }], ["path", { d: "M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" }]],
+    image: [["rect", { x: "3", y: "3", width: "18", height: "18", rx: "2", ry: "2" }], ["circle", { cx: "9", cy: "9", r: "2" }], ["path", { d: "m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" }]],
+    smile: [["circle", { cx: "12", cy: "12", r: "10" }], ["path", { d: "M8 14s1.5 2 4 2 4-2 4-2" }], ["line", { x1: "9", x2: "9.01", y1: "9", y2: "9" }], ["line", { x1: "15", x2: "15.01", y1: "9", y2: "9" }]],
+    "alarm-clock": [["circle", { cx: "12", cy: "13", r: "8" }], ["path", { d: "M12 9v4l2 2" }], ["path", { d: "M5 3 2 6" }], ["path", { d: "m22 6-3-3" }], ["path", { d: "M6.38 18.7 4 21" }], ["path", { d: "M17.64 18.67 20 21" }]],
+    clipboard: [["rect", { x: "8", y: "2", width: "8", height: "4", rx: "1", ry: "1" }], ["path", { d: "M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" }]],
+    calculator: [["rect", { x: "4", y: "2", width: "16", height: "20", rx: "2" }], ["line", { x1: "8", x2: "16", y1: "6", y2: "6" }], ["line", { x1: "16", x2: "16", y1: "14", y2: "18" }], ["path", { d: "M16 10h.01" }], ["path", { d: "M12 10h.01" }], ["path", { d: "M8 10h.01" }], ["path", { d: "M12 14h.01" }], ["path", { d: "M8 14h.01" }], ["path", { d: "M12 18h.01" }], ["path", { d: "M8 18h.01" }]],
+    search: [["circle", { cx: "11", cy: "11", r: "8" }], ["path", { d: "m21 21-4.3-4.3" }]],
+    puzzle: [["path", { d: "M19.439 7.85c-.049.322.059.648.289.878l1.568 1.568c.47.47.706 1.087.706 1.704s-.235 1.233-.706 1.704l-1.611 1.611a.98.98 0 0 1-.837.276c-.47-.07-.802-.48-.968-.925a2.501 2.501 0 1 0-3.214 3.214c.446.166.855.497.925.968a.979.979 0 0 1-.276.837l-1.61 1.61a2.404 2.404 0 0 1-1.705.707 2.402 2.402 0 0 1-1.704-.706l-1.568-1.568a1.026 1.026 0 0 0-.877-.29c-.493.074-.84.504-1.02.968a2.5 2.5 0 1 1-3.237-3.237c.464-.18.894-.527.967-1.02a1.026 1.026 0 0 0-.289-.877l-1.568-1.568A2.402 2.402 0 0 1 1.998 12c0-.617.236-1.234.706-1.704L4.23 8.77c.24-.24.581-.353.917-.303.515.077.877.528 1.073 1.01a2.5 2.5 0 1 0 3.259-3.259c-.482-.196-.933-.558-1.01-1.073-.05-.336.062-.676.303-.917l1.525-1.525A2.402 2.402 0 0 1 12 1.998c.617 0 1.234.236 1.704.706l1.568 1.568c.23.23.556.338.877.29.493-.074.84-.504 1.02-.968a2.5 2.5 0 1 1 3.237 3.237c-.464.18-.894.527-.967 1.02Z" }]],
+    package: [["path", { d: "m7.5 4.27 9 5.15" }], ["path", { d: "M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" }], ["path", { d: "m3.3 7 8.7 5 8.7-5" }], ["path", { d: "M12 22V12" }]],
+    sparkles: [["path", { d: "M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z" }], ["path", { d: "M20 3v4" }], ["path", { d: "M22 5h-4" }]],
+    code: [["polyline", { points: "16 18 22 12 16 6" }], ["polyline", { points: "8 6 2 12 8 18" }]],
+    arch: [["path", { d: "M12 2c-.9 2.3-1.5 3.8-2.6 5.9.7.7 1.5 1.5 2.8 2.4-1.4-.6-2.4-1.2-3.2-1.8C7.5 11.6 5.2 16 2 22c2.9-1.7 5.4-2.8 7.7-3.3.6-2.1 1.4-3.2 2.3-3.2s1.7 1.1 2.3 3.2c2.3.5 4.8 1.6 7.7 3.3-3.2-6-5.5-10.4-7-13.5-.8.6-1.8 1.2-3.2 1.8 1.3-.9 2.1-1.7 2.8-2.4C13.5 5.8 12.9 4.3 12 2z", fill: "currentColor", stroke: "none" }]],
     "chevron-left": [["path", { d: "m15 18-6-6 6-6" }]],
     "layout-grid": [["rect", { x: "3", y: "3", width: "7", height: "7", rx: "1" }], ["rect", { x: "14", y: "3", width: "7", height: "7", rx: "1" }], ["rect", { x: "14", y: "14", width: "7", height: "7", rx: "1" }], ["rect", { x: "3", y: "14", width: "7", height: "7", rx: "1" }]],
     "chart-column": [["path", { d: "M3 3v16a2 2 0 0 0 2 2h16" }], ["path", { d: "M7 15v-4m5 4V8m5 7v-6" }]],
@@ -145,6 +156,7 @@
     "queue.removed",
     "queue.consumed",
     "generation.superseded",
+    "chat.round_usage",
     "run.completed",
     "run.cancelled",
     "run.failed",
@@ -152,7 +164,6 @@
     "conversation.pop",
     "session.created",
     "session.renamed",
-    "session.archived",
     "session.deleted",
     "session.current_changed",
     "session.updated",
@@ -182,9 +193,6 @@
     toolExpandToggle: document.getElementById("toolExpandToggle"),
     sessionList: document.getElementById("sessionList"),
     sessionItems: document.getElementById("sessionItems"),
-    archivedSection: document.getElementById("archivedSection"),
-    archivedToggle: document.getElementById("archivedToggle"),
-    archivedList: document.getElementById("archivedList"),
     contextNumbers: document.getElementById("contextNumbers"),
     contextTrack: document.getElementById("contextTrack"),
     contextBar: document.getElementById("contextBar"),
@@ -212,7 +220,7 @@
     brandName: document.getElementById("brandName"),
     conversationTitle: document.getElementById("conversationTitle"),
     conversationMeta: document.getElementById("conversationMeta"),
-    modeCycle: document.getElementById("modeCycle"),
+    modeBadge: document.getElementById("modeBadge"),
     thinkingVariantButton: document.getElementById("thinkingVariantButton"),
     thinkingVariantPopover: document.getElementById("thinkingVariantPopover"),
     thinkingModelList: document.getElementById("thinkingModelList"),
@@ -318,6 +326,8 @@
     lastEventId: 0,
     replayRunIds: null,
     replayCutoff: 0,
+    replayResyncCount: 0,
+    replayResyncAt: 0,
     turns: [],
     queuedPrompts: [],
     models: [],
@@ -338,11 +348,10 @@
     viewSyncTimer: null,
     runsBySession: new Map(),
     liveRuns: new Map(),
-    archivedSessions: [],
-    archivedOpen: false,
-    archivedLoading: false,
     sessionMenuFor: null,
     sessionRenaming: null,
+    modeChooserOpen: false,
+    modeChooserKeyHandler: null,
     sessionBusy: false,
     display: {
       reasoning: "summary",
@@ -405,7 +414,6 @@
     modeAnimationTimer: null,
     healthTimer: null,
     terminalRunIds: new Set(),
-    mode: "normal",
     thinkingVariantModels: [],
     thinkingVariantActiveKey: null,
     thinkingVariantLoading: false,
@@ -579,44 +587,6 @@
       card.querySelector(".tool-head")?.setAttribute("aria-expanded", String(state.toolExpanded));
     });
     if (persist) safeStorageSet("miyu.web.toolExpanded", String(state.toolExpanded));
-  }
-
-  function setMode(mode, persist = true, animate = false) {
-    const selected = CONVERSATION_MODES.some((item) => item.id === mode) ? mode : "normal";
-    const previous = state.mode;
-    const options = Array.from(elements.modeCycle.querySelectorAll("[data-mode-option]"));
-    const previousOption = options.find((option) => option.dataset.modeOption === previous);
-    const selectedOption = options.find((option) => option.dataset.modeOption === selected);
-    if (state.modeAnimationTimer) window.clearTimeout(state.modeAnimationTimer);
-    options.forEach((option) => option.classList.remove("is-entering", "is-leaving"));
-    options.forEach((option) => option.classList.toggle("is-active", option.dataset.modeOption === previous));
-    if (animate && previous !== selected) {
-      previousOption?.classList.remove("is-active");
-      previousOption?.classList.add("is-leaving");
-      selectedOption?.classList.add("is-active", "is-entering");
-      state.modeAnimationTimer = window.setTimeout(() => {
-        previousOption?.classList.remove("is-leaving");
-        selectedOption?.classList.remove("is-entering");
-        state.modeAnimationTimer = null;
-      }, 240);
-    } else {
-      options.forEach((option) => option.classList.toggle("is-active", option === selectedOption));
-    }
-    state.mode = selected;
-    elements.modeCycle.dataset.mode = selected;
-    options.forEach((option) => option.setAttribute("aria-hidden", String(option !== selectedOption)));
-    const selectedIndex = CONVERSATION_MODES.findIndex((item) => item.id === selected);
-    const selectedMode = CONVERSATION_MODES[selectedIndex];
-    const nextMode = CONVERSATION_MODES[(selectedIndex + 1) % CONVERSATION_MODES.length];
-    const description = `当前模式：${selectedMode.label}；点击切换到${nextMode.label}`;
-    elements.modeCycle.title = description;
-    elements.modeCycle.setAttribute("aria-label", description);
-    if (persist) safeStorageSet("miyu.web.mode", selected);
-  }
-
-  function cycleMode() {
-    const current = CONVERSATION_MODES.findIndex((item) => item.id === state.mode);
-    setMode(CONVERSATION_MODES[(current + 1) % CONVERSATION_MODES.length].id, true, true);
   }
 
   function thinkingVariantLabel(variant, short = false) {
@@ -1041,6 +1011,13 @@
     const boardSubtitle = String(value?.board_subtitle || "").trim() || DEFAULT_BOARD_SUBTITLE;
     const configuredPrompts = Array.isArray(value?.starter_prompts) ? value.starter_prompts : [];
     const starterPrompts = DEFAULT_STARTER_PROMPTS.map((fallback, index) => String(configuredPrompts[index] || "").trim() || fallback);
+    // revision 只在图片 URL 真正变化时更新:每次快照都取 Date.now() 会让
+    // 头像/看板图的浏览器缓存永远击穿,每次 bootstrap 都重新下载。
+    const previous = state.persona;
+    const revision =
+      previous && previous.avatar_url === avatarUrl && previous.board_image_url === boardImageUrl
+        ? previous.revision
+        : `${Date.now()}`;
     return {
       name,
       avatar_url: avatarUrl,
@@ -1048,7 +1025,7 @@
       board_title: boardTitle,
       board_subtitle: boardSubtitle,
       starter_prompts: starterPrompts,
-      revision: `${Date.now()}`
+      revision
     };
   }
 
@@ -1459,6 +1436,7 @@
       api_key: null,
       models: [],
       model_context_window: {},
+      model_costs: {},
       model_modalities: {},
       default_model: "",
       timeout_seconds: 60,
@@ -1769,7 +1747,7 @@
       }
       const structured = [
         ["可用模型", "models", "lines", "每行一个模型"],
-        ["模型上下文窗口", "model_context_window", "json", "JSON 对象：模型名到 Token 数"],
+        ["模型上下文窗口", "model_context_window", "json", "JSON 对象：模型名到 Token 数"], ["模型价格", "model_costs", "json", "JSON 对象：模型名到 {currency, input, output, cache_read}，currency 可为 USD/CNY(默认 USD)，价格单位为 每 1M tokens；留空用 models.dev 目录价"],
         ["模型输入模态", "model_modalities", "json", "JSON 对象：模型名到 text/image/audio/video/pdf 数组"],
         ["额外请求体", "extra_body", "json", "JSON 对象，留空表示不设置"]
       ];
@@ -2196,6 +2174,7 @@
       const file = picker.files?.[0];
       if (!file) return;
       if (file.size > 8 * 1024 * 1024) return showToast("图片不能超过 8 MiB", "error");
+      if (preview.src && preview.src.startsWith("blob:")) URL.revokeObjectURL(preview.src);
       preview.src = URL.createObjectURL(file);
       preview.classList.remove("is-missing");
       pickButton.disabled = true;
@@ -3159,10 +3138,6 @@
     return state.sessions.find((session) => String(session?.session_id) === id) || null;
   }
 
-  function findArchivedSession(sessionId) {
-    const id = String(sessionId || "");
-    return state.archivedSessions.find((session) => String(session?.session_id) === id) || null;
-  }
 
   function viewSessionEntry() {
     return state.viewSessionId ? findSession(state.viewSessionId) : null;
@@ -3233,7 +3208,7 @@
   async function commitSessionRename(sessionId, value) {
     if (state.sessionRenaming !== sessionId) return;
     state.sessionRenaming = null;
-    const session = findSession(sessionId) || findArchivedSession(sessionId);
+    const session = findSession(sessionId);
     const name = String(value || "").trim();
     if (!session || !name || name === String(session.name || "").trim()) {
       renderSessionList();
@@ -3250,7 +3225,6 @@
       showToast(error.message || "重命名失败", "error");
     }
     renderSessionList();
-    renderArchivedList();
     if (sessionId === state.viewSessionId) updateConversationChrome();
   }
 
@@ -3260,11 +3234,12 @@
     menu.className = "session-menu";
     menu.setAttribute("role", "menu");
     menu.setAttribute("aria-label", `会话操作：${sessionDisplayName(session)}`);
-    const actions = [{ label: "重命名", handler: () => beginSessionRename(id) }];
-    if (!isDefault) actions.push({ label: "设为默认", handler: () => makeDefaultSession(id) });
+    // 终端集成会话是固定入口:不可改名、不可删除、不可被顶替,
+    // 菜单只留「清空对话」;其余会话不再提供「设为默认」。
+    const actions = [];
+    if (!isDefault) actions.push({ label: "重命名", handler: () => beginSessionRename(id) });
     if (isDefault) actions.push({ label: "清空对话", handler: requestClearConversation });
-    actions.push({ label: "归档", handler: () => archiveSession(id) });
-    actions.push({ label: "删除", danger: true, handler: () => deleteSession(id) });
+    if (!isDefault) actions.push({ label: "删除", danger: true, handler: () => deleteSession(id) });
     for (const action of actions) {
       const button = document.createElement("button");
       button.type = "button";
@@ -3284,7 +3259,8 @@
   function buildSessionItem(session) {
     const id = String(session?.session_id || "");
     const isView = Boolean(id) && id === state.viewSessionId;
-    const isDefault = Boolean(id) && id === state.currentSessionId;
+    // 终端集成会话固定为 id "default",不再跟随可变的全局指针。
+    const isDefault = id === "default";
     const item = document.createElement("div");
     item.className = `session-item${isView ? " active" : ""}`;
     item.dataset.sessionId = id;
@@ -3297,7 +3273,8 @@
       main.title = isView ? sessionDisplayName(session) : `查看「${sessionDisplayName(session)}」`;
       main.addEventListener("click", () => openSessionView(id));
     }
-    main.appendChild(makeIconSlot("message-circle"));
+    const icon = id === "default" ? "terminal" : session?.mode === "dev" ? "code" : "message-circle";
+    main.appendChild(makeIconSlot(icon));
 
     const copy = document.createElement("span");
     copy.className = "session-copy";
@@ -3425,102 +3402,38 @@
     elements.sessionItems.replaceChildren();
     if (!multiSessionEnabled() || state.sessions.length === 0) {
       elements.sessionItems.appendChild(buildFallbackSessionItem());
-      elements.archivedSection.hidden = !multiSessionEnabled();
       return;
     }
-    for (const session of state.sessions) {
-      if (session?.archived) continue;
-      elements.sessionItems.appendChild(buildSessionItem(session));
+    // 侧栏三段:终端集成会话置顶,其余按会话模式分组(创建时定死)。
+    const terminal = state.sessions.filter((session) => String(session?.session_id) === "default");
+    const normal = state.sessions.filter(
+      (session) => String(session?.session_id) !== "default" && session?.mode !== "dev"
+    );
+    const dev = state.sessions.filter((session) => session?.mode === "dev");
+    for (const session of terminal) elements.sessionItems.appendChild(buildSessionItem(session));
+    if (normal.length) {
+      elements.sessionItems.appendChild(buildSessionGroupHeader("普通模式"));
+      for (const session of normal) elements.sessionItems.appendChild(buildSessionItem(session));
     }
-    elements.archivedSection.hidden = false;
-  }
-
-  function renderArchivedList() {
-    elements.archivedToggle.setAttribute("aria-expanded", String(state.archivedOpen));
-    elements.archivedToggle.classList.toggle("is-open", state.archivedOpen);
-    elements.archivedList.hidden = !state.archivedOpen;
-    if (!state.archivedOpen) return;
-    elements.archivedList.replaceChildren();
-    if (state.archivedLoading) {
-      const note = document.createElement("p");
-      note.className = "archived-note";
-      note.textContent = "正在载入";
-      elements.archivedList.appendChild(note);
-      return;
-    }
-    if (state.archivedSessions.length === 0) {
-      const note = document.createElement("p");
-      note.className = "archived-note";
-      note.textContent = "暂无已归档会话";
-      elements.archivedList.appendChild(note);
-      return;
-    }
-    for (const session of state.archivedSessions) {
-      const id = String(session?.session_id || "");
-      const row = document.createElement("div");
-      row.className = "archived-item";
-      const copy = document.createElement("span");
-      copy.className = "archived-copy";
-      const title = document.createElement("strong");
-      title.textContent = sessionDisplayName(session);
-      title.title = sessionDisplayName(session);
-      const meta = document.createElement("small");
-      const workspace = String(session?.workspace || "").trim();
-      const turnCount = Math.max(0, asFiniteNumber(session?.turn_count));
-      meta.textContent = workspace ? `${formatInteger(turnCount)} 轮 · ${workspace}` : `${formatInteger(turnCount)} 轮`;
-      if (workspace) meta.title = workspace;
-      copy.append(title, meta);
-      row.appendChild(copy);
-      const actions = document.createElement("span");
-      actions.className = "archived-actions";
-      const restore = document.createElement("button");
-      restore.type = "button";
-      restore.className = "text-button";
-      restore.textContent = "恢复";
-      restore.addEventListener("click", () => restoreSession(id));
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "text-button danger-text";
-      remove.textContent = "删除";
-      remove.addEventListener("click", () => deleteSession(id));
-      actions.append(restore, remove);
-      row.appendChild(actions);
-      elements.archivedList.appendChild(row);
+    if (dev.length) {
+      elements.sessionItems.appendChild(buildSessionGroupHeader("开发模式"));
+      for (const session of dev) elements.sessionItems.appendChild(buildSessionItem(session));
     }
   }
 
-  async function loadArchivedSessions() {
-    if (state.archivedLoading) return;
-    state.archivedLoading = true;
-    renderArchivedList();
-    try {
-      const response = await apiRequest("/api/sessions?include_archived=true");
-      const payload = await response.json();
-      const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
-      state.archivedSessions = sessions.filter((session) => session?.archived);
-    } catch (error) {
-      showToast(error.message || "载入归档会话失败", "error");
-    } finally {
-      state.archivedLoading = false;
-      renderArchivedList();
-    }
-  }
-
-  function toggleArchivedSection() {
-    state.archivedOpen = !state.archivedOpen;
-    renderArchivedList();
-    if (state.archivedOpen) loadArchivedSessions();
+  function buildSessionGroupHeader(label) {
+    const header = document.createElement("div");
+    header.className = "session-group-header";
+    header.textContent = label;
+    return header;
   }
 
   async function refreshSessions() {
     try {
-      const response = await apiRequest("/api/sessions?include_archived=true");
+      const response = await apiRequest("/api/sessions");
       const payload = await response.json();
-      const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
-      state.sessions = sessions.filter((session) => !session?.archived);
-      state.archivedSessions = sessions.filter((session) => session?.archived);
+      state.sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
       renderSessionList();
-      renderArchivedList();
       updateConversationChrome();
     } catch (_) {
       // 后续 SSE 或 bootstrap 会补齐会话列表。
@@ -3532,13 +3445,13 @@
     updateControlState();
   }
 
-  async function createSession() {
+  async function createSession(mode) {
     if (state.blocked || state.sessionBusy || state.adminBusy || state.submitting) return;
     setSessionBusy(true);
     try {
       const response = await apiRequest("/api/sessions", {
         method: "POST",
-        body: JSON.stringify({})
+        body: JSON.stringify(mode === "dev" ? { mode: "dev" } : {})
       });
       const payload = await response.json();
       const record = payload?.session && typeof payload.session === "object" ? payload.session : null;
@@ -3668,6 +3581,15 @@
   }
 
   function beginRunReplay() {
+    // 事件环形缓冲已滚过上限时,after=0 必然触发 resync_required →
+    // bootstrap → 又 replay 的循环:短窗口内连续吃到 resync 就放弃从头
+    // 重放,live 状态由 bootstrap 快照兜底,增量从当前事件 id 继续。
+    const now = Date.now();
+    if (state.replayResyncCount >= 2 && now - state.replayResyncAt < 15000) {
+      state.replayRunIds = null;
+      connectEventSource(state.lastEventId);
+      return;
+    }
     state.replayRunIds = new Set(state.liveRuns.keys());
     state.replayCutoff = Math.max(state.lastEventId, state.replayCutoff, state.latestEventId);
     state.lastEventId = 0;
@@ -3704,60 +3626,8 @@
     else await loadBootstrap();
   }
 
-  async function makeDefaultSession(sessionId) {
-    if (!sessionId || state.sessionBusy) return;
-    setSessionBusy(true);
-    try {
-      await apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}/activate`, { method: "POST" });
-      state.currentSessionId = sessionId;
-      renderSessionList();
-      showToast("已设为默认会话");
-    } catch (error) {
-      showToast(error.message || "设为默认失败", "error");
-    } finally {
-      setSessionBusy(false);
-    }
-  }
-
-  async function archiveSession(sessionId) {
-    if (state.sessionBusy) return;
-    setSessionBusy(true);
-    try {
-      await apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, {
-        method: "PATCH",
-        body: JSON.stringify({ archived: true })
-      });
-      showToast("会话已归档");
-      state.sessions = state.sessions.filter((session) => String(session?.session_id) !== String(sessionId));
-      renderSessionList();
-      if (sessionId === state.viewSessionId) await openFallbackSessionView(sessionId);
-      if (state.archivedOpen) await loadArchivedSessions();
-    } catch (error) {
-      showToast(error.message || "归档失败", "error");
-    } finally {
-      setSessionBusy(false);
-    }
-  }
-
-  async function restoreSession(sessionId) {
-    if (state.sessionBusy) return;
-    setSessionBusy(true);
-    try {
-      await apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, {
-        method: "PATCH",
-        body: JSON.stringify({ archived: false })
-      });
-      showToast("会话已恢复");
-      await refreshSessions();
-    } catch (error) {
-      showToast(error.message || "恢复失败", "error");
-    } finally {
-      setSessionBusy(false);
-    }
-  }
-
   async function deleteSession(sessionId) {
-    const session = findSession(sessionId) || findArchivedSession(sessionId);
+    const session = findSession(sessionId);
     if (!window.confirm(`删除会话「${sessionDisplayName(session)}」？此操作无法撤销。`)) return;
     if (state.sessionBusy) return;
     setSessionBusy(true);
@@ -3765,9 +3635,7 @@
       await apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
       showToast("会话已删除");
       state.sessions = state.sessions.filter((item) => String(item?.session_id) !== String(sessionId));
-      state.archivedSessions = state.archivedSessions.filter((item) => String(item?.session_id) !== String(sessionId));
       renderSessionList();
-      renderArchivedList();
       if (sessionId === state.viewSessionId) await openFallbackSessionView(sessionId);
     } catch (error) {
       showToast(error.message || "删除失败", "error");
@@ -3781,13 +3649,13 @@
     if (!sessionId) return;
     if (name === "session.created") {
       if (data?.platform) return;
-      if (!findSession(sessionId) && !findArchivedSession(sessionId)) {
+      if (!findSession(sessionId)) {
         state.sessions.unshift({
           session_id: sessionId,
           name: String(data?.name || ""),
           kind: "",
           workspace: "",
-          archived: false,
+          mode: data?.mode === "dev" ? "dev" : "normal",
           created_at: null,
           updated_at: new Date().toISOString(),
           turn_count: 0,
@@ -3796,23 +3664,18 @@
         renderSessionList();
       }
     } else if (name === "session.renamed") {
-      const target = findSession(sessionId) || findArchivedSession(sessionId);
+      const target = findSession(sessionId);
       if (target) target.name = String(data?.name || "");
       renderSessionList();
-      renderArchivedList();
       if (sessionId === state.viewSessionId) updateConversationChrome();
-    } else if (name === "session.archived") {
-      refreshSessions();
     } else if (name === "session.deleted") {
       state.sessions = state.sessions.filter((item) => String(item?.session_id) !== sessionId);
-      state.archivedSessions = state.archivedSessions.filter((item) => String(item?.session_id) !== sessionId);
       renderSessionList();
-      renderArchivedList();
       if (sessionId === state.viewSessionId && !state.bootstrapPromise && !state.viewLoading) {
         openFallbackSessionView(sessionId);
       }
     } else if (name === "session.updated") {
-      const target = findSession(sessionId) || findArchivedSession(sessionId);
+      const target = findSession(sessionId);
       if (target && Object.prototype.hasOwnProperty.call(data || {}, "workspace")) {
         target.workspace = String(data?.workspace || "");
       }
@@ -3829,6 +3692,7 @@
   }
 
   function updateConversationChrome() {
+    updateModeBadge();
     const details = deriveConversationDetails();
     const current = multiSessionEnabled() ? viewSessionEntry() : null;
     const title = current ? sessionDisplayName(current) : details.title;
@@ -4129,7 +3993,7 @@
   function updateControlState() {
     const running = conversationRunning();
     const busy = state.adminBusy || state.submitting;
-    const locked = state.blocked || state.adminBusy;
+    const locked = state.blocked || state.adminBusy || state.modeChooserOpen;
     const inputCount = countCharacters(elements.composerInput.value.trim());
     const attachmentUploading = state.composerAttachments.some((item) => item.status === "uploading");
     const attachmentError = state.composerAttachments.some((item) => item.status === "error");
@@ -4141,7 +4005,6 @@
     elements.newChatButton.disabled = state.blocked || busy || state.sessionBusy || state.viewLoading;
     // 会话级模型覆盖允许在回复进行中调整，下一轮生效。
     elements.modelButton.disabled = state.blocked || state.models.length === 0;
-    elements.modeCycle.disabled = state.blocked || running || busy;
     elements.thinkingVariantButton.disabled = state.blocked || running || busy
       || state.thinkingVariantLoading || state.thinkingVariantModels.length === 0;
     if (elements.thinkingVariantButton.disabled) closeThinkingVariantPopover();
@@ -4357,8 +4220,7 @@
     try {
       const body = {
         expected_revision: candidate.revision,
-        input_id: candidate.input_id,
-        mode: state.mode
+        input_id: candidate.input_id
       };
       if (editedContent != null) body.content = editedContent;
       const response = await apiRequest(
@@ -6525,7 +6387,15 @@
       const page = limit !== null ? `L${start}-${start + limit - 1}` : `L${start}+`;
       return path ? `${path} (${page})` : page;
     }
-    if (["read", "write", "edit", "apply_patch", "print_image", "vision_analyze"].includes(toolName)) {
+    if (toolName === "apply_patch" || toolName === "apply_artifact_patch") {
+      // 唯一编辑器:patchText 里抠出文件名当副标题,不然标签恒空。
+      const text = String(args.patchText || args.patch_text || "");
+      const files = [...text.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map((m) => m[1].trim());
+      if (files.length === 1) return compactPath(files[0]);
+      if (files.length > 1) return `${compactPath(files[0])} 等 ${files.length} 个文件`;
+      return "";
+    }
+    if (["read", "write", "edit", "print_image", "vision_analyze"].includes(toolName)) {
       return compactPath(args.filePath || args.file_path || args.path || args.image);
     }
     if (toolName === "grep") {
@@ -6647,6 +6517,40 @@
     });
   }
 
+  // 工具家族图标(验收清单):终端=$、网络=地球仪、编辑=笔、记忆=大脑……
+  // 未列家族回落扳手。全部 lucide 线稿,无 emoji。
+  function toolIconName(name) {
+    const n = String(name || "");
+    if (["run_command", "job_status", "job_stop"].includes(n)) return "terminal";
+    if (["web_search", "web_fetch", "search_web", "webfetch"].includes(n)) return "globe";
+    if (n === "search_web_images") return "image-search";
+    if (n === "apply_patch" || n === "apply_artifact_patch") return "square-pen";
+    if (["recall_memories", "recall_past_events", "remember_fact", "search_evicted_context"].includes(n)) return "brain";
+    if (["create_goal", "get_goal", "update_goal"].includes(n)) return "target";
+    if (n === "todowrite" || n === "todoupdate") return "list-todo";
+    if (n === "task" || n === "deep_research") return "bot";
+    if (n.includes("knowledge_base")) return "book-open";
+    if (n === "ask_question") return "circle-help";
+    if (n === "generate_image") return "paintbrush";
+    if (["analyze_image", "vision_analyze", "print_image"].includes(n)) return "image";
+    if (n.includes("meme")) return "smile";
+    if (n.includes("alarm")) return "alarm-clock";
+    if (n === "read_clipboard") return "clipboard";
+    if (n === "get_weather") return "cloud-sun";
+    if (["calculator", "scientific_calculator", "calculate_hash", "get_exchange_rate", "decode_encoded_text"].includes(n)) return "calculator";
+    if (n === "read_file") return "file-text";
+    if (n === "glob" || n === "grep") return "search";
+    if (n === "trash_path") return "trash-2";
+    if (n === "load_tools") return "package";
+    if (n.includes("skill")) return "puzzle";
+    if (n.startsWith("aur_") || n.startsWith("archlinux") || n.startsWith("archwiki") || n === "install_aur_package") return "arch";
+    if (n.startsWith("online_man")) return "package";
+    if (n === "usage_query") return "chart-column";
+    if (["draw_tarot_card", "draw_zhouyi_hexagram", "draw_fortune_lot"].includes(n)) return "sparkles";
+    if (["create_artifact", "read_artifact", "present_artifact"].includes(n)) return "file-text";
+    return "wrench";
+  }
+
   function createTool(live, data) {
     ensureLiveArticle(live);
     clearTypingIndicator(live, { waitingOnly: true });
@@ -6672,8 +6576,7 @@
     const icon = document.createElement("span");
     icon.className = "tool-icon";
     const toolName = String(data?.name || "");
-    const isWebTool = ["web_search", "web_fetch", "search_web_images", "search_web", "webfetch"].includes(toolName);
-    icon.appendChild(makeIconSlot(isCommand ? "dollar-sign" : isWebTool ? "globe" : toolName === "generate_image" ? "paintbrush" : toolName === "present_artifact" ? "file-text" : "wrench"));
+    icon.appendChild(makeIconSlot(toolIconName(toolName)));
     const title = document.createElement("span");
     title.className = "tool-title";
     const displayName = document.createElement("strong");
@@ -7721,7 +7624,6 @@
     live.tools = new Map();
     live.questions = new Map();
     live.contextOperation = null;
-    if (["normal", "chat"].includes(data?.mode)) setMode(data.mode, false);
     showTypingIndicator(live);
     contentAdded();
   }
@@ -7764,6 +7666,28 @@
         turn.token_total = effectiveUsageTotal(data?.usage);
         turn.token_usage_estimated = Boolean(data?.usage_estimated);
       }
+    }
+  }
+
+  // 回合内一次模型请求结束(chat.round_usage):立即刷新气泡计量与上下文
+  // 条,不等 run 完结。usage 是刚结束请求的用量,其 prompt+completion 即
+  // 当前上下文占用;turn_* 是回合累计。回合结束后 finishLiveRun 会用权威
+  // 数字覆盖这里的中间值。
+  function handleRoundUsage(live, data) {
+    if (live.meta) {
+      const usage = formatUsageMeta({
+        turnTotal: asFiniteNumber(data?.turn_total),
+        turnPrompt: data?.turn_prompt,
+        turnCached: data?.turn_cache_read,
+        estimated: data?.estimated
+      });
+      if (usage) live.meta.textContent = usage;
+    }
+    const round = data?.usage;
+    const contextTokens = asFiniteNumber(round?.prompt_tokens, 0) + asFiniteNumber(round?.completion_tokens, 0);
+    if (contextTokens > 0) {
+      state.context.tokens = contextTokens;
+      updateContext();
     }
   }
 
@@ -7969,7 +7893,6 @@
     }
 
     if (name === "run.started") {
-      if (live && ["normal", "chat"].includes(data?.mode)) setMode(data.mode, false);
       if (live) {
         live.operation = String(data?.operation || live.operation || "create");
         live.turnId = String(data?.turn_id || live.turnId || "") || null;
@@ -8012,6 +7935,7 @@
       if (live.operation === "redo") commitRedoLive(live);
       else ensureActiveTurnUser(live, live.turnId);
     } else if (name === "assistant.delta") appendAssistantDelta(live, data?.delta);
+    else if (name === "chat.round_usage") handleRoundUsage(live, data);
     else if (name === "generation.superseded") resetSupersededGeneration(live);
     else if (name.startsWith("reasoning.")) handleReasoningEvent(name, live, data);
     else if (name === "queue.consumed") consumeLiveQueue(live, data);
@@ -8057,6 +7981,12 @@
     const eventId = Math.max(0, asFiniteNumber(event.lastEventId));
     if (!eventShouldBeHandled(name, data, eventId)) return;
     if (name === "resync_required") {
+      if (state.replayRunIds) {
+        state.replayResyncCount += 1;
+        state.replayResyncAt = Date.now();
+      } else {
+        state.replayResyncCount = 0;
+      }
       if (!state.resyncing) {
         state.resyncing = true;
         loadBootstrap().finally(() => {
@@ -8212,11 +8142,10 @@
     state.context = snapshot?.context && typeof snapshot.context === "object" ? snapshot.context : { tokens: 0, window: null };
     state.usage = snapshot?.usage && typeof snapshot.usage === "object" ? snapshot.usage : {};
       state.capabilities = snapshot?.capabilities && typeof snapshot.capabilities === "object" ? snapshot.capabilities : {};
-    state.sessions = Array.isArray(snapshot?.sessions) ? snapshot.sessions.filter((session) => !session?.archived) : [];
+    state.sessions = Array.isArray(snapshot?.sessions) ? snapshot.sessions : [];
     state.currentSessionId = typeof snapshot?.current_session_id === "string" && snapshot.current_session_id ? snapshot.current_session_id : null;
     state.sessionMenuFor = null;
     state.sessionRenaming = null;
-    if (state.archivedOpen) loadArchivedSessions();
     state.version = snapshot?.version ?? null;
     state.pendingSubmission = null;
     const allRuns = (Array.isArray(snapshot?.runs) ? snapshot.runs : []).filter((run) => run?.run_id && run?.session_id);
@@ -8436,13 +8365,13 @@
       return;
     }
     state.submitting = true;
-    if (!queueing) state.pendingSubmission = { content, mode: state.mode, attachments: sentAttachments };
+    if (!queueing) state.pendingSubmission = { content, attachments: sentAttachments };
     clearInlineError();
     updateControlState();
     try {
       const body = queueing
         ? { content, run_id: updateTarget.runId, turn_id: updateTarget.turnId, attachment_ids: attachmentIds }
-        : { content, mode: state.mode, attachment_ids: attachmentIds };
+        : { content, attachment_ids: attachmentIds };
       if (sessionId) body.session_id = sessionId;
       const response = await apiRequest(queueing ? "/api/queue" : "/api/turns", {
         method: "POST",
@@ -8525,12 +8454,94 @@
     window.requestAnimationFrame(() => elements.resetCancelButton.focus());
   }
 
+  function openModeChooser() {
+    if (state.modeChooserOpen) return;
+    state.modeChooserOpen = true;
+    updateControlState();
+    const overlay = document.createElement("div");
+    overlay.className = "mode-chooser-overlay";
+    overlay.id = "modeChooserOverlay";
+    const panel = document.createElement("div");
+    panel.className = "mode-chooser";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-label", "选择新会话模式");
+    const title = document.createElement("strong");
+    title.textContent = "新会话";
+    const hint = document.createElement("small");
+    hint.textContent = "选择模式后开始对话；会话模式创建后不可更改";
+    panel.append(title, hint);
+    const options = [
+      { id: "normal", label: "普通模式", icon: "message-circle", desc: "人格、记忆、全部工具" },
+      { id: "dev", label: "开发模式", icon: "code", desc: "极简提示词与编码工具，记忆独立" }
+    ];
+    for (const option of options) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "mode-chooser-option";
+      button.dataset.mode = option.id;
+      button.appendChild(makeIconSlot(option.icon));
+      const copy = document.createElement("span");
+      copy.className = "mode-chooser-copy";
+      const label = document.createElement("strong");
+      label.textContent = option.label;
+      const desc = document.createElement("small");
+      desc.textContent = option.desc;
+      copy.append(label, desc);
+      button.appendChild(copy);
+      button.addEventListener("click", () => {
+        closeModeChooser();
+        closeSidebar();
+        createSession(option.id);
+      });
+      panel.appendChild(button);
+    }
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) closeModeChooser();
+    });
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+    const onKey = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeModeChooser();
+      }
+    };
+    state.modeChooserKeyHandler = onKey;
+    document.addEventListener("keydown", onKey, true);
+    window.requestAnimationFrame(() => panel.querySelector("button")?.focus());
+  }
+
+  function closeModeChooser() {
+    if (!state.modeChooserOpen) return;
+    state.modeChooserOpen = false;
+    if (state.modeChooserKeyHandler) {
+      document.removeEventListener("keydown", state.modeChooserKeyHandler, true);
+      state.modeChooserKeyHandler = null;
+    }
+    document.getElementById("modeChooserOverlay")?.remove();
+    updateControlState();
+  }
+
+  function activeSessionMode() {
+    const session = findSession(state.viewSessionId);
+    return session?.mode === "dev" ? "dev" : "normal";
+  }
+
+  function updateModeBadge() {
+    if (!elements.modeBadge) return;
+    const mode = activeSessionMode();
+    elements.modeBadge.dataset.mode = mode;
+    const label = elements.modeBadge.querySelector(".mode-label");
+    if (label) label.textContent = mode === "dev" ? "开发" : "普通";
+    elements.modeBadge.title = mode === "dev" ? "开发模式会话（创建时定死）" : "普通模式会话（创建时定死）";
+  }
+
   function requestNewConversation() {
-    closeSidebar();
     if (multiSessionEnabled()) {
-      createSession();
+      openModeChooser();
       return;
     }
+    closeSidebar();
     if (!hasHistory()) {
       focusComposerIfDesktop();
       return;
@@ -8674,6 +8685,15 @@
     usageTip.style.display = "none";
   }
 
+  // 计费估算显示:None/0 → null(不渲染);极小值给足小数位。
+  function usageFmtCost(usd) {
+    if (!Number.isFinite(usd) || usd <= 0) return null;
+    if (usd < 0.01) return `$${usd.toFixed(4)}`;
+    if (usd < 1) return `$${usd.toFixed(3)}`;
+    if (usd < 100) return `$${usd.toFixed(2)}`;
+    return `$${usd.toFixed(1)}`;
+  }
+
   function usageFmt(value) {
     if (value >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
     if (value >= 1e3) return `${(value / 1e3).toFixed(1)}k`;
@@ -8788,7 +8808,11 @@
   }
   function usageCacheRate(cacheRead, prompt) {
     if (!prompt) return null;
-    return Math.min(100, Math.round((cacheRead / prompt) * 100));
+    const rate = Math.min(100, (cacheRead / prompt) * 100);
+    // 两位小数;逼近满分时(>99.99)直接封顶 100——命中率是这套缓存
+    // 工程的成绩单,四舍五入吃掉小数没有冲击力(验收 08-16)。
+    if (rate > 99.99) return "100";
+    return rate.toFixed(2);
   }
 
   function consoleOpen() {
@@ -8894,10 +8918,17 @@
     const dailyAvg = usageState.range === "1d"
       ? ""
       : ` · 日均 ${(Number(totals.requests || 0) / rangeDayCount(stats)).toFixed(1)} 次`;
+    const costValue = usageFmtCost(totals.cost);
+    const costCoverage = Number(totals.costed_requests || 0) < Number(totals.requests || 0)
+      ? `估算覆盖 ${Number(totals.costed_requests || 0).toLocaleString()}/${Number(totals.requests || 0).toLocaleString()} 次`
+      : "按 models.dev 价格估算";
     elements.usageTiles.innerHTML = `
       <div class="u-tile"><div class="u-tile-label">${icon('<path d="M18 5H7l6 7-6 7h11"/>')}总消耗${delta(totals.total, prev && prev.total)}</div>
         <div class="u-tile-value">${usageFmt(totals.total || 0)}<small>tokens</small></div>
         <div class="u-tile-sub">输入 ${usageFmt(totals.prompt || 0)} · 输出 ${usageFmt(totals.completion || 0)}</div></div>
+      <div class="u-tile"><div class="u-tile-label">${icon('<path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>')}总消费${delta(totals.cost, prev && prev.cost)}</div>
+        <div class="u-tile-value">${costValue ? `≈${costValue}` : "—"}</div>
+        <div class="u-tile-sub">${costValue ? costCoverage : "暂无价格数据"}</div></div>
       <div class="u-tile"><div class="u-tile-label">${icon('<path d="M22 12h-4l-3 8L9 4l-3 8H2"/>')}请求数${delta(totals.requests, prev && prev.requests)}</div>
         <div class="u-tile-value">${Number(totals.requests || 0).toLocaleString()}</div>
         <div class="u-tile-sub">全部请求:对话 + 辅助${dailyAvg}</div></div>
@@ -8945,7 +8976,8 @@
       cell.addEventListener("mousemove", (event) => usageTipShow(
         `<b>${day.date}</b>
          <div class="row"><span>tokens</span><em>${usageFmt(day.total)}</em></div>
-         <div class="row"><span>请求</span><em>${day.requests}</em></div>`, event));
+         <div class="row"><span>请求</span><em>${day.requests}</em></div>${usageFmtCost(day.cost) ? `
+         <div class="row"><span>消费</span><em>≈${usageFmtCost(day.cost)}</em></div>` : ""}`, event));
       cell.addEventListener("mouseleave", usageTipHide);
       wrap.appendChild(cell);
     }
@@ -8982,11 +9014,11 @@
         const chunk = daily.slice(daily.length - (Math.floor(daily.length / 7) - week) * 7,
           daily.length - (Math.floor(daily.length / 7) - week - 1) * 7);
         if (!chunk.length) continue;
-        const merged = { date: chunk[0].date, requests: 0, prompt: 0, completion: 0, cache_read: 0, total: 0 };
+        const merged = { date: chunk[0].date, requests: 0, prompt: 0, completion: 0, cache_read: 0, total: 0, cost: 0 };
         for (const day of chunk) {
           merged.requests += day.requests; merged.prompt += day.prompt;
           merged.completion += day.completion; merged.cache_read += day.cache_read;
-          merged.total += day.total;
+          merged.total += day.total; merged.cost += day.cost || 0;
         }
         slice.push(merged);
       }
@@ -9002,7 +9034,12 @@
       return;
     }
     const HEIGHT = 200;
-    const step = max > 4e6 ? 2e6 : max > 1e6 ? 5e5 : max > 2e5 ? 2e5 : max > 4e4 ? 2e4 : 5e3;
+    // 自适应刻度:目标 3-5 条网格线。老的固定档位在单日过亿 token 时
+    // 会摆出上百条虚线和重叠标签(条纹背景 bug)。
+    const rawStep = max / 4;
+    const stepPow = 10 ** Math.floor(Math.log10(Math.max(1, rawStep)));
+    const stepUnit = rawStep / stepPow;
+    const step = (stepUnit <= 1 ? 1 : stepUnit <= 2 ? 2 : stepUnit <= 5 ? 5 : 10) * stepPow;
     const yLabel = (value, text) => {
       const label = document.createElement("span");
       label.textContent = text;
@@ -9030,14 +9067,15 @@
         column.appendChild(segment);
       }
       slot.appendChild(column);
-      slot.addEventListener("mousemove", (event) => usageTipShow(
+      column.addEventListener("mousemove", (event) => usageTipShow(
         `<b>${day.date.slice(5)}${weekly ? " 起当周" : ""}</b>
          <div class="row"><span><i style="background:var(--chart-1)"></i>新输入</span><em>${usageFmt(fresh)}</em></div>
          <div class="row"><span><i style="background:var(--chart-2)"></i>输出</span><em>${usageFmt(day.completion)}</em></div>
          <div class="row"><span><i style="background:var(--chart-3)"></i>缓存命中</span><em>${usageFmt(day.cache_read)}</em></div>
          <div class="row"><span>请求</span><em>${day.requests}</em></div>
-         <div class="row"><span>合计</span><em>${usageFmt(day.total)}</em></div>`, event));
-      slot.addEventListener("mouseleave", usageTipHide);
+         <div class="row"><span>合计</span><em>${usageFmt(day.total)}</em></div>${usageFmtCost(day.cost) ? `
+         <div class="row"><span>消费</span><em>≈${usageFmtCost(day.cost)}</em></div>` : ""}`, event));
+      column.addEventListener("mouseleave", usageTipHide);
       bars.appendChild(slot);
       const label = document.createElement("span");
       label.textContent = weekly
@@ -9123,9 +9161,9 @@
     const scroll = document.createElement("div");
     scroll.className = "u-table-scroll";
     const table = document.createElement("table");
-    table.className = "u-table";
+    table.className = "u-table u-models-table";
     table.innerHTML = `<thead><tr><th>模型</th><th class="num">占比</th><th class="num">请求</th>
-      <th class="num">输入</th><th class="num">输出</th><th>缓存命中</th></tr></thead>`;
+      <th class="num">输入</th><th class="num">输出</th><th class="num">消费</th><th>缓存命中</th></tr></thead>`;
     const tbody = document.createElement("tbody");
     const tfoot = document.createElement("tfoot");
     table.appendChild(tbody);
@@ -9140,7 +9178,7 @@
     const defCenter = `<div><b>${requests.toLocaleString()}</b><small>次请求</small></div>`;
     center.innerHTML = defCenter;
     if (!models.length || !aggregate.total) {
-      tbody.innerHTML = `<tr><td colspan="6"><div class="u-empty">暂无记录</div></td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="7"><div class="u-empty">暂无记录</div></td></tr>`;
       return card;
     }
 
@@ -9153,11 +9191,15 @@
       <td></td><td class="num">${requests}</td>
       <td class="num">${usageFmt(aggregate.prompt || 0)}</td>
       <td class="num">${usageFmt(aggregate.completion || 0)}</td>
+      <td class="num">${usageFmtCost(aggregate.cost) ? `≈${usageFmtCost(aggregate.cost)}` : "—"}</td>
       <td>${sourceHit == null ? "" : `<span class="u-cache-pill">${sourceHit}%</span>`}</td></tr>`;
 
     const RADIUS = 44;
     const CIRCUM = 2 * Math.PI * RADIUS;
-    const GAP = 3;
+    // 单段就是完整圆环;分段间隙只在真的有多段时存在,且不超过最小段
+    // 的一半,防止小切片被间隙吃掉。
+    const minShare = Math.min(...models.map((model) => model.total / aggregate.total));
+    const GAP = models.length > 1 ? Math.min(3, Math.max(0.5, (minShare * CIRCUM) / 2)) : 0;
     let accumulated = 0;
     models.forEach((model, index) => {
       const share = model.total / aggregate.total;
@@ -9166,11 +9208,12 @@
       const hit = usageCacheRate(model.cache_read || 0, model.prompt || 0);
       const row = document.createElement("tr");
       row.innerHTML = `<td class="u-model-name"><b><i class="u-dot" style="background:${color}"></i>${modelName}</b>
-          <small>${model.provider || "—"}</small></td>
+          <small><i class="u-dot" style="visibility:hidden"></i>${model.provider || "—"}</small></td>
         <td class="num">${Math.round(share * 100)}%</td>
         <td class="num">${model.requests}</td>
         <td class="num">${usageFmt(model.prompt || 0)}</td>
         <td class="num">${usageFmt(model.completion || 0)}</td>
+        <td class="num">${usageFmtCost(model.cost) ? `≈${usageFmtCost(model.cost)}` : "—"}</td>
         <td>${hit == null ? "—" : `<span class="u-cache-pill">${hit}%</span>`}</td>`;
       tbody.appendChild(row);
 
@@ -9194,7 +9237,8 @@
            <div class="row"><span>占比</span><em>${Math.round(share * 100)}%</em></div>
            <div class="row"><span>请求</span><em>${model.requests}</em></div>
            <div class="row"><span>输入</span><em>${usageFmt(model.prompt || 0)}</em></div>
-           <div class="row"><span>输出</span><em>${usageFmt(model.completion || 0)}</em></div>
+           <div class="row"><span>输出</span><em>${usageFmt(model.completion || 0)}</em></div>${usageFmtCost(model.cost) ? `
+           <div class="row"><span>消费</span><em>≈${usageFmtCost(model.cost)}</em></div>` : ""}
            <div class="row"><span>缓存命中</span><em>${hit == null ? "—" : `${hit}%`}</em></div>`, event);
       });
       circle.addEventListener("mouseleave", () => {
@@ -9215,7 +9259,7 @@
     const tbody = elements.usageRecords;
     tbody.innerHTML = "";
     if (!records.length) {
-      tbody.innerHTML = `<tr class="u-day-row"><td colspan="7">还没有任何调用记录</td></tr>`;
+      tbody.innerHTML = `<tr class="u-day-row"><td colspan="8">还没有任何调用记录</td></tr>`;
       return;
     }
     const today = new Date();
@@ -9234,7 +9278,7 @@
         const label = key === todayKey ? "今天" : key === yesterdayKey ? "昨天" : "";
         const row = document.createElement("tr");
         row.className = "u-day-row";
-        row.innerHTML = `<td colspan="7">${label ? `${label} · ` : ""}${key.slice(5)}</td>`;
+        row.innerHTML = `<td colspan="8">${label ? `${label} · ` : ""}${key.slice(5)}</td>`;
         tbody.appendChild(row);
       }
       const pad = (n) => String(n).padStart(2, "0");
@@ -9245,6 +9289,7 @@
         <td class="u-model-name"><b>${record.model || "(未标模型)"}</b><small>${record.provider || "—"}</small></td>
         <td class="num">${usageFmt(record.prompt || 0)}</td>
         <td class="num">${usageFmt(record.completion || 0)}</td>
+        <td class="num">${usageFmtCost(record.cost) ? `≈${usageFmtCost(record.cost)}` : "—"}</td>
         <td>${hit == null ? "—" : `<span class="u-cache-pill">${hit}%</span>`}</td>
         <td><span class="u-type-pill ${record.aux ? "t-aux" : "t-chat"}">${record.aux ? "辅助" : "对话"}</span></td>`;
       tbody.appendChild(row);
@@ -9289,7 +9334,6 @@
     elements.sidebarScrim.addEventListener("click", closeSidebar);
     elements.sidebarCollapseButton?.addEventListener("click", () => setSidebarCollapsed(true));
     elements.sidebarExpandButton?.addEventListener("click", () => setSidebarCollapsed(false));
-    elements.archivedToggle.addEventListener("click", toggleArchivedSection);
     elements.topbarSettingsButton.addEventListener("click", (event) => openSettings(event.currentTarget));
     elements.artifactToggleButton.addEventListener("click", () => setArtifactWorkspaceOpen(!state.artifactOpen));
     elements.artifactCloseButton.addEventListener("click", () => setArtifactWorkspaceOpen(false));
@@ -9375,7 +9419,6 @@
     document.querySelectorAll("[data-chat-font]").forEach((button) => button.addEventListener("click", () => setChatFontSize(button.dataset.chatFont)));
     elements.reasoningExpandToggle?.addEventListener("click", () => setReasoningExpanded(!state.reasoningExpanded));
     elements.toolExpandToggle?.addEventListener("click", () => setToolExpanded(!state.toolExpanded));
-    elements.modeCycle.addEventListener("click", cycleMode);
     elements.thinkingVariantButton.addEventListener("click", () => {
       if (elements.thinkingVariantPopover.hidden) openThinkingVariantPopover();
       else closeThinkingVariantPopover({ restoreFocus: true });
@@ -9529,7 +9572,6 @@
     setChatFontSize(safeStorageGet("miyu.web.chatFontSize") || "15px", false);
     setReasoningExpanded(safeStorageGet("miyu.web.reasoningExpanded") === "true", false);
     setToolExpanded(safeStorageGet("miyu.web.toolExpanded") === "true", false);
-    setMode(safeStorageGet("miyu.web.mode") || "normal", false);
     const artifactRatio = Number(safeStorageGet("miyu.web.artifactWidthRatio.v2"));
     if (Number.isFinite(artifactRatio) && artifactRatio >= 0.25 && artifactRatio <= 0.9) {
       state.artifactWidthRatio = artifactRatio;

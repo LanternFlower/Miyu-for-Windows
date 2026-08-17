@@ -10,6 +10,7 @@ mod access_control;
 mod assets;
 pub(crate) mod avatar;
 pub(crate) mod commands;
+pub(crate) mod file_reader;
 pub(crate) mod onebot;
 pub(crate) mod plugins;
 mod tool;
@@ -18,10 +19,10 @@ mod types;
 pub(crate) use types::{
     BotGroupRole, BotSendAvailability, ConversationKind, ForwardNode, OutboundBody,
     OutboundMessage, OutboundOrigin, OutboundSegment, PartialSendError, PlatformAdapter,
-    PlatformContextImageRef, PlatformConversation, PlatformGroupMember, PlatformImageData,
-    PlatformInboundEvent, PlatformInboundEventKind, PlatformInboundMedia, PlatformMediaKind,
-    PlatformMention, PlatformMessageInfo, PlatformMessagePosition, PlatformPrincipal,
-    ResponseTarget, SendReceipt, TriggerDecision,
+    PlatformContextFileRef, PlatformContextImageRef, PlatformConversation, PlatformFileDownload,
+    PlatformGroupMember, PlatformImageData, PlatformInboundEvent, PlatformInboundEventKind,
+    PlatformInboundMedia, PlatformMediaKind, PlatformMention, PlatformMessageInfo,
+    PlatformMessagePosition, PlatformPrincipal, ResponseTarget, SendReceipt, TriggerDecision,
 };
 
 use crate::agent::{AgentMode, QueueIngressBarrier, QueueIngressReservation};
@@ -116,6 +117,7 @@ const PLATFORM_TOOL_LOG_MAX_CHARS: usize = 2_400;
 const PLATFORM_REPLY_LOG_MAX_CHARS: usize = 1_200;
 const MESSAGE_ACTIVITY_SCOPE_SOFT_LIMIT: usize = 512;
 const MESSAGE_ACTIVITY_SEEN_LIMIT: usize = 4_096;
+const MESSAGE_ACTIVITY_SENDER_LIMIT: usize = 4_096;
 const MESSAGE_ACTIVITY_MAX_ID_BYTES: usize = 256;
 
 #[derive(Clone, Default)]
@@ -190,6 +192,13 @@ impl MessageActivityHandle {
         state.total_messages = state.total_messages.saturating_add(1);
         let total_messages = state.total_messages;
         let sender_messages = {
+            // 与 seen_messages 同款兜底:常驻 daemon 里陌生发送者只增不减。
+            // 清表的代价只是各发送者的"第 N 条"计数重新起算。
+            if state.sender_messages.len() >= MESSAGE_ACTIVITY_SENDER_LIMIT
+                && !state.sender_messages.contains_key(sender_id)
+            {
+                state.sender_messages.clear();
+            }
             let count = state
                 .sender_messages
                 .entry(sender_id.to_string())
@@ -547,6 +556,7 @@ pub(crate) struct TurnProfile {
     /// keeps the agent's default of recording the turn content as-is.
     pub(crate) memory_content: Option<String>,
     pub(crate) context_images: Vec<PlatformContextImageRef>,
+    pub(crate) context_files: Box<[PlatformContextFileRef]>,
     pub(crate) platform: Option<Arc<PlatformTurnContext>>,
     pub(crate) image_cache_namespace: Option<String>,
     pub(crate) image_source_label: Option<String>,
@@ -569,6 +579,7 @@ impl Default for TurnProfile {
             turn_system_context: Vec::new(),
             memory_content: None,
             context_images: Vec::new(),
+            context_files: Vec::new().into_boxed_slice(),
             platform: None,
             image_cache_namespace: None,
             image_source_label: None,
@@ -639,6 +650,8 @@ pub(crate) struct PlatformTurnContext {
     group_member_cache: Mutex<HashMap<String, PlatformGroupMember>>,
     plugin_values: Mutex<BTreeMap<String, Value>>,
     delivered_image_digests: Mutex<HashSet<blake3::Hash>>,
+    /// Lazy file refs for queued follow-up prompts, keyed by prompt id.
+    queued_files: Mutex<BTreeMap<String, Vec<PlatformContextFileRef>>>,
     reply_rate_available: AtomicBool,
     pending_final_reply_suppression: AtomicBool,
     pending_prior_reply_suppression: AtomicBool,
@@ -674,6 +687,7 @@ impl PlatformTurnContext {
             group_member_cache: Mutex::new(HashMap::new()),
             plugin_values: Mutex::new(BTreeMap::new()),
             delivered_image_digests: Mutex::new(HashSet::new()),
+            queued_files: Mutex::new(BTreeMap::new()),
             reply_rate_available: AtomicBool::new(true),
             pending_final_reply_suppression: AtomicBool::new(false),
             pending_prior_reply_suppression: AtomicBool::new(false),
@@ -870,6 +884,7 @@ impl PlatformTurnContext {
             system_context: Vec::new(),
             turn_system_context: Vec::new(),
             context_images: Vec::new(),
+            context_files: Vec::new(),
         };
         self.plugins.before_turn(self, &mut input).await;
         input
@@ -1200,6 +1215,33 @@ impl PlatformTurnContext {
         Ok(members)
     }
 
+    /// Store lazy file refs for a queued prompt until the running agent claims
+    /// them before its next model request.
+    pub(crate) fn stash_queued_files(&self, prompt_id: &str, files: Vec<PlatformContextFileRef>) {
+        self.queued_files
+            .lock()
+            .unwrap()
+            .insert(prompt_id.to_string(), files);
+    }
+
+    pub(crate) fn take_queued_files(&self, prompt_id: &str) -> Vec<PlatformContextFileRef> {
+        self.queued_files
+            .lock()
+            .unwrap()
+            .remove(prompt_id)
+            .unwrap_or_default()
+    }
+
+    /// Resolve one `read_platform_file` context id into a locally cached file.
+    pub(crate) async fn fetch_platform_file(
+        &self,
+        file_ref: &PlatformContextFileRef,
+    ) -> Result<PlatformFileDownload> {
+        self.adapter
+            .fetch_platform_file(file_ref, &self.paths)
+            .await
+    }
+
     pub(crate) async fn group_member(&self, user_id: &str) -> Result<Option<PlatformGroupMember>> {
         if let Some(member) = self
             .group_member_cache
@@ -1525,11 +1567,6 @@ pub(crate) fn resolve_platform_session(
             .state_store
             .session_record(&session_id)?
             .with_context(|| format!("bound platform session is missing: {session_id}"))?;
-        if record.archived {
-            state
-                .state_store
-                .set_session_archived(&record.session_id, false)?;
-        }
         return Ok(record.session_id.into());
     }
 
@@ -1538,7 +1575,7 @@ pub(crate) fn resolve_platform_session(
     // wins and every later account gets a fresh, correctly isolated session.
     let mut candidates = state
         .state_store
-        .list_sessions(&persona, true)?
+        .list_sessions(&persona)?
         .into_iter()
         .filter(|overview| {
             overview.record.kind == "user"
@@ -1554,11 +1591,6 @@ pub(crate) fn resolve_platform_session(
             .claim_platform_session(&key, &record.session_id)
         {
             Ok(session_id) if session_id == record.session_id => {
-                if record.archived {
-                    state
-                        .state_store
-                        .set_session_archived(&record.session_id, false)?;
-                }
                 return Ok(record.session_id.into());
             }
             Ok(session_id) => return Ok(session_id.into()),
@@ -1583,11 +1615,6 @@ pub(crate) fn resolve_platform_session(
     let (record, created) = state
         .state_store
         .create_or_get_platform_session(&key, name)?;
-    if record.archived {
-        state
-            .state_store
-            .set_session_archived(&record.session_id, false)?;
-    }
     if created {
         state.events.publish(
             "session.created",
@@ -2064,6 +2091,8 @@ pub(crate) async fn run_platform_turn(
                 operation: crate::web::RunOperation::Create,
                 job_wake: false,
                 job_wake_label: None,
+                // 平台真实入站消息;wake 合成轮的来源细分待平台 goal 支持时一并做。
+                turn_origin: crate::tools::workspace::TurnOrigin::Human,
             },
         );
     }
@@ -2092,9 +2121,11 @@ pub(crate) async fn run_platform_turn(
             mode: AgentMode::Normal,
             images,
             cwd: None,
+            origin_tty: None,
             audience: PromptAudience::External,
             profile: Some(profile),
             cancel: cancel_rx,
+            turn_origin: Box::new(crate::tools::workspace::TurnOrigin::Human),
         })
         .is_err()
     {
@@ -2904,6 +2935,29 @@ mod tests {
         assert_eq!(sniff_image_mime(b"GIF89a"), "image/gif");
         assert_eq!(sniff_image_mime(b"RIFF\0\0\0\0WEBPVP8 "), "image/webp");
         assert_eq!(sniff_image_mime(b"????"), "image/png");
+    }
+
+    /// 回归(PR#31):sender_messages 每个唯一发送者一条、永不清,
+    /// 常驻 daemon 慢速泄漏;超限清表后计数重新起算、总数不受影响。
+    #[test]
+    fn message_activity_sender_counts_are_bounded() {
+        let registry = MessageActivityRegistry::default();
+        let now = Instant::now();
+        // 持有一个 handle 保住 scope 的 Arc,循环里的弱引用才升级得到。
+        let (_keep, _, _) = registry.observe("onebot:1:group:9", "m0", "sender-0", now);
+        for i in 1..MESSAGE_ACTIVITY_SENDER_LIMIT {
+            registry.observe("onebot:1:group:9", &format!("m{i}"), &format!("sender-{i}"), now);
+        }
+        // 表满;新面孔触发清表,计数从 1 起
+        let (_, newcomer, _) = registry.observe("onebot:1:group:9", "mx1", "newcomer", now);
+        assert_eq!(newcomer.sender_messages, 1);
+        // 老发送者被清,回到 1 而不是 2;总量计数不受清表影响
+        let (_, again, _) = registry.observe("onebot:1:group:9", "mx2", "sender-0", now);
+        assert_eq!(again.sender_messages, 1);
+        assert_eq!(
+            again.total_messages,
+            (MESSAGE_ACTIVITY_SENDER_LIMIT + 2) as u64
+        );
     }
 
     #[test]

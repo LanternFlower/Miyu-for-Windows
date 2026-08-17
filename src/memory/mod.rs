@@ -224,6 +224,13 @@ pub struct EvictedTurn {
 }
 
 #[derive(Debug, Clone)]
+/// 联想召回的自回声排除:`session_id` 会话里、`since`(最老可见轮的
+/// 时间戳,Utc RFC3339,与记忆行同源可比)之后产生的记忆不注入。
+pub struct AssociationExclusion {
+    pub session_id: String,
+    pub since: String,
+}
+
 pub struct AssociationContext {
     pub facts: Vec<MemoryHit>,
     pub episodes: Vec<MemoryHit>,
@@ -292,6 +299,7 @@ pub struct MemoryHit {
     owner_display_name: String,
     subjects: String,
     source_episode_ids: Vec<i64>,
+    origin_session_id: String,
 }
 
 #[derive(Debug, Clone, Eq, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
@@ -1100,15 +1108,17 @@ impl MemoryStore {
             [],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
         )?;
+        // 已被遗忘(主动 forget 或衰减)的日记不参与整理:否则会被组织
+        // 批次"复活"为长期记忆。
         let forced = count_where(
             &conn,
             "episodes",
-            "retention='short_term' AND promotion_pending=1",
+            "retention='short_term' AND promotion_pending=1 AND status != 'forgotten'",
         )?;
         let unconsolidated = count_where(
             &conn,
             "episodes",
-            "retention='short_term' AND consolidated_at IS NULL",
+            "retention='short_term' AND consolidated_at IS NULL AND status != 'forgotten'",
         )?;
         if forced == 0 && unconsolidated < self.config.diary_batch_size as i64 {
             return Ok(None);
@@ -1122,6 +1132,7 @@ impl MemoryStore {
                         origin_sender_display_name, origin_session_id, origin_message_id
                  FROM episodes
                  WHERE retention='short_term' AND promotion_pending=1
+                   AND status != 'forgotten'
                  ORDER BY id LIMIT ?1",
                 self.config.diary_batch_size.max(1),
             )
@@ -1133,6 +1144,7 @@ impl MemoryStore {
                         origin_sender_display_name, origin_session_id, origin_message_id
                  FROM episodes
                  WHERE retention='short_term' AND consolidated_at IS NULL
+                   AND status != 'forgotten'
                  ORDER BY id LIMIT ?1",
                 self.config.diary_batch_size,
             )
@@ -1490,7 +1502,11 @@ impl MemoryStore {
         }))
     }
 
-    pub fn association(&self, query: &str) -> Result<Option<AssociationContext>> {
+    pub fn association(
+        &self,
+        query: &str,
+        exclude: Option<&AssociationExclusion>,
+    ) -> Result<Option<AssociationContext>> {
         if !self.config.enabled || !self.config.association_enabled {
             return Ok(None);
         }
@@ -1500,6 +1516,16 @@ impl MemoryStore {
         let facts = self.search_facts(&conn, query, self.config.association_facts, false)?;
         let mut episodes =
             self.search_episodes(&conn, query, self.config.association_episodes, false)?;
+        // 自回声过滤(缓存调研 08-16):当前会话可见范围内刚写下的日记/
+        // 事实,原对话就在眼前,复述一遍纯属冗余;被 compact 折走后
+        // (时间早于最老可见轮)重新够格召回。显式 recall 工具不受此限。
+        if let Some(exclude) = exclude {
+            // facts 无 origin 列(origin_session_id 恒空串),天然不命中;
+            // 实际的自回声源=上一轮自动日记(episodes)。
+            episodes.retain(|hit| {
+                !(hit.origin_session_id == exclude.session_id && hit.timestamp >= exclude.since)
+            });
+        }
         let matched_short_ids = episodes
             .iter()
             .filter(|hit| hit.retention.as_deref() == Some(SHORT_TERM))
@@ -1670,12 +1696,19 @@ impl MemoryStore {
         let sql = format!(
             "SELECT id, content, source, status, created_at, strength,
                      COALESCE(importance, 3), {}, COALESCE(source_episode_ids, '[]'),
-                     visibility, owner_principal, owner_display_name, subjects
+                     visibility, owner_principal, owner_display_name, subjects,
+                     {}
              FROM {table} {}{} ORDER BY updated_at DESC LIMIT 5000",
             if kind == MemoryKind::Diary {
                 "retention"
             } else {
                 "NULL"
+            },
+            // 自回声排除只针对自动日记;facts 表没有 origin 列。
+            if kind == MemoryKind::Diary {
+                "COALESCE(origin_session_id, '')"
+            } else {
+                "''"
             },
             status_filter,
             access_filter,
@@ -1700,6 +1733,7 @@ impl MemoryStore {
             let owner_principal = row.get::<_, String>(10)?;
             let owner_display_name = row.get::<_, String>(11)?;
             let subjects = row.get::<_, String>(12)?;
+            let origin_session_id = row.get::<_, String>(13)?;
             if !include_forgotten && status == "forgotten" {
                 continue;
             }
@@ -1712,6 +1746,7 @@ impl MemoryStore {
                 + importance.clamp(1, 5) as f32;
             hits.push(MemoryHit {
                 id,
+                origin_session_id,
                 kind,
                 content,
                 score,
@@ -3557,6 +3592,41 @@ mod tests {
     }
 
     #[test]
+    fn association_excludes_own_sessions_visible_echo() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = AppConfig::default();
+        let paths = test_paths(&temp);
+        let store = MemoryStore::new(&config, &paths);
+        store.init().unwrap();
+        store
+            .data_conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO episodes (content, source, status, recall_count, created_at, updated_at, retention, origin_session_id)
+                 VALUES ('对方提到自回声话题', 'auto_diary', 'active', 0, ?1, ?1, 'short_term', 's1')",
+                [chrono::Utc::now().to_rfc3339()],
+            )
+            .unwrap();
+        // 无排除:能召回。
+        assert!(store.association("自回声", None).unwrap().is_some());
+        // 同会话且晚于最老可见轮 → 自回声被滤(原对话就在眼前)。
+        let exclusion = AssociationExclusion {
+            session_id: "s1".to_string(),
+            since: "2000-01-01T00:00:00Z".to_string(),
+        };
+        assert!(store
+            .association("自回声", Some(&exclusion))
+            .unwrap()
+            .is_none());
+        // 别的会话不受排除影响。
+        let other = AssociationExclusion {
+            session_id: "s2".to_string(),
+            since: "2000-01-01T00:00:00Z".to_string(),
+        };
+        assert!(store.association("自回声", Some(&other)).unwrap().is_some());
+    }
+
+    #[test]
     fn unrelated_and_rejected_memories_are_not_associated() {
         let temp = tempfile::tempdir().unwrap();
         let config = AppConfig::default();
@@ -3571,8 +3641,8 @@ mod tests {
                 [rejected],
             )
             .unwrap();
-        assert!(store.association("完全无关的主题").unwrap().is_none());
-        assert!(store.association("错误结论").unwrap().is_none());
+        assert!(store.association("完全无关的主题", None).unwrap().is_none());
+        assert!(store.association("错误结论", None).unwrap().is_none());
     }
 
     #[test]
@@ -3595,6 +3665,7 @@ mod tests {
             owner_display_name: String::new(),
             subjects: "[]".to_string(),
             source_episode_ids: Vec::new(),
+            origin_session_id: String::new(),
         };
         let formatted = store.format_association(&AssociationContext {
             facts: vec![hit],
@@ -3626,6 +3697,7 @@ mod tests {
             owner_display_name: String::new(),
             subjects: "[]".to_string(),
             source_episode_ids: Vec::new(),
+            origin_session_id: String::new(),
         };
         let diary = MemoryHit {
             id: 2,
@@ -3678,6 +3750,7 @@ mod tests {
             owner_display_name: String::new(),
             subjects: "[]".to_string(),
             source_episode_ids: Vec::new(),
+            origin_session_id: String::new(),
         };
         let diary = MemoryHit {
             id: 2,
@@ -3804,7 +3877,7 @@ mod tests {
         assert!(!record_turn(&store, "不应写入日记", "不会写入"));
         assert!(store.prepare_evicted_context_db().unwrap().is_none());
 
-        let association = store.association("Niri XMODIFIERS").unwrap();
+        let association = store.association("Niri XMODIFIERS", None).unwrap();
         assert!(association.is_some());
         let conn = store.data_conn().unwrap();
         let recall_count = conn
@@ -3873,7 +3946,7 @@ mod tests {
         let store = MemoryStore::new(&config, &paths);
         assert!(record_turn(&store, "Wayland 输入法配置", "设置 XMODIFIERS"));
         for _ in 0..3 {
-            assert!(store.association("Wayland 输入法").unwrap().is_some());
+            assert!(store.association("Wayland 输入法", None).unwrap().is_some());
         }
         let batch = store.next_organization_batch().unwrap().unwrap();
         assert_eq!(batch.diaries.len(), 1);

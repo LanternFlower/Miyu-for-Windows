@@ -3,6 +3,7 @@ use crate::i18n::text as t;
 
 pub(crate) const RESET_COMMAND_ID: &str = "reset";
 pub(crate) const WIPE_COMMAND_ID: &str = "wipe";
+pub(crate) const RESET_MEMORY_COMMAND_ID: &str = "reset-memory";
 pub(crate) const STOP_COMMAND_ID: &str = "stop";
 pub(crate) const MODELS_COMMAND_ID: &str = "models";
 
@@ -22,6 +23,11 @@ pub(crate) const BUILTIN_COMMANDS: &[PlatformCommandDescriptor] = &[
     // thing to want — handed everyone the memory wipe as well.
     PlatformCommandDescriptor {
         id: WIPE_COMMAND_ID,
+        default_permission: PlatformCommandPermission::AdminOnly,
+    },
+    // 只清长期记忆,会话/技能不动;与 wipe 同款独立描述符+confirm 字面。
+    PlatformCommandDescriptor {
+        id: RESET_MEMORY_COMMAND_ID,
         default_permission: PlatformCommandPermission::AdminOnly,
     },
     PlatformCommandDescriptor {
@@ -48,6 +54,9 @@ pub(crate) enum ParsedPlatformCommand {
     /// a chat platform gets no dialog box, so the confirmation is the word
     /// itself — stateless, and impossible to hit by muscle memory.
     Wipe {
+        confirmed: bool,
+    },
+    ResetMemory {
         confirmed: bool,
     },
     Stop {
@@ -84,6 +93,13 @@ pub(crate) fn parse(config: &PlatformsConfig, text: &str) -> Option<ParsedPlatfo
             _ => return None,
         };
         Some(ParsedPlatformCommand::Wipe { confirmed })
+    } else if command.eq_ignore_ascii_case(RESET_MEMORY_COMMAND_ID) {
+        let confirmed = match (parts.next(), parts.next()) {
+            (None, None) => false,
+            (Some(argument), None) if argument.eq_ignore_ascii_case("confirm") => true,
+            _ => return None,
+        };
+        Some(ParsedPlatformCommand::ResetMemory { confirmed })
     } else if command.eq_ignore_ascii_case(STOP_COMMAND_ID) {
         let has_arguments = parts.next().is_some();
         Some(ParsedPlatformCommand::Stop { has_arguments })
@@ -130,6 +146,16 @@ pub(crate) fn permission_denied_message(
 
 pub(crate) fn reset_usage_message(config: &PlatformsConfig) -> String {
     usage_message(config, RESET_COMMAND_ID)
+}
+
+pub(crate) fn reset_memory_confirm_message(config: &PlatformsConfig) -> String {
+    let command = command_text(config, RESET_MEMORY_COMMAND_ID);
+    t_owned(
+        format!(
+            "This erases this persona's long-term memory (facts, diary, episodes) and cannot be undone. Send `{command} confirm` to go ahead."
+        ),
+        format!("这会清空当前人格的长期记忆（事实/日记/经历），不可撤销。确认请发送 `{command} confirm`。"),
+    )
 }
 
 pub(crate) fn wipe_confirm_message(config: &PlatformsConfig) -> String {
@@ -190,6 +216,14 @@ mod tests {
             Some(ParsedPlatformCommand::Wipe { confirmed: true })
         );
         assert_eq!(parse(&config, "/wipe now"), None);
+        assert_eq!(
+            parse(&config, "/reset-memory"),
+            Some(ParsedPlatformCommand::ResetMemory { confirmed: false })
+        );
+        assert_eq!(
+            parse(&config, "/reset-memory confirm"),
+            Some(ParsedPlatformCommand::ResetMemory { confirmed: true })
+        );
 
         // Opening `/reset` up to a group used to hand out the memory wipe with
         // it, because both scopes shared one descriptor.

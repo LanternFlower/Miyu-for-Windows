@@ -75,3 +75,86 @@ mod tests {
         assert_eq!(seen, workspace);
     }
 }
+
+tokio::task_local! {
+    /// 触发本回合的终端身份(shellhook/单次 CLI),供后台任务捕获,
+    /// 完成后把跟进回复写回原终端。
+    static ORIGIN_TTY: Option<crate::ipc::OriginTty>;
+}
+
+pub async fn with_origin_tty<F>(origin: Option<crate::ipc::OriginTty>, future: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    ORIGIN_TTY.scope(origin, future).await
+}
+
+pub fn current_origin_tty() -> Option<crate::ipc::OriginTty> {
+    ORIGIN_TTY.try_with(|origin| origin.clone()).ok().flatten()
+}
+
+tokio::task_local! {
+    /// 触发本回合的平台侧真实发起者(如 QQ user_id)。后台任务 spawn 时捕获,
+    /// 完成唤醒的合成回合凭它继承发起者的身份与权限;不继承的话合成事件只能
+    /// 伪装成机器人自己,is_admin=false 会把工具表降级成受限集合(issue #29)。
+    static PLATFORM_SENDER: Option<String>;
+}
+
+pub async fn with_platform_sender<F>(sender: Option<String>, future: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    PLATFORM_SENDER.scope(sender, future).await
+}
+
+pub fn current_platform_sender() -> Option<String> {
+    PLATFORM_SENDER.try_with(|sender| sender.clone()).ok().flatten()
+}
+
+/// 本回合的发起来源(dsh goal 权限模型的 Miyu 化:不扫会话事件,发起方
+/// 在起回合时如实声明)。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TurnOrigin {
+    /// 人类输入(REPL/WebUI/平台真实消息)。
+    Human,
+    /// 后台任务完成唤醒的合成轮。
+    JobWake,
+}
+
+tokio::task_local! {
+    static TURN_ORIGIN: TurnOrigin;
+}
+
+pub async fn with_turn_origin<F>(origin: TurnOrigin, future: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    TURN_ORIGIN.scope(origin, future).await
+}
+
+/// 缺省 Human:直连 CLI/测试没有包装层,而那里敲键盘的就是人。
+pub fn current_turn_origin() -> TurnOrigin {
+    TURN_ORIGIN
+        .try_with(|origin| origin.clone())
+        .unwrap_or(TurnOrigin::Human)
+}
+
+tokio::task_local! {
+    /// 工具桥递归深度:回合内 run_command 起的脚本经 `miyu tool-call` 打回
+    /// daemon 再执行工具,若那个工具又是 run_command……深度护栏防无限套娃。
+    static BRIDGE_DEPTH: u32;
+}
+
+pub const MAX_BRIDGE_DEPTH: u32 = 2;
+
+pub async fn with_bridge_depth<F>(depth: u32, future: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    BRIDGE_DEPTH.scope(depth, future).await
+}
+
+pub fn current_bridge_depth() -> u32 {
+    BRIDGE_DEPTH.try_with(|depth| *depth).unwrap_or(0)
+}

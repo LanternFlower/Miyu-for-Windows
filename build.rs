@@ -20,8 +20,8 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed=src/prompts/miyu.md");
-    println!("cargo:rerun-if-changed=src/prompts/plan.md");
-    println!("cargo:rerun-if-changed=src/prompts/chat.md");
+    println!("cargo:rerun-if-changed=src/prompts/miyu.hint.md");
+    println!("cargo:rerun-if-changed=src/prompts/miyu-dialogs.md");
     println!("cargo:rerun-if-changed=assets/o200k_base.tiktoken");
     println!("cargo:rerun-if-changed=assets/jieba/dict.txt");
     // Rerun on any source or frontend change so MIYU_BUILD_ID uniquely
@@ -40,19 +40,27 @@ fn main() {
             .unwrap_or(0)
     );
 
-    let prompt = fs::read("src/prompts/miyu.md").expect("read src/prompts/miyu.md");
-    let encoded = prompt
-        .into_iter()
-        .enumerate()
-        .map(|(index, byte)| byte ^ PROMPT_MASK[index % PROMPT_MASK.len()])
-        .collect::<Vec<_>>();
-    let encoded = base64_encode(&encoded);
+    let obfuscate = |path: &str| {
+        let content = fs::read(path).unwrap_or_else(|_| panic!("read {path}"));
+        let encoded = content
+            .into_iter()
+            .enumerate()
+            .map(|(index, byte)| byte ^ PROMPT_MASK[index % PROMPT_MASK.len()])
+            .collect::<Vec<_>>();
+        base64_encode(&encoded)
+    };
+    let prompt = obfuscate("src/prompts/miyu.md");
+    let hint = obfuscate("src/prompts/miyu.hint.md");
+    let dialogs = obfuscate("src/prompts/miyu-dialogs.md");
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR is set by cargo");
     let dest = Path::new(&out_dir).join("default_miyu_prompt.rs");
     fs::write(
         dest,
         format!(
-            "const PROMPT_MASK: &[u8] = b\"MiyuPromptMask\";\nconst OBFUSCATED_DEFAULT_SYSTEM_PROMPT: &str = \"{encoded}\";\n"
+            "const PROMPT_MASK: &[u8] = b\"MiyuPromptMask\";\n\
+             const OBFUSCATED_DEFAULT_SYSTEM_PROMPT: &str = \"{prompt}\";\n\
+             const OBFUSCATED_DEFAULT_MIYU_HINT: &str = \"{hint}\";\n\
+             const OBFUSCATED_DEFAULT_MIYU_DIALOGS: &str = \"{dialogs}\";\n"
         ),
     )
     .expect("write generated prompt asset");

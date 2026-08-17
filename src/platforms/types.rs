@@ -112,6 +112,7 @@ pub(crate) enum PlatformInboundEventKind {
     MessageRecall,
     GroupBan,
     GroupDecrease,
+    GroupFileUpload,
 }
 
 /// Receive-time counters for one message in its transport conversation.
@@ -162,6 +163,29 @@ pub(crate) struct PlatformContextImageRef {
     pub(crate) message_id: String,
     /// One-based position among image segments in the source message.
     pub(crate) image_index: usize,
+}
+
+/// Stable reference to one file placeholder rendered into platform history.
+/// `file_id` is the provider-side identifier used to resolve the download URL.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PlatformContextFileRef {
+    pub(crate) id: String,
+    pub(crate) message_id: String,
+    /// One-based position among file segments in the source message.
+    pub(crate) file_index: usize,
+    pub(crate) file_id: String,
+    pub(crate) file_name: String,
+    /// Direct download URL when the bridge supplied one. Lazy downloads use
+    /// this first; history-derived refs leave it empty and ask the bridge.
+    pub(crate) url: Option<String>,
+}
+
+/// A platform file downloaded into Miyu's local platform file cache.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PlatformFileDownload {
+    pub(crate) path: PathBuf,
+    pub(crate) name: String,
+    pub(crate) size: u64,
 }
 
 /// Protocol-neutral view of an inbound event. It contains stable identities
@@ -412,6 +436,19 @@ pub(crate) trait PlatformAdapter: Send + Sync {
         _message_id: &'a str,
     ) -> BoxFuture<'a, Result<Vec<PlatformImageData>>> {
         Box::pin(async { anyhow::bail!("message image lookup is not supported by this platform") })
+    }
+
+    /// Resolve one context-file placeholder into a locally cached file. The
+    /// platform is responsible for provider URL lookup, size-capped download,
+    /// and storage under `paths.cache_dir/platform_files/<platform>/`.
+    fn fetch_platform_file<'a>(
+        &'a self,
+        _file_ref: &'a PlatformContextFileRef,
+        _paths: &'a crate::paths::MiyuPaths,
+    ) -> BoxFuture<'a, Result<PlatformFileDownload>> {
+        Box::pin(async {
+            anyhow::bail!("platform file downloads are not supported by this platform")
+        })
     }
 
     fn group_members<'a>(&'a self) -> BoxFuture<'a, Result<Vec<PlatformGroupMember>>> {

@@ -40,8 +40,8 @@ pub fn register_artifact(registry: &mut ToolRegistry, root: PathBuf, session_id:
     registry.register(ToolSpec::new_with_progress(
         "apply_artifact_patch",
         agent_text(
-            "Apply a patch to files in the current managed Artifact workspace. Paths must be plain Artifact file names. Supports Add File and Update File; deletion is not supported.",
-            "对当前托管 Artifact 工作区中的文件应用补丁。路径必须是 Artifact 文件名。支持 Add File 和 Update File，不支持删除。",
+            "Apply a patch to files in the current managed Artifact workspace. Paths must be plain Artifact file names. Supports Add File, Update File, and Delete File.",
+            "对当前托管 Artifact 工作区中的文件应用补丁。路径必须是 Artifact 文件名。支持 Add File、Update File 与 Delete File。",
         ),
         json!({
             "type": "object",
@@ -106,14 +106,6 @@ where
     if operations.is_empty() {
         bail!("patch rejected: empty patch")
     }
-    if managed_artifact
-        && operations
-            .iter()
-            .any(|operation| matches!(operation, Operation::Delete { .. }))
-    {
-        bail!("Artifact patches do not support Delete File")
-    }
-
     let changes = preflight_operations(operations)?;
     if managed_artifact {
         for change in &changes {
@@ -313,6 +305,14 @@ where
                     continue;
                 }
                 if !lines[index].starts_with("@@") {
+                    // hunk 内容样的行(以 ' '/'-'/'+' 开头)出现在 @@ 之外,
+                    // 多半是漏写了 @@ 头:静默跳过等于把整块修改丢掉。
+                    let stray = lines[index];
+                    if stray.starts_with(' ') || stray.starts_with('-') || stray.starts_with('+') {
+                        bail!(
+                            "apply_patch verification failed: hunk line outside a @@ hunk (missing @@ header?): {stray}"
+                        )
+                    }
                     index += 1;
                     continue;
                 }
@@ -465,9 +465,19 @@ fn preflight_operations(operations: Vec<Operation>) -> Result<Vec<FileChange>> {
                     bail!("apply_patch verification failed: Move to is not supported yet")
                 }
                 let before = staged_content(&path, &staged)?;
-                let mut after = before.clone();
+                // CRLF 文件的匹配靠 TrimEnd 模式成功,但替换进来的新行是
+                // LF:统一按 LF 应用,写回前还原原文件的行尾风格,避免混合。
+                let crlf = before.contains("\r\n");
+                let mut after = if crlf {
+                    before.replace("\r\n", "\n")
+                } else {
+                    before.clone()
+                };
                 for hunk in hunks {
                     after = apply_hunk(&path, &after, &hunk)?;
+                }
+                if crlf {
+                    after = after.replace('\n', "\r\n");
                 }
                 staged.insert(path.clone(), Some(after.clone()));
                 changes.push(FileChange {
@@ -515,7 +525,20 @@ fn apply_hunk(path: &Path, content: &str, hunk: &Hunk) -> Result<String> {
         .and_then(|context| seek_sequence(&current_lines, &[context.to_string()], 0, false))
         .map(|index| index + 1)
         .unwrap_or(0);
+    // 无 @@ 锚点的 hunk 在文件中多处匹配时,首命中会落到错误位置还返回
+    // ok:与 fallback 子串路径的 count>1 拒绝对齐。带锚点/EOF 的视为已消歧。
+    let ambiguous = |found: usize, pattern: &[String]| {
+        hunk.context.is_none()
+            && !hunk.end_of_file
+            && seek_sequence(&current_lines, pattern, found + 1, false).is_some()
+    };
     if let Some(found) = seek_sequence(&current_lines, &pattern, start_index, hunk.end_of_file) {
+        if ambiguous(found, &pattern) {
+            bail!(
+                "apply_patch verification failed: hunk matches multiple locations in {}; add a @@ context anchor",
+                path.display()
+            )
+        }
         let mut result = current_lines.clone();
         result.splice(found..found + pattern.len(), new_lines);
         return Ok(join_lines(result));
@@ -524,6 +547,12 @@ fn apply_hunk(path: &Path, content: &str, hunk: &Hunk) -> Result<String> {
         pattern.pop();
         if let Some(found) = seek_sequence(&current_lines, &pattern, start_index, hunk.end_of_file)
         {
+            if ambiguous(found, &pattern) {
+                bail!(
+                    "apply_patch verification failed: hunk matches multiple locations in {}; add a @@ context anchor",
+                    path.display()
+                )
+            }
             let mut result = current_lines.clone();
             result.splice(found..found + pattern.len(), content_lines(&new));
             return Ok(join_lines(result));
@@ -926,7 +955,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn artifact_patch_rejects_unsafe_paths_delete_and_symlinks() {
+    fn artifact_patch_rejects_unsafe_paths_and_symlinks_but_allows_delete() {
         use std::os::unix::fs::symlink;
 
         let temp = tempfile::tempdir().unwrap();
@@ -942,8 +971,8 @@ mod tests {
         for patch in [
             "*** Begin Patch\n*** Add File: ../escape.md\n+bad\n*** End Patch",
             "*** Begin Patch\n*** Add File: nested/file.md\n+bad\n*** End Patch",
-            "*** Begin Patch\n*** Delete File: report.md\n*** End Patch",
             "*** Begin Patch\n*** Update File: link.md\n@@ patch\n-outside\n+changed\n*** End Patch",
+            "*** Begin Patch\n*** Delete File: link.md\n*** End Patch",
         ] {
             assert!(apply_artifact_patch(
                 json!({"patchText": patch}),
@@ -953,9 +982,18 @@ mod tests {
             )
             .is_err());
         }
-
-        assert_eq!(std::fs::read_to_string(report).unwrap(), "original\n");
+        assert_eq!(std::fs::read_to_string(&report).unwrap(), "original\n");
         assert_eq!(std::fs::read_to_string(outside).unwrap(), "outside\n");
         assert!(!temp.path().join("escape.md").exists());
+
+        // 验收四轮:Artifact 与本地补丁同语义,普通文件的 Delete File 放行。
+        let deleted = apply_artifact_patch(
+            json!({"patchText": "*** Begin Patch\n*** Delete File: report.md\n*** End Patch"}),
+            ToolProgress::default(),
+            &root,
+            "sess_test",
+        );
+        assert!(deleted.is_ok(), "{deleted:?}");
+        assert!(!report.exists());
     }
 }

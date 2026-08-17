@@ -12,6 +12,20 @@ use tokio::sync::{mpsc, oneshot};
 pub type ToolFuture = Pin<Box<dyn Future<Output = Result<String>> + Send>>;
 pub type ToolHandler = Arc<dyn Fn(Value, ToolProgress) -> ToolFuture + Send + Sync>;
 
+/// 单调执行守卫:返回 Some(理由) 即拒绝本次调用,返回 None 放行。
+/// 只拒不放——任何 guard 拒绝后,后续 guard 与调用方都无法翻案
+/// (dsh ToolGuard 同款语义)。拒绝以普通 tool error 回给模型,轮次存活。
+pub type ToolGuard = Arc<dyn Fn(&ToolSpec, &Value, &GuardCtx) -> Option<String> + Send + Sync>;
+
+/// 守卫可见的回合上下文。registry 自身无回合概念,由调用方(agent 主循环、
+/// 未来的工具桥)按次构造;拿不到上下文的路径(subagent 的 call)用默认值,
+/// 仅参数级守卫生效。
+#[derive(Default)]
+pub struct GuardCtx<'a> {
+    /// 本回合此前已请求过的工具名(含本次,按主循环 push 时序)。
+    pub used_tools: &'a [String],
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommandOutputStream {
     Stdout,
@@ -132,6 +146,8 @@ pub struct ToolSpec {
     pub is_script: bool,
     pub load_policy: LoadPolicy,
     pub groups: Vec<String>,
+    /// 按工具超时（秒）。None=吃 registry 默认兜底；Some(0)=豁免。
+    pub timeout_seconds: Option<u64>,
     handler: ToolHandler,
 }
 
@@ -163,6 +179,7 @@ impl ToolSpec {
             is_script: false,
             load_policy: LoadPolicy::Summary,
             groups: Vec::new(),
+            timeout_seconds: None,
             handler: Arc::new(move |args, _progress| Box::pin(handler(args))),
         }
     }
@@ -187,6 +204,7 @@ impl ToolSpec {
             is_script: false,
             load_policy: LoadPolicy::Summary,
             groups: Vec::new(),
+            timeout_seconds: None,
             handler: Arc::new(move |args, progress| Box::pin(handler(args, progress))),
         }
     }
@@ -230,6 +248,11 @@ impl ToolSpec {
         self
     }
 
+    pub fn with_timeout_seconds(mut self, secs: u64) -> Self {
+        self.timeout_seconds = Some(secs);
+        self
+    }
+
     pub fn apply_built_in_description(mut self) -> Self {
         if let Some(desc) = crate::tools::tool_descriptions::get(&self.name) {
             // load_skill owns a dynamic catalog description, but still uses
@@ -243,6 +266,9 @@ impl ToolSpec {
             self.always_loaded = desc.always_loaded;
             self.load_policy = desc.load_policy;
             self.groups = desc.groups.clone();
+            if desc.timeout_seconds.is_some() {
+                self.timeout_seconds = desc.timeout_seconds;
+            }
         }
         self
     }
@@ -279,6 +305,13 @@ pub struct ToolRegistry {
     script_tool_names: BTreeSet<String>,
     unregistered_scripts: Vec<UnregisteredScript>,
     skill_catalog_fingerprint: Option<[u8; 32]>,
+    /// 兜底超时：工具未声明 timeout_seconds 时生效。None=不兜底（默认构
+    /// 造/测试保持旧行为），工厂函数按 config.tools.default_timeout_secs
+    /// 注入。防的是 MCP/web/生图这类没有自管超时的工具把回合无限挂死；
+    /// run_command 等自管工具用 timeout_seconds=0 豁免。
+    default_timeout: Option<std::time::Duration>,
+    /// 单调守卫链,按注册序求值,第一个拒绝即终。
+    guards: Vec<ToolGuard>,
 }
 
 impl ToolRegistry {
@@ -289,6 +322,38 @@ impl ToolRegistry {
     pub fn register(&mut self, tool: ToolSpec) {
         let tool = tool.apply_built_in_description();
         self.tools.insert(tool.name.clone(), Arc::new(tool));
+    }
+
+    /// 0 = 关闭兜底超时。
+    pub fn set_default_timeout_secs(&mut self, secs: u64) {
+        self.default_timeout = (secs > 0).then(|| std::time::Duration::from_secs(secs));
+    }
+
+    pub fn add_guard(&mut self, guard: ToolGuard) {
+        self.guards.push(guard);
+    }
+
+    fn guard_denial(&self, tool: &ToolSpec, args: &Value, ctx: &GuardCtx) -> Option<String> {
+        self.guards
+            .iter()
+            .find_map(|guard| guard(tool, args, ctx))
+    }
+
+    fn effective_timeout(&self, tool: &ToolSpec) -> Option<std::time::Duration> {
+        match tool.timeout_seconds {
+            Some(0) => None,
+            Some(secs) => Some(std::time::Duration::from_secs(secs)),
+            None => self.default_timeout,
+        }
+    }
+
+    fn timeout_error(name: &str, limit: std::time::Duration) -> anyhow::Error {
+        let secs = limit.as_secs();
+        if crate::i18n::agent_is_zh() {
+            anyhow::anyhow!("工具 `{name}` 执行超时（超过 {secs} 秒）已中止")
+        } else {
+            anyhow::anyhow!("tool `{name}` timed out after {secs}s and was aborted")
+        }
     }
 
     pub fn unregister(&mut self, name: &str) -> bool {
@@ -333,10 +398,15 @@ impl ToolRegistry {
             if !names.insert(script.name.clone()) {
                 bail!("duplicate script id: {}", script.name);
             }
+            // occupant 是否脚本按注册表现状判断,不依赖 script_tool_names:
+            // 脚本先注册、同名 MCP 工具后覆盖时,名单还挂着旧名字,按名单
+            // 判会把 MCP 工具当成脚本顶掉。
             if script.name == "load_tools"
                 || crate::tools::tool_descriptions::get(&script.name).is_some()
-                || (self.tools.contains_key(&script.name)
-                    && !self.script_tool_names.contains(&script.name))
+                || self
+                    .tools
+                    .get(&script.name)
+                    .is_some_and(|tool| !tool.is_script)
             {
                 continue;
             }
@@ -344,7 +414,9 @@ impl ToolRegistry {
         }
 
         for name in &self.script_tool_names {
-            self.tools.remove(name);
+            if self.tools.get(name).is_some_and(|tool| tool.is_script) {
+                self.tools.remove(name);
+            }
         }
         self.script_tool_names.clear();
 
@@ -475,7 +547,7 @@ impl ToolRegistry {
 
     pub async fn call(&self, name: &str, arguments: &str) -> Result<String> {
         let Some(tool) = self.tools.get(name) else {
-            bail!("unknown tool: {name}");
+            return Err(self.unknown_tool_error(name));
         };
         let args = if arguments.trim().is_empty() {
             json!({})
@@ -485,7 +557,18 @@ impl ToolRegistry {
         if name == "load_tools" {
             return super::load_tools::execute(args, self);
         }
-        tool.call(args, ToolProgress::default()).await
+        if let Some(reason) = self.guard_denial(tool, &args, &GuardCtx::default()) {
+            bail!("{reason}");
+        }
+        match self.effective_timeout(tool) {
+            Some(limit) => {
+                match tokio::time::timeout(limit, tool.call(args, ToolProgress::default())).await {
+                    Ok(result) => result,
+                    Err(_) => Err(Self::timeout_error(name, limit)),
+                }
+            }
+            None => tool.call(args, ToolProgress::default()).await,
+        }
     }
 
     pub fn call_with_progress_future(
@@ -493,9 +576,10 @@ impl ToolRegistry {
         name: &str,
         arguments: &str,
         sender: mpsc::UnboundedSender<ToolProgressEvent>,
+        guard_ctx: &GuardCtx,
     ) -> Result<ToolFuture> {
         let Some(tool) = self.tools.get(name) else {
-            bail!("unknown tool: {name}");
+            return Err(self.unknown_tool_error(name));
         };
         let args = if arguments.trim().is_empty() {
             json!({})
@@ -506,7 +590,22 @@ impl ToolRegistry {
             let result = super::load_tools::execute(args, self);
             return Ok(Box::pin(async move { result }));
         }
-        Ok(tool.call_future(args, ToolProgress::new(sender)))
+        if let Some(reason) = self.guard_denial(tool, &args, guard_ctx) {
+            return Ok(Box::pin(async move { Err(anyhow::anyhow!("{reason}")) }));
+        }
+        let future = tool.call_future(args, ToolProgress::new(sender));
+        Ok(match self.effective_timeout(tool) {
+            Some(limit) => {
+                let tool_name = tool.name.clone();
+                Box::pin(async move {
+                    match tokio::time::timeout(limit, future).await {
+                        Ok(result) => result,
+                        Err(_) => Err(Self::timeout_error(&tool_name, limit)),
+                    }
+                })
+            }
+            None => future,
+        })
     }
 
     pub fn display_name(&self, name: &str) -> Option<String> {
@@ -524,6 +623,50 @@ impl ToolRegistry {
 
     pub fn contains(&self, name: &str) -> bool {
         self.tools.contains_key(name)
+    }
+
+    /// 拼错工具名时的近似候选:子串命中优先,其余按编辑距离,太远不猜。
+    /// 供 unknown-tool 报错引导用(dev 实测:裸报错会让调用方盲试一轮)。
+    pub fn suggest_similar(&self, name: &str) -> Vec<String> {
+        let needle = name.to_ascii_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let mut scored = self
+            .tools
+            .keys()
+            .filter_map(|candidate| {
+                let hay = candidate.to_ascii_lowercase();
+                let score = if hay.contains(&needle) || needle.contains(&hay) {
+                    0
+                } else {
+                    let distance = levenshtein(&needle, &hay);
+                    if distance > needle.len().max(3) / 3 + 1 {
+                        return None;
+                    }
+                    distance
+                };
+                Some((score, candidate))
+            })
+            .collect::<Vec<_>>();
+        scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+        scored
+            .into_iter()
+            .take(3)
+            .map(|(_, name)| name.clone())
+            .collect()
+    }
+
+    pub fn unknown_tool_error(&self, name: &str) -> anyhow::Error {
+        let suggestions = self.suggest_similar(name);
+        if suggestions.is_empty() {
+            anyhow::anyhow!("unknown tool: {name}")
+        } else {
+            anyhow::anyhow!(
+                "unknown tool: {name} (did you mean: {}?)",
+                suggestions.join(", ")
+            )
+        }
     }
 
     pub(crate) fn loadable_tools(&self, loaded: &BTreeSet<String>) -> Vec<&ToolSpec> {
@@ -685,6 +828,8 @@ impl ToolRegistry {
 
     pub fn clone_filtered(&self, allowed: &[&str]) -> ToolRegistry {
         let mut registry = ToolRegistry::new();
+        registry.default_timeout = self.default_timeout;
+        registry.guards = self.guards.clone();
         for name in allowed {
             if let Some(spec) = self.tools.get(*name) {
                 registry.tools.insert(spec.name.clone(), Arc::clone(spec));
@@ -713,12 +858,13 @@ fn load_target_tool_xml(tool: &ToolSpec) -> String {
 
 fn stub_definition(tool: &ToolSpec) -> ToolDefinition {
     let summary = load_target_summary(&tool.description);
+    // 后缀只留标记:整套"先 load_tools 取契约再调用"的说明在 load_tools
+    // 自己的 description 里统一给一次,N 个 stub 各背一遍纯属重复计费
+    // (验收 08-16:每条省 ~55B)。
     let description = if summary.is_empty() {
-        "（精简条目）先调用 load_tools 获取本工具的完整参数契约，再按契约直接填写参数调用本工具。".to_string()
+        "（精简条目：契约经 load_tools 获取）".to_string()
     } else {
-        format!(
-            "{summary}（精简条目：先调用 load_tools 获取完整参数契约，再按契约直接填写参数调用本工具。）"
-        )
+        format!("{summary}（精简条目）")
     };
     ToolDefinition {
         kind: "function",
@@ -755,6 +901,25 @@ fn load_target_summary(description: &str) -> String {
     summary
 }
 
+/// 经典两行 DP 编辑距离,只服务 suggest_similar 的小字符串,不引依赖。
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.is_empty() {
+        return b.len();
+    }
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    for (i, ch_a) in a.iter().enumerate() {
+        let mut current = vec![i + 1];
+        for (j, ch_b) in b.iter().enumerate() {
+            let substitution = previous[j] + usize::from(ch_a != ch_b);
+            current.push(substitution.min(previous[j + 1] + 1).min(current[j] + 1));
+        }
+        previous = current;
+    }
+    previous[b.len()]
+}
+
 fn xml_escape(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -767,6 +932,164 @@ fn xml_escape(text: &str) -> String {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    fn sleeping_tool(name: &str, sleep_secs: u64) -> ToolSpec {
+        ToolSpec::new(
+            name,
+            "sleeps",
+            json!({"type":"object","properties":{}}),
+            move |_| async move {
+                tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
+                Ok("done".to_string())
+            },
+        )
+    }
+
+    /// 兜底超时:未声明 timeout_seconds 的慢工具被中止,错误走普通
+    /// tool error 路径(轮次存活),不会无限挂死回合。
+    #[tokio::test]
+    async fn default_timeout_aborts_undeclared_slow_tools() {
+        let mut registry = ToolRegistry::new();
+        registry.set_default_timeout_secs(2);
+        registry.register(sleeping_tool("slow_tool", 60));
+        let error = registry.call("slow_tool", "{}").await.unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("timed out") || message.contains("超时"),
+            "unexpected timeout message: {message}"
+        );
+    }
+
+    /// timeout_seconds=0 = 豁免(run_command 这类自管超时的工具),
+    /// 兜底不生效。
+    #[tokio::test]
+    async fn zero_timeout_exempts_self_managed_tools() {
+        let mut registry = ToolRegistry::new();
+        registry.set_default_timeout_secs(1);
+        registry.register(sleeping_tool("self_managed", 2).with_timeout_seconds(0));
+        let output = registry.call("self_managed", "{}").await.unwrap();
+        assert_eq!(output, "done");
+    }
+
+    /// 按工具声明覆盖兜底默认。
+    #[tokio::test]
+    async fn per_tool_timeout_overrides_default() {
+        let mut registry = ToolRegistry::new();
+        registry.set_default_timeout_secs(3600);
+        registry.register(sleeping_tool("tight_tool", 5).with_timeout_seconds(1));
+        let error = registry.call("tight_tool", "{}").await.unwrap_err();
+        assert!(error.to_string().contains("1"));
+    }
+
+    /// unknown tool 报错带近似建议:拼错给候选,子串命中优先,毫不相干
+    /// 不硬猜(dev 实测:裸报错会让桥调用方盲试一轮)。
+    #[tokio::test]
+    async fn unknown_tool_error_suggests_near_matches() {
+        let mut registry = ToolRegistry::new();
+        registry.register(sleeping_tool("run_command", 0));
+        registry.register(sleeping_tool("web_search", 0));
+        registry.register(sleeping_tool("web_fetch", 0));
+        let error = registry
+            .call("run_comand", "{}")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unknown tool: run_comand"), "{error}");
+        assert!(error.contains("run_command"), "{error}");
+        let subs = registry.suggest_similar("web");
+        assert!(
+            subs.contains(&"web_search".to_string()) && subs.contains(&"web_fetch".to_string()),
+            "{subs:?}"
+        );
+        let error = registry
+            .call("totally_unrelated_zzz", "{}")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "unknown tool: totally_unrelated_zzz");
+    }
+
+    /// AUR 互斥迁入 guard 后语义不变:同轮先 review 再 install 被拒,
+    /// 拒绝理由与原循环特判逐字一致;无 review 上下文时放行。
+    #[tokio::test]
+    async fn aur_guard_denies_install_after_review_in_same_turn() {
+        let mut registry = ToolRegistry::new();
+        registry.register(ToolSpec::new(
+            "install_aur_package",
+            "installs",
+            json!({"type":"object","properties":{}}),
+            |_| async { Ok("installed".to_string()) },
+        ));
+        registry.add_guard(crate::tools::aur_review_install_guard());
+
+        let (sender, _receiver) = mpsc::unbounded_channel();
+        let used = vec!["review_aur_package".to_string(), "install_aur_package".to_string()];
+        let denied = registry
+            .call_with_progress_future(
+                "install_aur_package",
+                "{}",
+                sender.clone(),
+                &GuardCtx { used_tools: &used },
+            )
+            .unwrap()
+            .await
+            .unwrap_err();
+        assert!(denied.to_string().contains("cannot run in the same turn"));
+
+        let clean = vec!["install_aur_package".to_string()];
+        let allowed = registry
+            .call_with_progress_future(
+                "install_aur_package",
+                "{}",
+                sender,
+                &GuardCtx { used_tools: &clean },
+            )
+            .unwrap()
+            .await
+            .unwrap();
+        assert_eq!(allowed, "installed");
+    }
+
+    /// 命令拒绝子串:命中即拒(轮次以 tool error 存活),未命中放行;
+    /// 只作用于 run_command。
+    #[tokio::test]
+    async fn command_deny_guard_blocks_matching_commands() {
+        let mut registry = ToolRegistry::new();
+        registry.register(ToolSpec::new(
+            "run_command",
+            "runs",
+            json!({"type":"object","properties":{}}),
+            |_| async { Ok("ran".to_string()) },
+        ));
+        registry.add_guard(crate::tools::command_deny_guard(vec![
+            "rm -rf /".to_string(),
+        ]));
+
+        let denied = registry
+            .call("run_command", r#"{"command":"sudo rm -rf /"}"#)
+            .await
+            .unwrap_err();
+        let message = denied.to_string();
+        assert!(
+            message.contains("rm -rf /") || message.contains("denied pattern"),
+            "unexpected denial: {message}"
+        );
+        let allowed = registry
+            .call("run_command", r#"{"command":"ls -la"}"#)
+            .await
+            .unwrap();
+        assert_eq!(allowed, "ran");
+    }
+
+    /// clone_filtered 继承兜底超时(task 的 Explore 裁剪路径)。
+    #[tokio::test]
+    async fn clone_filtered_keeps_default_timeout() {
+        let mut registry = ToolRegistry::new();
+        registry.set_default_timeout_secs(2);
+        registry.register(sleeping_tool("slow_tool", 60));
+        let filtered = registry.clone_filtered(&["slow_tool"]);
+        assert!(filtered.call("slow_tool", "{}").await.is_err());
+    }
 
     #[test]
     fn lazy_definitions_include_loaded_on_demand_tools() {

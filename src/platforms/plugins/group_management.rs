@@ -496,20 +496,24 @@ impl GroupManagementPlugin {
         if let Err(error) = append_kick(context, &record, settings.max_kick_history_per_group) {
             audit_errors.push(format!("kick history: {error}"));
         }
-        let event = ManagementEvent {
-            record_id: record.record_id.clone(),
-            action: if blacklist { "kick_black" } else { "kick" }.to_string(),
-            user_id: record.user_id.clone(),
-            user_name: record.user_name.clone(),
-            duration: 0,
-            happened_at: record.kicked_at,
-            operator_id: record.operator_id.clone(),
-            reason: record.reason.clone(),
-            source: record.source.clone(),
-            detail: String::new(),
-        };
-        if let Err(error) = append_event(context, &event, settings.max_records_per_group) {
-            audit_errors.push(format!("event log: {error}"));
+        // 与 ban 路径对齐:enable_record 管事件日志(kick 历史是入群审批
+        // 等功能依赖的数据,不受此开关影响)。
+        if settings.enable_record {
+            let event = ManagementEvent {
+                record_id: record.record_id.clone(),
+                action: if blacklist { "kick_black" } else { "kick" }.to_string(),
+                user_id: record.user_id.clone(),
+                user_name: record.user_name.clone(),
+                duration: 0,
+                happened_at: record.kicked_at,
+                operator_id: record.operator_id.clone(),
+                reason: record.reason.clone(),
+                source: record.source.clone(),
+                detail: String::new(),
+            };
+            if let Err(error) = append_event(context, &event, settings.max_records_per_group) {
+                audit_errors.push(format!("event log: {error}"));
+            }
         }
         if let Err(error) = record_real_context(
             context,
@@ -737,22 +741,25 @@ impl PlatformPlugin for Arc<GroupManagementPlugin> {
                         source: "onebot_notice".to_string(),
                     };
                     append_kick(context, &record, settings.max_kick_history_per_group)?;
-                    append_event(
-                        context,
-                        &ManagementEvent {
-                            record_id: record.record_id.clone(),
-                            action: "kick".to_string(),
-                            user_id: record.user_id.clone(),
-                            user_name: record.user_name.clone(),
-                            duration: 0,
-                            happened_at: record.kicked_at,
-                            operator_id: record.operator_id.clone(),
-                            reason: String::new(),
-                            source: "onebot_notice".to_string(),
-                            detail: String::new(),
-                        },
-                        settings.max_records_per_group,
-                    )?;
+                    // 与 GroupBan 通知分支对齐:事件日志受 enable_record 管。
+                    if settings.enable_record {
+                        append_event(
+                            context,
+                            &ManagementEvent {
+                                record_id: record.record_id.clone(),
+                                action: "kick".to_string(),
+                                user_id: record.user_id.clone(),
+                                user_name: record.user_name.clone(),
+                                duration: 0,
+                                happened_at: record.kicked_at,
+                                operator_id: record.operator_id.clone(),
+                                reason: String::new(),
+                                source: "onebot_notice".to_string(),
+                                detail: String::new(),
+                            },
+                            settings.max_records_per_group,
+                        )?;
+                    }
                     let member = notice_member(context, event);
                     record_real_context(context, &record.record_id, "外部踢出", &member, "", None)
                         .await?;

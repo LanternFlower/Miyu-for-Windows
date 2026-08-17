@@ -1,4 +1,4 @@
-use super::{ToolRegistry, ToolSpec};
+use super::{http_response, ToolRegistry, ToolSpec};
 use crate::config::ExchangeRatePluginConfig;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -38,20 +38,27 @@ async fn get_exchange_rate(args: Value, config: ExchangeRatePluginConfig) -> Res
             "https://v6.exchangerate-api.com/v6/{}/latest/{base}",
             config.api_key.trim()
         );
-        let data: Value = reqwest::Client::new()
-            .get(url)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        if data.get("result").and_then(Value::as_str) == Some("success") {
-            if let Some(rate) = data
-                .get("conversion_rates")
-                .and_then(|rates| rates.get(&target))
-                .and_then(Value::as_f64)
-            {
-                return Ok(format!("{base} 到 {target} 的汇率是: {rate}"));
+        // 付费 API 的任何失败(网络/401/解析)都不终止请求:免费 fallback
+        // 兜底。此前 `?` 直接上抛,fallback 分支实际是死代码。
+        let data = async {
+            http_response::shared_client()
+                .get(url)
+                .send()
+                .await?
+                .error_for_status()?
+                .json::<Value>()
+                .await
+        }
+        .await;
+        if let Ok(data) = data {
+            if data.get("result").and_then(Value::as_str) == Some("success") {
+                if let Some(rate) = data
+                    .get("conversion_rates")
+                    .and_then(|rates| rates.get(&target))
+                    .and_then(Value::as_f64)
+                {
+                    return Ok(format!("{base} 到 {target} 的汇率是: {rate}"));
+                }
             }
         }
     }
@@ -59,7 +66,7 @@ async fn get_exchange_rate(args: Value, config: ExchangeRatePluginConfig) -> Res
         bail!("exchange rate API key failed or missing and free fallback is disabled");
     }
     let url = format!("https://open.er-api.com/v6/latest/{base}");
-    let data: Value = reqwest::Client::new()
+    let data: Value = http_response::shared_client()
         .get(url)
         .send()
         .await?

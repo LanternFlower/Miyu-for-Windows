@@ -280,7 +280,9 @@ fn find_built_package(build_dir: &Path) -> Result<PathBuf> {
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if name.contains(".pkg.tar") {
+        // `.pkg.tar.zst.sig` 同样含 ".pkg.tar":签名文件不能被当作包传给
+        // `pacman -U`。
+        if name.contains(".pkg.tar") && !name.ends_with(".sig") {
             packages.push(path);
         }
     }

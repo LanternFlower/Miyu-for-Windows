@@ -1,8 +1,10 @@
 use super::{ToolRegistry, ToolSpec};
 use crate::i18n::agent_text as t;
+use crate::paths::MiyuPaths;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -14,13 +16,68 @@ pub struct Todo {
 
 pub type TodoList = Arc<Mutex<Vec<Todo>>>;
 
-pub fn register(registry: &mut ToolRegistry) {
-    let todos: TodoList = Arc::new(Mutex::new(Vec::new()));
-    register_with_state(registry, todos);
+// 存储绑定(任务#13):按会话落盘 state_dir/todos/<session>.json。
+// 旧实现是注册时的单例 Arc<Mutex<Vec>>,daemon 按 config 缓存复用
+// registry 后所有会话共享同一份(串味实锤);现在每次调用按当前回合的
+// 会话加载/回存,纯函数 todo_write/todo_update 与其测试原样保留。
+
+fn todos_path(paths: &MiyuPaths, session: &str) -> PathBuf {
+    paths.state_dir.join("todos").join(format!("{session}.json"))
 }
 
-pub fn register_with_state(registry: &mut ToolRegistry, todos: TodoList) {
-    let update_todos = Arc::clone(&todos);
+fn load_todos(paths: &MiyuPaths, session: &str) -> Vec<Todo> {
+    let Ok(raw) = std::fs::read_to_string(todos_path(paths, session)) else {
+        return Vec::new();
+    };
+    match serde_json::from_str(&raw) {
+        Ok(todos) => todos,
+        Err(error) => {
+            // 容错语义保留(损坏即重新开始),但必须留痕:任务清单无声消失
+            // 会让模型以为自己从没建过清单。
+            tracing::warn!(
+                session,
+                error = %error,
+                "todo list file is corrupt; starting with an empty list"
+            );
+            Vec::new()
+        }
+    }
+}
+
+fn save_todos(paths: &MiyuPaths, session: &str, todos: &[Todo]) -> Result<()> {
+    let path = todos_path(paths, session);
+    let Some(parent) = path.parent() else {
+        anyhow::bail!("todo path has no parent directory");
+    };
+    std::fs::create_dir_all(parent)?;
+    // 原子写:崩溃在写回中途不能把清单留成截断的半个 JSON。
+    let temp = tempfile::NamedTempFile::new_in(parent)?;
+    std::fs::write(temp.path(), serde_json::to_string_pretty(todos)?)?;
+    temp.persist(&path)?;
+    Ok(())
+}
+
+fn session_for_call() -> Result<String> {
+    super::workspace::try_session()
+        .map(|session| session.to_string())
+        .ok_or_else(|| anyhow::anyhow!("todo tools require a session turn"))
+}
+
+fn run_scoped(
+    paths: &MiyuPaths,
+    args: Value,
+    apply: fn(Value, TodoList) -> Result<String>,
+) -> Result<String> {
+    let session = session_for_call()?;
+    let todos: TodoList = Arc::new(Mutex::new(load_todos(paths, &session)));
+    let output = apply(args, Arc::clone(&todos))?;
+    let list = todos.lock().expect("todo state lock").clone();
+    save_todos(paths, &session, &list)?;
+    Ok(output)
+}
+
+pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
+    let update_paths = paths.clone();
     registry.register(ToolSpec::new(
         "todowrite",
         t(
@@ -59,8 +116,8 @@ pub fn register_with_state(registry: &mut ToolRegistry, todos: TodoList) {
             "additionalProperties": false
         }),
         move |args| {
-            let todos = Arc::clone(&todos);
-            async move { todo_write(args, todos) }
+            let paths = paths.clone();
+            async move { run_scoped(&paths, args, todo_write) }
         },
     ).writes());
     registry.register(ToolSpec::new(
@@ -115,8 +172,8 @@ pub fn register_with_state(registry: &mut ToolRegistry, todos: TodoList) {
             "additionalProperties": false
         }),
         move |args| {
-            let todos = Arc::clone(&update_todos);
-            async move { todo_update(args, todos) }
+            let paths = update_paths.clone();
+            async move { run_scoped(&paths, args, todo_update) }
         },
     ).writes());
 }
@@ -138,20 +195,22 @@ fn todo_write(args: Value, todos: TodoList) -> Result<String> {
         if content.is_empty() {
             anyhow::bail!("todo content must not be empty");
         }
+        // 与 todoupdate 同一套校验:enum 外的值静默入库会让 pending 计数
+        // 和状态展示错乱。
         let status = item
             .get("status")
             .and_then(Value::as_str)
-            .unwrap_or("pending")
-            .to_string();
+            .unwrap_or("pending");
+        validate_status(status)?;
         let priority = item
             .get("priority")
             .and_then(Value::as_str)
-            .unwrap_or("medium")
-            .to_string();
+            .unwrap_or("medium");
+        validate_priority(priority)?;
         list.push(Todo {
             content,
-            status,
-            priority,
+            status: status.to_string(),
+            priority: priority.to_string(),
         });
     }
 

@@ -175,14 +175,13 @@ pub fn register(
 /// so the calling agent knows which tiers are configured and with which
 /// concrete models when choosing a tier.
 fn tier_pool_status(config: &AppConfig) -> String {
+    // 全部未配置=默认形态:一个字都不追加。三行"未配置(回退主模型池)"
+    // 对模型是零信息,还把动态文本焊进 tools 数组(字节稳定性隐患,
+    // 验收 08-16 dev 解剖)。配置了档位的用户才见状态。
     let describe = |tier: ModelTier| {
         let pool = config.subagent_tier_choices(tier);
         if pool.is_empty() {
-            t(
-                "not configured (falls back to the main model pool)",
-                "未配置（回退主模型池）",
-            )
-            .to_string()
+            String::new()
         } else {
             pool.iter()
                 .map(|choice| choice.model.as_str())
@@ -190,12 +189,28 @@ fn tier_pool_status(config: &AppConfig) -> String {
                 .join(", ")
         }
     };
-    format!(
-        "{}cheap=[{}]; balanced=[{}]; strong=[{}]",
-        t(" Current tier pools: ", " 当前档位池状态："),
+    let (cheap, balanced, strong) = (
         describe(ModelTier::Cheap),
         describe(ModelTier::Balanced),
         describe(ModelTier::Strong),
+    );
+    if cheap.is_empty() && balanced.is_empty() && strong.is_empty() {
+        return String::new();
+    }
+    let fallback = t("main pool", "主池");
+    let show = |pool: &str| -> String {
+        if pool.is_empty() {
+            fallback.to_string()
+        } else {
+            pool.to_string()
+        }
+    };
+    format!(
+        "{}cheap=[{}]; balanced=[{}]; strong=[{}]",
+        t(" Current tier pools: ", " 当前档位池状态："),
+        show(&cheap),
+        show(&balanced),
+        show(&strong),
     )
 }
 

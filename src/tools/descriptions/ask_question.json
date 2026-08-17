@@ -37,7 +37,10 @@
                     "description": "解释该选项的含义和影响。"
                   }
                 },
-                "required": ["label", "description"],
+                "required": [
+                  "label",
+                  "description"
+                ],
                 "additionalProperties": false
               }
             },
@@ -50,16 +53,22 @@
               "description": "是否允许输入自定义答案，默认 true。"
             }
           },
-          "required": ["header", "question", "options"],
+          "required": [
+            "header",
+            "question",
+            "options"
+          ],
           "additionalProperties": false
         }
       }
     },
-    "required": ["questions"],
+    "required": [
+      "questions"
+    ],
     "additionalProperties": false
   },
   "permission": "read_only",
-  "always_loaded": true,
+  "always_loaded": false,
   "load_policy": "summary",
   "groups": []
 }

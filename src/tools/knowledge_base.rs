@@ -482,16 +482,21 @@ impl KnowledgeBase {
         self.init()?;
         let rel = normalize_relative_path(name)?;
         let path = self.safe_file_path(&rel)?;
-        if path.exists() {
+        let file_existed = path.exists();
+        if file_existed {
             std::fs::remove_file(&path)?;
         }
         let conn = self.meta_conn()?;
-        conn.execute("DELETE FROM files WHERE name=?1", params![rel])?;
+        let deleted_rows = conn.execute("DELETE FROM files WHERE name=?1", params![rel])?;
         let semantic = self.semantic_conn()?;
         semantic.execute(
             "DELETE FROM semantic_chunks WHERE file_name=?1",
             params![rel],
         )?;
+        // 目标本来就不存在时必须报错:静默返回 ok 会让模型以为删除成功。
+        if !file_existed && deleted_rows == 0 {
+            anyhow::bail!("knowledge base file not found: {rel}");
+        }
         Ok(())
     }
 
@@ -626,6 +631,12 @@ impl KnowledgeBase {
     }
 
     fn import_file(&self, source: &Path, name: &str) -> Result<String> {
+        // 先看元数据再整读:超大文件不该先撑满 RAM 再被大小校验拒绝。
+        let max_bytes = self.config.plugins.knowledge_base.max_file_size_kb * 1024;
+        let size = std::fs::metadata(source)?.len();
+        if size > max_bytes as u64 {
+            bail!("file too large: {size} bytes");
+        }
         let bytes = std::fs::read(source)?;
         self.validate_file(name, &bytes)?;
         let dest = self.safe_file_path(name)?;

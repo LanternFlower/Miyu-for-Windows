@@ -16,3 +16,4 @@
 config.jsonc
 *.jsonc.bak
 .env
+.claude

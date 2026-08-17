@@ -186,10 +186,19 @@ enum MemeSource {
     User,
 }
 
-pub(crate) fn auto_meme_reminder(config: &AppConfig, user_message: &str) -> Option<String> {
+pub(crate) fn auto_meme_reminder(
+    config: &AppConfig,
+    user_message: &str,
+    platform: bool,
+) -> Option<String> {
     let meme_config = &config.plugins.memes;
+    let auto_enabled = if platform {
+        meme_config.auto_send_platform_enabled
+    } else {
+        meme_config.auto_send_enabled
+    };
     if !meme_config.enabled
-        || !meme_config.auto_send_enabled
+        || !auto_enabled
         || user_message.trim().is_empty()
         || meme_config.auto_send_probability <= 0.0
     {
@@ -604,9 +613,26 @@ async fn update_meme(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Resu
     let _guard = library_lock.lock().await;
     let id = required_str(&args, "id")?;
     let existing =
-        find_meme(paths, &library, id)?.with_context(|| format!("meme not found: {id}"))?;
+        find_meme_any(paths, &library, id)?.with_context(|| format!("meme not found: {id}"))?;
     let id = existing.item.id.clone();
     let user_dir = user_library_dir(paths, &library);
+    if matches!(existing.source, MemeSource::Builtin) {
+        // 内置条目的 file 是相对内置目录的路径:落进用户 overlay 前必须
+        // 把图片实体复制过来,否则之后按 user_dir 解析落空,show 必失败。
+        let target = user_dir.join(&existing.item.file);
+        if !target.exists() {
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&existing.path, &target).with_context(|| {
+                format!(
+                    "failed to copy builtin meme image {} to {}",
+                    existing.path.display(),
+                    target.display()
+                )
+            })?;
+        }
+    }
     let mut index = load_index(&user_dir.join("index.json"))?.unwrap_or_else(|| MemeIndex {
         library: library.clone(),
         version: 2,
@@ -809,7 +835,17 @@ pub(crate) async fn collect_meme_from_local_image(
     index
         .disabled_ids
         .retain(|value| !ids_match(value, &prepared.id));
-    index.memes.push(item);
+    // 之前被禁用的同 id 条目还留在 memes 里(find_meme 滤 disabled 看
+    // 不见它):替换而不是追加,避免同 id 双条目。
+    if let Some(existing) = index
+        .memes
+        .iter_mut()
+        .find(|meme| ids_match(&meme.id, &prepared.id))
+    {
+        *existing = item;
+    } else {
+        index.memes.push(item);
+    }
     if let Err(error) = save_index(&user_dir.join("index.json"), &index) {
         let _ = std::fs::remove_file(&target);
         return Err(error);
@@ -906,6 +942,37 @@ fn index_mtime(path: &Path) -> Option<SystemTime> {
 
 fn find_meme(paths: &MiyuPaths, library: &str, id: &str) -> Result<Option<LoadedMeme>> {
     find_meme_in(load_library(paths, library)?, id)
+}
+
+/// 与 [`find_meme`] 相同的匹配规则,但不滤 disabled:重新启用
+/// (`enabled=true`)必须能找到已禁用条目,否则禁用成了单向门。
+/// 管理操作低频,不走库缓存。
+fn find_meme_any(paths: &MiyuPaths, library: &str, id: &str) -> Result<Option<LoadedMeme>> {
+    let builtin_dir = builtin_library_dir(library);
+    let user_dir = user_library_dir(paths, library);
+    let builtin = load_index(&builtin_dir.join("index.json"))?.unwrap_or_default();
+    let user = load_index(&user_dir.join("index.json"))?.unwrap_or_default();
+    let mut user_ids = Vec::new();
+    let mut result = Vec::new();
+    for item in user.memes {
+        user_ids.push(item.id.clone());
+        result.push(LoadedMeme {
+            path: user_dir.join(&item.file),
+            item,
+            source: MemeSource::User,
+        });
+    }
+    for item in builtin.memes {
+        if user_ids.iter().any(|id| ids_match(id, &item.id)) {
+            continue;
+        }
+        result.push(LoadedMeme {
+            path: builtin_dir.join(&item.file),
+            item,
+            source: MemeSource::Builtin,
+        });
+    }
+    find_meme_in(result, id)
 }
 
 fn find_meme_in(memes: Vec<LoadedMeme>, id: &str) -> Result<Option<LoadedMeme>> {
@@ -1549,6 +1616,22 @@ mod tests {
     fn sanitize_library_keeps_simple_names() {
         assert_eq!(sanitize_library("Miyu"), "miyu");
         assert_eq!(sanitize_library("默认 表情"), "default");
+    }
+
+    /// 自动提示发送表情的平台/本地开关相互独立(两者默认都开)。
+    #[test]
+    fn platform_and_local_auto_send_gates_are_independent() {
+        let mut config = AppConfig::default();
+        config.plugins.memes.auto_send_probability = 1.0;
+        assert!(auto_meme_reminder(&config, "你好", true).is_some());
+        assert!(auto_meme_reminder(&config, "你好", false).is_some());
+        config.plugins.memes.auto_send_enabled = false;
+        assert!(auto_meme_reminder(&config, "你好", false).is_none());
+        assert!(auto_meme_reminder(&config, "你好", true).is_some());
+        config.plugins.memes.auto_send_enabled = true;
+        config.plugins.memes.auto_send_platform_enabled = false;
+        assert!(auto_meme_reminder(&config, "你好", false).is_some());
+        assert!(auto_meme_reminder(&config, "你好", true).is_none());
     }
 
     #[test]

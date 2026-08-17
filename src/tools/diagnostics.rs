@@ -574,8 +574,11 @@ async fn linux_input_method_evidence(
         return;
     };
     let mut pids = process_check(config, report, target).await;
+    let mut launch_child = None;
     if pids.is_empty() && args.allow_launch_probe {
-        pids = launch_probe_target(args, config, report, target).await;
+        let (probe_pids, child) = launch_probe_target(args, config, report, target).await;
+        pids = probe_pids;
+        launch_child = child;
     }
     if pids.is_empty() {
         report.missing_evidence.push(format!(
@@ -616,6 +619,10 @@ async fn linux_input_method_evidence(
         &[target, "fcitx", "ibus", "qt", "gtk", "xwayland"],
     )
     .await;
+    // 诊断采样结束后回收 launch probe 拉起的目标进程，避免弹出的应用常驻。
+    if let Some(mut child) = launch_child {
+        let _ = child.kill().await;
+    }
 }
 
 async fn probe_wayland_protocol(
@@ -710,15 +717,16 @@ async fn probe_display_mode_via_sockets(
     let ss_output = run_command(config, "ss", &["-xp"], 3).await;
     let unix_text = std::fs::read_to_string("/proc/net/unix").unwrap_or_default();
 
+    // /proc/net/unix 列序：Num RefCount Protocol Flags Type St Inode Path，Inode 是第 6 列。
     let x11_inodes: BTreeSet<String> = unix_text
         .lines()
         .filter(|line| line.contains("X11-unix"))
-        .filter_map(|line| line.split_whitespace().nth(7).map(|s| s.to_string()))
+        .filter_map(|line| line.split_whitespace().nth(6).map(|s| s.to_string()))
         .collect();
     let wayland_inodes: BTreeSet<String> = unix_text
         .lines()
         .filter(|line| line.contains("wayland"))
-        .filter_map(|line| line.split_whitespace().nth(7).map(|s| s.to_string()))
+        .filter_map(|line| line.split_whitespace().nth(6).map(|s| s.to_string()))
         .collect();
 
     let mut has_x11 = false;
@@ -804,9 +812,10 @@ async fn build_input_method_profile(
     let command_line = pids.first().and_then(|pid| read_proc_cmdline(*pid));
     let desktop_exec = linux_desktop_exec_for_target(target);
     let command_path = command_path(config, target).await;
-    let package_probe = command_path
-        .as_deref()
-        .and_then(|path| package_probe_for_command(config, path, target));
+    let package_probe = match command_path.as_deref() {
+        Some(path) => package_probe_for_command(config, path, target).await,
+        None => None,
+    };
     if let Some(probe) = &package_probe {
         report
             .facts
@@ -1389,24 +1398,25 @@ async fn launch_probe_target(
     config: &DiagnosticsPluginConfig,
     report: &mut EvidenceReport,
     target: &str,
-) -> Vec<u32> {
+) -> (Vec<u32>, Option<tokio::process::Child>) {
     if !safe_command_name(target) {
         report
             .missing_evidence
             .push("launch probe skipped because target command name is not safe".to_string());
-        return Vec::new();
+        return (Vec::new(), None);
     }
     let before = process_ids(config, target).await;
     let spawn = Command::new(target)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .kill_on_drop(true)
         .spawn();
     let Ok(child) = spawn else {
         report
             .missing_evidence
             .push(format!("failed to launch {target} for runtime sampling"));
-        return Vec::new();
+        return (Vec::new(), None);
     };
     tokio::time::sleep(Duration::from_secs(args.launch_timeout_seconds)).await;
     let after = process_ids(config, target).await;
@@ -1419,11 +1429,8 @@ async fn launch_probe_target(
         "launch_probe".to_string(),
         json!({"target": target, "launched_pid": child.id(), "pids_before": before, "pids_after": after, "new_pids": new_pids}),
     );
-    if new_pids.is_empty() {
-        after
-    } else {
-        new_pids
-    }
+    let pids = if new_pids.is_empty() { after } else { new_pids };
+    (pids, Some(child))
 }
 
 async fn process_ids(config: &DiagnosticsPluginConfig, name: &str) -> Vec<u32> {
@@ -1741,26 +1748,40 @@ async fn package_owner(config: &DiagnosticsPluginConfig, report: &mut EvidenceRe
     push_log_if_stdout(report, "pacman -Qo", &output);
 }
 
-fn package_probe_for_command(
+async fn package_probe_for_command(
     config: &DiagnosticsPluginConfig,
     command_path: &str,
     target: &str,
 ) -> Option<String> {
-    let owner = std::process::Command::new("pacman")
-        .args(["-Qo", command_path])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())?;
+    let owner = timeout(
+        Duration::from_secs(5),
+        Command::new("pacman")
+            .args(["-Qo", command_path])
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()
+    .filter(|output| output.status.success())?;
     let owner_text = String::from_utf8_lossy(&owner.stdout);
     let package = package_name_from_pacman_owner(&owner_text)?;
     if !safe_command_name(&package) {
         return None;
     }
-    let output = std::process::Command::new("pacman")
-        .args(["-Ql", &package])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())?;
+    let output = timeout(
+        Duration::from_secs(10),
+        Command::new("pacman")
+            .args(["-Ql", &package])
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()
+    .filter(|output| output.status.success())?;
     let mut lines = vec![format!("package={package}"), format!("target={target}")];
     lines.extend(
         String::from_utf8_lossy(&output.stdout)
@@ -1865,6 +1886,7 @@ async fn run_command(
         Command::new(command)
             .args(args)
             .stdin(Stdio::null())
+            .kill_on_drop(true)
             .output(),
     )
     .await;

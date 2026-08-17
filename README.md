@@ -14,7 +14,17 @@ Miyu 是从我曾经很喜欢的动画中的角色身上汲取灵感制作的虚
 
 ## 有什么功能？
 
-`miyu` 由大模型驱动，默认接入了 [opencode](https://github.com/anomalyco/opencode) 的公共模型服务，你也可以配置自己的大模型服务。除了 Coding，她还可以完成聊天日常、游戏娱乐、系统排障、天气查询、汇率换算、二手市场行情查询等日用场景。
+`miyu` 由大模型驱动，默认接入了 [opencode](https://github.com/anomalyco/opencode) 的公共模型服务，你也可以配置自己的大模型服务。
+
+`miyu` 拥有两个模式：
+
+- Normal 普通模式
+
+  拥有全部功能和工具，可以完成角色扮演、游戏娱乐、系统排障、天气查询、汇率换算、二手市场行情查询等日用场景。
+
+- Dev 开发模式
+
+  和普通模式隔离，移除所有和开发无关的功能和工具，通过极简设计最大限度发挥模型自身的能力。
 
 `miyu` 可以与 `PowerShell`（Windows）以及 `fish`、`zsh`、`bash`（Linux/macOS）集成，终端打字直接无缝对话！
 
@@ -92,17 +102,17 @@ cd Miyu
 cargo build --release
 ```
 
+安装完成后可以运行 `miyu init` 初始化配置和状态文件；也可以直接运行 `miyu daemon start`，首次启动会自动初始化。查看完整帮助信息可以运行 `miyu -h`。
+
 > `fish-init`/`bash-init`/`zsh-init` 为 Unix 专属；终端 LaTeX 渲染、kitty 图像协议等终端特性也只在 Unix 终端可用。
 
-## 如何使用？
+## 三种触发
 
 > Windows 上推荐使用 [Windows Terminal](https://github.com/microsoft/terminal) 或 PowerShell；Linux 上最适配的是 `kitty` 终端。
 
-- REPL TUI 交互模式
+- REPL TUI
 
-  ```
-  miyu
-  ```
+  `miyu normal` 进入普通模式的 REPL；`miyu dev` 进入开发模式的 REPL。
 
 - WebUI 局域网网页
 
@@ -126,47 +136,9 @@ cargo build --release
   miyu zsh-init
   ```
 
-### 会话的三条车道
+  初始化后可以直接在终端打字对话。
 
-`miyu` 把「对话落在哪」分成三条互不干扰的车道，不用手动切会话就能随口问问题：
-
-| 入口                                                            | 落在哪                                               |
-| --------------------------------------------------------------- | ---------------------------------------------------- |
-| `miyu ask <消息>`、`miyu '<消息>'`、管道输入                    | **一次性对话**：临时会话，答完即删，不进任何上下文   |
-| shell hook（终端里直接说自然语言）、`miyu new` / `miyu session` | **终端会话**：一直沿用，直到你主动切换               |
-| `miyu` 进 REPL、REPL 内的 `/new` 和 `/session`                  | **REPL 会话**：REPL 自己记着上次在哪，重开就回到那里 |
-
-于是：shell hook 正在长篇回复时，另开一个终端 `miyu '顺手问一句'` 不会污染那条对话；REPL 里 `/new` 开的新会话，退出重开还在，而 shell hook 仍留在原来的终端会话上。
-
-一次性入口想例外地发进终端会话时加 `-c`：
-
-```
-miyu -c '记住我在写 Miyu 的会话模块'
-```
-
-`--session <名称|编号>` 则指定任意一个会话，同样只作用于本次命令。
-
-删除会话不必先切过去：`miyu session` 或 REPL 的 `/session` 弹出菜单后，在目标行按 `Ctrl+D` 确认即可，删完菜单会刷新并留在原处。
-
-### 搬到另一台机器
-
-`miyu export` 把当前安装打成一个 `.tar.gz`（权限 0600），`miyu import` 在新机器上还原：
-
-```bash
-miyu export                      # 配置、会话历史、记忆、知识库原文、用户资源
-miyu export --index --platforms  # 额外带上向量索引与平台聊天历史
-miyu export --no-secrets         # 清空 API key 与令牌，导入后自行补填
-miyu export --dry-run            # 只看清单与体积，不写文件
-
-miyu daemon stop                 # daemon 占着数据库，导入前必须停
-miyu import miyu-export-*.tar.gz
-```
-
-默认**不含**知识库向量索引（很大，且 `miyu kb embed` 可重建）、缓存、日志和其他一次性的本机状态。密钥默认带上并在导出时警告——归档是明文的，别随手发出去。
-
-目标目录已有配置或会话历史时导入会被拒绝；`--force` 会先把现有安装导出成 `miyu-backup-<时间>.tar.gz` 再覆盖。导入后按提示重装 shell 集成、跑 `miyu kb reindex`（知识库记的是旧机器的绝对路径），未带 `--index` 时再跑一次 `miyu kb embed`。
-
-### 重要配置调整
+## 重要配置调整
 
 运行 `miyu config` 命令打开配置 TUI。
 
@@ -182,11 +154,27 @@ miyu import miyu-export-*.tar.gz
 
   `miyu` 的默认提示词是无法修改的。你可以在`自定义提示词`中新建属于自己的 AI 人格，还可以配置 `用户身份` 让对话更加沉浸。
 
-### 用户资源与 Skill
+## 搬到另一台机器
+
+`miyu export` 把当前安装打成一个 `.tar.gz`（权限 0600），`miyu import` 在新机器上还原：
+
+```bash
+miyu export                      # 配置、会话历史、记忆、知识库原文、用户资源
+miyu export --index --platforms  # 额外带上向量索引与平台聊天历史
+miyu export --no-secrets         # 清空 API key 与令牌，导入后自行补填
+miyu export --dry-run            # 只看清单与体积，不写文件
+
+miyu daemon stop                 # daemon 占着数据库，导入前必须停
+miyu import miyu-export-*.tar.gz
+```
+
+默认**不含**知识库向量索引（很大，且 `miyu kb embed` 可重建）、缓存、日志和其他一次性的本机状态。密钥默认带上并在导出时警告——归档是明文的，别随手发出去。
+
+## 用户资源与 Skill
 
 Miyu 将配置与用户资源分开保存（`~/.miyu`，Windows 下为 `%USERPROFILE%\.miyu`）：`config` 存放 `config.jsonc`、主题和 shell 集成；`data` 存放 prompts、identities、persona-avatars、scripts 和 skills；运行状态与 Skill 草稿位于 `state`。
 
-### 内置插件
+## 内置插件
 
 > 以下大部分插件跨平台可用；标注「Linux」的插件（ProtonDB、Linux 游戏兼容性、Man 手册、Arch Linux 相关、Linux 输入法诊断、Fcitx5 wiki 等）主要服务 Linux 用户，Windows 上仍可调用，只是实用价值有限。
 
@@ -365,6 +353,7 @@ Miyu 将配置与用户资源分开保存（`~/.miyu`，Windows 下为 `%USERPRO
 - [Claude Code](https://github.com/anthropics/claude-code)
 - [Pi](https://github.com/earendil-works/pi)
 - [Deepseek-Reasonix](https://github.com/esengine/deepseek-reasonix)
+- [Deepseek-Harness](https://github.com/deepseek-ai/deepseek-harness)
 - [Astrbot](https://github.com/AstrBotDevs/AstrBot)
 - [NapCatQQ](https://github.com/NapNeko/NapCatQQ)
 
@@ -377,7 +366,6 @@ Miyu 将配置与用户资源分开保存（`~/.miyu`，Windows 下为 `%USERPRO
 - [Railgun19457/astrbot_plugin_image_generation](Railgun19457/astrbot_plugin_image_generation)
 - [xiewoc/astrbot_plugin_weather_wttr_in](xiewoc/astrbot_plugin_weather_wttr_in)
 - [muyouzhi6/astrbot_plugin_recall_cancel](muyouzhi6/astrbot_plugin_recall_cancel)
-- []()
 
 ## 许可
 

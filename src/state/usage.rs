@@ -184,6 +184,9 @@ pub struct UsageRecord {
     pub cache_write: u64,
     #[serde(default, skip_serializing_if = "is_false")]
     pub aux: bool,
+    /// 计费估算(USD),读取时按当前价目计算,不落盘。
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<f64>,
 }
 
 /// 调用元数据,由各埋点交代。provider/model 拿不到就 None(如缓存保活)。
@@ -219,6 +222,7 @@ fn record_usage_at(
         cache_read: usage.cache_read_tokens,
         cache_write: usage.cache_write_tokens,
         aux,
+        cost: None,
     };
     let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(file, "{}", serde_json::to_string(&record)?)?;
@@ -245,15 +249,24 @@ pub struct UsageAggregate {
     pub completion: u64,
     pub cache_read: u64,
     pub total: u64,
+    /// 计费估算(USD),按 models.dev 单价 × 用量;只累计查得到价的请求。
+    pub cost: f64,
+    /// 参与计费估算的请求数。< requests 说明部分记录没有价格数据
+    /// (自定义中转、目录未收录的模型),前端据此标注估算覆盖率。
+    pub costed_requests: u64,
 }
 
 impl UsageAggregate {
-    fn absorb(&mut self, record: &UsageRecord) {
+    fn absorb(&mut self, record: &UsageRecord, cost: Option<f64>) {
         self.requests += 1;
         self.prompt += record.prompt;
         self.completion += record.completion;
         self.cache_read += record.cache_read;
         self.total += record.total;
+        if let Some(cost) = cost {
+            self.cost += cost;
+            self.costed_requests += 1;
+        }
     }
 }
 
@@ -266,6 +279,8 @@ pub struct DailyUsage {
     pub completion: u64,
     pub cache_read: u64,
     pub total: u64,
+    /// 计费估算(USD),只含查得到价的请求。
+    pub cost: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -331,8 +346,19 @@ fn local_day_start(ts: i64) -> Option<chrono::DateTime<Local>> {
     time.date_naive().and_hms_opt(0, 0, 0)?.and_local_timezone(Local).single()
 }
 
-pub fn usage_stats(path: &Path, range: UsageRange) -> Result<UsageStats> {
+/// 计价器:按 (provider, model) 给出单价;None = 无价格数据。
+pub type PriceFn<'a> = &'a dyn Fn(&str, &str) -> Option<crate::models_cache::ApiCost>;
+
+pub fn usage_stats(path: &Path, range: UsageRange, price: PriceFn<'_>) -> Result<UsageStats> {
     let records = load_records(path)?;
+    // 单价按 (provider, model) 记忆化:每条记录都查一次目录锁太浪费。
+    let mut price_cache = std::collections::HashMap::<(String, String), Option<crate::models_cache::ApiCost>>::new();
+    let mut record_cost = |record: &UsageRecord| -> Option<f64> {
+        price_cache
+            .entry((record.provider.clone(), record.model.clone()))
+            .or_insert_with(|| price(&record.provider, &record.model))
+            .map(|c| c.estimate(record.prompt, record.completion, record.cache_read, record.cache_write))
+    };
     let now = chrono::Utc::now().timestamp();
     // 范围窗口按本地自然日对齐:今天=本地零点起;7d/30d=含今天往前 n 天。
     let today_start = local_day_start(now).map(|t| t.timestamp()).unwrap_or(now);
@@ -354,19 +380,20 @@ pub fn usage_stats(path: &Path, range: UsageRange) -> Result<UsageStats> {
 
     for record in &records {
         first_ts = Some(first_ts.map_or(record.ts, |t| t.min(record.ts)));
+        let cost = record_cost(record);
         let in_range = start.map_or(true, |s| record.ts >= s);
         if in_range {
-            totals.absorb(record);
+            totals.absorb(record, cost);
             let src = if record.src.is_empty() { "agent" } else { record.src.as_str() };
             let (agg, models) = sources.entry(src.to_string()).or_default();
-            agg.absorb(record);
+            agg.absorb(record, cost);
             models
                 .entry((record.provider.clone(), record.model.clone()))
                 .or_default()
-                .absorb(record);
+                .absorb(record, cost);
         } else if let (Some(s), Some(p)) = (start, prev_start) {
             if record.ts >= p && record.ts < s {
-                prev_totals.absorb(record);
+                prev_totals.absorb(record, cost);
             }
         }
         if record.ts >= daily_floor {
@@ -379,12 +406,14 @@ pub fn usage_stats(path: &Path, range: UsageRange) -> Result<UsageStats> {
                     completion: 0,
                     cache_read: 0,
                     total: 0,
+                    cost: 0.0,
                 });
                 entry.requests += 1;
                 entry.prompt += record.prompt;
                 entry.completion += record.completion;
                 entry.cache_read += record.cache_read;
                 entry.total += record.total;
+                entry.cost += cost.unwrap_or(0.0);
             }
         }
     }
@@ -401,6 +430,7 @@ pub fn usage_stats(path: &Path, range: UsageRange) -> Result<UsageStats> {
                 completion: 0,
                 cache_read: 0,
                 total: 0,
+                cost: 0.0,
             });
         }
     }
@@ -449,6 +479,7 @@ pub fn usage_details(
     limit: usize,
     src: Option<&str>,
     model: Option<&str>,
+    price: PriceFn<'_>,
 ) -> Result<Vec<UsageRecord>> {
     let mut records = load_records(path)?;
     if let Some(src) = src.filter(|value| !value.is_empty()) {
@@ -462,12 +493,66 @@ pub fn usage_details(
     }
     records.sort_by_key(|record| std::cmp::Reverse(record.ts));
     records.truncate(limit);
+    let mut price_cache = std::collections::HashMap::<(String, String), Option<crate::models_cache::ApiCost>>::new();
+    for record in &mut records {
+        record.cost = price_cache
+            .entry((record.provider.clone(), record.model.clone()))
+            .or_insert_with(|| price(&record.provider, &record.model))
+            .map(|c| c.estimate(record.prompt, record.completion, record.cache_read, record.cache_write));
+    }
     Ok(records)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 计费估算:有价的记录累计 cost/costed_requests,无价的只计用量。
+    #[test]
+    fn usage_stats_estimates_cost_with_resolver() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("usage-history.jsonl");
+        let usage = Usage {
+            prompt_tokens: 2_000_000,
+            completion_tokens: 1_000_000,
+            total_tokens: 3_000_000,
+            cache_read_tokens: 1_000_000,
+            ..Usage::default()
+        };
+        record_usage(
+            &path,
+            &usage,
+            UsageMeta { source: "agent", provider: Some("priced"), model: Some("m") },
+            false,
+        )
+        .unwrap();
+        record_usage(
+            &path,
+            &usage,
+            UsageMeta { source: "agent", provider: Some("unknown"), model: Some("m") },
+            false,
+        )
+        .unwrap();
+        let price = |provider: &str, _model: &str| {
+            (provider == "priced").then_some(crate::models_cache::ApiCost {
+                input: 1.0,
+                output: 2.0,
+                cache_read: Some(0.1),
+                cache_write: None,
+            })
+        };
+        let stats = usage_stats(&path, UsageRange::All, &price).unwrap();
+        assert_eq!(stats.totals.requests, 2);
+        assert_eq!(stats.totals.costed_requests, 1);
+        // 未命中 100 万×1 + 命中 100 万×0.1 + 输出 100 万×2 = 3.1
+        assert!((stats.totals.cost - 3.1).abs() < 1e-9, "{}", stats.totals.cost);
+        let day_cost: f64 = stats.daily.iter().map(|d| d.cost).sum();
+        assert!((day_cost - 3.1).abs() < 1e-9);
+        let details = usage_details(&path, 10, None, None, &price).unwrap();
+        let priced: Vec<_> = details.iter().filter(|r| r.cost.is_some()).collect();
+        assert_eq!(priced.len(), 1);
+        assert!((priced[0].cost.unwrap() - 3.1).abs() < 1e-9);
+    }
 
     #[test]
     fn records_and_clears_last_usage() {
@@ -570,7 +655,7 @@ mod tests {
         record_usage_at(&path, &usage(30, 5, 10), meta("qq", "m-b"), true, now - 40 * 86_400)
             .unwrap();
 
-        let all = usage_stats(&path, UsageRange::All).unwrap();
+        let all = usage_stats(&path, UsageRange::All, &|_, _| None).unwrap();
         assert_eq!(all.totals.requests, 3);
         assert_eq!(all.totals.prompt, 180);
         assert_eq!(all.totals.cache_read, 70);
@@ -582,19 +667,19 @@ mod tests {
         assert_eq!(all.sources[1].aggregate.requests, 2);
         assert_eq!(all.sources[1].models[0].model, "m-b");
 
-        let week = usage_stats(&path, UsageRange::Days(7)).unwrap();
+        let week = usage_stats(&path, UsageRange::Days(7), &|_, _| None).unwrap();
         assert_eq!(week.totals.requests, 2); // 40 天前的那条不在窗口
         assert!(week.prev_totals.is_some());
 
-        let details = usage_details(&path, 2, None, None).unwrap();
+        let details = usage_details(&path, 2, None, None, &|_, _| None).unwrap();
         assert_eq!(details.len(), 2);
         assert_eq!(details[0].model, "m-a"); // 新的在前
         assert!(!details[0].aux);
 
-        let only_qq = usage_details(&path, 10, Some("qq"), None).unwrap();
+        let only_qq = usage_details(&path, 10, Some("qq"), None, &|_, _| None).unwrap();
         assert_eq!(only_qq.len(), 2);
         assert!(only_qq.iter().all(|record| record.src == "qq"));
-        let only_model = usage_details(&path, 10, None, Some("m-b")).unwrap();
+        let only_model = usage_details(&path, 10, None, Some("m-b"), &|_, _| None).unwrap();
         assert_eq!(only_model.len(), 2);
     }
 
@@ -610,7 +695,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let stats = usage_stats(&path, UsageRange::All).unwrap();
+        let stats = usage_stats(&path, UsageRange::All, &|_, _| None).unwrap();
         assert_eq!(stats.totals.requests, 1);
         assert_eq!(stats.sources[0].src, "agent"); // 旧记录缺 src 归智能体
     }

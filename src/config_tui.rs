@@ -1,12 +1,13 @@
 use crate::config::{
-    merge_real_context_settings, ActiveProviderModelConfig, ApiQuotaAccountConfig,
-    ApiQuotaProviderConfig, AppConfig, PlatformCommandPermission, PlatformConversationConfig,
-    PlatformConversationKind, PlatformModelPoolInheritance, PlatformModelRoute,
-    PlatformPersonaOverride, PlatformRateLimit, PlatformSessionLimits, ProviderConfig,
-    ProviderModelChoice, QqMemeCollectorPluginSettings, QqMessageHistoryPluginSettings,
-    RealContextIdentityMapping, RealContextPluginSettings, MAX_COMMAND_OUTPUT_LINES,
-    MAX_PLATFORM_COMMAND_PREFIX_CHARS, MAX_PLATFORM_SESSION_QUEUED, MAX_PLATFORM_SESSION_RUNNING,
-    MAX_REPL_REPLAY_TURNS,
+    merge_group_join_approval_settings, merge_real_context_settings, ActiveProviderModelConfig,
+    ApiQuotaAccountConfig, ApiQuotaProviderConfig, AppConfig, PlatformCommandPermission,
+    PlatformConversationConfig, PlatformConversationKind, PlatformModelPoolInheritance,
+    PlatformModelRoute, PlatformPersonaOverride, PlatformRateLimit, PlatformSessionLimits,
+    ProviderConfig, ProviderModelChoice, QqGroupJoinApprovalGroupConfig,
+    QqGroupJoinApprovalPluginSettings, QqMemeCollectorPluginSettings,
+    QqMessageHistoryPluginSettings, RealContextIdentityMapping, RealContextPluginSettings,
+    MAX_COMMAND_OUTPUT_LINES, MAX_PLATFORM_COMMAND_PREFIX_CHARS, MAX_PLATFORM_SESSION_QUEUED,
+    MAX_PLATFORM_SESSION_RUNNING, MAX_REPL_REPLAY_TURNS, QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID,
     QQ_MEME_COLLECTOR_PLUGIN_ID, QQ_MESSAGE_HISTORY_PLUGIN_ID, REAL_CONTEXT_PLUGIN_ID,
 };
 use crate::default_models::{OPENCODE_DEFAULT_VISION_MODEL, OPENCODE_PROVIDER_ID};
@@ -50,6 +51,9 @@ struct TerminalSession {
 impl TerminalSession {
     fn start() -> Result<Self> {
         terminal::enable_raw_mode()?;
+        // 独立 `miyu config` 没有 REPL 的挂断看门狗;不发 SIGHUP 的断开
+        // (tmux kill-pane、SSH 掉线)会让 crossterm 对 HUP fd 全速自旋。
+        crate::cli::spawn_hangup_watchdog();
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen, Hide)?;
         Ok(Self { stdout })
@@ -137,34 +141,64 @@ fn run_main_menu(
                     return Ok(false);
                 }
                 if confirm_save_on_exit(stdout)? {
-                    config.save(paths)?;
-                    thinking_variants.save(paths)?;
-                    return Ok(true);
+                    match config.save(paths) {
+                        Ok(()) => {
+                            thinking_variants.save(paths)?;
+                            return Ok(true);
+                        }
+                        Err(error) => {
+                            // 保存失败(如校验不过)不能崩出:崩出会丢掉本次
+                            // 全部内存修改,留在菜单让用户改完再存。
+                            show_tui_error(stdout, &error)?;
+                            continue;
+                        }
+                    }
                 }
                 return Ok(false);
             }
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
-            KeyCode::Enter => match selected {
-                0 => ProviderBrowser::new(paths, config, thinking_variants).run(stdout)?,
-                1 => select_active_provider(stdout, config)?,
-                2 => select_active_multimodal_provider(stdout, config)?,
-                3 => edit_embedding_model(stdout, config)?,
-                4 => select_subagent_tiers(stdout, config)?,
-                5 => edit_plugins(stdout, config)?,
-                6 => edit_custom_prompts(stdout, paths, config)?,
-                7 => select_platforms(stdout, paths, config)?,
-                8 => edit_settings(stdout, config)?,
-                9 => {
-                    config.save(paths)?;
-                    thinking_variants.save(paths)?;
-                    return Ok(true);
+            KeyCode::Enter => {
+                let outcome = match selected {
+                    0 => ProviderBrowser::new(paths, config, thinking_variants).run(stdout),
+                    1 => select_active_provider(stdout, config),
+                    2 => select_active_multimodal_provider(stdout, config),
+                    3 => edit_embedding_model(stdout, config),
+                    4 => select_subagent_tiers(stdout, config),
+                    5 => edit_plugins(stdout, config),
+                    6 => edit_custom_prompts(stdout, paths, config),
+                    7 => select_platforms(stdout, paths, config),
+                    8 => edit_settings(stdout, config),
+                    9 => match config.save(paths) {
+                        Ok(()) => {
+                            thinking_variants.save(paths)?;
+                            return Ok(true);
+                        }
+                        Err(error) => Err(error),
+                    },
+                    _ => Ok(()),
+                };
+                if let Err(error) = outcome {
+                    // 子界面的表单解析/保存错误只作废当次输入,config 的
+                    // 内存态还在;显示错误后回主菜单,不让 TUI 整个崩出。
+                    show_tui_error(stdout, &error)?;
                 }
-                _ => {}
-            },
+            }
             _ => {}
         }
     }
+}
+
+/// 子界面出错时的兜底提示:错误只作废当次表单输入,绝不让它穿透主循环
+/// 把 TUI 崩出(崩出会连带丢掉本次全部未保存修改)。
+fn show_tui_error(stdout: &mut io::Stdout, error: &anyhow::Error) -> Result<()> {
+    let options = vec![
+        format!("{error:#}"),
+        t("Press any key to go back", "按任意键返回").to_string(),
+    ];
+    draw_menu(stdout, t(" ERROR ", " 错误 "), &options, 1, "")?;
+    let _ = read_key()?;
+    Ok(())
 }
 
 fn edit_plugins(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> {
@@ -382,7 +416,9 @@ fn toggle_plugin(config: &mut AppConfig, index: usize) {
 }
 
 fn edit_plugin_detail(stdout: &mut io::Stdout, config: &mut AppConfig, index: usize) -> Result<()> {
-    if index == 13 {
+    // api_quota 是 plugin_names() 的最后一项(下标 12):它有专门的账号
+    // 管理界面,不走通用表单。
+    if index == plugin_names().len() - 1 {
         return edit_api_quota(stdout, config);
     }
     let title = format!(" {}: {} ", t("PLUGIN", "插件"), plugin_names()[index].1);
@@ -884,6 +920,13 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                 t("Suggest memes automatically", "自动提示发送表情"),
                 config.plugins.memes.auto_send_enabled,
             ),
+            Field::boolean(
+                t(
+                    "Suggest memes automatically on platforms",
+                    "通讯平台自动提示发送表情",
+                ),
+                config.plugins.memes.auto_send_platform_enabled,
+            ),
             Field::new(
                 t(
                     "Automatic meme suggestion probability",
@@ -1165,8 +1208,9 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
                 fields[4].value.trim().parse::<usize>()?.clamp(1, 3);
             config.plugins.memes.allow_gif_animation = parse_bool_field(&fields[5].value)?;
             config.plugins.memes.auto_send_enabled = parse_bool_field(&fields[6].value)?;
+            config.plugins.memes.auto_send_platform_enabled = parse_bool_field(&fields[7].value)?;
             config.plugins.memes.auto_send_probability =
-                fields[7].value.trim().parse::<f32>()?.clamp(0.0, 1.0);
+                fields[8].value.trim().parse::<f32>()?.clamp(0.0, 1.0);
         }
         7 => {
             config.plugins.knowledge_base.enabled = parse_bool_field(&fields[0].value)?;
@@ -1251,6 +1295,70 @@ fn edit_custom_prompts(
 ) -> Result<()> {
     let mut selected = 0usize;
     loop {
+        let options = [
+            t("Normal mode", "普通模式").to_string(),
+            t("Dev mode", "开发模式").to_string(),
+            // 08-15 A/B 二轮:干净体制下预设对话单独已满分,提醒降为可关
+            // 开关;重噪声 QQ 长群聊体制未复测,默认保持启用。
+            format!(
+                "{}: {}",
+                t("Anti-amnesia reminder", "防失忆提醒"),
+                if config.prompt.persona_reminder {
+                    t("Enabled", "启用")
+                } else {
+                    t("Disabled", "禁用")
+                }
+            ),
+            format!(
+                "{}: {}",
+                t("Reminder interval (turns)", "防失忆间隔轮数"),
+                config.prompt.persona_reminder_interval.max(1)
+            ),
+        ];
+        draw_menu(
+            stdout,
+            t(" CUSTOM PROMPTS ", " 自定义提示词 "),
+            &options,
+            selected,
+            t(
+                "[Enter]select/toggle [q]back",
+                "[Enter]选择/切换 [q]返回",
+            ),
+        )?;
+        match read_key()? {
+            KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
+            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
+            KeyCode::Enter if selected == 0 => edit_normal_mode_prompts(stdout, paths, config)?,
+            KeyCode::Enter if selected == 1 => edit_dev_prompt(stdout, paths)?,
+            KeyCode::Enter if selected == 2 => {
+                config.prompt.persona_reminder = !config.prompt.persona_reminder;
+            }
+            KeyCode::Enter if selected == 3 => {
+                if let Some(value) = edit_inline_value(
+                    stdout,
+                    t("Reminder interval (turns)", "防失忆间隔轮数"),
+                    &config.prompt.persona_reminder_interval.to_string(),
+                    false,
+                )? {
+                    if let Ok(interval) = value.trim().parse::<u32>() {
+                        config.prompt.persona_reminder_interval = interval.max(1);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 普通模式的提示词面:AI 人格与用户身份(原顶层两项下沉至此)。
+fn edit_normal_mode_prompts(
+    stdout: &mut io::Stdout,
+    paths: &MiyuPaths,
+    config: &mut AppConfig,
+) -> Result<()> {
+    let mut selected = 0usize;
+    loop {
         let persona = if config.prompt.active_persona.trim().is_empty() {
             "Miyu".to_string()
         } else {
@@ -1266,7 +1374,7 @@ fn edit_custom_prompts(
         ];
         draw_menu(
             stdout,
-            t(" CUSTOM PROMPTS ", " 自定义提示词 "),
+            t(" NORMAL MODE ", " 普通模式 "),
             &options,
             selected,
             t("[Enter]select [q]back", "[Enter]选择 [q]返回"),
@@ -1280,6 +1388,41 @@ fn edit_custom_prompts(
             _ => {}
         }
     }
+}
+
+/// 开发模式的「AI 提示词」:编辑 config/dev-prompt.md 一个文件。清空
+/// 保存=删文件,运行时回退内置默认一行;记忆按保留人格 "dev" 落库,
+/// 与这份提示词的内容完全解耦——怎么改都不会切库。
+fn edit_dev_prompt(stdout: &mut io::Stdout, paths: &MiyuPaths) -> Result<()> {
+    let path = paths.config_dir.join(crate::config::DEV_PROMPT_FILE);
+    let current = std::fs::read_to_string(&path).unwrap_or_default();
+    let prefill = if current.trim().is_empty() {
+        crate::config::DEFAULT_DEV_SYSTEM_PROMPT.to_string()
+    } else {
+        current.trim_end().to_string()
+    };
+    let mut fields = vec![Field::textarea(
+        t(
+            "AI prompt (empty = built-in default)",
+            "AI 提示词(清空=恢复内置默认)",
+        ),
+        prefill,
+    )];
+    if !run_form(stdout, t(" DEV MODE ", " 开发模式 "), &mut fields)? {
+        return Ok(());
+    }
+    let value = fields[0].value.trim();
+    if value.is_empty() {
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+    } else {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, format!("{value}\n"))?;
+    }
+    Ok(())
 }
 
 fn edit_personas(stdout: &mut io::Stdout, paths: &MiyuPaths, config: &mut AppConfig) -> Result<()> {
@@ -1427,11 +1570,23 @@ fn manage_personas(
             }
             KeyCode::Enter if selected >= custom_offset => {
                 if let Some(name) = personas.get(selected - custom_offset) {
-                    if let Some((new_name, content)) = edit_persona(stdout, paths, config, name)? {
-                        apply_persona_edit(paths, config, name, &new_name, &content)?;
-                        target.rename_custom(name, &new_name);
+                    if let Some(values) = edit_persona(stdout, paths, config, name)? {
+                        apply_persona_edit(paths, config, name, &values.name, &values.content)?;
+                        write_persona_aux(
+                            paths,
+                            config,
+                            &crate::config::persona_scope_name(&values.name),
+                            &values.hint,
+                            &values.dialogs,
+                        )?;
+                        target.rename_custom(name, &values.name);
                     }
                 }
+            }
+            // 默认 Miyu 人格本体只读,但防失忆提示与预设对话是独立文件
+            // (hints/default.md、dialogs/default.md),回车打开精简表单。
+            KeyCode::Enter if selected + 1 == custom_offset => {
+                edit_miyu_persona_extras(stdout, paths, config)?;
             }
             KeyCode::Char('d') if selected >= custom_offset => {
                 if let Some(name) = personas.get(selected - custom_offset) {
@@ -1548,21 +1703,113 @@ fn apply_persona_delete(
     Ok(())
 }
 
+struct PersonaFormValues {
+    name: String,
+    content: String,
+    hint: String,
+    dialogs: String,
+}
+
+/// 人格附属文件现值:防失忆提示(hints/<scope>.md)与预设对话
+/// (dialogs/<scope>.md)。
+fn persona_aux_values(paths: &MiyuPaths, config: &AppConfig, scope: &str) -> (String, String) {
+    let hint =
+        std::fs::read_to_string(crate::persona_hint::manual_hint_path(config, paths, scope))
+            .map(|text| text.trim().to_string())
+            .unwrap_or_default();
+    let dialogs = crate::persona_hint::dialogs_raw(config, paths, scope);
+    (hint, dialogs)
+}
+
+/// 附属文件落盘:非空写入,空则删除(清空提示=回到自动蒸馏,清空
+/// 对话=不注入)。
+fn write_persona_aux(
+    paths: &MiyuPaths,
+    config: &AppConfig,
+    scope: &str,
+    hint: &str,
+    dialogs: &str,
+) -> Result<()> {
+    let targets = [
+        (
+            crate::persona_hint::manual_hint_path(config, paths, scope),
+            hint,
+        ),
+        (
+            crate::persona_hint::dialogs_path(config, paths, scope),
+            dialogs,
+        ),
+    ];
+    for (path, value) in targets {
+        let value = value.trim();
+        if value.is_empty() {
+            if path.exists() {
+                std::fs::remove_file(&path)?;
+            }
+        } else {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&path, format!("{value}\n"))?;
+        }
+    }
+    Ok(())
+}
+
+fn persona_aux_fields(hint: String, dialogs: String, miyu: bool) -> Vec<Field> {
+    let (hint_label, dialogs_label) = if miyu {
+        (
+            t(
+                "Anti-amnesia reminder (empty = built-in default)",
+                "防失忆提示(清空=恢复内置默认)",
+            ),
+            t(
+                "Preset dialogs (Enter = list editor; empty = built-in default)",
+                "预设对话(回车进列表编辑,清空=恢复内置默认)",
+            ),
+        )
+    } else {
+        (
+            t(
+                "Anti-amnesia reminder (empty = auto distill)",
+                "防失忆提示(留空=自动蒸馏)",
+            ),
+            t(
+                "Preset dialogs (Enter = list editor)",
+                "预设对话(回车进列表编辑)",
+            ),
+        )
+    };
+    vec![
+        Field::textarea(hint_label, hint),
+        Field::dialog_list(dialogs_label, dialogs),
+    ]
+}
+
 fn new_persona(
     stdout: &mut io::Stdout,
     paths: &MiyuPaths,
     config: &AppConfig,
 ) -> Result<Option<String>> {
-    edit_prompt_file_form(
-        stdout,
-        t(" NEW PERSONA ", " 新建人格 "),
-        None,
-        String::new(),
-        |name, content| {
-            ensure_persona_name_available(paths, config, name, None)?;
-            write_persona(paths, config, name, content)
-        },
-    )
+    let mut fields = vec![
+        Field::new(t("Name", "名称"), String::new()),
+        Field::textarea(t("Content", "内容"), String::new()),
+    ];
+    fields.extend(persona_aux_fields(String::new(), String::new(), false));
+    if !run_form(stdout, t(" NEW PERSONA ", " 新建人格 "), &mut fields)? {
+        return Ok(None);
+    }
+    let name = sanitize_persona_name(&fields[0].value)?;
+    ensure_persona_name_available(paths, config, &name, None)?;
+    write_persona(paths, config, &name, &fields[1].value)?;
+    write_persona_aux(
+        paths,
+        config,
+        &crate::config::persona_scope_name(&name),
+        &fields[2].value,
+        &fields[3].value,
+    )?;
+    Ok(Some(name))
 }
 
 fn edit_persona(
@@ -1570,14 +1817,46 @@ fn edit_persona(
     paths: &MiyuPaths,
     config: &AppConfig,
     current_name: &str,
-) -> Result<Option<(String, String)>> {
+) -> Result<Option<PersonaFormValues>> {
     let content = read_persona(paths, config, current_name)?;
-    edit_prompt_file_values(
-        stdout,
-        t(" EDIT PERSONA ", " 编辑人格 "),
-        Some(current_name),
-        content,
-    )
+    let (hint, dialogs) = persona_aux_values(
+        paths,
+        config,
+        &crate::config::persona_scope_name(current_name),
+    );
+    let mut fields = vec![
+        Field::new(
+            t("Name", "名称"),
+            persona_display_name(current_name).to_string(),
+        ),
+        Field::textarea(t("Content", "内容"), content),
+    ];
+    fields.extend(persona_aux_fields(hint, dialogs, false));
+    if !run_form(stdout, t(" EDIT PERSONA ", " 编辑人格 "), &mut fields)? {
+        return Ok(None);
+    }
+    let name = sanitize_persona_name(&fields[0].value)?;
+    Ok(Some(PersonaFormValues {
+        name,
+        content: fields[1].value.clone(),
+        hint: fields[2].value.clone(),
+        dialogs: fields[3].value.clone(),
+    }))
+}
+
+/// 默认 Miyu 人格:本体只读,回车只编辑附属的防失忆提示与预设对话
+/// (scope 固定为 default)。
+fn edit_miyu_persona_extras(
+    stdout: &mut io::Stdout,
+    paths: &MiyuPaths,
+    config: &AppConfig,
+) -> Result<()> {
+    let (hint, dialogs) = crate::persona_hint::miyu_aux_prefill(config, paths);
+    let mut fields = persona_aux_fields(hint, dialogs, true);
+    if !run_form(stdout, t(" MIYU EXTRAS ", " Miyu 人格附加 "), &mut fields)? {
+        return Ok(());
+    }
+    write_persona_aux(paths, config, "default", &fields[0].value, &fields[1].value)
 }
 
 fn ensure_persona_name_available(
@@ -1660,6 +1939,23 @@ fn move_persona_scope(
             completed.push((source, target));
         }
     }
+    let old_scope = crate::config::persona_scope_name(old_name);
+    let new_scope = crate::config::persona_scope_name(new_name);
+    let file_moves = [
+        (
+            crate::persona_hint::manual_hint_path(config, paths, &old_scope),
+            crate::persona_hint::manual_hint_path(config, paths, &new_scope),
+        ),
+        (
+            crate::persona_hint::dialogs_path(config, paths, &old_scope),
+            crate::persona_hint::dialogs_path(config, paths, &new_scope),
+        ),
+    ];
+    for (source, target) in file_moves {
+        if source.exists() && !target.exists() {
+            std::fs::rename(&source, &target)?;
+        }
+    }
     Ok(())
 }
 
@@ -1667,6 +1963,15 @@ fn remove_persona_scope(paths: &MiyuPaths, config: &AppConfig, name: &str) -> Re
     remove_dir_if_exists(config.persona_memory_data_dir(paths, name))?;
     remove_dir_if_exists(config.persona_memory_state_dir(paths, name))?;
     remove_dir_if_exists(config.persona_skills_dir(paths, name))?;
+    let scope = crate::config::persona_scope_name(name);
+    for path in [
+        crate::persona_hint::manual_hint_path(config, paths, &scope),
+        crate::persona_hint::dialogs_path(config, paths, &scope),
+    ] {
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+    }
     Ok(())
 }
 
@@ -1926,6 +2231,17 @@ fn sanitize_persona_name(value: &str) -> Result<String> {
             t(
                 "system-prompt.md is reserved",
                 "system-prompt.md 是保留文件名"
+            )
+        );
+    }
+    // "dev" 是开发模式的保留人格(记忆/技能命名空间挂其名下);同名
+    // 用户人格会与 dev 模式共享记忆库,必须挡在创建入口。
+    if persona_display_name(&name).eq_ignore_ascii_case(crate::state::DEV_PERSONA) {
+        bail!(
+            "{}",
+            t(
+                "\"dev\" is reserved for dev mode",
+                "\"dev\" 是开发模式的保留名"
             )
         );
     }
@@ -3371,7 +3687,7 @@ fn edit_platform_session_limits(
         ),
         Field::new(t("Queued turns", "等待队列数量"), limits.queued.to_string()),
     ];
-    if !run_form(
+    if !run_form_editing(
         stdout,
         t(" CONVERSATION CONCURRENCY ", " 会话并发 "),
         &mut fields,
@@ -3408,72 +3724,49 @@ fn rate_limit_label(limit: PlatformRateLimit) -> String {
     )
 }
 
+/// Both numbers live on one form, the way `edit_platform_session_limits`
+/// already does it. The menu row above already renders "N / M 秒", so routing
+/// Enter through a two-item submenu only restated that summary before letting
+/// anyone type — two keypresses to reach a field that was never in doubt.
 fn edit_platform_rate_limit(stdout: &mut io::Stdout, limit: &mut PlatformRateLimit) -> Result<()> {
-    let mut selected = 0usize;
-    loop {
-        let options = vec![
-            format!(
-                "{}: {}",
-                t(
-                    "Maximum messages (0 = unlimited)",
-                    "窗口内消息上限（0 = 不限）"
-                ),
-                limit.max_messages
+    let mut fields = vec![
+        Field::new(
+            t(
+                "Maximum messages (0 = unlimited)",
+                "窗口内消息上限（0 = 不限）",
             ),
-            format!(
-                "{}: {}",
-                t("Window seconds", "窗口秒数"),
-                limit.window_seconds
-            ),
-        ];
-        draw_menu(
-            stdout,
-            t(" RATE LIMIT ", " 限流配置 "),
-            &options,
-            selected,
-            t("Enter edits the selected value", "回车编辑选中的数值"),
-        )?;
-        match read_key()? {
-            KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
-            KeyCode::Enter => match selected {
-                0 => {
-                    if let Some(value) = edit_u32_value(
-                        stdout,
-                        t(
-                            "Maximum messages (0 = unlimited)",
-                            "窗口内消息上限（0 = 不限）",
-                        ),
-                        limit.max_messages,
-                    )? {
-                        limit.max_messages = value;
-                    }
-                }
-                1 => {
-                    if let Some(value) = edit_u32_value(
-                        stdout,
-                        t("Window seconds (1-86400)", "窗口秒数（1-86400）"),
-                        limit.window_seconds,
-                    )? {
-                        if (1..=86_400).contains(&value) {
-                            limit.window_seconds = value;
-                        } else {
-                            message(
-                                stdout,
-                                t(
-                                    "Window seconds must be between 1 and 86400.",
-                                    "窗口秒数必须在 1 到 86400 之间。",
-                                ),
-                            )?;
-                        }
-                    }
-                }
-                _ => {}
-            },
-            _ => {}
-        }
+            limit.max_messages.to_string(),
+        ),
+        Field::new(
+            t("Window seconds (1-86400)", "窗口秒数（1-86400）"),
+            limit.window_seconds.to_string(),
+        ),
+    ];
+    if !run_form_editing(stdout, t(" RATE LIMIT ", " 限流配置 "), &mut fields)? {
+        return Ok(());
     }
+    let (Ok(max_messages), Ok(window_seconds)) = (
+        fields[0].value.trim().parse::<u32>(),
+        fields[1].value.trim().parse::<u32>(),
+    ) else {
+        message(stdout, t("Invalid number.", "数值无效。"))?;
+        return Ok(());
+    };
+    if !(1..=86_400).contains(&window_seconds) {
+        message(
+            stdout,
+            t(
+                "Window seconds must be between 1 and 86400.",
+                "窗口秒数必须在 1 到 86400 之间。",
+            ),
+        )?;
+        return Ok(());
+    }
+    *limit = PlatformRateLimit {
+        max_messages,
+        window_seconds,
+    };
+    Ok(())
 }
 
 fn edit_u16_value(
@@ -3482,25 +3775,7 @@ fn edit_u16_value(
     current: u16,
 ) -> Result<Option<u16>> {
     let mut fields = vec![Field::new(label, current.to_string())];
-    if !run_form(stdout, t(" EDIT VALUE ", " 编辑数值 "), &mut fields)? {
-        return Ok(None);
-    }
-    match fields[0].value.trim().parse() {
-        Ok(value) => Ok(Some(value)),
-        Err(_) => {
-            message(stdout, t("Invalid number.", "数值无效。"))?;
-            Ok(None)
-        }
-    }
-}
-
-fn edit_u32_value(
-    stdout: &mut io::Stdout,
-    label: &'static str,
-    current: u32,
-) -> Result<Option<u32>> {
-    let mut fields = vec![Field::new(label, current.to_string())];
-    if !run_form(stdout, t(" EDIT VALUE ", " 编辑数值 "), &mut fields)? {
+    if !run_form_editing(stdout, t(" EDIT VALUE ", " 编辑数值 "), &mut fields)? {
         return Ok(None);
     }
     match fields[0].value.trim().parse() {
@@ -4482,6 +4757,18 @@ fn select_platform_plugins(
         } else {
             t("disabled", "未启用")
         };
+        let group_join_approval_enabled = config
+            .platforms
+            .qq
+            .plugins
+            .get(QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID)
+            .map(|plugin| plugin.enabled_or(true))
+            .unwrap_or(true);
+        let group_join_approval_state = if group_join_approval_enabled {
+            t("enabled", "已启用")
+        } else {
+            t("disabled", "未启用")
+        };
         let options = [
             format!("{}: {reply_state}", t("Reply processor", "回复处理")),
             format!(
@@ -4495,6 +4782,10 @@ fn select_platform_plugins(
             format!(
                 "{}: {meme_collector_state}",
                 t("QQ meme pocket", "QQ 表情口袋")
+            ),
+            format!(
+                "{}: {group_join_approval_state}",
+                t("Group join approval", "入群审批")
             ),
         ];
         draw_menu(
@@ -4516,6 +4807,302 @@ fn select_platform_plugins(
                 1 => edit_real_context(stdout, paths, config)?,
                 2 => edit_message_history(stdout, config)?,
                 3 => edit_meme_collector(stdout, config)?,
+                4 => edit_group_join_approval(stdout, config)?,
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+}
+
+fn group_join_approval_values(
+    config: &AppConfig,
+) -> Result<(bool, QqGroupJoinApprovalPluginSettings)> {
+    let Some(instance) = config
+        .platforms
+        .qq
+        .plugins
+        .get(QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID)
+    else {
+        return Ok((true, QqGroupJoinApprovalPluginSettings::default()));
+    };
+    Ok((
+        instance.enabled_or(true),
+        QqGroupJoinApprovalPluginSettings::from_instance(instance)?,
+    ))
+}
+
+fn apply_group_join_approval_values(
+    config: &mut AppConfig,
+    enabled: bool,
+    settings: &QqGroupJoinApprovalPluginSettings,
+) {
+    let instance = config
+        .platforms
+        .qq
+        .plugins
+        .entry(QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID.to_string())
+        .or_default();
+    instance.enabled = (!enabled).then_some(false);
+    merge_group_join_approval_settings(instance, settings);
+}
+
+fn group_join_approval_group_label(group: &QqGroupJoinApprovalGroupConfig) -> String {
+    format!(
+        "{} · {}",
+        group.group_id,
+        if group.approve_condition.is_empty() {
+            t("not set", "未设置")
+        } else {
+            t("set", "已设置")
+        }
+    )
+}
+
+fn edit_group_join_approval_groups(
+    stdout: &mut io::Stdout,
+    settings: &mut QqGroupJoinApprovalPluginSettings,
+) -> Result<()> {
+    let mut selected = 0usize;
+    loop {
+        let mut options = vec![t("+ Add one", "+ 新增一项").to_string()];
+        options.extend(settings.groups.iter().map(group_join_approval_group_label));
+        selected = selected.min(options.len().saturating_sub(1));
+        draw_menu(
+            stdout,
+            t(" GROUP JOIN APPROVAL CONDITIONS ", " 分群审批条件 "),
+            &options,
+            selected,
+            t(
+                "[Enter]configure [Delete]remove [j/k]move [q]back",
+                "[Enter]配置 [Delete]删除 [j/k]移动 [q]返回",
+            ),
+        )?;
+        match read_key()? {
+            KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => {
+                selected = (selected + 1).min(options.len().saturating_sub(1))
+            }
+            KeyCode::Enter if selected == 0 => {
+                if let Some(group) = prompt_group_join_approval_group(stdout, None)? {
+                    upsert_group_join_approval_group(&mut settings.groups, group);
+                    settings.normalize();
+                }
+            }
+            KeyCode::Enter => {
+                let index = selected - 1;
+                if let Some(group) =
+                    prompt_group_join_approval_group(stdout, settings.groups.get(index).cloned())?
+                {
+                    upsert_group_join_approval_group(&mut settings.groups, group);
+                    settings.normalize();
+                }
+            }
+            KeyCode::Delete | KeyCode::Backspace if selected >= 1 => {
+                settings.groups.remove(selected - 1);
+                selected = selected.min(settings.groups.len());
+            }
+            _ => {}
+        }
+    }
+}
+
+fn prompt_group_join_approval_group(
+    stdout: &mut io::Stdout,
+    current: Option<QqGroupJoinApprovalGroupConfig>,
+) -> Result<Option<QqGroupJoinApprovalGroupConfig>> {
+    let current = current.unwrap_or(QqGroupJoinApprovalGroupConfig {
+        group_id: 0,
+        approve_condition: String::new(),
+    });
+    let mut fields = vec![
+        Field::new(
+            t("Group id", "群号"),
+            if current.group_id > 0 {
+                current.group_id.to_string()
+            } else {
+                String::new()
+            },
+        ),
+        Field::textarea(
+            t("Approval condition", "通过条件"),
+            current.approve_condition.clone(),
+        ),
+    ];
+    if !run_form_editing(
+        stdout,
+        t(" GROUP JOIN APPROVAL CONDITION ", " 编辑入群审批条件 "),
+        &mut fields,
+    )? {
+        return Ok(None);
+    }
+    let group_id = match parse_positive_id(&fields[0].value) {
+        Ok(id) => id,
+        Err(error) => {
+            message(stdout, &error)?;
+            return Ok(None);
+        }
+    };
+    let approve_condition = fields[1].value.trim().to_string();
+    if approve_condition.is_empty() {
+        message(
+            stdout,
+            t(
+                "The approval condition cannot be empty.",
+                "通过条件不能为空。",
+            ),
+        )?;
+        return Ok(None);
+    }
+    Ok(Some(QqGroupJoinApprovalGroupConfig {
+        group_id,
+        approve_condition,
+    }))
+}
+
+fn upsert_group_join_approval_group(
+    groups: &mut Vec<QqGroupJoinApprovalGroupConfig>,
+    group: QqGroupJoinApprovalGroupConfig,
+) {
+    if let Some(existing) = groups
+        .iter_mut()
+        .find(|existing| existing.group_id == group.group_id)
+    {
+        *existing = group;
+    } else {
+        groups.push(group);
+    }
+}
+
+fn edit_group_join_approval(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> {
+    let (mut enabled, mut settings) = group_join_approval_values(config)?;
+    let mut selected = 0usize;
+    let mut editing: Option<(usize, String, usize)> = None;
+    loop {
+        let state = if enabled {
+            t("enabled", "已启用")
+        } else {
+            t("disabled", "未启用")
+        };
+        let labels = [
+            t("Plugin", "插件状态"),
+            t("Approval timeout seconds", "审批超时秒数"),
+            t("Parse retry count", "解析失败重试次数"),
+            t("Text model pool", "文本模型池"),
+            t("Group approval conditions", "分群审批条件"),
+        ];
+        let options = vec![
+            format!("{}: {state}", labels[0]),
+            format!("{}: {}", labels[1], settings.timeout_seconds),
+            format!("{}: {}", labels[2], settings.max_retries),
+            format!(
+                "{}: {}",
+                labels[3],
+                real_context_model_pool_summary(settings.text_models.as_deref())
+            ),
+            format!(
+                "{}: {} {}",
+                labels[4],
+                settings.groups.len(),
+                t("groups", "个群")
+            ),
+        ];
+        draw_menu_with_editing(
+            stdout,
+            t(" GROUP JOIN APPROVAL ", " 入群审批 "),
+            &options,
+            selected,
+            "",
+            editing
+                .as_ref()
+                .map(|(index, value, cursor)| (*index, labels[*index], value.as_str(), *cursor)),
+        )?;
+        let key = read_key()?;
+        if let Some((_, value, cursor)) = editing.as_mut() {
+            match key {
+                KeyCode::Esc => editing = None,
+                KeyCode::Enter => {
+                    let (index, value, _) = editing.take().unwrap();
+                    let value = value.trim().to_string();
+                    match index {
+                        1 => match value.parse::<u64>() {
+                            Ok(parsed) if (1..=3_600).contains(&parsed) => {
+                                settings.timeout_seconds = parsed;
+                            }
+                            _ => message(
+                                stdout,
+                                t(
+                                    "Timeout must be between 1 and 3600 seconds.",
+                                    "超时秒数必须在 1 到 3600 之间。",
+                                ),
+                            )?,
+                        },
+                        2 => match value.parse::<usize>() {
+                            Ok(parsed) if parsed <= 3 => settings.max_retries = parsed,
+                            _ => message(
+                                stdout,
+                                t(
+                                    "Retry count must be between 0 and 3.",
+                                    "重试次数必须在 0 到 3 之间。",
+                                ),
+                            )?,
+                        },
+                        _ => {}
+                    }
+                }
+                KeyCode::Left => *cursor = cursor.saturating_sub(1),
+                KeyCode::Right => *cursor = (*cursor + 1).min(value.chars().count()),
+                KeyCode::Home => *cursor = 0,
+                KeyCode::End => *cursor = value.chars().count(),
+                KeyCode::Backspace => {
+                    if *cursor > 0 {
+                        remove_char_before_cursor(value, cursor);
+                    }
+                }
+                KeyCode::Delete => remove_char_at_cursor(value, *cursor),
+                KeyCode::Char(character) => insert_char_at_cursor(value, cursor, character),
+                _ => {}
+            }
+            continue;
+        }
+        match key {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                settings.normalize();
+                let mut candidate = config.clone();
+                apply_group_join_approval_values(&mut candidate, enabled, &settings);
+                candidate.normalize_platform_model_routes();
+                if let Err(error) = candidate.validate() {
+                    message(stdout, &error.to_string())?;
+                    continue;
+                }
+                apply_group_join_approval_values(config, enabled, &settings);
+                config.normalize_platform_model_routes();
+                return Ok(());
+            }
+            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
+            KeyCode::Enter => match selected {
+                0 => enabled = select_bool(stdout, t("Plugin", "插件状态"), enabled)?,
+                1 => {
+                    let value = settings.timeout_seconds.to_string();
+                    let cursor = value.chars().count();
+                    editing = Some((1, value, cursor));
+                }
+                2 => {
+                    let value = settings.max_retries.to_string();
+                    let cursor = value.chars().count();
+                    editing = Some((2, value, cursor));
+                }
+                3 => select_model_pool(
+                    stdout,
+                    config.text_provider_model_choices(),
+                    &mut settings.text_models,
+                    false,
+                    t(" GROUP JOIN APPROVAL TEXT MODELS ", " 入群审批文本模型 "),
+                    t("Inherit QQ platform model pool", "继承 QQ 平台模型池"),
+                )?,
+                4 => edit_group_join_approval_groups(stdout, &mut settings)?,
                 _ => {}
             },
             _ => {}
@@ -6416,12 +7003,6 @@ fn edit_provider_form(
     stdout: &mut io::Stdout,
     provider: ProviderConfig,
 ) -> Result<Option<ProviderConfig>> {
-    let current_context_window = provider
-        .model_context_window
-        .get(&provider.default_model)
-        .copied()
-        .unwrap_or_default();
-
     // 将 extra_body 格式化为 JSON 字符串，方便编辑
     let extra_body_string = provider
         .extra_body
@@ -6449,17 +7030,9 @@ fn edit_provider_form(
             provider.default_model.clone(),
         ),
         Field::new(
-            t(
-                "Model context window (tokens, 0=auto)",
-                "模型上下文窗口 (tokens, 0=自动)",
-            ),
-            current_context_window.to_string(),
-        ),
-        Field::new(
             t("Timeout (seconds)", "超时秒数"),
             provider.timeout_seconds.to_string(),
         ),
-        Field::new("Temperature", provider.temperature.to_string()),
         Field::textarea(
             t("Extra request body (JSON)", "额外请求体 (JSON)"),
             extra_body_string,
@@ -6472,30 +7045,18 @@ fn edit_provider_form(
             return Ok(None);
         }
 
-        // 提取各个字段的值（索引保持不变）
+        // 温度与上下文窗口都是按模型的事,归模型菜单管;供应商表单
+        // 不再放这两项(验收:曾牵连全部模型)。
         let default_model = fields[5].value.trim().to_string();
-        let model_context_window_raw = fields[6].value.trim().parse::<usize>().unwrap_or_default();
-        let timeout = fields[7].value.trim().parse().unwrap_or(60);
-        let temperature = fields[8].value.trim().parse().unwrap_or(1.0);
+        let timeout = fields[6].value.trim().parse().unwrap_or(60);
 
-        let extra_body = match parse_extra_body(&fields[9].value) {
+        let extra_body = match parse_extra_body(&fields[7].value) {
             Ok(extra_body) => extra_body,
             Err(error) => {
                 message(stdout, &error)?;
                 continue;
             }
         };
-
-        // 构建 model_context_window
-        let mut model_context_window = provider.model_context_window.clone();
-        match model_context_window_raw {
-            0 => {
-                model_context_window.remove(&default_model);
-            }
-            value => {
-                model_context_window.insert(default_model.clone(), value);
-            }
-        }
 
         let mut models = provider.models.clone();
         if !default_model.trim().is_empty() && !models.iter().any(|item| item == &default_model) {
@@ -6510,11 +7071,13 @@ fn edit_provider_form(
             protocol: fields[3].value.trim().to_string(),
             api_key: Some(fields[4].value.trim().to_string()).filter(|value| !value.is_empty()),
             models,
-            model_context_window,
+            model_context_window: provider.model_context_window.clone(),
+            model_temperature: provider.model_temperature.clone(),
             model_modalities: provider.model_modalities.clone(),
+            model_costs: provider.model_costs.clone(),
             default_model,
             timeout_seconds: timeout,
-            temperature,
+            temperature: provider.temperature,
             anthropic_max_tokens: provider.anthropic_max_tokens,
             extra_body,
         }));
@@ -6561,6 +7124,15 @@ fn edit_model_form(
     let variant_options =
         thinking_variant_options_for_model(provider, model, stored_variant.as_deref());
     let initial_variant = stored_variant.clone();
+    let cost = provider.model_costs.get(model).copied();
+    let currency_value = cost
+        .map(|cost| match cost.currency {
+            crate::config::CostCurrency::Usd => "USD",
+            crate::config::CostCurrency::Cny => "CNY",
+        })
+        .unwrap_or("")
+        .to_string();
+    let price_text = |value: Option<f64>| value.map(|v| v.to_string()).unwrap_or_default();
     let mut fields = vec![
         Field::modalities(
             t("Supported input", "支持输入"),
@@ -6578,36 +7150,132 @@ fn edit_model_form(
             context_window.to_string(),
         ),
         thinking_variant_field(&variant_options, stored_variant.as_deref()),
-        Field::new("Temperature", provider.temperature.to_string()),
-    ];
-    if !run_form(stdout, t(" EDIT MODEL ", " 编辑模型 "), &mut fields)? {
-        return Ok(false);
-    }
-    let mut modalities = parse_modalities(&fields[0].value);
-    modalities.retain(|item| item != EMBEDDING_MODALITY);
-    if parse_bool_field(&fields[1].value)? {
-        modalities.push(EMBEDDING_MODALITY.to_string());
-    }
-    provider
-        .model_modalities
-        .insert(model.to_string(), modalities);
-    match fields[2].value.trim().parse::<usize>().unwrap_or_default() {
-        0 => {
-            provider.model_context_window.remove(model);
-        }
-        value => {
+        Field::new(
+            t("Temperature (empty = provider default)", "Temperature (留空=供应商默认)"),
             provider
-                .model_context_window
-                .insert(model.to_string(), value);
+                .model_temperature
+                .get(model)
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+        ),
+        Field::new(
+            t(
+                "Price currency (empty = models.dev)",
+                "价格货币 (留空=用 models.dev 目录价)",
+            ),
+            currency_value,
+        )
+        .choices(&["", "USD", "CNY"])
+        .empty_choice_label(t("catalogue", "目录价")),
+        Field::new(
+            t("Input price / 1M tokens", "输入价 / 1M tokens"),
+            price_text(cost.map(|c| c.input)),
+        ),
+        Field::new(
+            t("Output price / 1M tokens", "输出价 / 1M tokens"),
+            price_text(cost.map(|c| c.output)),
+        ),
+        Field::new(
+            t(
+                "Cache-hit price / 1M (empty = input price)",
+                "缓存命中价 / 1M (留空=按输入价)",
+            ),
+            price_text(cost.and_then(|c| c.cache_read)),
+        ),
+    ];
+    loop {
+        if !run_form(stdout, t(" EDIT MODEL ", " 编辑模型 "), &mut fields)? {
+            return Ok(false);
         }
+        // 价格:选了货币才生效;三个价按所选货币记,估算时统一折 USD。
+        match fields[5].value.trim() {
+            "" => {
+                provider.model_costs.remove(model);
+            }
+            currency => {
+                let parse = |value: &str| -> Option<f64> {
+                    let value = value.trim();
+                    if value.is_empty() {
+                        return None;
+                    }
+                    value.parse::<f64>().ok().filter(|price| *price >= 0.0)
+                };
+                let (input, output) = match (parse(&fields[6].value), parse(&fields[7].value)) {
+                    (Some(input), Some(output)) => (input, output),
+                    _ => {
+                        message(
+                            stdout,
+                            t(
+                                "Input and output prices are required non-negative numbers",
+                                "输入价与输出价必须是非负数字",
+                            ),
+                        )?;
+                        continue;
+                    }
+                };
+                let cache_read = match (fields[8].value.trim().is_empty(), parse(&fields[8].value))
+                {
+                    (true, _) => None,
+                    (false, Some(price)) => Some(price),
+                    (false, None) => {
+                        message(
+                            stdout,
+                            t(
+                                "Cache-hit price must be a non-negative number",
+                                "缓存命中价必须是非负数字",
+                            ),
+                        )?;
+                        continue;
+                    }
+                };
+                provider.model_costs.insert(
+                    model.to_string(),
+                    crate::config::ModelCostConfig {
+                        currency: if currency == "CNY" {
+                            crate::config::CostCurrency::Cny
+                        } else {
+                            crate::config::CostCurrency::Usd
+                        },
+                        input,
+                        output,
+                        cache_read,
+                    },
+                );
+            }
+        }
+        let mut modalities = parse_modalities(&fields[0].value);
+        modalities.retain(|item| item != EMBEDDING_MODALITY);
+        if parse_bool_field(&fields[1].value)? {
+            modalities.push(EMBEDDING_MODALITY.to_string());
+        }
+        provider
+            .model_modalities
+            .insert(model.to_string(), modalities);
+        match fields[2].value.trim().parse::<usize>().unwrap_or_default() {
+            0 => {
+                provider.model_context_window.remove(model);
+            }
+            value => {
+                provider
+                    .model_context_window
+                    .insert(model.to_string(), value);
+            }
+        }
+        let selected_variant =
+            (!fields[3].value.trim().is_empty()).then(|| fields[3].value.trim().to_string());
+        if selected_variant != initial_variant {
+            thinking_variants.set(&provider.id, model, selected_variant);
+        }
+        match fields[4].value.trim().parse::<f32>() {
+            Ok(value) => {
+                provider.model_temperature.insert(model.to_string(), value);
+            }
+            Err(_) => {
+                provider.model_temperature.remove(model);
+            }
+        }
+        return Ok(true);
     }
-    let selected_variant =
-        (!fields[3].value.trim().is_empty()).then(|| fields[3].value.trim().to_string());
-    if selected_variant != initial_variant {
-        thinking_variants.set(&provider.id, model, selected_variant);
-    }
-    provider.temperature = fields[4].value.trim().parse().unwrap_or(1.0);
-    Ok(true)
 }
 
 fn thinking_variant_field(options: &ThinkingVariantOptions, stored: Option<&str>) -> Field {
@@ -6695,13 +7363,20 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
             t("Turns replayed when reopening the REPL", "重开 REPL 回放的轮数"),
             config.display.repl_replay_turns.to_string(),
         ),
+        // 验收:default_mode 只能改 config.jsonc 不像话——空=裸 miyu 出帮助。
+        Field::new(
+            t("Bare `miyu` default mode", "裸 miyu 默认模式"),
+            config.default_mode.clone(),
+        )
+        .choices(&["", "normal", "dev"])
+        .empty_choice_label(t("Help screen", "帮助信息")),
     ];
     // The read-back below is by index, so an insert in the middle silently
     // writes every later value into the wrong setting. This catches that in
     // debug builds; new fields go on the end.
     debug_assert_eq!(
         fields.len(),
-        15,
+        16,
         "global settings fields changed: update the positional read-back below"
     );
     run_form_without_buttons(stdout, t(" GLOBAL SETTINGS ", " 全局设置 "), &mut fields)?;
@@ -6730,6 +7405,7 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
         .trim()
         .parse::<usize>()?
         .min(MAX_REPL_REPLAY_TURNS);
+    config.default_mode = fields[15].value.trim().to_string();
     Ok(())
 }
 
@@ -6899,9 +7575,35 @@ fn draw_inline_editor(
 }
 
 fn run_form(stdout: &mut io::Stdout, title: &str, fields: &mut [Field]) -> Result<bool> {
+    run_form_from(stdout, title, fields, false)
+}
+
+/// `start_editing` puts the caret in the first field straight away, for forms
+/// reached from a menu row that already showed the value: the row said what it
+/// was, Enter said "change it", so a second Enter to begin typing is a keypress
+/// that asks a question nobody had.
+fn run_form_editing(stdout: &mut io::Stdout, title: &str, fields: &mut [Field]) -> Result<bool> {
+    run_form_from(stdout, title, fields, true)
+}
+
+fn run_form_from(
+    stdout: &mut io::Stdout,
+    title: &str,
+    fields: &mut [Field],
+    start_editing: bool,
+) -> Result<bool> {
     let mut selected = 0usize;
-    let mut editing = false;
     let mut fcitx = FcitxState::new();
+    // Only a plain text field can be typed into directly; the others open
+    // their own picker on Enter, so landing "inside" them would mean typing
+    // free text where a choice was expected.
+    let mut editing = start_editing
+        && fields.first().is_some_and(|field| {
+            !field.boolean && !field.textarea && !field.modalities && field.choices.is_empty()
+        });
+    if editing {
+        fcitx.enter_editing();
+    }
     let mut cursors = fields
         .iter()
         .map(|field| field.value.chars().count())
@@ -6950,6 +7652,10 @@ fn run_form(stdout: &mut io::Stdout, title: &str, fields: &mut [Field]) -> Resul
                     fields[selected].empty_choice_label,
                     fields[selected].raw_choice_labels,
                 )?;
+                cursors[selected] = fields[selected].value.chars().count();
+            }
+            KeyCode::Enter if !editing && fields[selected].dialog_list => {
+                edit_dialog_list(stdout, &mut fields[selected].value)?;
                 cursors[selected] = fields[selected].value.chars().count();
             }
             KeyCode::Enter if !editing && fields[selected].textarea => {
@@ -7223,6 +7929,10 @@ fn localized_choice_label(value: &str, zh: bool) -> Option<&'static str> {
         return Some(label);
     }
     match (value.trim(), zh) {
+        ("normal", false) => Some("Normal mode (normal)"),
+        ("normal", true) => Some("普通模式（normal）"),
+        ("dev", false) => Some("Dev mode (dev)"),
+        ("dev", true) => Some("开发模式（dev）"),
         ("minimal", false) => Some("Minimal"),
         ("minimal", true) => Some("最低"),
         ("low", false) => Some("Low"),
@@ -7468,6 +8178,95 @@ fn open_text_editor(path: &std::path::Path) -> std::io::Result<()> {
     ))
 }
 
+/// 预设对话列表式编辑器(验收 #19):每行一对 user/assistant,回车编辑、
+/// [a] 新增、[d] 删除;退出时把列表写回 `user:`/`assistant:` 行格式,
+/// 与手写 dialogs 文件同构,存量文件无需迁移。
+fn edit_dialog_list(stdout: &mut io::Stdout, value: &mut String) -> Result<()> {
+    let mut pairs = crate::persona_hint::parse_dialogs(value);
+    let mut selected = 0usize;
+    loop {
+        let mut options: Vec<String> = pairs
+            .iter()
+            .map(|(question, answer)| {
+                format!(
+                    "user: {}  assistant: {}",
+                    truncate(question.lines().next().unwrap_or(""), 20),
+                    truncate(answer.lines().next().unwrap_or(""), 20),
+                )
+            })
+            .collect();
+        if options.is_empty() {
+            options.push(t("(no preset dialogs)", "(暂无预设对话)").to_string());
+        }
+        selected = selected.min(options.len() - 1);
+        draw_menu(
+            stdout,
+            t(" PRESET DIALOGS ", " 预设对话 "),
+            &options,
+            selected,
+            t(
+                "[Enter]edit [a]add [d]delete [j/k]move [q]done",
+                "[Enter]编辑 [a]新增 [d]删除 [j/k]移动 [q]完成",
+            ),
+        )?;
+        match read_key()? {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                *value = crate::persona_hint::format_dialogs(&pairs);
+                return Ok(());
+            }
+            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
+            KeyCode::Char('a') => {
+                if let Some(pair) =
+                    edit_dialog_pair(stdout, t(" NEW DIALOG ", " 新增对话 "), "", "")?
+                {
+                    pairs.push(pair);
+                    selected = pairs.len() - 1;
+                }
+            }
+            KeyCode::Enter if !pairs.is_empty() => {
+                let (question, answer) = pairs[selected].clone();
+                if let Some(pair) = edit_dialog_pair(
+                    stdout,
+                    t(" EDIT DIALOG ", " 编辑对话 "),
+                    &question,
+                    &answer,
+                )? {
+                    pairs[selected] = pair;
+                }
+            }
+            KeyCode::Char('d') if !pairs.is_empty() => {
+                pairs.remove(selected);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// user/assistant 双框表单:打开即落在 user 框内直接输入,回车确认后
+/// j 移到 assistant 框。空的一侧视为放弃(与 `parse_dialogs` 丢弃
+/// 空对的语义一致)。
+fn edit_dialog_pair(
+    stdout: &mut io::Stdout,
+    title: &str,
+    question: &str,
+    answer: &str,
+) -> Result<Option<(String, String)>> {
+    let mut fields = vec![
+        Field::new("user", question.to_string()),
+        Field::new("assistant", answer.to_string()),
+    ];
+    if !run_form_editing(stdout, title, &mut fields)? {
+        return Ok(None);
+    }
+    let question = fields[0].value.trim().to_string();
+    let answer = fields[1].value.trim().to_string();
+    if question.is_empty() || answer.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((question, answer)))
+}
+
 fn edit_textarea(stdout: &mut io::Stdout, value: &mut String) -> Result<()> {
     execute!(
         stdout,
@@ -7544,6 +8343,95 @@ fn draw_menu(
             )?;
         } else {
             queue!(stdout, Print(pad(option, width.saturating_sub(4) as usize)))?;
+        }
+    }
+    stdout.flush()?;
+    Ok(())
+}
+
+fn draw_menu_with_editing(
+    stdout: &mut io::Stdout,
+    title: &str,
+    options: &[String],
+    selected: usize,
+    status: &str,
+    editing: Option<(usize, &str, &str, usize)>,
+) -> Result<()> {
+    let (cols, rows) = terminal::size()?;
+    let editing_width = editing
+        .map(|(_, label, value, _)| {
+            format!("{label}: {value}")
+                .chars()
+                .count()
+                .saturating_add(2)
+        })
+        .unwrap_or(0);
+    let content_w = options
+        .iter()
+        .map(|option| option.chars().count())
+        .max()
+        .unwrap_or(20)
+        .max(title.chars().count())
+        .max(menu_help(status).chars().count())
+        .max(editing_width)
+        + 6;
+    let width = (content_w as u16).min(cols.saturating_sub(4)).max(56);
+    let height = (options.len() as u16 + 5)
+        .min(rows.saturating_sub(2))
+        .max(7);
+    let x = cols.saturating_sub(width) / 2;
+    let y = rows.saturating_sub(height) / 2;
+    let visible_rows = height.saturating_sub(4).max(1) as usize;
+    let window = menu_window(options.len(), selected, visible_rows);
+    let inner_width = width.saturating_sub(4) as usize;
+
+    queue!(stdout, Clear(ClearType::All))?;
+    draw_box(stdout, x, y, width, height, title)?;
+    let footer = if editing.is_some() {
+        t(
+            "[Enter]save [Esc]cancel [Left/Right/Home/End]edit",
+            "[Enter]保存 [Esc]取消 [Left/Right/Home/End]编辑",
+        )
+    } else {
+        menu_help(status)
+    };
+    queue!(
+        stdout,
+        MoveTo(x + 2, y + height - 1),
+        SetAttribute(Attribute::Dim),
+        Print(truncate(footer, inner_width)),
+        SetAttribute(Attribute::Reset)
+    )?;
+    for (row, index) in window.enumerate() {
+        queue!(stdout, MoveTo(x + 2, y + row as u16 + 2))?;
+        if let Some((edit_index, label, value, cursor)) = editing {
+            if edit_index == index {
+                let prefix = format!("> {label}: ");
+                let before_cursor = format!("{prefix}{}", take_chars(value, cursor));
+                let line = format!("{prefix}{value}");
+                queue!(
+                    stdout,
+                    SetAttribute(Attribute::Reverse),
+                    Print(pad(&line, inner_width)),
+                    SetAttribute(Attribute::Reset),
+                    MoveTo(
+                        x + 2 + display_width(&truncate(&before_cursor, inner_width)) as u16,
+                        y + row as u16 + 2,
+                    ),
+                    Show,
+                )?;
+                continue;
+            }
+        }
+        if index == selected {
+            queue!(
+                stdout,
+                SetAttribute(Attribute::Reverse),
+                Print(pad(&options[index], inner_width)),
+                SetAttribute(Attribute::Reset)
+            )?;
+        } else {
+            queue!(stdout, Print(pad(&options[index], inner_width)))?;
         }
     }
     stdout.flush()?;
@@ -7795,9 +8683,18 @@ fn draw_form(
 }
 
 fn field_display_value(field: &Field, reveal_sensitive: bool) -> String {
-    if field.textarea && field.value.is_empty() {
-        t("(Enter opens $EDITOR)", "(Enter 打开 $EDITOR)").to_string()
-    } else if field.sensitive && !field.value.is_empty() && !reveal_sensitive {
+    if field.dialog_list {
+        // 列表式字段没有 $EDITOR;摘要成对数,原始序列化文本不上屏。
+        let pairs = crate::persona_hint::parse_dialogs(&field.value).len();
+        return if pairs == 0 {
+            t("(empty; Enter opens the list)", "(空,回车进列表)").to_string()
+        } else if is_zh() {
+            format!("[{pairs} 对对话]")
+        } else {
+            format!("[{pairs} dialog pair(s)]")
+        };
+    }
+    if field.sensitive && !field.value.is_empty() && !reveal_sensitive {
         if field.textarea {
             if is_zh() {
                 format!("[已配置 {} 项]", parse_key_list(&field.value).len())
@@ -7989,6 +8886,9 @@ struct Field {
     label: &'static str,
     value: String,
     textarea: bool,
+    /// 预设对话列表:Enter 进入列表式子编辑器而不是 $EDITOR(验收 #19),
+    /// value 仍是 `user:`/`assistant:` 行格式的序列化文本。
+    dialog_list: bool,
     sensitive: bool,
     boolean: bool,
     modalities: bool,
@@ -8003,6 +8903,7 @@ impl Field {
             label,
             value,
             textarea: false,
+            dialog_list: false,
             sensitive: false,
             boolean: false,
             modalities: false,
@@ -8017,6 +8918,7 @@ impl Field {
             label,
             value: value.to_string(),
             textarea: false,
+            dialog_list: false,
             sensitive: false,
             boolean: true,
             modalities: false,
@@ -8031,12 +8933,20 @@ impl Field {
             label,
             value,
             textarea: true,
+            dialog_list: false,
             sensitive: false,
             boolean: false,
             modalities: false,
             choices: Vec::new(),
             empty_choice_label: t("Use current provider", "使用当前 Provider"),
             raw_choice_labels: false,
+        }
+    }
+
+    fn dialog_list(label: &'static str, value: String) -> Self {
+        Self {
+            dialog_list: true,
+            ..Self::textarea(label, value)
         }
     }
 
@@ -8055,6 +8965,7 @@ impl Field {
             label,
             value,
             textarea: false,
+            dialog_list: false,
             sensitive: false,
             boolean: false,
             modalities: true,
@@ -8084,18 +8995,20 @@ impl Field {
 mod tests {
     use super::{
         apply_real_context_values, apply_reply_processor_values, choice_display_label,
-        field_display_value, language_choice_label, language_choice_value, menu_window,
-        parse_extra_body, parse_id_lines, parse_id_list, parse_keyword_lines,
-        parse_real_context_identity_lines, parse_real_context_string_lines,
-        platform_conversation_id_label, platform_conversation_kind_label, platform_persona_summary,
-        real_context_values, reply_processor_mode_label, reply_processor_mode_value,
-        reply_processor_values, route_pool_summary, t, thinking_variant_field,
+        field_display_value, group_join_approval_group_label, group_join_approval_values,
+        language_choice_label, language_choice_value, menu_window, parse_extra_body, parse_id_lines,
+        parse_id_list, parse_keyword_lines, parse_real_context_identity_lines,
+        parse_real_context_string_lines, platform_conversation_id_label,
+        platform_conversation_kind_label, platform_persona_summary, real_context_values,
+        reply_processor_mode_label, reply_processor_mode_value, reply_processor_values,
+        route_pool_summary, t, thinking_variant_field, upsert_group_join_approval_group,
         validate_reply_processor_settings, vision_provider_model_choice_values, Field,
         PersonaMenuTarget, ReplyProcessorSettingsForm, REPLY_PROCESSOR_PLUGIN_ID,
     };
     use crate::config::{
         AppConfig, PlatformConversationKind, PlatformModelPoolInheritance, PlatformPersonaOverride,
-        PlatformPluginInstanceConfig, RealContextPluginSettings, REAL_CONTEXT_PLUGIN_ID,
+        PlatformPluginInstanceConfig, QqGroupJoinApprovalGroupConfig, RealContextPluginSettings,
+        REAL_CONTEXT_PLUGIN_ID,
     };
     use crate::llm::ThinkingVariantOptions;
 
@@ -8113,6 +9026,51 @@ mod tests {
 
         assert_eq!(field_display_value(&field, false), "");
     }
+
+    #[test]
+    fn group_join_approval_defaults_to_enabled_with_empty_groups() {
+        let config = AppConfig::default();
+        let (enabled, settings) = group_join_approval_values(&config).unwrap();
+        assert!(enabled);
+        assert!(settings.groups.is_empty());
+        assert_eq!(settings.timeout_seconds, 60);
+        assert_eq!(settings.max_retries, 1);
+        assert!(settings.text_models.is_none());
+    }
+
+    #[test]
+    fn group_join_approval_upsert_keeps_one_entry_per_group() {
+        let mut groups = vec![
+            QqGroupJoinApprovalGroupConfig {
+                group_id: 1,
+                approve_condition: "first".to_string(),
+            },
+            QqGroupJoinApprovalGroupConfig {
+                group_id: 2,
+                approve_condition: "second".to_string(),
+            },
+        ];
+        upsert_group_join_approval_group(
+            &mut groups,
+            QqGroupJoinApprovalGroupConfig {
+                group_id: 1,
+                approve_condition: "replaced".to_string(),
+            },
+        );
+        assert_eq!(groups.len(), 2);
+        assert_eq!(
+            groups[0],
+            QqGroupJoinApprovalGroupConfig {
+                group_id: 1,
+                approve_condition: "replaced".to_string(),
+            }
+        );
+        assert!(
+            group_join_approval_group_label(&groups[1]).starts_with("2 · "),
+            "group label should contain the group id"
+        );
+    }
+
 
     #[test]
     fn thinking_variant_field_uses_raw_model_options_and_default_choice() {
@@ -8170,13 +9128,10 @@ mod tests {
     }
 
     #[test]
-    fn empty_sensitive_textarea_keeps_editor_placeholder() {
+    fn empty_sensitive_textarea_renders_empty() {
         let field = Field::textarea("API Keys", String::new()).sensitive();
 
-        assert_eq!(
-            field_display_value(&field, false),
-            t("(Enter opens $EDITOR)", "(Enter 打开 $EDITOR)")
-        );
+        assert_eq!(field_display_value(&field, false), "");
     }
 
     #[test]

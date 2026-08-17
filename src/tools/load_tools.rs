@@ -67,6 +67,20 @@ pub(super) fn execute(args: Value, registry: &ToolRegistry) -> Result<String> {
     let (loaded_targets, loaded_tools, skipped) =
         registry.expand_load_targets(&requested, &BTreeSet::new());
 
+    // 未知名一票否决:哪怕混着可用工具也整调报错并逐名点出——否则
+    // "7 个不存在+1 个本就常驻"会渲染成一次成功加载,模型(和用户)都
+    // 会以为那批工具真的存在(验收:dev 记忆里的旧工具清单诱发误加载)。
+    let unknown = skipped
+        .iter()
+        .filter(|note| note.ends_with(": unknown tool or script"))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unknown.is_empty() {
+        bail!(
+            "these names do not exist in this session: {}. Pick names from <available_load_targets>; other requested names were not loaded.",
+            unknown.join("; ")
+        );
+    }
     if loaded_tools.is_empty() {
         let already_available = skipped
             .iter()
@@ -250,6 +264,18 @@ mod tests {
             value["note"],
             "nothing to load; every requested tool is already available"
         );
+
+        // Mixed known+unknown must ALSO error, naming the unknowns: an
+        // "already available" note beside 7 ghosts must not render as success.
+        let mixed = registry
+            .call(
+                "load_tools",
+                r#"{"names":["web_search","read_file","edit_string"]}"#,
+            )
+            .await;
+        let message = format!("{:#}", mixed.unwrap_err());
+        assert!(message.contains("read_file"), "{message}");
+        assert!(message.contains("edit_string"), "{message}");
 
         // Entirely unknown names still error so the model can correct itself.
         assert!(registry

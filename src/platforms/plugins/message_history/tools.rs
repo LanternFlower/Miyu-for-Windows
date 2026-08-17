@@ -697,6 +697,9 @@ fn describe_scope(scope: &HistoryScope) -> String {
             conversation.account_id(),
             conversation.conversation_id()
         ),
+        HistoryScope::AllGroups(account) => {
+            format!("{}:{}:all_groups", account.platform(), account.account_id())
+        }
         HistoryScope::Account(account) => {
             format!(
                 "{}:{}:all_conversations",
@@ -1008,17 +1011,24 @@ fn history_scope(
     context: &PlatformTurnContext,
     allow_cross_group: bool,
 ) -> Result<HistoryScope> {
-    let all = arguments
+    let all_conversations = arguments
         .get("all_conversations")
         .and_then(Value::as_bool)
-        .unwrap_or(false)
-        || arguments
-            .get("all_groups")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-    if all {
+        .unwrap_or(false);
+    let all_groups = arguments
+        .get("all_groups")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if all_conversations || all_groups {
         require_cross_conversation_access(context, allow_cross_group)?;
-        return Ok(HistoryScope::Account(super::account_key(context)?));
+        let account = super::account_key(context)?;
+        // all_groups 按字面语义只覆盖群聊:此前它与 all_conversations 完全
+        // 等价(含全部私聊),模型按参数名删"群历史"会连私聊一起删。
+        return Ok(if all_conversations {
+            HistoryScope::Account(account)
+        } else {
+            HistoryScope::AllGroups(account)
+        });
     }
 
     let conversation_id = optional_id(arguments, "conversation_id")?;
@@ -1115,7 +1125,9 @@ fn explicit_or_current_group(
     match history_scope(arguments, context, allow_cross_group)? {
         HistoryScope::Group(group) => Ok(group),
         HistoryScope::Private(_) => bail!("this operation requires a group conversation"),
-        HistoryScope::Account(_) => bail!("this operation requires one group conversation"),
+        HistoryScope::AllGroups(_) | HistoryScope::Account(_) => {
+            bail!("this operation requires one group conversation")
+        }
     }
 }
 

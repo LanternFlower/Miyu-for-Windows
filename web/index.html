@@ -39,13 +39,6 @@
 
       <nav class="session-list" id="sessionList" aria-label="会话">
         <div class="session-items" id="sessionItems"></div>
-        <div class="archived-section" id="archivedSection" hidden>
-          <button class="archived-toggle" id="archivedToggle" type="button" aria-expanded="false" aria-controls="archivedList">
-            <span class="icon-slot" data-icon="chevron-right" aria-hidden="true"><span class="icon-fallback">›</span></span>
-            <span>已归档</span>
-          </button>
-          <div class="archived-list" id="archivedList" hidden></div>
-        </div>
       </nav>
 
       <footer class="sidebar-footer">
@@ -174,16 +167,9 @@
             <input id="attachmentInput" type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,.txt,.md,.markdown,.json,.jsonl,.csv,.tsv,.log,.rs,.js,.jsx,.ts,.tsx,.py,.go,.java,.c,.cc,.cpp,.h,.hpp,.cs,.rb,.php,.swift,.kt,.kts,.sh,.bash,.zsh,.fish,.toml,.yaml,.yml,.xml,.html,.css,.scss,.sql" hidden>
             <div class="composer-footer">
               <div class="composer-controls">
-                <button class="mode-cycle" id="modeCycle" type="button" data-mode="normal" title="当前模式：普通；点击切换到计划" aria-label="当前模式：普通；点击切换到计划">
-                  <span class="mode-option is-active" data-mode-option="normal" aria-hidden="false">
-                    <span class="icon-slot mode-icon" data-icon="message-circle" aria-hidden="true"><span class="icon-fallback">N</span></span>
-                    <span class="mode-label">普通</span>
-                  </span>
-                  <span class="mode-option" data-mode-option="chat" aria-hidden="true">
-                    <span class="icon-slot mode-icon" data-icon="messages-square" aria-hidden="true"><span class="icon-fallback">C</span></span>
-                    <span class="mode-label">闲聊</span>
-                  </span>
-                </button>
+                <span class="mode-badge" id="modeBadge" data-mode="normal" title="普通模式会话（创建时定死）">
+                  <span class="mode-label">普通</span>
+                </span>
                 <button class="thinking-variant-button" id="thinkingVariantButton" type="button" title="思考程度" aria-label="思考程度" aria-haspopup="dialog" aria-expanded="false" aria-controls="thinkingVariantPopover" disabled>
                   <span class="icon-slot brain-icon" data-icon="brain" aria-hidden="true"><span class="icon-fallback">B</span></span>
                   <span class="icon-slot thinking-chevron" data-icon="chevron-down" aria-hidden="true"><span class="icon-fallback">⌄</span></span>
@@ -355,7 +341,7 @@
               </div>
             </div>
             <div class="u-table-scroll"><table class="u-table u-records-table">
-              <thead><tr><th>时间</th><th>来源</th><th>模型</th><th class="num">输入</th><th class="num">输出</th><th>缓存命中</th><th>类型</th></tr></thead>
+              <thead><tr><th>时间</th><th>来源</th><th>模型</th><th class="num">输入</th><th class="num">输出</th><th class="num">消费</th><th>缓存命中</th><th>类型</th></tr></thead>
               <tbody id="usageRecords"></tbody>
             </table></div>
           </div>

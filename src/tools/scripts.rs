@@ -563,20 +563,28 @@ async fn run_script(
     command.kill_on_drop(true);
 
     let mut child = command.spawn()?;
-    if !stdin_input.is_empty() {
-        if let Some(mut stdin) = child.stdin.take() {
-            use tokio::io::AsyncWriteExt;
-            let _ = stdin.write_all(stdin_input.as_bytes()).await;
-        }
-    }
+    let stdin_pipe = child.stdin.take();
 
     // Collect with a hard per-stream cap: wait_with_output() buffers
     // without bounds, so a runaway script could exhaust memory.
+    // stdin 写入必须在 timeout 之内且与读取并发:脚本不读 stdin 且输入
+    // 超过管道缓冲时 write_all 永久 pending,放在超时外整个 future 就
+    // 永远不返回,kill_on_drop 也无从生效。
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
     let (status, stdout_bytes, stderr_bytes) =
         tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
-            let (stdout_bytes, stderr_bytes, status) = tokio::join!(
+            let write_stdin = async {
+                if let Some(mut stdin) = stdin_pipe {
+                    if !stdin_input.is_empty() {
+                        use tokio::io::AsyncWriteExt;
+                        let _ = stdin.write_all(stdin_input.as_bytes()).await;
+                    }
+                    // drop 关闭写端,脚本读 stdin 时拿到 EOF。
+                }
+            };
+            let (_, stdout_bytes, stderr_bytes, status) = tokio::join!(
+                write_stdin,
                 read_capped_stream(stdout_pipe),
                 read_capped_stream(stderr_pipe),
                 child.wait(),

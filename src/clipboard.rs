@@ -81,14 +81,14 @@ pub(crate) fn write_image_cache_file(
 }
 
 pub fn read_clipboard_image() -> Result<Option<ClipboardImage>> {
-    if let Some(img) = try_command("wl-paste", &["-t", "image/png"], "image/png")? {
+    read_clipboard_image_of("image/png")
+}
+
+fn read_clipboard_image_of(mime: &str) -> Result<Option<ClipboardImage>> {
+    if let Some(img) = try_command("wl-paste", &["-t", mime], mime)? {
         return Ok(Some(img));
     }
-    if let Some(img) = try_command(
-        "xclip",
-        &["-selection", "clipboard", "-t", "image/png", "-o"],
-        "image/png",
-    )? {
+    if let Some(img) = try_command("xclip", &["-selection", "clipboard", "-t", mime, "-o"], mime)? {
         return Ok(Some(img));
     }
     Ok(None)
@@ -151,6 +151,23 @@ pub fn read_clipboard() -> Result<ClipboardContent> {
         }
     }
     if has_image {
+        // 持有者不一定提供 image/png target:按它实际声明的格式读取,
+        // 否则只 offer JPEG/WebP 的复制源在粘贴时会静默丢失。
+        for mime in [
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "image/gif",
+            "image/bmp",
+        ] {
+            if !targets.iter().any(|target| target == mime) {
+                continue;
+            }
+            if let Some(img) = read_clipboard_image_of(mime)? {
+                return Ok(ClipboardContent::Image(img));
+            }
+        }
+        // 兜底保持老行为:有的持有者不如实上报 target,仍直接请求 PNG。
         if let Some(img) = read_clipboard_image()? {
             return Ok(ClipboardContent::Image(img));
         }

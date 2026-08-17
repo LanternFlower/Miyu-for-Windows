@@ -53,8 +53,18 @@ pub fn register(registry: &mut ToolRegistry, config: AppConfig) {
         .iter()
         .filter(|server| server.enabled && !server.id.trim().is_empty())
     {
-        let Ok(tools) = list_server_tools(server) else {
-            continue;
+        // 有界列举:一个挂起的 server 不能吊死整个注册流程(启动路径)。
+        // 失败必须留日志,否则用户无从排查工具为何消失。
+        let tools = match list_server_tools_with_timeout(server) {
+            Ok(tools) => tools,
+            Err(error) => {
+                tracing::warn!(
+                    server = %server.id,
+                    error = %format!("{error:#}"),
+                    "MCP server failed to start or list tools; its tools are skipped"
+                );
+                continue;
+            }
         };
         for tool in tools {
             let tool_id = mcp_tool_id(&server.id, &tool.name);
@@ -79,7 +89,7 @@ pub fn register(registry: &mut ToolRegistry, config: AppConfig) {
                     normalize_schema(tool.input_schema),
                     move |args| {
                         let binding = binding.clone();
-                        async move { call_mcp_tool(binding, args) }
+                        async move { call_mcp_tool_async(binding, args).await }
                     },
                 )
                 .with_display_name(display_name)
@@ -89,16 +99,76 @@ pub fn register(registry: &mut ToolRegistry, config: AppConfig) {
     }
 }
 
+/// 会话内的 `request` 超时只在两次成功读之间生效:server 完全不吐字节时
+/// `read_line` 永久阻塞,轮不到超时检查。外层兜底 = 会话超时 + 5s 余量,
+/// 超时后 SIGKILL 子进程让阻塞读收到 EOF,工作线程随之回收。
+fn kill_mcp_child(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
+}
+
+fn overall_timeout(server: &McpServerConfig) -> Duration {
+    Duration::from_secs(server.timeout_seconds.max(1)) + Duration::from_secs(5)
+}
+
 fn list_server_tools(server: &McpServerConfig) -> Result<Vec<McpToolInfo>> {
+    list_server_tools_inner(server, None)
+}
+
+fn list_server_tools_inner(
+    server: &McpServerConfig,
+    pid_notify: Option<std::sync::mpsc::Sender<u32>>,
+) -> Result<Vec<McpToolInfo>> {
     let mut session = McpSession::start(server)?;
+    if let Some(notify) = pid_notify {
+        let _ = notify.send(session.child.id());
+    }
     session.initialize()?;
     let result = session.request("tools/list", json!({}))?;
     let parsed: ToolsListResult = serde_json::from_value(result)?;
     Ok(parsed.tools)
 }
 
+fn list_server_tools_with_timeout(server: &McpServerConfig) -> Result<Vec<McpToolInfo>> {
+    let deadline = overall_timeout(server);
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    let (pid_tx, pid_rx) = std::sync::mpsc::channel();
+    let server_clone = server.clone();
+    std::thread::spawn(move || {
+        let _ = result_tx.send(list_server_tools_inner(&server_clone, Some(pid_tx)));
+    });
+    match result_rx.recv_timeout(deadline) {
+        Ok(result) => result,
+        Err(_) => {
+            if let Ok(pid) = pid_rx.try_recv() {
+                kill_mcp_child(pid);
+            }
+            bail!(
+                "MCP server {} did not answer tools/list within {}s",
+                server.id,
+                deadline.as_secs()
+            )
+        }
+    }
+}
+
 fn call_mcp_tool(binding: McpToolBinding, args: Value) -> Result<String> {
+    call_mcp_tool_inner(binding, args, None)
+}
+
+fn call_mcp_tool_inner(
+    binding: McpToolBinding,
+    args: Value,
+    pid_notify: Option<std::sync::mpsc::Sender<u32>>,
+) -> Result<String> {
     let mut session = McpSession::start(&binding.server)?;
+    if let Some(notify) = pid_notify {
+        let _ = notify.send(session.child.id());
+    }
     session.initialize()?;
     let result = session.request(
         "tools/call",
@@ -108,6 +178,28 @@ fn call_mcp_tool(binding: McpToolBinding, args: Value) -> Result<String> {
         }),
     )?;
     Ok(format_mcp_result(&result))
+}
+
+/// 同步 MCP 会话移出 async 线程(spawn_blocking):在 actor 的单线程
+/// runtime 上直接跑同步 IO 会冻结全部并发 turn;多次挂起还会耗尽 tokio
+/// 阻塞池。外层超时 + kill 保证阻塞线程一定能回收。
+async fn call_mcp_tool_async(binding: McpToolBinding, args: Value) -> Result<String> {
+    let deadline = overall_timeout(&binding.server);
+    let server_id = binding.server.id.clone();
+    let (pid_tx, pid_rx) = std::sync::mpsc::channel();
+    let task = tokio::task::spawn_blocking(move || call_mcp_tool_inner(binding, args, Some(pid_tx)));
+    match tokio::time::timeout(deadline, task).await {
+        Ok(joined) => joined.context("MCP worker task failed")?,
+        Err(_) => {
+            if let Ok(pid) = pid_rx.try_recv() {
+                kill_mcp_child(pid);
+            }
+            bail!(
+                "MCP server {server_id} did not answer within {}s",
+                deadline.as_secs()
+            )
+        }
+    }
 }
 
 struct McpSession {

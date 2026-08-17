@@ -160,6 +160,22 @@ impl ReplFooterStatus {
         self.token_usage.session_tokens = session_tokens;
     }
 
+    /// 回合中途的逐请求刷新:在(回合前的)基线上叠加回合累计。必须作用
+    /// 在基线快照的克隆上,同一回合内可重复调用而不重复相加。
+    fn apply_round_usage(&mut self, context_tokens: u64, turn: TurnTokens) {
+        let meter = &mut self.token_usage;
+        meter.turn_tokens = turn.total;
+        meter.turn_prompt_tokens = turn.prompt;
+        meter.turn_cached_tokens = turn.cache_read;
+        if context_tokens > 0 {
+            meter.session_tokens = context_tokens;
+        }
+        let cumulative = meter.cumulative_tokens.unwrap_or(0) + turn.total;
+        meter.cumulative_tokens = (cumulative > 0).then_some(cumulative);
+        meter.cumulative_prompt_tokens += turn.prompt;
+        meter.cumulative_cached_tokens += turn.cache_read;
+    }
+
     fn update_context_window(&mut self, context_window: Option<usize>) {
         self.token_usage.context_window = context_window;
     }
@@ -351,7 +367,9 @@ fn colored_footer_mode_label(mode: AgentMode) -> String {
     let label = mode.label();
     match mode {
         AgentMode::Normal => primary_footer_text(label),
-        AgentMode::Chat => format!("\x1b[1m\x1b[32m{label}\x1b[0m"),
+        // tertiary(35 酒红,与 render/webui 的 tertiary 一致),区别于普通
+        // 模式的 primary 蓝。
+        AgentMode::Dev => format!("\x1b[1m\x1b[35m{label}\x1b[0m"),
     }
 }
 
@@ -436,7 +454,7 @@ fn extract_debug_flag(args: &mut Vec<OsString>) -> bool {
 fn localized_command() -> clap::Command {
     let mut command = Cli::command();
     command = command
-        .about(t("Miyu CLI AI Agent", "Miyu 命令行 AI 助手"))
+        .about(t("Miyu AI assistant", "Miyu AI 助手"))
         .override_usage(t(
             "miyu [OPTIONS] [MESSAGE]... [COMMAND]",
             "miyu [选项] [消息]... [命令]",
@@ -462,7 +480,72 @@ fn localized_command() -> clap::Command {
     if is_zh() {
         command = apply_chinese_help_template(command);
     }
+    // 终端无缝集成组在根帮助里以静态段单独成节(这些子命令已 hide,
+    // 不进 {subcommands});最后设置以免被上面的通用中文模板覆盖。
+    command = command.help_template(root_help_template());
     command
+}
+
+fn root_help_template() -> String {
+    let shell_block = t(
+        "  fish-init          Integrate with fish; then chat in natural language directly in the terminal
+  bash-init          Integrate with bash
+  zsh-init           Integrate with zsh
+  remove-shell-hook  Safely remove installed Miyu shell hooks
+  models             Switch the terminal-integration session's model
+  variant            Switch the terminal session model's thinking level
+  history            Show conversation history
+  reset              Clear the terminal-integration session context
+  reset-memory       Erase this persona's long-term memory
+  pop                Move conversation turns out of active context",
+        "  fish-init          集成到 fish，集成后可在终端直接使用自然语言交流
+  bash-init          集成到 bash
+  zsh-init           集成到 zsh
+  remove-shell-hook  安全删除已安装的 Miyu shell hook
+  models             修改终端集成会话的模型
+  variant            切换终端集成会话模型的思考档位
+  history            显示会话历史
+  reset              清除终端集成会话上下文
+  reset-memory       清空长期记忆
+  pop                将对话轮次移出当前上下文",
+    );
+    if is_zh() {
+        format!(
+            "{{about}}
+
+用法: {{usage}}
+
+命令:
+{{subcommands}}
+
+终端无缝集成相关：
+{shell_block}
+
+参数:
+{{positionals}}
+选项:
+{{options}}
+{{after-help}}"
+        )
+    } else {
+        format!(
+            "{{about}}
+
+Usage: {{usage}}
+
+Commands:
+{{subcommands}}
+
+Terminal integration:
+{shell_block}
+
+Arguments:
+{{positionals}}
+Options:
+{{options}}
+{{after-help}}"
+        )
+    }
 }
 
 fn apply_localized_help_flags(mut command: clap::Command, root: bool) -> clap::Command {
@@ -531,8 +614,8 @@ fn localize_top_args(command: clap::Command) -> clap::Command {
         })
         .mut_arg("continue_session", |arg| {
             arg.help(t(
-                "Send this one-shot message to the terminal session instead of a throwaway one",
-                "把这条一次性消息发进终端会话，而不是用完即弃的临时会话",
+                "Send the message into the terminal-integration session instead of a throwaway one-shot chat",
+                "把消息发进终端集成会话，而不是用完即弃的一次性对话",
             ))
         })
         .mut_arg("message", |arg| {
@@ -547,55 +630,54 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
     let descriptions = [
         (
             "ask",
-            "Send one message to the assistant",
-            "向助手发送一条消息",
+            "Send one message to the assistant as a one-shot chat",
+            "向助手发送一条消息，一次性对话",
+        ),
+        (
+            "normal",
+            "Enter the normal-mode REPL (full persona abilities)",
+            "进入普通模式 REPL（人格全能力）",
+        ),
+        (
+            "dev",
+            "Enter the dev-mode REPL (minimal coding form, no persona)",
+            "进入开发模式 REPL（极简编码形态，无人格）",
+        ),
+        (
+            "tool-call",
+            "Tool bridge: call this session's AI tools from the command line",
+            "工具桥：以本会话身份调用 AI 工具",
         ),
         (
             "init",
-            "Create default config and state files; use <shell>-init for shell hooks",
-            "创建默认配置和状态文件；Shell 集成请使用对应的 <shell>-init 命令",
+            "Create default config and state files",
+            "创建默认配置和状态文件",
         ),
         (
             "paths",
             "Show app config, data, and cache paths",
             "显示应用配置、数据和缓存路径",
         ),
-        ("config", "Open or manage configuration", "打开或管理配置"),
-        (
-            "reload",
-            "Reload configuration in the running Miyu daemon",
-            "在运行中的 Miyu daemon 内重新加载配置",
-        ),
+        ("config", "Configure via the TUI", "使用 TUI 进行配置"),
+        ("reload", "Reload configuration", "重新加载配置"),
         (
             "models",
-            "Switch the current session's model",
-            "切换当前会话使用的模型",
+            "Switch the terminal-integration session's model",
+            "修改终端集成会话的模型",
         ),
-        (
-            "list-models",
-            "List the global model pool with indexes",
-            "列出全局模型池并编号",
-        ),
+        ("list-models", "List available models", "列出可用模型"),
         (
             "variant",
-            "View or switch thinking level",
-            "查看或切换思考档位",
+            "Switch the terminal session model's thinking level",
+            "切换终端集成会话模型的思考档位",
         ),
         (
             "fish-init",
             "Integrate with fish so you can chat in natural language directly in the terminal",
             "集成到 fish，集成后可在终端直接使用自然语言交流。",
         ),
-        (
-            "bash-init",
-            "Integrate with bash so you can chat in natural language directly in the terminal",
-            "集成到 bash，集成后可在终端直接使用自然语言交流。",
-        ),
-        (
-            "zsh-init",
-            "Integrate with zsh so you can chat in natural language directly in the terminal",
-            "集成到 zsh，集成后可在终端直接使用自然语言交流。",
-        ),
+        ("bash-init", "Integrate with bash", "集成到 bash"),
+        ("zsh-init", "Integrate with zsh", "集成到 zsh"),
         (
             "powershell-init",
             "Integrate with PowerShell so you can chat in natural language directly in the terminal",
@@ -612,51 +694,30 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
             "Move conversation turns out of active context",
             "将对话轮次移出当前上下文",
         ),
-        ("kb", "Manage local knowledge base", "管理本地知识库"),
+        ("kb", "Manage the knowledge base", "管理知识库"),
         (
             "update-default-kb",
             "Update Miyu default knowledge base",
             "更新 Miyu 默认知识库",
         ),
-        (
-            "memory",
-            "Inspect or edit assistant memory",
-            "查看或编辑助手记忆",
-        ),
+        ("memory", "Manage assistant memory", "管理记忆"),
         ("skills", "Manage assistant skills", "管理助手 skills"),
         (
             "reset",
-            "Start the current conversation over",
-            "重新开始当前会话",
+            "Clear the terminal-integration session context",
+            "清除终端集成会话上下文",
+        ),
+        (
+            "reset-memory",
+            "Erase this persona's long-term memory",
+            "清空长期记忆",
         ),
         (
             "wipe",
-            "Erase memory, all conversations, group contexts and generated skills",
-            "抹掉记忆、所有会话内容、群聊上下文和自动技能",
+            "Erase all conversation history, memory, group contexts and their artifacts",
+            "抹掉所有会话历史、记忆、群聊上下文和其产物",
         ),
-        (
-            "new",
-            "Create a new session and switch to it",
-            "创建新会话并切换过去",
-        ),
-        (
-            "session",
-            "List sessions, or switch to one (Ctrl+D deletes in the picker)",
-            "列出会话，或切换到指定会话（菜单内 Ctrl+D 删除）",
-        ),
-        ("rename", "Rename the current session", "重命名当前会话"),
-        ("archive", "Archive the current session", "归档当前会话"),
-        (
-            "delete",
-            "Delete a session (current by default)",
-            "删除会话（默认当前会话）",
-        ),
-        (
-            "workspace",
-            "Show, bind, or unbind the session workspace",
-            "查看、绑定或解绑会话工作目录",
-        ),
-        ("web", "Open the local Miyu WebUI", "访问本地 Miyu WebUI"),
+                                                ("web", "Open the local Miyu WebUI", "访问本地 Miyu WebUI"),
         (
             "daemon",
             "Manage the unified Miyu background service",
@@ -664,17 +725,55 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
         ),
         (
             "export",
-            "Pack this installation into a portable archive",
-            "把当前安装打包成可移植归档",
+            "Export configuration into a portable archive",
+            "导出配置，把当前配置打包成可移植归档",
         ),
-        (
-            "import",
-            "Restore an installation from an exported archive",
-            "从导出的归档恢复安装",
-        ),
+        ("import", "Import configuration", "导入配置"),
     ];
     for (name, en, zh) in descriptions {
         command = command.mut_subcommand(name, |subcommand| subcommand.about(t(en, zh)));
+    }
+    // 终端无缝集成组:从 {subcommands} 里藏掉,根帮助模板里以静态段
+    // 单独成节(clap 不支持子命令分组);`miyu <cmd> -h` 不受影响。
+    for name in [
+        "fish-init",
+        "bash-init",
+        "zsh-init",
+        "remove-shell-hook",
+        "models",
+        "variant",
+        "history",
+        "reset",
+        "reset-memory",
+        "pop",
+    ] {
+        command = command.mut_subcommand(name, |subcommand| subcommand.hide(true));
+    }
+    for (index, name) in [
+        "init",
+        "config",
+        "normal",
+        "dev",
+        "daemon",
+        "web",
+        "tool-call",
+        "ask",
+        "list-models",
+        "export",
+        "import",
+        "kb",
+        "memory",
+        "skills",
+        "update-default-kb",
+        "wipe",
+        "paths",
+        "reload",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        command = command
+            .mut_subcommand(name, move |subcommand| subcommand.display_order(index));
     }
     command = command
         .mut_subcommand("ask", localize_ask_command)
@@ -1008,35 +1107,18 @@ pub enum Command {
     Memory(MemoryArgs),
     Skills(SkillsArgs),
     Reset,
+    #[command(name = "reset-memory")]
+    ResetMemoryCli,
     Wipe(WipeArgs),
-    New(SessionNameArgs),
-    Session(SessionTargetArgs),
-    Rename(SessionRenameArgs),
-    Archive,
-    Delete(SessionTargetArgs),
-    Workspace(WorkspaceArgs),
     Web(WebArgs),
     Daemon(DaemonArgs),
-}
-
-#[derive(Debug, Args)]
-pub struct SessionNameArgs {
-    pub name: Option<String>,
-}
-
-#[derive(Debug, Args)]
-pub struct SessionTargetArgs {
-    pub target: Option<String>,
-}
-
-#[derive(Debug, Args)]
-pub struct SessionRenameArgs {
-    pub name: String,
-}
-
-#[derive(Debug, Args)]
-pub struct WorkspaceArgs {
-    pub path: Option<String>,
+    /// 进入普通模式 REPL(人格全能力)
+    Normal,
+    /// 进入开发模式 REPL(极简编码形态,无人格)
+    Dev,
+    /// 工具桥:以当前会话身份调用一个结构化工具(供 run_command 脚本编排)
+    #[command(name = "tool-call")]
+    ToolCallCmd(ToolCallArgs),
 }
 
 #[derive(Debug, Args)]
@@ -1093,6 +1175,10 @@ pub enum DaemonCommand {
 pub struct DaemonLogsArgs {
     #[arg(short = 'n', long, value_name = "N")]
     pub lines: Option<usize>,
+
+    /// `request`:开启出网请求录制并实时监控;Ctrl+C 停止并关闭录制
+    #[arg(value_name = "TOPIC")]
+    pub topic: Option<String>,
 }
 
 impl std::fmt::Debug for WebArgs {
@@ -1127,6 +1213,29 @@ pub struct AlarmWorkerArgs {
 pub struct ToolArgs {
     pub name: String,
     pub arguments: Option<String>,
+}
+
+/// 工具桥:以本会话身份(MIYU_SESSION)调用结构化工具。--list 列出的即
+/// 本会话可调用的集合;内层调用在 daemon 侧的会话工作区执行,不继承本
+/// shell 的环境变量与当前目录,跨工具传数据走参数 JSON 或文件。
+#[derive(Debug, Args)]
+pub struct ToolCallArgs {
+    /// 工具名(--list 时可省略)
+    pub name: Option<String>,
+    /// 参数 JSON(便捷位置参数;脚本里推荐 --stdin 免引号地狱)
+    pub arguments: Option<String>,
+    /// 从标准输入读参数 JSON(跨 shell 安全,PowerShell 也能用)
+    #[arg(long = "stdin")]
+    pub args_stdin: bool,
+    /// 从文件读参数 JSON
+    #[arg(long)]
+    pub args_file: Option<std::path::PathBuf>,
+    /// 列出本会话当前可调用的工具(名称+显示名)
+    #[arg(long)]
+    pub list: bool,
+    /// 打印指定工具的完整合同(描述+参数 schema)
+    #[arg(long)]
+    pub describe: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1475,6 +1584,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
         Some(Command::UpdateDefaultKb) => run_update_default_kb(&paths).await,
         Some(Command::Memory(args)) => run_memory(&paths, args),
         Some(Command::Skills(args)) => run_skills(&paths, args),
+        Some(Command::ResetMemoryCli) => run_reset_memory_command(&paths).await,
         Some(Command::Reset) => {
             if ipc::daemon_info(&paths).await.is_some() {
                 send_ipc_admin(
@@ -1491,12 +1601,9 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
             Ok(())
         }
         Some(Command::Wipe(args)) => run_wipe(&paths, args.yes).await,
-        Some(Command::New(args)) => run_session_new(&paths, args).await,
-        Some(Command::Session(args)) => run_session_command(&paths, args).await,
-        Some(Command::Rename(args)) => run_session_rename(&paths, args).await,
-        Some(Command::Archive) => run_session_archive(&paths).await,
-        Some(Command::Delete(args)) => run_session_delete(&paths, args).await,
-        Some(Command::Workspace(args)) => run_workspace_command(&paths, args).await,
+        Some(Command::ToolCallCmd(args)) => run_tool_call(&paths, args).await,
+        Some(Command::Normal) => run_repl(&paths, AgentMode::Normal).await,
+        Some(Command::Dev) => run_repl(&paths, AgentMode::Dev).await,
         Some(Command::Web(args)) => run_web(&paths, args).await,
         Some(Command::Daemon(args)) => run_daemon_command(&paths, args).await,
         None => {
@@ -1511,7 +1618,26 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                         )
                     );
                 }
-                run_repl(&paths, mode).await
+                // 裸 miyu:按 default_mode 配置分流;未配置则打印模式说明,
+                // 逼一次显式选择(miyu normal / miyu dev)。
+                let default_mode = AppConfig::load_or_default(&paths)
+                    .map(|config| config.default_mode.trim().to_ascii_lowercase())
+                    .unwrap_or_default();
+                match default_mode.as_str() {
+                    "normal" => run_repl(&paths, AgentMode::Normal).await,
+                    "dev" => run_repl(&paths, AgentMode::Dev).await,
+                    "" => {
+                        print_mode_help();
+                        Ok(())
+                    }
+                    other => bail!(
+                        "{}: {other}",
+                        t(
+                            "invalid default_mode (expected normal or dev)",
+                            "default_mode 配置无效(应为 normal 或 dev)"
+                        )
+                    ),
+                }
             } else {
                 let session =
                     one_shot_session(&paths, session_arg.as_deref(), continue_session).await?;
@@ -1759,7 +1885,114 @@ fn daemon_web_status_lines(label: &str, urls: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// `miyu daemon logs request`:监控期间开启录制,滚动打印每个出网请求
+/// 的摘要行;完整请求体在 JSONL 文件里(整段 prompt 打终端没法看)。
+/// Ctrl+C 退出时关闭录制——开关是 daemon 进程级内存位,不落配置。
+async fn run_request_monitor(paths: &MiyuPaths) -> Result<()> {
+    if ipc::daemon_info(paths).await.is_none() {
+        bail!(
+            "{}",
+            t(
+                "the daemon is not running; start it first (miyu daemon start)",
+                "daemon 未运行;先 miyu daemon start"
+            )
+        );
+    }
+    let (_, data) = send_ipc_admin(paths, IpcCommand::SetRequestLogging { enabled: true }).await?;
+    let file = data
+        .get("file")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| paths.logs_dir().join("requests-<date>.jsonl").display().to_string());
+    println!(
+        "{}",
+        t(
+            "request recording is ON; full bodies append to:",
+            "出网请求录制已开启;完整请求体实时追加到:"
+        )
+    );
+    println!("  {file}");
+    println!(
+        "[2m{}[0m",
+        t(
+            "monitoring (one summary line per request) · Ctrl+C stops and turns recording off",
+            "实时监控中(每请求一行摘要) · Ctrl+C 停止并关闭录制"
+        )
+    );
+    let path = std::path::PathBuf::from(&file);
+    let mut offset = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+    let mut carry = String::new();
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => break,
+            _ = tokio::time::sleep(Duration::from_millis(300)) => {}
+        }
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        if meta.len() < offset {
+            offset = 0; // 跨日换文件或被清空
+        }
+        if meta.len() == offset {
+            continue;
+        }
+        use std::io::{Read as _, Seek as _};
+        let Ok(mut handle) = std::fs::File::open(&path) else { continue };
+        if handle.seek(std::io::SeekFrom::Start(offset)).is_err() {
+            continue;
+        }
+        let mut chunk = String::new();
+        if handle.read_to_string(&mut chunk).is_err() {
+            continue;
+        }
+        offset = meta.len();
+        carry.push_str(&chunk);
+        while let Some(newline) = carry.find('\n') {
+            let line: String = carry.drain(..=newline).collect();
+            let Ok(entry) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+                continue;
+            };
+            let text = |key: &str| entry.get(key).and_then(serde_json::Value::as_str).unwrap_or("?");
+            let body = entry.get("body");
+            let messages = body
+                .and_then(|body| body.get("messages").or_else(|| body.get("input")))
+                .and_then(serde_json::Value::as_array)
+                .map(|items| items.len());
+            let size_kb = line.len() as f64 / 1024.0;
+            let stamp = text("ts").get(11..19).unwrap_or("--:--:--").to_string();
+            println!(
+                "{stamp}  {}/{}  {}  scope={}  {:.1}KB{}",
+                text("provider"),
+                text("model"),
+                text("kind"),
+                text("scope"),
+                size_kb,
+                messages
+                    .map(|count| format!("  messages={count}"))
+                    .unwrap_or_default(),
+            );
+        }
+    }
+    let _ = send_ipc_admin(paths, IpcCommand::SetRequestLogging { enabled: false }).await;
+    println!(
+        "
+{}
+  {file}",
+        t(
+            "recording is OFF; inspect full bodies with jq:",
+            "录制已关闭;用 jq 查看完整请求体:"
+        )
+    );
+    Ok(())
+}
+
 async fn run_daemon_logs(paths: &MiyuPaths, args: DaemonLogsArgs) -> Result<()> {
+    match args.topic.as_deref().map(str::trim) {
+        None => {}
+        Some("request" | "requests") => return run_request_monitor(paths).await,
+        Some(other) => bail!(
+            "{}: {other}",
+            t("unknown logs topic (try: request)", "未知日志主题(可用: request)")
+        ),
+    }
     let ansi = io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
     if let Some(lines) = args.lines {
         if !(1..=100_000).contains(&lines) {
@@ -2480,6 +2713,198 @@ async fn run_tool(paths: &MiyuPaths, mode: AgentMode, args: ToolArgs) -> Result<
     let output = registry
         .call(&args.name, args.arguments.as_deref().unwrap_or("{}"))
         .await?;
+    println!("{output}");
+    Ok(())
+}
+
+/// 工具桥客户端(任务#12)。bash 就是编排层:脚本里循环/管道串结构化
+/// 工具,中间数据本地流动、不经模型上下文往返;每次内层调用都以本回合的
+/// 会话身份与来源在 daemon 侧过 guard/超时管线。daemon 不在(直连调试
+/// 形态)则本地执行,语义一致但 jobs 等 daemon 态不可见。
+async fn run_tool_call(paths: &MiyuPaths, args: ToolCallArgs) -> Result<()> {
+    let config = AppConfig::load_or_default(paths)?;
+    let env_mode = std::env::var("MIYU_TURN_MODE").unwrap_or_default();
+    let mode = if env_mode == "dev" {
+        AgentMode::Dev
+    } else {
+        AgentMode::Normal
+    };
+    if args.list || args.describe {
+        if args.describe && args.name.is_none() {
+            bail!("--describe 需要工具名");
+        }
+        // daemon 存活时目录走 IPC:与 ToolCall 同一条会话→模式→registry
+        // 解析链,--list 列出的就是本会话真能调的集合。此前本地建表按
+        // MIYU_TURN_MODE 环境变量定模式(run_command 并不注入它),dev 会话
+        // 里 --list 展示普通人格全量目录,实测逐个调用全报 unknown tool。
+        if ipc::daemon_info(paths).await.is_some() {
+            let session = std::env::var("MIYU_SESSION").ok().filter(|s| !s.is_empty());
+            let (_, data) = send_ipc_admin(
+                paths,
+                IpcCommand::ToolCatalog {
+                    session,
+                    name: args.describe.then(|| args.name.clone()).flatten(),
+                },
+            )
+            .await?;
+            let mode_label = data
+                .get("mode")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?");
+            if args.list {
+                let tools = data
+                    .get("tools")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                // 来源说明走 stderr,stdout 保持纯 name\tdisplay 供脚本管道。
+                eprintln!(
+                    "{}",
+                    if is_zh() {
+                        format!("# 本会话目录({mode_label} 模式,{} 个工具);列出即可调用", tools.len())
+                    } else {
+                        format!("# session catalog ({mode_label} mode, {} tools); listed = callable", tools.len())
+                    }
+                );
+                for tool in &tools {
+                    let name = tool
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    match tool
+                        .get("display_name")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|display| !display.is_empty())
+                    {
+                        Some(display) => println!("{name}\t{display}"),
+                        None => println!("{name}"),
+                    }
+                }
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        data.get("tool").unwrap_or(&serde_json::Value::Null)
+                    )?
+                );
+            }
+            return Ok(());
+        }
+        // 直连回退:本地建表,与下方调用回退同一构建方式,依旧同源。
+        let registry = build_tool_registry(&config, paths, mode, false)?;
+        if args.list {
+            let mut names = registry.tool_names();
+            names.sort();
+            eprintln!(
+                "{}",
+                if is_zh() {
+                    format!("# 直连目录(daemon 不在,{} 个工具)", names.len())
+                } else {
+                    format!("# direct catalog (daemon absent, {} tools)", names.len())
+                }
+            );
+            for name in names {
+                let display = registry.display_name(&name).unwrap_or_default();
+                if display.is_empty() {
+                    println!("{name}");
+                } else {
+                    println!("{name}\t{display}");
+                }
+            }
+            return Ok(());
+        }
+        let name = args.name.as_deref().expect("checked above");
+        let Some(spec) = registry.get(name) else {
+            return Err(registry.unknown_tool_error(name));
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "name": spec.name,
+                "description": spec.description,
+                "parameters": spec.parameters,
+            }))?
+        );
+        return Ok(());
+    }
+    let Some(name) = args.name.clone() else {
+        // 裸 `miyu tool-call` 是来问路的,给完整帮助而不是一行报错。
+        localized_command()
+            .find_subcommand_mut("tool-call")
+            .expect("tool-call subcommand exists")
+            .print_help()?;
+        return Ok(());
+    };
+    let arguments = if args.args_stdin {
+        let mut raw = String::new();
+        use std::io::Read as _;
+        io::stdin().read_to_string(&mut raw)?;
+        raw
+    } else if let Some(file) = &args.args_file {
+        std::fs::read_to_string(file)?
+    } else {
+        args.arguments.clone().unwrap_or_else(|| "{}".to_string())
+    };
+    let session = std::env::var("MIYU_SESSION").ok().filter(|s| !s.is_empty());
+    let origin = std::env::var("MIYU_TURN_ORIGIN").ok().filter(|s| !s.is_empty());
+    let depth: u32 = std::env::var("MIYU_BRIDGE_DEPTH")
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(0);
+
+    if ipc::daemon_info(paths).await.is_some() {
+        let (_, data) = send_ipc_admin(
+            paths,
+            IpcCommand::ToolCall {
+                session,
+                name,
+                arguments,
+                origin,
+                depth,
+            },
+        )
+        .await?;
+        let output = data
+            .get("output")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        println!("{output}");
+        return Ok(());
+    }
+
+    // 直连回退:本地建 registry(guard/超时同源),会话与来源按环境作用域化。
+    // jobs 等 daemon 内存态在本地进程不可见,直连调试形态可接受。
+    if depth >= crate::tools::workspace::MAX_BRIDGE_DEPTH {
+        bail!("tool bridge recursion limit reached (depth {depth})");
+    }
+    let registry = build_tool_registry(&config, paths, mode, false)?;
+    if !registry.contains(&name) {
+        bail!(
+            "{:#}. {}",
+            registry.unknown_tool_error(&name),
+            t(
+                "run `miyu tool-call --list` to see tools callable in this session",
+                "用 `miyu tool-call --list` 查看本会话可调用的工具"
+            )
+        );
+    }
+    let turn_origin: crate::tools::workspace::TurnOrigin = origin
+        .as_deref()
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .unwrap_or(crate::tools::workspace::TurnOrigin::Human);
+    let invoke = crate::tools::workspace::with_turn_origin(
+        turn_origin,
+        crate::tools::workspace::with_bridge_depth(depth + 1, async {
+            registry.call(&name, &arguments).await
+        }),
+    );
+    let output = match session {
+        Some(session) => {
+            let session: std::sync::Arc<str> = session.into();
+            crate::tools::workspace::with_session(session, invoke).await?
+        }
+        None => invoke.await?,
+    };
     println!("{output}");
     Ok(())
 }
@@ -3216,7 +3641,13 @@ async fn run_models_for_session(
             initial.clone(),
         )? {
             if active == initial {
-                println!("{}", t("no changes", "未做修改"));
+                println!(
+                    "{}",
+                    t(
+                        "no changes (Enter picks the highlighted model; Tab multi-selects)",
+                        "未做修改（回车=选定高亮模型,Tab=多选勾选）"
+                    )
+                );
                 return Ok(());
             }
             let models = choices
@@ -3801,6 +4232,11 @@ fn inline_fuzzy_select(items: &[String], mut active: Vec<bool>) -> Result<Option
     let mut query = String::new();
     let mut selected = 0usize;
     let mut scroll = 0usize;
+    // 验收三轮:用户搜到模型直接回车,期望"切到它";多选语义却要求
+    // Tab 勾选,回车成了"确认没改"→静默未做修改。记住入场快照与是否
+    // 表达过意图(搜索/移动),回车时没动过勾选就按单选切换处理。
+    let initial = active.clone();
+    let mut navigated = false;
     let (_, cursor_y) = cursor::position().unwrap_or((0, menu_lines.saturating_sub(1)));
     let anchor_y = cursor_y.saturating_sub(menu_lines.saturating_sub(1));
     loop {
@@ -3846,6 +4282,13 @@ fn inline_fuzzy_select(items: &[String], mut active: Vec<bool>) -> Result<Option
                 }
                 KeyCode::Enter => {
                     clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
+                    if active == initial && (navigated || !query.is_empty()) {
+                        if let Some((_, index)) = matches.get(selected) {
+                            let mut solo = vec![false; active.len()];
+                            solo[*index] = true;
+                            return Ok(Some(solo));
+                        }
+                    }
                     return Ok(Some(active));
                 }
                 KeyCode::Tab => {
@@ -3855,8 +4298,12 @@ fn inline_fuzzy_select(items: &[String], mut active: Vec<bool>) -> Result<Option
                         }
                     }
                 }
-                KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    navigated = true;
+                    selected = selected.saturating_sub(1);
+                }
                 KeyCode::Down | KeyCode::Char('j') => {
+                    navigated = true;
                     selected = (selected + 1).min(matches.len().saturating_sub(1));
                 }
                 KeyCode::Backspace => {
@@ -3890,6 +4337,10 @@ fn inline_fuzzy_select_single(items: &[String], initial: usize) -> Result<Option
     let mut query = String::new();
     let mut selected = 0usize;
     let mut scroll = 0usize;
+    // initial 恒被标记,此前 Enter 无脑取 marked 导致"搜索后回车选不中
+    // 高亮项":只有用户 Tab 过才尊重标记,否则搜索/移动后回车确认高亮项。
+    let mut marked_by_user = false;
+    let mut navigated = false;
     let (_, cursor_y) = cursor::position().unwrap_or((0, menu_lines.saturating_sub(1)));
     let anchor_y = cursor_y.saturating_sub(menu_lines.saturating_sub(1));
     loop {
@@ -3936,8 +4387,14 @@ fn inline_fuzzy_select_single(items: &[String], initial: usize) -> Result<Option
                 KeyCode::Enter => {
                     clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
                     let marked = active.iter().position(|value| *value);
-                    let fallback = matches.get(selected).map(|(_, index)| *index);
-                    return Ok(marked.or(fallback));
+                    let highlighted = matches.get(selected).map(|(_, index)| *index);
+                    return Ok(if marked_by_user {
+                        marked.or(highlighted)
+                    } else if navigated || !query.is_empty() {
+                        highlighted.or(marked)
+                    } else {
+                        marked.or(highlighted)
+                    });
                 }
                 KeyCode::Tab => {
                     if let Some((_, index)) = matches.get(selected) {
@@ -3947,10 +4404,15 @@ fn inline_fuzzy_select_single(items: &[String], initial: usize) -> Result<Option
                         if let Some(slot) = active.get_mut(*index) {
                             *slot = true;
                         }
+                        marked_by_user = true;
                     }
                 }
-                KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    navigated = true;
+                    selected = selected.saturating_sub(1);
+                }
                 KeyCode::Down | KeyCode::Char('j') => {
+                    navigated = true;
                     selected = (selected + 1).min(matches.len().saturating_sub(1));
                 }
                 KeyCode::Backspace => {
@@ -4095,7 +4557,7 @@ fn inline_fuzzy_item_line(item: &str, selected: bool, active: bool, width: usize
 fn inline_fuzzy_help_line(width: usize) -> String {
     let line = t(
         "type search · j/k move · Tab toggle · Enter/q confirm",
-        "输入搜索 · j/k 移动 · Tab 切换 · Enter/q 确认",
+        "输入搜索 · j/k 移动 · Enter 选定 · Tab 多选 · q 完成",
     );
     format!("\x1b[2m{}\x1b[0m", truncate_visible_width(line, width))
 }
@@ -4670,7 +5132,12 @@ fn extract_image_placeholders(
         let segment: String = chars[*start..*end].iter().collect();
         let name_str = segment
             .strip_prefix("[Image ")
-            .and_then(|s| s.strip_prefix(|c: char| c.is_ascii_digit()))
+            .and_then(|s| {
+                // 序号可能是多位数("[Image 10: ...]"),char pattern 的
+                // strip_prefix 只剥一位,会把第 10 张起的图静默丢弃。
+                let rest = s.trim_start_matches(|c: char| c.is_ascii_digit());
+                (rest.len() < s.len()).then_some(rest)
+            })
             .and_then(|s| s.strip_prefix(':'))
             .and_then(|s| s.strip_suffix(']'))
             .map(|s| s.trim().to_string());
@@ -4920,6 +5387,7 @@ async fn create_ephemeral_session(paths: &MiyuPaths) -> Result<String> {
             name: Some(ephemeral_session_name()),
             switch: false,
             kind: Some(crate::state::ASK_SESSION_KIND.to_string()),
+            mode: None,
         },
     )
     .await?;
@@ -5124,11 +5592,52 @@ impl std::fmt::Display for RemoteTurnCancelled {
 
 impl std::error::Error for RemoteTurnCancelled {}
 
+/// 前端退出但回合继续:daemon 拥有回合,REPL 只是观众离席(验收:
+/// dsh 语义,前端退出任务照跑)。
+#[derive(Debug)]
+struct RemoteTurnDetached;
+
+impl std::fmt::Display for RemoteTurnDetached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(t("detached", "已脱离"))
+    }
+}
+
+impl std::error::Error for RemoteTurnDetached {}
+
+fn is_remote_turn_detached(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<RemoteTurnDetached>().is_some()
+}
+
 fn is_remote_turn_cancelled(error: &anyhow::Error) -> bool {
     error.downcast_ref::<RemoteTurnCancelled>().is_some()
 }
 
 #[allow(clippy::too_many_arguments)]
+/// 触发终端指纹。shellhook/单次 CLI 的 stdin 常被管道占用(--stdin 喂正文),
+/// 所以按 stderr→stdout→stdin 找第一个 tty;父进程就是触发它的 shell。后台任务
+/// 完成后 daemon 凭这份指纹校验「shell 还活着、仍在这个 tty、空闲在提示符」,
+/// 才把跟进回复写回终端。检测不到(纯管道/重定向/cron)就不带。
+#[cfg(unix)]
+fn detect_origin_tty() -> Option<crate::ipc::OriginTty> {
+    let fd = [2, 1, 0]
+        .into_iter()
+        .find(|&fd| unsafe { libc::isatty(fd) } == 1)?;
+    let path = std::fs::read_link(format!("/proc/self/fd/{fd}")).ok()?;
+    if !path.starts_with("/dev/") {
+        return None;
+    }
+    Some(crate::ipc::OriginTty {
+        path,
+        shell_pid: std::os::unix::process::parent_id(),
+    })
+}
+
+#[cfg(not(unix))]
+fn detect_origin_tty() -> Option<crate::ipc::OriginTty> {
+    None
+}
+
 async fn try_run_remote_chat(
     paths: &MiyuPaths,
     mut live: Option<&mut LiveReplTail>,
@@ -5172,6 +5681,13 @@ async fn try_run_remote_chat(
             images: ipc_images(images),
             cwd: std::env::current_dir().ok(),
             session_id: session_override,
+            // REPL 常驻连接,后台任务有自己的 FollowWake 通道;只有阅后即焚的
+            // 单次/shellhook 触发才需要记下终端供 daemon 回写。
+            origin_tty: if live.is_none() {
+                detect_origin_tty()
+            } else {
+                None
+            },
         }),
     )
     .await?;
@@ -5247,7 +5763,7 @@ async fn try_run_remote_chat(
                 biased;
                 _ = input_tick.tick(), if live.is_some() => {
                     if terminal_hangup() {
-                        let _ = send_ipc_command(paths, IpcCommand::Cancel { run_id: run_id.clone() }).await;
+                        // 终端没了但回合是 daemon 的:观众离席,戏照演。
                         std::process::exit(0);
                     }
                     if !event::poll(Duration::ZERO)? {
@@ -5334,12 +5850,19 @@ async fn try_run_remote_chat(
                                 }
                             }
                         }
-                        LiveEditorAction::Interrupt | LiveEditorAction::Exit => {
+                        LiveEditorAction::Interrupt => {
                             let _ = send_ipc_command(
                                 paths,
                                 IpcCommand::Cancel { run_id: run_id.clone() },
                             )
                             .await;
+                        }
+                        LiveEditorAction::Exit => {
+                            renderer.finish()?;
+                            if let Some(live) = live.as_deref_mut() {
+                                live.apply_renderer_frame(&mut renderer)?;
+                            }
+                            return Err(anyhow::Error::new(RemoteTurnDetached));
                         }
                     }
                 },
@@ -5619,7 +6142,7 @@ async fn try_run_remote_chat(
                         })
                         .unwrap_or_default();
                     let consumed_mode = match ipc_text(&data, "mode") {
-                        "chat" => AgentMode::Chat,
+                        "dev" => AgentMode::Dev,
                         _ => AgentMode::Normal,
                     };
                     renderer.prepare_for_external_output()?;
@@ -5905,6 +6428,8 @@ struct SessionListEntry {
     turns: u64,
     snippet: String,
     workspace: Option<String>,
+    /// "dev" | "normal",由 daemon 按会话人格推导。
+    mode: String,
 }
 
 fn session_list_entries(data: &serde_json::Value) -> Vec<SessionListEntry> {
@@ -5944,6 +6469,7 @@ fn session_list_entry(session: &serde_json::Value) -> SessionListEntry {
             })
             .unwrap_or_default(),
         workspace: text("workspace"),
+        mode: text("mode").unwrap_or_else(|| "normal".to_string()),
     }
 }
 
@@ -5970,14 +6496,14 @@ fn session_select_line(entry: &SessionListEntry, active_session_id: Option<&str>
     } else {
         "  "
     };
+    // 验收三轮定版:「模式：名称 · 摘要」,轮数删掉。
     let mut line = format!(
-        "{marker}{}  {} {}",
+        "{marker}{}：{}",
+        session_mode_label(&entry.mode),
         display_session_name(&entry.name),
-        entry.turns,
-        t("turns", "轮")
     );
     if !entry.snippet.is_empty() {
-        line.push_str("  ");
+        line.push_str(" · ");
         line.push_str(&entry.snippet);
     }
     if let Some(workspace) = &entry.workspace {
@@ -5988,11 +6514,21 @@ fn session_select_line(entry: &SessionListEntry, active_session_id: Option<&str>
 
 fn session_select_search(entry: &SessionListEntry) -> String {
     format!(
-        "{} {} {}",
+        "{} {} {} {}",
         display_session_name(&entry.name),
+        session_mode_label(&entry.mode),
         entry.snippet,
         entry.workspace.as_deref().unwrap_or_default()
     )
+}
+
+/// 会话类型标(验收:列表看不出普通/开发)。
+fn session_mode_label(mode: &str) -> &'static str {
+    if mode == "dev" {
+        t("dev", "开发")
+    } else {
+        t("normal", "普通")
+    }
 }
 
 fn session_initial_selection(
@@ -6059,17 +6595,26 @@ fn select_session_target(
 
 /// Resolves a user-typed `/session` / `/delete` argument into a session ref:
 /// a number picks from the visible session list, anything else is a name.
+/// REPL 会话列表的作用域:dev REPL 只看/只解析 dev 人格名下的会话。
+fn repl_list_mode(mode: AgentMode) -> Option<String> {
+    (mode == AgentMode::Dev).then(|| "dev".to_string())
+}
+
 async fn resolve_repl_session_target(
     paths: &MiyuPaths,
     live: &mut LiveReplTail,
+    mode: AgentMode,
     arg: &str,
 ) -> Result<Option<crate::ipc::SessionRef>> {
-    if let Ok(index) = arg.parse::<usize>() {
+    let index = arg.parse::<usize>().ok();
+    // 名字寻址在 daemon 侧按"当前人格"检索,够不着 dev 会话;dev REPL
+    // 统一走列表在客户端配对,再降成不可猜的 id 显式寻址。
+    if index.is_some() || mode == AgentMode::Dev {
         let Some((_, data)) = repl_ipc_admin(
             paths,
             live,
             IpcCommand::ListSessions {
-                include_archived: false,
+                mode: repl_list_mode(mode),
             },
         )
         .await?
@@ -6077,12 +6622,21 @@ async fn resolve_repl_session_target(
             return Ok(None);
         };
         let entries = session_list_entries(&data);
-        let Some(target) = session_ref_from_index(&entries, index) else {
+        let target = match index {
+            Some(index) => session_ref_from_index(&entries, index),
+            None => entries
+                .iter()
+                .find(|entry| entry.name == arg)
+                .map(|entry| crate::ipc::SessionRef::Id {
+                    id: entry.id.clone(),
+                }),
+        };
+        let Some(target) = target else {
             repl_note(
                 live,
                 &format!(
-                    "\x1b[2m{}: {index}\x1b[0m\n",
-                    t("no session with this number", "没有这个编号的会话")
+                    "\x1b[2m{}: {arg}\x1b[0m\n",
+                    t("no such session", "没有这个会话")
                 ),
             )?;
             return Ok(None);
@@ -6095,46 +6649,6 @@ async fn resolve_repl_session_target(
     }
 }
 
-fn print_session_list(entries: &[SessionListEntry]) {
-    let ansi = io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
-    if entries.is_empty() {
-        if ansi {
-            println!("\x1b[2m{}\x1b[0m\n", t("no sessions", "没有会话"));
-        } else {
-            println!("{}\n", t("no sessions", "没有会话"));
-        }
-        return;
-    }
-    println!("{}", t("sessions:", "会话列表:"));
-    for (index, entry) in entries.iter().enumerate() {
-        println!("{}", session_list_line(index + 1, entry, ansi));
-    }
-    println!();
-}
-
-fn session_list_line(index: usize, entry: &SessionListEntry, ansi: bool) -> String {
-    let name = display_session_name(&entry.name);
-    let workspace = entry
-        .workspace
-        .as_deref()
-        .map(|workspace| format!("  [{workspace}]"))
-        .unwrap_or_default();
-    let marker = if entry.is_current { "*" } else { " " };
-    let turns_label = t("turns", "轮");
-    let details = format!(
-        "{} {turns_label}  {}{workspace}",
-        entry.turns, entry.snippet
-    );
-    if ansi {
-        format!("{marker}{index:>3}. {name}  \x1b[2m{details}\x1b[0m")
-    } else {
-        format!("{marker}{index:>3}. {name}  {details}")
-    }
-}
-
-/// Repaints the queued-prompt strip from the store. A reset deletes those rows
-/// underneath the REPL, so without this the strip keeps showing prompts that no
-/// longer exist.
 fn reload_repl_queue(live: &mut LiveReplTail, paths: &MiyuPaths, session_id: &str) -> Result<()> {
     let store = StateStore::new(paths)?.pinned(session_id);
     synchronized_terminal_update(CursorAfterUpdate::Shown, || live.reload_queue(&store))
@@ -6190,12 +6704,26 @@ async fn repl_get_session_state(
 async fn repl_fallback_session_state(
     paths: &MiyuPaths,
     live: &mut LiveReplTail,
+    mode: AgentMode,
 ) -> Result<Option<ipc::SessionState>> {
+    // dev 无普通人格的"终端会话"可退:GetReplSession 会治愈指针并在
+    // 没有 dev 会话时就地自举一个,绝不落回普通人格的会话。
+    if mode == AgentMode::Dev {
+        return Ok(repl_ipc_admin(
+            paths,
+            live,
+            IpcCommand::GetReplSession {
+                mode: Some("dev".to_string()),
+            },
+        )
+        .await?
+        .map(|(state, _)| state));
+    }
     let Some((_, data)) = repl_ipc_admin(
         paths,
         live,
         IpcCommand::ListSessions {
-            include_archived: false,
+            mode: None,
         },
     )
     .await?
@@ -6227,6 +6755,7 @@ async fn repl_fallback_session_state(
 async fn repl_pick_session(
     paths: &MiyuPaths,
     live: &mut LiveReplTail,
+    mode: AgentMode,
     active_session_id: &str,
 ) -> Result<Option<ipc::SessionState>> {
     let mut cursor = None;
@@ -6236,7 +6765,7 @@ async fn repl_pick_session(
             paths,
             live,
             IpcCommand::ListSessions {
-                include_archived: false,
+                mode: repl_list_mode(mode),
             },
         )
         .await?
@@ -6251,7 +6780,7 @@ async fn repl_pick_session(
             )?;
             // Deleting the last session leaves the daemon to mint a fresh one.
             return if lost_active {
-                repl_fallback_session_state(paths, live).await
+                repl_fallback_session_state(paths, live, mode).await
             } else {
                 Ok(None)
             };
@@ -6259,7 +6788,7 @@ async fn repl_pick_session(
         match select_session_target(&entries, Some(active_session_id), cursor)? {
             SessionPick::Cancelled => {
                 return if lost_active {
-                    repl_fallback_session_state(paths, live).await
+                    repl_fallback_session_state(paths, live, mode).await
                 } else {
                     Ok(None)
                 };
@@ -6279,7 +6808,7 @@ async fn repl_pick_session(
                 .await?;
                 if deleted.is_none() {
                     return if lost_active {
-                        repl_fallback_session_state(paths, live).await
+                        repl_fallback_session_state(paths, live, mode).await
                     } else {
                         Ok(None)
                     };
@@ -6335,7 +6864,7 @@ async fn resolve_session_id_for_turn(paths: &MiyuPaths, arg: &str) -> Result<Str
     let (_, data) = session_admin(
         paths,
         IpcCommand::ListSessions {
-            include_archived: true,
+            mode: None,
         },
     )
     .await?;
@@ -6354,254 +6883,6 @@ async fn resolve_session_id_for_turn(paths: &MiyuPaths, arg: &str) -> Result<Str
         .find(|entry| entry.name.eq_ignore_ascii_case(arg) || entry.id == arg)
         .map(|entry| entry.id)
         .ok_or_else(|| anyhow::anyhow!("{}: {arg}", t("session not found", "找不到该会话")))
-}
-
-async fn resolve_cli_session_target(
-    paths: &MiyuPaths,
-    arg: &str,
-) -> Result<crate::ipc::SessionRef> {
-    if let Ok(index) = arg.parse::<usize>() {
-        let (_, data) = session_admin(
-            paths,
-            IpcCommand::ListSessions {
-                include_archived: false,
-            },
-        )
-        .await?;
-        let entries = session_list_entries(&data);
-        return session_ref_from_index(&entries, index).ok_or_else(|| {
-            anyhow::anyhow!(
-                "{}: {index}",
-                t("no session with this number", "没有这个编号的会话")
-            )
-        });
-    }
-    Ok(crate::ipc::SessionRef::Name {
-        name: arg.to_string(),
-    })
-}
-
-async fn run_session_new(paths: &MiyuPaths, args: SessionNameArgs) -> Result<()> {
-    let name = args
-        .name
-        .as_deref()
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(str::to_string);
-    let (state, _) = session_admin(
-        paths,
-        IpcCommand::CreateSession {
-            name,
-            switch: true,
-            kind: None,
-        },
-    )
-    .await?;
-    println!(
-        "{}: {}",
-        t("created and switched to session", "已创建并切换到会话"),
-        display_session_name(&state.session_name)
-    );
-    Ok(())
-}
-
-/// Runs the interactive session picker, servicing Ctrl+D deletions in place
-/// and reopening on the refreshed list until the user picks one or backs out.
-async fn cli_pick_session(
-    paths: &MiyuPaths,
-    mut entries: Vec<SessionListEntry>,
-) -> Result<Option<crate::ipc::SessionRef>> {
-    let mut cursor = None;
-    loop {
-        match select_session_target(&entries, None, cursor)? {
-            SessionPick::Cancelled => return Ok(None),
-            SessionPick::Switch(target) => return Ok(Some(target)),
-            SessionPick::Delete { session_id, index } => {
-                session_admin(
-                    paths,
-                    IpcCommand::DeleteSession {
-                        target: crate::ipc::SessionRef::Id { id: session_id },
-                    },
-                )
-                .await?;
-                let (_, data) = session_admin(
-                    paths,
-                    IpcCommand::ListSessions {
-                        include_archived: false,
-                    },
-                )
-                .await?;
-                entries = session_list_entries(&data);
-                if entries.is_empty() {
-                    print_session_list(&entries);
-                    return Ok(None);
-                }
-                // The rows below shift up, so holding the index parks the
-                // cursor on the next session instead of jumping to the top.
-                cursor = Some(index);
-            }
-        }
-    }
-}
-
-async fn run_session_command(paths: &MiyuPaths, args: SessionTargetArgs) -> Result<()> {
-    let arg = args
-        .target
-        .as_deref()
-        .map(str::trim)
-        .filter(|arg| !arg.is_empty());
-    let target = if let Some(arg) = arg {
-        resolve_cli_session_target(paths, arg).await?
-    } else {
-        let (_, data) = session_admin(
-            paths,
-            IpcCommand::ListSessions {
-                include_archived: false,
-            },
-        )
-        .await?;
-        let entries = session_list_entries(&data);
-        if entries.is_empty() {
-            print_session_list(&entries);
-            return Ok(());
-        }
-        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-            print_session_list(&entries);
-            return Ok(());
-        }
-        match cli_pick_session(paths, entries).await? {
-            Some(target) => target,
-            None => return Ok(()),
-        }
-    };
-    let (state, _) = session_admin(paths, IpcCommand::SwitchSession { target }).await?;
-    println!(
-        "{}: {}",
-        t("switched to session", "已切换到会话"),
-        display_session_name(&state.session_name)
-    );
-    Ok(())
-}
-
-async fn run_session_rename(paths: &MiyuPaths, args: SessionRenameArgs) -> Result<()> {
-    let name = args.name.trim().to_string();
-    if name.is_empty() {
-        bail!(
-            "{}",
-            t("usage: miyu rename <name>", "用法：miyu rename <新名称>")
-        );
-    }
-    session_admin(
-        paths,
-        IpcCommand::RenameSession {
-            target: crate::ipc::SessionRef::Current,
-            name: name.clone(),
-        },
-    )
-    .await?;
-    println!("{}: {name}", t("session renamed", "会话已重命名"));
-    Ok(())
-}
-
-async fn run_session_archive(paths: &MiyuPaths) -> Result<()> {
-    let (state, _) = session_admin(
-        paths,
-        IpcCommand::ArchiveSession {
-            target: crate::ipc::SessionRef::Current,
-            archived: true,
-        },
-    )
-    .await?;
-    println!("{}", t("session archived", "当前会话已归档"));
-    println!(
-        "{}: {}",
-        t("switched to session", "已切换到会话"),
-        display_session_name(&state.session_name)
-    );
-    Ok(())
-}
-
-async fn run_session_delete(paths: &MiyuPaths, args: SessionTargetArgs) -> Result<()> {
-    let target = match args
-        .target
-        .as_deref()
-        .map(str::trim)
-        .filter(|arg| !arg.is_empty())
-    {
-        Some(arg) => resolve_cli_session_target(paths, arg).await?,
-        None => crate::ipc::SessionRef::Current,
-    };
-    if !confirm_stdin(t(
-        "delete this session and all of its history?",
-        "确认删除该会话及其全部历史？",
-    ))? {
-        println!("{}", t("cancelled", "已取消"));
-        return Ok(());
-    }
-    let (state, _) = session_admin(paths, IpcCommand::DeleteSession { target }).await?;
-    println!("{}", t("session deleted", "会话已删除"));
-    println!(
-        "{}: {}",
-        t("switched to session", "已切换到会话"),
-        display_session_name(&state.session_name)
-    );
-    Ok(())
-}
-
-async fn run_workspace_command(paths: &MiyuPaths, args: WorkspaceArgs) -> Result<()> {
-    let Some(arg) = args
-        .path
-        .as_deref()
-        .map(str::trim)
-        .filter(|arg| !arg.is_empty())
-    else {
-        let (state, _) = session_admin(paths, IpcCommand::GetStatus).await?;
-        match state.workspace {
-            Some(workspace) => {
-                println!("{}: {workspace}", t("session workspace", "会话工作目录"));
-            }
-            None => println!(
-                "{}",
-                t(
-                    "no workspace bound; using the client working directory",
-                    "未绑定工作目录；使用客户端当前目录"
-                )
-            ),
-        }
-        return Ok(());
-    };
-    if arg.eq_ignore_ascii_case("clear") {
-        session_admin(
-            paths,
-            IpcCommand::SetWorkspace {
-                target: crate::ipc::SessionRef::Current,
-                path: None,
-            },
-        )
-        .await?;
-        println!("{}", t("workspace unbound", "已解绑工作目录"));
-        return Ok(());
-    }
-    let path = std::fs::canonicalize(expand_tilde(arg)).map_err(|error| {
-        anyhow::anyhow!(
-            "{}: {arg} ({error})",
-            t("invalid workspace path", "无效的工作目录路径")
-        )
-    })?;
-    session_admin(
-        paths,
-        IpcCommand::SetWorkspace {
-            target: crate::ipc::SessionRef::Current,
-            path: Some(path.clone()),
-        },
-    )
-    .await?;
-    println!(
-        "{}: {}",
-        t("workspace bound", "已绑定工作目录"),
-        path.display()
-    );
-    Ok(())
 }
 
 /// Expands a leading `~` or `~/…` to the user's home directory.
@@ -6684,7 +6965,7 @@ fn remote_image_preview(asset: &crate::state::ImageAssetData) -> Result<tempfile
 fn ipc_mode_name(mode: AgentMode) -> &'static str {
     match mode {
         AgentMode::Normal => "normal",
-        AgentMode::Chat => "chat",
+        AgentMode::Dev => "dev",
     }
 }
 
@@ -6931,6 +7212,20 @@ fn print_variant_updated() {
     println!("{}\n", t("thinking variants updated", "已更新思考档位"));
 }
 
+fn print_mode_help() {
+    if crate::i18n::is_zh() {
+        println!("请选择模式。想让裸 miyu 命令直接进某个模式,可以在设置中修改(config.jsonc 的 default_mode)。\n");
+        println!("  miyu normal   普通模式。可使用全部工具,适合日常使用。支持角色扮演、娱乐聊天、记忆、技能等全部能力。");
+        println!("  miyu dev      开发模式。与普通模式明确区分,用于开发工作;移除与开发无关的角色扮演与娱乐工具,提示词极简可编辑,记忆独立。");
+        println!("  miyu '<your_prompts>'   使用普通模式进行一次性对话");
+    } else {
+        println!("Pick a mode. To make bare `miyu` enter one directly, set default_mode in config.jsonc.\n");
+        println!("  miyu normal   full-capability mode: persona, memory, every tool.");
+        println!("  miyu dev      development mode: minimal editable prompt, coding tools only, separate memory.");
+        println!("  miyu '<your_prompts>'   one-shot ask in normal mode");
+    }
+}
+
 async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
     if direct_mode_requested() {
         run_direct_repl(paths, initial_mode).await
@@ -6949,18 +7244,28 @@ async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMode) -> Result<()> {
     // The REPL resumes its own lane rather than the terminal session, so
     // reopening a REPL lands back where the last one left off while shell-hook
     // keeps talking to whatever session it was on.
-    let (daemon_state, _) = send_ipc_admin(paths, IpcCommand::GetReplSession).await?;
+    let (daemon_state, _) = send_ipc_admin(
+        paths,
+        IpcCommand::GetReplSession {
+            mode: (mode == AgentMode::Dev).then(|| "dev".to_string()),
+        },
+    )
+    .await?;
     let mut active_session_id = daemon_state.session_id.clone();
     let history_state = StateStore::new(paths)?.pinned(&active_session_id);
     let mut history = load_repl_input_history(&history_state, paths)?;
     drop(history_state);
     let mut cumulative_tokens = state_cumulative(&daemon_state);
+    // footer 的模型标签与思考程度必须同源:都从会话作用域配置推导。
+    // 曾经 client 用全局配置,标签显示会话覆盖模型、·max 却算的全局
+    // 模型,两边各说各话(验收#23)。
+    let session_config = footer_config_for_session(paths, &config, &active_session_id);
     let mut footer = ReplFooterStatus::from_config(
-        &footer_config_for_session(paths, &config, &active_session_id),
+        &session_config,
         daemon_state.context_tokens,
         cumulative_tokens,
     );
-    let client = OpenAiCompatibleClient::from_config(&config, paths)?;
+    let client = OpenAiCompatibleClient::from_config(&session_config, paths)?;
     let thinking_summary = client.thinking_variant_summary();
     footer.update_thinking_variant(thinking_summary.as_deref());
     footer.update_context_window(daemon_state.context_window);
@@ -6988,16 +7293,12 @@ async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMode) -> Result<()> {
                 _ = hangup.recv() => {}
                 _ = terminate.recv() => {}
             }
-            let session = { feed.repl_session.lock().unwrap().clone() };
-            if let Some(session_id) = session {
-                // 超时保底:daemon 正在重启/无响应时也必须退出,
-                // 否则挂在这里的同时主循环还在对死终端空转。
-                let _ = tokio::time::timeout(
-                    Duration::from_secs(2),
-                    send_ipc_admin(&paths, IpcCommand::StopSessionJobs { session_id }),
-                )
-                .await;
-            }
+            // 后台任务归 daemon 管:前端死了任务照跑,完成后有唤醒
+            // (验收:dsh 语义,前端退出不拖死会话任务)。
+            let _ = (&paths, &feed);
+            // SIGTERM 时终端往往还活着:process::exit 绕过 Drop,先尽力
+            // 恢复 raw mode,否则用户的 shell 停在原始模式里。
+            let _ = crossterm::terminal::disable_raw_mode();
             std::process::exit(0);
         });
         // Windows console close (CTRL_CLOSE_EVENT) still reaches Ctrl+C
@@ -7158,6 +7459,7 @@ async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMode) -> Result<()> {
                             name: (!name.is_empty()).then(|| name.to_string()),
                             switch: false,
                             kind: None,
+                            mode: (mode == AgentMode::Dev).then(|| "dev".to_string()),
                         },
                     )
                     .await?
@@ -7205,13 +7507,13 @@ async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMode) -> Result<()> {
                 ReplSlashCommand::Session => {
                     let arg = command_args.trim();
                     let state = if arg.is_empty() {
-                        match repl_pick_session(paths, &mut live_repl, &active_session_id).await? {
+                        match repl_pick_session(paths, &mut live_repl, mode, &active_session_id).await? {
                             Some(state) => state,
                             None => continue,
                         }
                     } else {
                         let target =
-                            match resolve_repl_session_target(paths, &mut live_repl, arg).await? {
+                            match resolve_repl_session_target(paths, &mut live_repl, mode, arg).await? {
                                 Some(target) => target,
                                 None => continue,
                             };
@@ -7266,41 +7568,6 @@ async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMode) -> Result<()> {
                         )?;
                     }
                 }
-                ReplSlashCommand::Archive => {
-                    let Some((_, _)) = repl_ipc_admin(
-                        paths,
-                        &mut live_repl,
-                        IpcCommand::ArchiveSession {
-                            target: crate::ipc::SessionRef::Id {
-                                id: active_session_id.clone(),
-                            },
-                            archived: true,
-                        },
-                    )
-                    .await?
-                    else {
-                        continue;
-                    };
-                    repl_note(
-                        &mut live_repl,
-                        &format!("\x1b[2m{}\x1b[0m", t("session archived", "当前会话已归档")),
-                    )?;
-                    let Some(state) = repl_fallback_session_state(paths, &mut live_repl).await?
-                    else {
-                        continue;
-                    };
-                    apply_repl_session_switch(
-                        paths,
-                        &config,
-                        &state,
-                        &mut active_session_id,
-                        &mut history,
-                        &mut live_repl,
-                        &mut footer,
-                        &mut cumulative_tokens,
-                    )
-                    .await?;
-                }
                 ReplSlashCommand::Delete => {
                     let arg = command_args.trim();
                     let target = if arg.is_empty() {
@@ -7308,7 +7575,7 @@ async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMode) -> Result<()> {
                             id: active_session_id.clone(),
                         }
                     } else {
-                        match resolve_repl_session_target(paths, &mut live_repl, arg).await? {
+                        match resolve_repl_session_target(paths, &mut live_repl, mode, arg).await? {
                             Some(target) => target,
                             None => continue,
                         }
@@ -7351,7 +7618,7 @@ async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMode) -> Result<()> {
                     )?;
                     if deleted_active {
                         let Some(state) =
-                            repl_fallback_session_state(paths, &mut live_repl).await?
+                            repl_fallback_session_state(paths, &mut live_repl, mode).await?
                         else {
                             continue;
                         };
@@ -7567,12 +7834,15 @@ async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMode) -> Result<()> {
                         .await?;
                     }
                     cumulative_tokens = state_cumulative(&state);
+                    // 同源约束(验收#23):标签与思考程度都取会话作用域配置。
+                    let session_config =
+                        footer_config_for_session(paths, &config, &active_session_id);
                     footer = ReplFooterStatus::from_config(
-                        &footer_config_for_session(paths, &config, &active_session_id),
+                        &session_config,
                         state.context_tokens,
                         cumulative_tokens,
                     );
-                    let client = OpenAiCompatibleClient::from_config(&config, paths)?;
+                    let client = OpenAiCompatibleClient::from_config(&session_config, paths)?;
                     let thinking_summary = client.thinking_variant_summary();
                     footer.update_thinking_variant(thinking_summary.as_deref());
                     footer.update_context_window(state.context_window);
@@ -7815,6 +8085,42 @@ async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMode) -> Result<()> {
                     footer.update_context_window(state.context_window);
                     footer.update_cumulative_tokens(cumulative_tokens);
                 }
+                ReplSlashCommand::ResetMemory => {
+                    if !confirm_inline(
+                        &mut live_repl,
+                        t(
+                            "erase this mode's long-term memory (facts, diary, episodes)?",
+                            "确认清空当前模式的长期记忆（事实/日记/经历）？",
+                        ),
+                    )? {
+                        repl_note(
+                            &mut live_repl,
+                            &format!("\x1b[2m{}\x1b[0m\n", t("cancelled", "已取消")),
+                        )?;
+                        continue;
+                    }
+                    let Some((_, _)) = repl_ipc_admin(
+                        paths,
+                        &mut live_repl,
+                        IpcCommand::ResetMemory {
+                            mode: (mode == AgentMode::Dev).then(|| "dev".to_string()),
+                        },
+                    )
+                    .await?
+                    else {
+                        continue;
+                    };
+                    repl_note(
+                        &mut live_repl,
+                        &format!(
+                            "\x1b[2m{}\x1b[0m\n",
+                            t(
+                                "long-term memory erased",
+                                "长期记忆已清空"
+                            )
+                        ),
+                    )?;
+                }
                 ReplSlashCommand::Reset => {
                     let Some((state, _)) = repl_ipc_admin(
                         paths,
@@ -7838,6 +8144,9 @@ async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMode) -> Result<()> {
                     // reloaded rather than left showing them.
                     cumulative_tokens = TurnTokens::default();
                     footer.reset_token_usage(state.context_tokens, state.context_window);
+                    // 存下新数字还不够:footer 不重绘,屏幕上的 Σ 就一直
+                    // 挂着重置前的累计(验收问题四)。
+                    live_repl.refresh_footer(footer.clone())?;
                     reload_repl_queue(&mut live_repl, paths, &active_session_id)?;
                     repl_note(
                         &mut live_repl,
@@ -7869,6 +8178,7 @@ async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMode) -> Result<()> {
                     live_repl.editor.cursor = 0;
                     cumulative_tokens = TurnTokens::default();
                     footer.reset_token_usage(state.context_tokens, state.context_window);
+                    live_repl.refresh_footer(footer.clone())?;
                     reload_repl_queue(&mut live_repl, paths, &active_session_id)?;
                     repl_note(
                         &mut live_repl,
@@ -7881,7 +8191,7 @@ async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMode) -> Result<()> {
         if input.is_empty() {
             continue;
         }
-        history.push(input.to_string());
+        push_history_capped(&mut history, input);
         live_repl.editor.record_history(input);
         persist_repl_history_entry(paths, input);
         match try_run_remote_chat(
@@ -7925,6 +8235,17 @@ async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMode) -> Result<()> {
                     "Miyu Web 核心已停止；请重新启动 REPL 以使用直连模式"
                 )
             ),
+            Err(err) if is_remote_turn_detached(&err) => {
+                let frame = format!(
+                    "\x1b[2m{}\x1b[0m\n",
+                    t(
+                        "exited; the reply keeps running in the daemon",
+                        "已退出；回复在 daemon 里继续运行"
+                    )
+                );
+                live_repl.apply_output_frame(frame.as_bytes())?;
+                break;
+            }
             Err(err)
                 if is_remote_turn_cancelled(&err)
                     || crate::question::is_question_cancelled(&err) =>
@@ -7963,31 +8284,6 @@ async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMode) -> Result<()> {
             }
         }
     }
-    // Background commands follow their conversation's lifecycle: leaving the
-    // REPL (exit/quit or Ctrl+C) terminates this session's running jobs.
-    if let Ok((_, data)) = send_ipc_admin(
-        paths,
-        IpcCommand::StopSessionJobs {
-            session_id: active_session_id.clone(),
-        },
-    )
-    .await
-    {
-        let stopped = data
-            .get("stopped")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-        if stopped > 0 {
-            println!(
-                "\x1b[2m{}\x1b[0m",
-                if is_zh() {
-                    format!("已停止 {stopped} 个后台命令")
-                } else {
-                    format!("stopped {stopped} background command(s)")
-                }
-            );
-        }
-    }
     Ok(())
 }
 
@@ -8006,9 +8302,23 @@ async fn run_direct_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<(
     state.init_files()?;
     // Same lane as the remote REPL: resume where the last REPL was, not where
     // shell-hook happens to be pointing.
-    let persona = config.active_persona_scope();
+    let persona = if initial_mode == AgentMode::Dev {
+        crate::state::DEV_PERSONA.to_string()
+    } else {
+        config.active_persona_scope()
+    };
     if let Ok(Some(session_id)) = state.repl_session(&persona) {
         state.adopt_session(&session_id);
+    } else if initial_mode == AgentMode::Dev {
+        // dev 无「终端会话」可退:自举一个 dev 会话并钉住指针。
+        let record = state.create_session(
+            crate::state::DEV_PERSONA,
+            "",
+            crate::state::USER_SESSION_KIND,
+            None,
+        )?;
+        state.adopt_session(&record.session_id);
+        let _ = state.set_repl_session(&persona, &record.session_id);
     } else {
         let _ = state.set_repl_session(&persona, &state.session_id());
     }
@@ -8326,13 +8636,30 @@ async fn run_direct_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<(
             }
             continue;
         }
+        if command.eq_ignore_ascii_case("/reset-memory") {
+            if !confirm_stdin(t(
+                "erase this mode's long-term memory (facts, diary, episodes)?",
+                "确认清空当前模式的长期记忆（事实/日记/经历）？",
+            ))? {
+                println!("{}", t("cancelled", "已取消"));
+                continue;
+            }
+            agent.wipe_memory()?;
+            println!(
+                "{}",
+                t("long-term memory erased", "长期记忆已清空")
+            );
+            continue;
+        }
         if command.eq_ignore_ascii_case("/reset") && command_args.trim().is_empty() {
             run_reset(paths).await?;
-            if let Some(live) = live_repl.as_mut() {
-                live.queued.clear();
-            }
             cumulative_tokens = TurnTokens::default();
             footer.reset_token_usage(agent.effective_context_tokens()?, agent.context_window());
+            // 直连道同病同修(验收问题四):不重绘,Σ 旧数一直挂在屏上。
+            if let Some(live) = live_repl.as_mut() {
+                live.queued.clear();
+                live.refresh_footer(footer.clone())?;
+            }
             continue;
         }
         if command.eq_ignore_ascii_case("/wipe") {
@@ -8342,18 +8669,43 @@ async fn run_direct_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<(
                 continue;
             }
             run_wipe(paths, true).await?;
-            if let Some(live) = live_repl.as_mut() {
-                live.queued.clear();
-            }
             agent.reset_memory()?;
             cumulative_tokens = TurnTokens::default();
             footer.reset_token_usage(agent.effective_context_tokens()?, agent.context_window());
+            if let Some(live) = live_repl.as_mut() {
+                live.queued.clear();
+                live.refresh_footer(footer.clone())?;
+            }
+            continue;
+        }
+        // 命令泄漏守门(任务#14):直连道的 if 链只实现了命令表的子集,
+        // 落到这里的表内命令(如 /new /session)以前会原文发给模型当聊天
+        // ——人格实验冒烟时实锤过。现在一律拦下提示,绝不进对话;完整的
+        // 双 dispatch 后端归一记为技术债,此守门先消灭整个 bug 类。
+        if input.starts_with('/') {
+            let known = REPL_COMMAND_TABLE
+                .iter()
+                .any(|spec| spec.name.eq_ignore_ascii_case(&command));
+            if known {
+                println!(
+                    "{}",
+                    t(
+                        "this command needs the full (daemon) REPL; start without MIYU_DIRECT to use it",
+                        "该命令需要完整(daemon)REPL;不带 MIYU_DIRECT 启动即可使用"
+                    )
+                );
+            } else {
+                println!(
+                    "{}: {command_input}",
+                    t("unknown command", "未知命令")
+                );
+            }
             continue;
         }
         if input.is_empty() {
             continue;
         }
-        input_history.push(input.to_string());
+        push_history_capped(&mut input_history, input);
         persist_repl_history_entry(paths, input);
         if let Some(live) = live_repl.as_mut() {
             live.editor.record_history(input);
@@ -8384,7 +8736,7 @@ async fn run_direct_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<(
             build_tool_registry(
                 &config,
                 paths,
-                AgentMode::Chat,
+                AgentMode::Dev,
                 crate::question_tui::available(false),
             )?,
         );
@@ -9061,6 +9413,17 @@ fn load_persistent_repl_history(paths: &MiyuPaths) -> Vec<String> {
     entries
 }
 
+/// 会话内输入历史的容量上限:REPL 常开数天时防无界增长,超限丢最老。
+const REPL_HISTORY_LIMIT: usize = 500;
+
+fn push_history_capped(history: &mut Vec<String>, content: &str) {
+    history.push(content.to_string());
+    if history.len() > REPL_HISTORY_LIMIT {
+        let excess = history.len() - REPL_HISTORY_LIMIT;
+        history.drain(..excess);
+    }
+}
+
 fn persist_repl_history_entry(paths: &MiyuPaths, entry: &str) {
     let entry = entry.trim();
     if entry.is_empty() {
@@ -9253,7 +9616,7 @@ impl LiveReplEditor {
     }
 
     fn record_history(&mut self, content: &str) {
-        self.history.push(content.to_string());
+        push_history_capped(&mut self.history, content);
         self.history_index = self.history.len();
     }
 
@@ -9311,10 +9674,8 @@ impl LiveReplEditor {
                             self.history_clean_index = None;
                         }
                     } else {
-                        self.mode = match self.mode {
-                            AgentMode::Normal => AgentMode::Chat,
-                            AgentMode::Chat => AgentMode::Normal,
-                        };
+                        // 会话模式创建时定死:Tab 切换已随闲聊模式一并删除
+                        // (中途换模式=系统提示词换血=全量缓存作废)。
                     }
                 }
                 KeyCode::Esc => {
@@ -9580,6 +9941,10 @@ struct LiveReplTail {
     queued: Vec<QueuedPrompt>,
     pending_chunks: Vec<ChatStreamChunk>,
     footer: ReplFooterStatus,
+    /// 回合中途逐请求刷新计量时的基线(回合开始前的 footer 快照)。
+    /// 每次 RoundUsage 事件都从基线重新叠加,避免累计值重复相加;
+    /// 任何权威更新(set_footer)都会清掉它。
+    round_base_footer: Option<Box<ReplFooterStatus>>,
     jobs: Vec<crate::tools::jobs::JobOverview>,
     job_spinner: usize,
     output_cursor: (u16, u16),
@@ -9967,6 +10332,7 @@ impl LiveReplTail {
             queued,
             pending_chunks: Vec::new(),
             footer,
+            round_base_footer: None,
             jobs: Vec::new(),
             job_spinner: 0,
             output_cursor: cursor_position_or((0, 0)),
@@ -9985,6 +10351,23 @@ impl LiveReplTail {
 
     fn set_footer(&mut self, footer: ReplFooterStatus) {
         self.footer = footer;
+        self.round_base_footer = None;
+    }
+
+    /// 回合内一次模型请求结束:用基线+回合累计刷新计量并立即重绘。
+    /// `context_tokens` 取该请求 prompt+completion,即当前上下文占用的
+    /// 最新实测;回合结束后外层会用权威数字覆盖(set_footer 清基线)。
+    fn refresh_round_usage(&mut self, context_tokens: u64, turn: TurnTokens) -> Result<()> {
+        let base = self
+            .round_base_footer
+            .get_or_insert_with(|| Box::new(self.footer.clone()));
+        let mut display = (**base).clone();
+        display.apply_round_usage(context_tokens, turn);
+        self.footer = display;
+        if self.rendered && !self.external_output_active {
+            synchronized_terminal_update(CursorAfterUpdate::Shown, || self.redraw())?;
+        }
+        Ok(())
     }
 
     /// Replaces the footer and redraws the live editor immediately when it is
@@ -10863,6 +11246,11 @@ struct SharedJobsFeed {
     rendered_turns: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
+/// 两个去重集合的容量兜底。常开 REPL 的后台唤醒一直发生,集合只增不减;
+/// 死掉的 id 不会再被查到(run 不再出现在 wake_runs、turn 已过水位线),
+/// 超限时清掉无副作用。
+const JOBS_FEED_MARK_LIMIT: usize = 4_096;
+
 #[derive(Clone)]
 struct BackgroundReport {
     turn_id: String,
@@ -10930,6 +11318,9 @@ impl JobsFeed {
         let mut followed = shared.followed_runs.lock().unwrap();
         for (run_id, run_session, label) in wake_runs.iter() {
             if run_session == session && !followed.contains(run_id) {
+                if followed.len() >= JOBS_FEED_MARK_LIMIT {
+                    followed.retain(|id| wake_runs.iter().any(|(r, _, _)| r == id));
+                }
                 followed.insert(run_id.clone());
                 return Some((run_id.clone(), label.clone()));
             }
@@ -11061,7 +11452,7 @@ async fn fetch_jobs_overview(paths: &MiyuPaths) -> Result<JobsOverviewSnapshot> 
 /// 退出路径 5 秒宽限——主线程若卡死在 crossterm 对 HUP fd 的任何内部
 /// 自旋(事件 poll、CPR 应答等待,均为实测形态),由这里强制收尾,
 /// 保证关终端后绝不留下吃 CPU 的残留进程。
-fn spawn_hangup_watchdog() {
+pub(crate) fn spawn_hangup_watchdog() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         std::thread::spawn(|| loop {
@@ -11451,7 +11842,7 @@ async fn follow_wake_run(
                     })
                     .unwrap_or_default();
                 let consumed_mode = match ipc_text(&data, "mode") {
-                    "chat" => AgentMode::Chat,
+                    "dev" => AgentMode::Dev,
                     _ => AgentMode::Normal,
                 };
                 renderer.prepare_for_external_output()?;
@@ -11484,11 +11875,11 @@ async fn follow_wake_run(
     live.raw_mode_handoff = true;
     // Suppress the duplicate DB report for a turn that was rendered live.
     if let Some(turn_id) = turn_id {
-        jobs_shared
-            .rendered_turns
-            .lock()
-            .unwrap()
-            .insert(turn_id);
+        let mut rendered = jobs_shared.rendered_turns.lock().unwrap();
+        if rendered.len() >= JOBS_FEED_MARK_LIMIT {
+            rendered.clear();
+        }
+        rendered.insert(turn_id);
     }
     Ok(())
 }
@@ -11502,6 +11893,12 @@ fn handle_live_agent_event(
         AgentEvent::Chunk(chunk) => {
             live.queue_stream_chunk(chunk);
             return Ok(());
+        }
+        AgentEvent::RoundUsage { round, turn, .. } => {
+            // 一次模型请求刚结束:立即刷新 footer 计量,不等整个回合。
+            // prompt+completion 即该请求结束时的上下文实际占用。
+            let context_tokens = round.prompt_tokens.saturating_add(round.completion_tokens);
+            return live.refresh_round_usage(context_tokens, turn);
         }
         event => event,
     };
@@ -11693,7 +12090,7 @@ async fn run_live_agent_turn(
 
 fn read_repl_input(
     paths: &MiyuPaths,
-    mut mode: AgentMode,
+    mode: AgentMode,
     prefill: Option<String>,
     history: &[String],
     footer: &ReplFooterStatus,
@@ -11794,10 +12191,7 @@ fn read_repl_input(
                             history_clean_index = None;
                         }
                     } else {
-                        mode = match mode {
-                            AgentMode::Normal => AgentMode::Chat,
-                            AgentMode::Chat => AgentMode::Normal,
-                        };
+                        // 会话模式创建时定死:Tab 切换已随闲聊模式一并删除。
                     }
                     is_pasted = false;
                     render_repl_input(
@@ -12447,7 +12841,8 @@ fn submitted_echo_lines(mode: AgentMode, input: &str, cols: usize) -> Vec<String
 fn submitted_echo_bar(mode: AgentMode) -> String {
     match mode {
         AgentMode::Normal => "\x1b[1m\x1b[34m┃\x1b[0m".to_string(),
-        AgentMode::Chat => "\x1b[1m\x1b[32m┃\x1b[0m".to_string(),
+        // 与 footer 模式标签同为 tertiary(35 酒红),整条 dev 视觉一致。
+        AgentMode::Dev => "\x1b[1m\x1b[35m┃\x1b[0m".to_string(),
     }
 }
 
@@ -12458,8 +12853,8 @@ fn input_prompt_bar(mode: AgentMode) -> String {
 fn repl_shortcut_hint_line(mode: AgentMode, cols: usize) -> String {
     let bar = input_prompt_bar(mode);
     let text = t(
-        "Tab switch mode; Shift+Enter newline; Ctrl+J newline; Ctrl+V paste clipboard",
-        "Tab 切换模式；Shift+Enter 换行；Ctrl+J 换行；Ctrl+V 粘贴剪贴板",
+        "Shift+Enter newline; Ctrl+J newline; Ctrl+V paste clipboard",
+        "Shift+Enter 换行；Ctrl+J 换行；Ctrl+V 粘贴剪贴板",
     );
     let text_width = cols.saturating_sub(visible_width(&bar)).max(1);
     format!(
@@ -13079,7 +13474,6 @@ enum ReplSlashCommand {
     New,
     Session,
     Rename,
-    Archive,
     Delete,
     Workspace,
     Models,
@@ -13091,6 +13485,7 @@ enum ReplSlashCommand {
     Pop,
     Compact,
     Reset,
+    ResetMemory,
     Wipe,
     History,
     Clear,
@@ -13131,13 +13526,6 @@ const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
         arg_hint: "<name>",
         help_en: "rename the current session",
         help_zh: "重命名当前会话",
-    },
-    ReplCommandSpec {
-        name: "/archive",
-        command: ReplSlashCommand::Archive,
-        arg_hint: "",
-        help_en: "archive the current session",
-        help_zh: "归档当前会话",
     },
     ReplCommandSpec {
         name: "/delete",
@@ -13215,6 +13603,13 @@ const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
         arg_hint: "",
         help_en: "start this conversation over",
         help_zh: "重新开始当前会话",
+    },
+    ReplCommandSpec {
+        name: "/reset-memory",
+        command: ReplSlashCommand::ResetMemory,
+        arg_hint: "",
+        help_en: "erase this mode's long-term memory",
+        help_zh: "清空当前模式的长期记忆",
     },
     ReplCommandSpec {
         name: "/wipe",
@@ -13357,6 +13752,18 @@ mod repl_input_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
+    /// 回归(PR#31):会话内历史无上限,常开 REPL 线性增长。
+    #[test]
+    fn repl_history_is_capped() {
+        let mut history = Vec::new();
+        for i in 0..(REPL_HISTORY_LIMIT + 100) {
+            push_history_capped(&mut history, &format!("entry-{i}"));
+        }
+        assert_eq!(history.len(), REPL_HISTORY_LIMIT);
+        assert_eq!(history.first().map(String::as_str), Some("entry-100"));
+        assert_eq!(history.last().map(String::as_str), Some("entry-599"));
+    }
+
     fn sample_pop_turn(status: TurnStatus) -> Turn {
         Turn {
             turn_id: "turn-1".to_string(),
@@ -13371,6 +13778,7 @@ mod repl_input_tests {
             assistant_timestamp: Some("2026-07-19 10:43".to_string()),
             status,
             tool_reports: vec!["hidden tool report".to_string()],
+            tool_flow: Vec::new(),
             question_exchanges: Vec::new(),
             followups: Vec::new(),
             attachments: Vec::new(),
@@ -13811,7 +14219,7 @@ mod repl_input_tests {
         assert!(matches!(
             cli.command,
             Some(Command::Daemon(DaemonArgs {
-                command: Some(DaemonCommand::Logs(DaemonLogsArgs { lines: None })),
+                command: Some(DaemonCommand::Logs(DaemonLogsArgs { lines: None, .. })),
                 ..
             }))
         ));
@@ -13825,7 +14233,7 @@ mod repl_input_tests {
         assert!(matches!(
             cli.command,
             Some(Command::Daemon(DaemonArgs {
-                command: Some(DaemonCommand::Logs(DaemonLogsArgs { lines: Some(25) })),
+                command: Some(DaemonCommand::Logs(DaemonLogsArgs { lines: Some(25), .. })),
                 ..
             }))
         ));
@@ -14596,7 +15004,7 @@ mod repl_input_tests {
         let mut footer = ReplFooterStatus::from_config(&config, 0, TurnTokens::default());
         footer.update_thinking_variant(Some("high"));
 
-        for mode in [AgentMode::Normal, AgentMode::Chat] {
+        for mode in [AgentMode::Normal, AgentMode::Dev] {
             let line = repl_footer_left(mode, &footer, 120);
             assert!(line.contains("\x1b[1m\x1b[34mhigh\x1b[0m"));
             assert_eq!(
@@ -14675,7 +15083,7 @@ mod repl_input_tests {
         };
 
         let normal = queued_prompt_lines(std::slice::from_ref(&prompt), AgentMode::Normal, 80);
-        let chat = queued_prompt_lines(&[prompt], AgentMode::Chat, 80);
+        let chat = queued_prompt_lines(&[prompt], AgentMode::Dev, 80);
 
         assert_eq!(normal.len(), 4);
         assert_eq!(normal[0], submitted_echo_bar(AgentMode::Normal));
@@ -14685,7 +15093,7 @@ mod repl_input_tests {
         assert!(chat
             .iter()
             .filter(|line| !line.is_empty())
-            .all(|line| line.starts_with(&submitted_echo_bar(AgentMode::Chat))));
+            .all(|line| line.starts_with(&submitted_echo_bar(AgentMode::Dev))));
         assert_ne!(normal[0], chat[0]);
     }
 
@@ -14894,6 +15302,7 @@ mod repl_input_tests {
             queued: Vec::new(),
             pending_chunks: Vec::new(),
             footer: ReplFooterStatus::from_config(&config, 0, TurnTokens::default()),
+            round_base_footer: None,
             output_cursor: (0, 0),
             tail_start: 0,
             tail_rows: 0,
@@ -14926,6 +15335,7 @@ mod repl_input_tests {
             queued: Vec::new(),
             pending_chunks: Vec::new(),
             footer: ReplFooterStatus::from_config(&config, 0, TurnTokens::default()),
+            round_base_footer: None,
             output_cursor: (0, 0),
             tail_start: 0,
             tail_rows: 0,
@@ -15238,8 +15648,9 @@ mod repl_input_tests {
 
     #[test]
     fn shortcut_hint_line_is_bar_aligned_and_truncated() {
+        // Tab 切换模式已随闲聊模式删除,提示行首个词条现在是换行快捷键。
         let line = repl_shortcut_hint_line(AgentMode::Normal, 24);
-        assert!(strip_terminal_control_sequences(&line).contains("Tab"));
+        assert!(strip_terminal_control_sequences(&line).contains("Shift+Enter"));
         assert!(visible_width(&line) <= 24);
     }
 
@@ -15276,6 +15687,7 @@ mod repl_input_tests {
             turns: 0,
             snippet: String::new(),
             workspace: None,
+            mode: "normal".to_string(),
         };
         let entries = vec![entry("default", true), entry("active", false)];
 
@@ -15286,7 +15698,6 @@ mod repl_input_tests {
             Some(crate::ipc::SessionRef::Id { id }) if id == "active"
         ));
         assert_eq!(session_initial_selection(&[entry("only", false)], None), 0);
-        assert!(!session_list_line(1, &entries[0], false).contains('\x1b'));
     }
 
     #[test]
@@ -15834,6 +16245,35 @@ async fn run_reset(paths: &MiyuPaths) -> Result<()> {
     Ok(())
 }
 
+/// `miyu reset-memory`:清空当前人格的长期记忆。daemon 在跑走 IPC,
+/// 否则本地直清;终端确认后执行。
+async fn run_reset_memory_command(paths: &MiyuPaths) -> Result<()> {
+    if !io::stdin().is_terminal() {
+        bail!(
+            "{}",
+            t(
+                "reset-memory needs a terminal to confirm",
+                "reset-memory 需要在终端确认"
+            )
+        );
+    }
+    if !confirm_stdin(t(
+        "erase this persona's long-term memory (facts, diary, episodes)?",
+        "确认清空长期记忆（事实/日记/经历）？",
+    ))? {
+        println!("{}", t("cancelled", "已取消"));
+        return Ok(());
+    }
+    if ipc::daemon_info(paths).await.is_some() {
+        send_ipc_admin(paths, IpcCommand::ResetMemory { mode: None }).await?;
+    } else {
+        let config = AppConfig::load_or_default(paths)?;
+        MemoryStore::new(&config, paths).reset_all(false)?;
+    }
+    println!("{}", t("long-term memory erased", "长期记忆已清空"));
+    Ok(())
+}
+
 fn wipe_summary() -> &'static str {
     t(
         "This erases everything Miyu has accumulated: memory, every conversation's contents, group-chat contexts, and auto-generated skills. It cannot be undone.",
@@ -15907,7 +16347,7 @@ pub(crate) fn build_tool_registry(
     let mut registry = if config.tools.enabled {
         match mode {
             AgentMode::Normal => tools::builtin_registry(config, paths),
-            AgentMode::Chat => tools::chat_registry(config, paths),
+            AgentMode::Dev => tools::dev_registry(config, paths),
         }
     } else {
         tools::ToolRegistry::new()
@@ -15930,6 +16370,8 @@ fn handle_agent_event(renderer: &mut render::StreamRenderer, event: AgentEvent) 
         AgentEvent::TurnStarted { .. } => Ok(()),
         AgentEvent::RawReasoning(_) => Ok(()),
         AgentEvent::FlushJournal => Ok(()),
+        // 单次输出模式没有常驻 footer,逐请求计量快照无处可画。
+        AgentEvent::RoundUsage { .. } => Ok(()),
         AgentEvent::Chunk(chunk) => {
             renderer.write_chunk(chunk)?;
             renderer.tick_spinner()

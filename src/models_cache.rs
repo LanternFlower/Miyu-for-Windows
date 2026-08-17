@@ -9,6 +9,10 @@ use std::time::Duration;
 
 const API_URL: &str = "https://models.dev/api.json";
 
+/// 人民币手动价折算 USD 的估算汇率。计费本就是估算,固定汇率的误差
+/// 远小于价格本身的不确定度;真要精确对账应直接看供应商账单。
+const CNY_PER_USD: f64 = 7.25;
+
 #[derive(Debug, Deserialize)]
 struct ApiResponse(HashMap<String, ApiProvider>);
 
@@ -18,6 +22,11 @@ struct ApiProvider {
     models: HashMap<String, ApiModel>,
     #[serde(default)]
     npm: Option<String>,
+    /// 该供应商的 API base URL,用来把 Miyu 配置里的自定义供应商
+    /// (id 不一定与 models.dev 键一致,如 opencodego vs opencode-go)
+    /// 对到目录条目上,计费估算靠它。
+    #[serde(default)]
+    api: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -30,6 +39,36 @@ struct ApiModel {
     reasoning_options: Vec<ApiReasoningOption>,
     #[serde(default)]
     provider: Option<ApiModelProvider>,
+    #[serde(default)]
+    cost: Option<ApiCost>,
+}
+
+/// models.dev 的模型单价,USD / 1M tokens。
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+pub struct ApiCost {
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub output: f64,
+    #[serde(default)]
+    pub cache_read: Option<f64>,
+    #[serde(default)]
+    pub cache_write: Option<f64>,
+}
+
+impl ApiCost {
+    /// 一次调用的估算费用(USD)。cache_read ⊆ prompt(Usage 归一化
+    /// 保证的不变量),命中部分按缓存价、未命中按输入价;cache_write
+    /// 有单独价目才计附加费。
+    pub fn estimate(&self, prompt: u64, completion: u64, cache_read: u64, cache_write: u64) -> f64 {
+        let uncached = prompt.saturating_sub(cache_read) as f64;
+        let read_price = self.cache_read.unwrap_or(self.input);
+        (uncached * self.input
+            + cache_read as f64 * read_price
+            + completion as f64 * self.output
+            + cache_write as f64 * self.cache_write.unwrap_or(0.0))
+            / 1_000_000.0
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,7 +82,23 @@ struct ApiLimit {
     #[serde(default)]
     context: Option<u64>,
     #[serde(default)]
+    input: Option<u64>,
+    #[serde(default)]
     output: Option<u64>,
+}
+
+impl ApiLimit {
+    /// The window Miyu may actually fill. Some catalogue entries advertise a
+    /// total `context` larger than the `input` the provider will accept —
+    /// opencode's big-pickle reports 200k context against a 160k input cap —
+    /// and budgeting against the larger number puts compaction 20k of tokens
+    /// too late, so the request overflows before it is ever compacted.
+    fn usable_context(&self) -> Option<u64> {
+        match (self.context, self.input.filter(|input| *input > 0)) {
+            (Some(context), Some(input)) => Some(context.min(input)),
+            (context, input) => context.or(input),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,11 +126,12 @@ struct ApiModelProvider {
     npm: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ModelInfo {
     pub input_modalities: Vec<String>,
     pub context_window: Option<u64>,
     reasoning: Option<ModelReasoningInfo>,
+    pub cost: Option<ApiCost>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +156,9 @@ pub enum ReasoningSetting {
 
 struct Cache {
     data: HashMap<String, HashMap<String, ModelInfo>>,
+    /// models.dev 供应商键 → 其 API base URL(尾斜杠归一),配合配置里的
+    /// base_url 做供应商对齐。
+    provider_api: HashMap<String, String>,
 }
 
 static CACHE: OnceLock<Mutex<Option<Cache>>> = OnceLock::new();
@@ -127,21 +186,29 @@ fn cache_file(paths: &crate::paths::MiyuPaths) -> PathBuf {
     paths.cache_dir.join("models_cache.json")
 }
 
-fn load_from_disk(path: &PathBuf) -> Result<HashMap<String, HashMap<String, ModelInfo>>> {
+fn load_from_disk(path: &PathBuf) -> Result<Cache> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read models cache: {}", path.display()))?;
     parse_api_response(&text)
 }
 
-fn parse_api_response(text: &str) -> Result<HashMap<String, HashMap<String, ModelInfo>>> {
+fn parse_api_response(text: &str) -> Result<Cache> {
     let api: ApiResponse = serde_json::from_str(text).context("failed to parse models cache")?;
     let mut result = HashMap::new();
+    let mut provider_api = HashMap::new();
     for (provider_id, provider) in api.0 {
+        if let Some(api_url) = provider.api.as_deref() {
+            let normalized = api_url.trim().trim_end_matches('/');
+            if !normalized.is_empty() {
+                provider_api.insert(provider_id.clone(), normalized.to_string());
+            }
+        }
         let mut models = HashMap::new();
         for (model_id, model) in provider.models {
             let input = model.modalities.map(|m| m.input).unwrap_or_default();
             let limit = model.limit.unwrap_or(ApiLimit {
                 context: None,
+                input: None,
                 output: None,
             });
             let variants = reasoning_variants(&model.reasoning_options, limit.output);
@@ -149,7 +216,7 @@ fn parse_api_response(text: &str) -> Result<HashMap<String, HashMap<String, Mode
                 model_id,
                 ModelInfo {
                     input_modalities: input,
-                    context_window: limit.context,
+                    context_window: limit.usable_context(),
                     reasoning: (!variants.is_empty()).then_some(ModelReasoningInfo {
                         provider_npm: model
                             .provider
@@ -157,12 +224,16 @@ fn parse_api_response(text: &str) -> Result<HashMap<String, HashMap<String, Mode
                             .or_else(|| provider.npm.clone()),
                         variants,
                     }),
+                    cost: model.cost,
                 },
             );
         }
         result.insert(provider_id, models);
     }
-    Ok(result)
+    Ok(Cache {
+        data: result,
+        provider_api,
+    })
 }
 
 fn reasoning_variants(
@@ -241,7 +312,7 @@ fn push_variant(variants: &mut Vec<ReasoningVariant>, id: String, setting: Reaso
     variants.push(ReasoningVariant { id, setting });
 }
 
-fn fetch_and_cache(path: &PathBuf) -> Result<HashMap<String, HashMap<String, ModelInfo>>> {
+fn fetch_and_cache(path: &PathBuf) -> Result<Cache> {
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
@@ -255,7 +326,7 @@ fn fetch_and_cache(path: &PathBuf) -> Result<HashMap<String, HashMap<String, Mod
     if text.trim().is_empty() {
         anyhow::bail!("models.dev returned empty response");
     }
-    let data = parse_api_response(&text)?;
+    let cache = parse_api_response(&text)?;
     let parent = path.parent().context("models cache path has no parent")?;
     std::fs::create_dir_all(parent)?;
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
@@ -264,25 +335,25 @@ fn fetch_and_cache(path: &PathBuf) -> Result<HashMap<String, HashMap<String, Mod
     temp.persist(path)
         .map_err(|error| error.error)
         .context("failed to replace models cache")?;
-    Ok(data)
+    Ok(cache)
 }
 
 pub fn try_load(paths: &crate::paths::MiyuPaths) {
     let path = cache_file(paths);
-    let data = load_from_disk(&path).ok();
-    if let Some(data) = data {
+    let cache = load_from_disk(&path).ok();
+    if let Some(cache) = cache {
         let mut lock = cache_lock().lock().unwrap();
-        *lock = Some(Cache { data });
+        *lock = Some(cache);
     }
 }
 
 pub fn try_load_active(paths: &crate::paths::MiyuPaths, config: &crate::config::AppConfig) {
     let path = cache_file(paths);
-    let data = load_from_disk(&path).ok();
-    if let Some(mut data) = data {
-        retain_configured_models(&mut data, config);
+    let cache = load_from_disk(&path).ok();
+    if let Some(mut cache) = cache {
+        retain_configured_models(&mut cache.data, config);
         let mut lock = cache_lock().lock().unwrap();
-        *lock = Some(Cache { data });
+        *lock = Some(cache);
     }
 }
 
@@ -291,9 +362,9 @@ pub fn spawn_background_refresh(paths: crate::paths::MiyuPaths) {
     std::thread::spawn(move || {
         let _refresh = refresh_lock().lock().unwrap();
         let fetched = fetch_and_cache(&path).ok();
-        if let Some(data) = fetched {
+        if let Some(cache) = fetched {
             let mut lock = cache_lock().lock().unwrap();
-            *lock = Some(Cache { data });
+            *lock = Some(cache);
         }
     });
 }
@@ -307,10 +378,10 @@ pub fn spawn_background_refresh_active(
     std::thread::spawn(move || {
         let _refresh = refresh_lock().lock().unwrap();
         let fetched = fetch_and_cache(&path).ok();
-        if let Some(mut data) = fetched {
-            retain_configured_models(&mut data, &config);
+        if let Some(mut cache) = fetched {
+            retain_configured_models(&mut cache.data, &config);
             let mut lock = cache_lock().lock().unwrap();
-            *lock = Some(Cache { data });
+            *lock = Some(cache);
         }
     });
 }
@@ -684,15 +755,80 @@ fn lookup_context_window(
     matches.into_iter().min()
 }
 
+/// 模型单价查询,供计费估算。供应商对齐两步走:① Miyu 供应商 id 恰好是
+/// models.dev 键(deepseek、openrouter 等官方模板);② 按 base_url 对齐
+/// (自定义 id,如 opencodego → opencode-go)。都对不上就不猜——同名
+/// 模型在不同渠道价格不同,跨供应商模糊匹配会算错钱。
+pub fn model_cost(provider_id: &str, base_url: &str, model_id: &str) -> Option<ApiCost> {
+    let lock = cache_lock().lock().unwrap();
+    let cache = lock.as_ref()?;
+    if let Some(cost) = cache
+        .data
+        .get(provider_id)
+        .and_then(|models| models.get(model_id))
+        .and_then(|info| info.cost)
+    {
+        return Some(cost);
+    }
+    let normalized = base_url.trim().trim_end_matches('/');
+    if normalized.is_empty() {
+        return None;
+    }
+    cache
+        .provider_api
+        .iter()
+        .filter(|(_, api)| api.as_str() == normalized)
+        .find_map(|(key, _)| {
+            cache
+                .data
+                .get(key)
+                .and_then(|models| models.get(model_id))
+                .and_then(|info| info.cost)
+        })
+}
+
+/// 用量统计的计价器:usage 记录只存供应商 id,这里借 config 把 id 解析
+/// 成 base_url 再查目录。查不到价的记录计 None(前端显示为无估算),
+/// 绝不糊弄一个数字。
+pub fn pricing_resolver(
+    config: &crate::config::AppConfig,
+) -> impl Fn(&str, &str) -> Option<ApiCost> + '_ {
+    move |provider_id: &str, model_id: &str| {
+        if provider_id.is_empty() || model_id.is_empty() {
+            return None;
+        }
+        let provider = config
+            .providers
+            .iter()
+            .find(|provider| provider.id == provider_id);
+        // 手动价格优先:目录没收录的中转/赠送端点靠它。CNY 按估算汇率
+        // 折成 USD 聚合(统计页统一以 $ 展示)。
+        if let Some(manual) = provider.and_then(|p| p.model_costs.get(model_id)) {
+            let rate = match manual.currency {
+                crate::config::CostCurrency::Usd => 1.0,
+                crate::config::CostCurrency::Cny => 1.0 / CNY_PER_USD,
+            };
+            return Some(ApiCost {
+                input: manual.input * rate,
+                output: manual.output * rate,
+                cache_read: manual.cache_read.map(|price| price * rate),
+                cache_write: None,
+            });
+        }
+        let base_url = provider.map(|p| p.base_url.as_str()).unwrap_or("");
+        model_cost(provider_id, base_url, model_id)
+    }
+}
+
 pub fn refresh_blocking(paths: &crate::paths::MiyuPaths) -> Result<()> {
     let _refresh = refresh_lock().lock().unwrap();
     if is_loaded() {
         return Ok(());
     }
     let path = cache_file(paths);
-    let data = fetch_and_cache(&path)?;
+    let cache = fetch_and_cache(&path)?;
     let mut lock = cache_lock().lock().unwrap();
-    *lock = Some(Cache { data });
+    *lock = Some(cache);
     Ok(())
 }
 
@@ -705,7 +841,110 @@ mod tests {
             input_modalities: Vec::new(),
             context_window: Some(window),
             reasoning: None,
+            cost: None,
         }
+    }
+
+    /// 手动价格优先于目录价:目录未收录的中转端点靠 model_costs。
+    #[test]
+    fn manual_model_cost_overrides_catalogue() {
+        let mut config = crate::config::AppConfig::default();
+        config.providers.push(crate::config::ProviderConfig {
+            id: "relay".to_string(),
+            display_name: "Relay".to_string(),
+            base_url: "https://relay.example/v1".to_string(),
+            protocol: "openai-chat".to_string(),
+            api_key: None,
+            models: vec!["m".to_string()],
+            model_context_window: HashMap::new(),
+model_temperature: HashMap::new(),
+            model_modalities: HashMap::new(),
+            model_costs: HashMap::from([(
+                "m".to_string(),
+                crate::config::ModelCostConfig {
+                    currency: crate::config::CostCurrency::Usd,
+                    input: 1.5,
+                    output: 3.0,
+                    cache_read: Some(0.15),
+                },
+            )]),
+            default_model: "m".to_string(),
+            timeout_seconds: 60,
+            temperature: 1.0,
+            anthropic_max_tokens: 4096,
+            extra_body: None,
+        });
+        {
+            let price = pricing_resolver(&config);
+            let cost = price("relay", "m").expect("manual price should resolve");
+            assert_eq!(cost.input, 1.5);
+            assert_eq!(cost.output, 3.0);
+            assert_eq!(cost.cache_read, Some(0.15));
+            assert_eq!(cost.cache_write, None);
+        }
+        // CNY 手动价按估算汇率折 USD
+        config.providers.last_mut().unwrap().model_costs.insert(
+            "m".to_string(),
+            crate::config::ModelCostConfig {
+                currency: crate::config::CostCurrency::Cny,
+                input: 7.25,
+                output: 14.5,
+                cache_read: None,
+            },
+        );
+        let price = pricing_resolver(&config);
+        let cost = price("relay", "m").unwrap();
+        assert!((cost.input - 1.0).abs() < 1e-9);
+        assert!((cost.output - 2.0).abs() < 1e-9);
+        assert_eq!(cost.cache_read, None);
+    }
+
+    /// 单价解析与估算:cache_read ⊆ prompt,命中按缓存价、未命中按输入价。
+    #[test]
+    fn cost_parses_and_estimates() {
+        let parsed = parse_api_response(
+            r#"{"opencode-go":{"api":"https://opencode.ai/zen/go/v1/","models":{
+                "deepseek-v4-flash":{"cost":{"input":0.07,"output":0.14,"cache_read":0.0014}},
+                "no-cost":{}
+            }}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.provider_api["opencode-go"],
+            "https://opencode.ai/zen/go/v1"
+        );
+        assert!(parsed.data["opencode-go"]["no-cost"].cost.is_none());
+        let cost = parsed.data["opencode-go"]["deepseek-v4-flash"].cost.unwrap();
+        // 200 万 prompt(其中 100 万命中)+ 100 万输出
+        let est = cost.estimate(2_000_000, 1_000_000, 1_000_000, 0);
+        assert!((est - (0.07 + 0.0014 + 0.14)).abs() < 1e-9, "{est}");
+        // 无缓存价时命中按输入价计
+        let flat = ApiCost { input: 1.0, output: 2.0, cache_read: None, cache_write: None };
+        assert!((flat.estimate(1_000_000, 0, 400_000, 0) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn catalogue_context_window_is_capped_by_the_input_limit() {
+        // opencode's big-pickle advertises a 200k context against a 160k input
+        // cap; budgeting against 200k puts compaction past the point the
+        // provider still accepts the request.
+        let parsed = parse_api_response(
+            r#"{"opencode":{"models":{
+                "big-pickle":{"limit":{"context":200000,"input":160000,"output":32000}},
+                "context-only":{"limit":{"context":128000,"output":8000}},
+                "input-only":{"limit":{"input":64000}},
+                "input-zero":{"limit":{"context":32000,"input":0}},
+                "no-limit":{}
+            }}}"#,
+        )
+        .unwrap();
+        let models = &parsed.data["opencode"];
+
+        assert_eq!(models["big-pickle"].context_window, Some(160_000));
+        assert_eq!(models["context-only"].context_window, Some(128_000));
+        assert_eq!(models["input-only"].context_window, Some(64_000));
+        assert_eq!(models["input-zero"].context_window, Some(32_000));
+        assert_eq!(models["no-limit"].context_window, None);
     }
 
     #[test]
@@ -925,7 +1164,7 @@ mod tests {
         )
         .unwrap();
 
-        let info = lookup_reasoning_info(&data, "openrouter", "example").unwrap();
+        let info = lookup_reasoning_info(&data.data, "openrouter", "example").unwrap();
         assert_eq!(
             info.provider_npm.as_deref(),
             Some("@openrouter/ai-sdk-provider")
@@ -991,6 +1230,7 @@ mod tests {
                             provider_npm: Some("@provider/a".to_string()),
                             variants: variants.clone(),
                         }),
+                        cost: None,
                     },
                 )]),
             ),
@@ -1005,6 +1245,7 @@ mod tests {
                             provider_npm: Some("@provider/b".to_string()),
                             variants,
                         }),
+                        cost: None,
                     },
                 )]),
             ),
@@ -1032,6 +1273,7 @@ mod tests {
             setting: ReasoningSetting::Effort("low".to_string()),
         }];
         let reasoning = |variants| ModelInfo {
+            cost: None,
             input_modalities: Vec::new(),
             context_window: None,
             reasoning: Some(ModelReasoningInfo {
@@ -1057,6 +1299,7 @@ mod tests {
     #[test]
     fn reasoning_fallback_counts_models_without_variants() {
         let reasoning = ModelInfo {
+            cost: None,
             input_modalities: Vec::new(),
             context_window: None,
             reasoning: Some(ModelReasoningInfo {
@@ -1068,6 +1311,7 @@ mod tests {
             }),
         };
         let without_reasoning = ModelInfo {
+            cost: None,
             input_modalities: Vec::new(),
             context_window: None,
             reasoning: None,

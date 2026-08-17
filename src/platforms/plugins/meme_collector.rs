@@ -204,15 +204,19 @@ impl PlatformPlugin for MemeCollectorPlugin {
             let mut memes = Vec::new();
             if let OutboundBody::Segments(segments) = &message.body {
                 for segment in segments {
-                    let bytes = match segment {
-                        OutboundSegment::ImageBytes { data, .. } => Some(data.to_vec()),
-                        OutboundSegment::ImagePath { path, .. } => tokio::fs::read(path).await.ok(),
+                    // 只需要 digest:ImageBytes 直接借用,免掉整图 to_vec 拷贝。
+                    let digest = match segment {
+                        OutboundSegment::ImageBytes { data, .. } => Some(Sha256::digest(data)),
+                        OutboundSegment::ImagePath { path, .. } => tokio::fs::read(path)
+                            .await
+                            .ok()
+                            .map(|bytes| Sha256::digest(&bytes)),
                         _ => None,
                     };
-                    let Some(bytes) = bytes else { continue };
+                    let Some(digest) = digest else { continue };
                     let meme = MemeRef {
                         library: library.clone(),
-                        id: format!("sha256:{:x}", Sha256::digest(&bytes)),
+                        id: format!("sha256:{digest:x}"),
                     };
                     if meme_ref_exists(&context.paths, &meme)? {
                         memes.push(meme);

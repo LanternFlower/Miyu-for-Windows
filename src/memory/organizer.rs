@@ -308,13 +308,9 @@ fn parse_json_object(text: &str) -> Result<serde_json::Value> {
     if let Ok(value) = serde_json::from_str(trimmed) {
         return Ok(value);
     }
-    let start = trimmed
-        .find('{')
-        .context("memory organizer returned no JSON object")?;
-    let end = trimmed
-        .rfind('}')
-        .context("memory organizer returned an incomplete JSON object")?;
-    serde_json::from_str(&trimmed[start..=end]).context("parsing memory organizer JSON")
+    let json_text = crate::json_extract::extract_json_object(trimmed)
+        .context("memory organizer returned no complete JSON object")?;
+    serde_json::from_str(json_text).context("parsing memory organizer JSON")
 }
 
 #[cfg(test)]

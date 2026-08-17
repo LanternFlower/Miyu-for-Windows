@@ -37,17 +37,35 @@ pub fn parse_alarm_seconds(value: &str) -> Result<u64> {
     }
     let mut total = 0u64;
     for part in parts {
-        if part.len() < 2 {
+        // 按 数字+单位 分段扫描：兼容 "1h30m" 这类无空格复合写法，且不做字节
+        // 切分（"5分钟" 之类多字节输入走 bail 而非 panic）。
+        let mut number = String::new();
+        let mut segments = 0usize;
+        for ch in part.chars() {
+            if ch.is_ascii_digit() {
+                number.push(ch);
+                continue;
+            }
+            if number.is_empty() {
+                bail!("invalid alarm time: {value}")
+            }
+            let amount = number.parse::<u64>()?;
+            number.clear();
+            segments += 1;
+            let multiplier = match ch.to_ascii_lowercase() {
+                'h' => 3600,
+                'm' => 60,
+                's' => 1,
+                _ => bail!("invalid alarm time unit: {ch}"),
+            };
+            total = amount
+                .checked_mul(multiplier)
+                .and_then(|secs| total.checked_add(secs))
+                .ok_or_else(|| anyhow::anyhow!("alarm time overflows: {value}"))?;
+        }
+        if !number.is_empty() || segments == 0 {
             bail!("invalid alarm time: {value}")
         }
-        let (number, unit) = part.split_at(part.len() - 1);
-        let amount = number.parse::<u64>()?;
-        total += match unit.to_ascii_lowercase().as_str() {
-            "h" => amount * 3600,
-            "m" => amount * 60,
-            "s" => amount,
-            _ => bail!("invalid alarm time unit: {unit}"),
-        };
     }
     if total == 0 {
         bail!("alarm time must be greater than zero")
@@ -56,7 +74,12 @@ pub fn parse_alarm_seconds(value: &str) -> Result<u64> {
 }
 
 pub fn due_at_from_time(value: &str) -> Result<i64> {
-    Ok(Local::now().timestamp() + parse_alarm_seconds(value)? as i64)
+    let secs = i64::try_from(parse_alarm_seconds(value)?)
+        .map_err(|_| anyhow::anyhow!("alarm time overflows: {value}"))?;
+    Local::now()
+        .timestamp()
+        .checked_add(secs)
+        .ok_or_else(|| anyhow::anyhow!("alarm time overflows: {value}"))
 }
 
 pub fn load(paths: &MiyuPaths) -> Result<Vec<AlarmRecord>> {
@@ -187,7 +210,21 @@ mod tests {
         assert_eq!(parse_alarm_seconds("30s").unwrap(), 30);
         assert_eq!(parse_alarm_seconds("10m").unwrap(), 600);
         assert_eq!(parse_alarm_seconds("1h 2m 3s").unwrap(), 3723);
+        assert_eq!(parse_alarm_seconds("1h30m").unwrap(), 5400);
         assert!(parse_alarm_seconds("0s").is_err());
+    }
+
+    #[test]
+    fn rejects_multibyte_units_without_panicking() {
+        assert!(parse_alarm_seconds("5分钟").is_err());
+        assert!(parse_alarm_seconds("分钟").is_err());
+    }
+
+    #[test]
+    fn rejects_overflowing_durations() {
+        assert!(parse_alarm_seconds("9999999999999999999h").is_err());
+        assert!(parse_alarm_seconds("18446744073709551615s 1s").is_err());
+        assert!(due_at_from_time("9999999999999999999h").is_err());
     }
 
     #[test]

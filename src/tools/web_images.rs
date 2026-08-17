@@ -2099,9 +2099,7 @@ fn parse_vision_screenings(
     );
     let mut screenings = vec![failed; count];
     let raw = text.trim();
-    let json_text = raw
-        .find('{')
-        .and_then(|start| raw.rfind('}').map(|end| &raw[start..=end]));
+    let json_text = crate::json_extract::extract_json_object(raw);
     if let Some(json_text) = json_text {
         if let Ok(data) = serde_json::from_str::<Value>(json_text) {
             for item in data
@@ -2346,7 +2344,9 @@ mod tests {
             api_key: None,
             models: vec!["vision-model".to_string()],
             model_context_window: HashMap::new(),
+model_temperature: HashMap::new(),
             model_modalities: HashMap::new(),
+            model_costs: HashMap::new(),
             default_model: "vision-model".to_string(),
             timeout_seconds: 60,
             temperature: 0.2,

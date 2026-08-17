@@ -200,10 +200,14 @@ fn acquire_lock(lock_path: PathBuf) -> Result<File> {
         .read(true)
         .write(true)
         .open(lock_path)?;
+    let held_message = crate::i18n::text(
+        "another Miyu core (the daemon or another direct REPL) holds this home; stop it (miyu daemon stop) or drop MIYU_DIRECT to attach to the daemon",
+        "另一个 Miyu 核心(daemon 或另一个直连 REPL)正占用本机身份;直连模式与它互斥——先 miyu daemon stop,或去掉 MIYU_DIRECT 改为连接 daemon",
+    );
     match sys::try_lock_exclusive(&lock_file) {
         Ok(true) => Ok(lock_file),
-        Ok(false) => bail!("Miyu Web core is starting or temporarily unavailable"),
-        Err(error) => bail!("Miyu Web core is starting or temporarily unavailable: {error}"),
+        Ok(false) => bail!("{held_message}"),
+        Err(error) => bail!("{held_message}: {error}"),
     }
 }
 
@@ -221,6 +225,13 @@ impl Request {
             command,
         }
     }
+}
+
+/// 触发回合的终端身份:tty 设备路径 + 拉起 miyu 的 shell 进程。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OriginTty {
+    pub path: std::path::PathBuf,
+    pub shell_pid: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -251,6 +262,18 @@ pub enum Command {
     ResetConversation {
         target: SessionRef,
     },
+    /// 只清长期记忆(事实/日记/经历/待处理事件与外溢上下文存档),会话
+    /// 历史与技能不动。`mode: "dev"` 清开发模式的独立记忆命名空间,
+    /// 缺省清当前人格。不可逆,前端须先确认。
+    ResetMemory {
+        #[serde(default)]
+        mode: Option<String>,
+    },
+    /// 出网请求录制开关(进程级,重启即关)。开着时每个 LLM 请求的完整
+    /// 序列化体追加到 logs/requests-<日期>.jsonl,供审计注入内容。
+    SetRequestLogging {
+        enabled: bool,
+    },
     /// Erases everything the persona accumulated: memory, every session's
     /// contents, group-chat contexts and auto-generated skills. Configuration
     /// is untouched. Irreversible; every frontend confirms before sending it.
@@ -270,6 +293,10 @@ pub enum Command {
         mode: String,
         #[serde(default)]
         images: Vec<Option<ImageAttachment>>,
+        /// 触发本回合的终端身份(shellhook/单次 CLI)。后台任务完成后的
+        /// 跟进回复据此写回原终端;缺省(REPL/WebUI/平台)不回写。
+        #[serde(default)]
+        origin_tty: Option<OriginTty>,
         /// Client working directory; used as the turn workspace when the
         /// target session has none bound.
         #[serde(default)]
@@ -303,8 +330,10 @@ pub enum Command {
         question_id: String,
     },
     ListSessions {
+        /// `dev` 列开发模式会话(保留人格 "dev" 名下),`all` 普通+dev
+        /// 合并(管理面);缺省=当前人格。
         #[serde(default)]
-        include_archived: bool,
+        mode: Option<String>,
     },
     CreateSession {
         #[serde(default)]
@@ -315,23 +344,48 @@ pub enum Command {
         /// back one-shot turns and stay out of every listing.
         #[serde(default)]
         kind: Option<String>,
+        /// `"dev"` 建到保留人格 dev 名下(Build 模式会话);缺省=当前人格。
+        #[serde(default)]
+        mode: Option<String>,
     },
     /// Session the REPL was last on. Falls back to the current session and
     /// heals the stored pointer when it has gone stale.
-    GetReplSession,
+    GetReplSession {
+        /// `"dev"` 取 dev 人格的 REPL 指针(无则自举一个 dev 会话)。
+        #[serde(default)]
+        mode: Option<String>,
+    },
     SetReplSession {
         target: SessionRef,
     },
-    SwitchSession {
-        target: SessionRef,
+    /// 工具桥(任务#12):`miyu tool-call` 打回 daemon,以指定会话的身份与
+    /// 回合来源执行结构化工具——内层调用照走 guard/超时管线。bash 就是
+    /// 编排层:中间数据在脚本里流动,不经模型上下文往返。
+    ToolCall {
+        #[serde(default)]
+        session: Option<String>,
+        name: String,
+        #[serde(default)]
+        arguments: String,
+        /// 序列化的 TurnOrigin(来自 run_command 注入的 MIYU_TURN_ORIGIN)。
+        #[serde(default)]
+        origin: Option<String>,
+        /// 递归深度(护栏,daemon 侧校验)。
+        #[serde(default)]
+        depth: u32,
+    },
+    /// 工具桥目录:`--list/--describe` 与 ToolCall 同一条解析链(会话→
+    /// 模式→registry),杜绝"--list 列全量、调用却 unknown tool"的错位
+    /// (dev 会话实测踩坑)。name=None 列全表,Some(name) 查单个合同。
+    ToolCatalog {
+        #[serde(default)]
+        session: Option<String>,
+        #[serde(default)]
+        name: Option<String>,
     },
     RenameSession {
         target: SessionRef,
         name: String,
-    },
-    ArchiveSession {
-        target: SessionRef,
-        archived: bool,
     },
     DeleteSession {
         target: SessionRef,
@@ -1443,7 +1497,7 @@ mod tests {
                 cumulative_prompt_tokens: 20,
                 cumulative_cache_read_tokens: 10,
                 session_id: "default".to_string(),
-                session_name: "默认会话".to_string(),
+                session_name: "终端集成会话".to_string(),
                 workspace: None,
             },
             data: serde_json::json!({"ok": true}),
@@ -1474,6 +1528,10 @@ mod tests {
             })],
             cwd: Some(std::path::PathBuf::from("/tmp/workdir")),
             session_id: Some("sess_test".to_string()),
+            origin_tty: Some(OriginTty {
+                path: std::path::PathBuf::from("/dev/pts/7"),
+                shell_pid: 4321,
+            }),
         });
         let writer = tokio::spawn(async move { send(&mut left, &request).await });
         let received = receive::<Request>(&mut right).await.unwrap().unwrap();
@@ -1487,12 +1545,16 @@ mod tests {
                 images,
                 cwd,
                 session_id,
+                origin_tty,
             } => {
                 assert_eq!(content, "hello");
                 assert_eq!(mode, "normal");
                 assert_eq!(images.len(), 1);
                 assert_eq!(cwd, Some(std::path::PathBuf::from("/tmp/workdir")));
                 assert_eq!(session_id.as_deref(), Some("sess_test"));
+                let origin = origin_tty.expect("origin tty should round-trip");
+                assert_eq!(origin.path, std::path::PathBuf::from("/dev/pts/7"));
+                assert_eq!(origin.shell_pid, 4321);
             }
             _ => panic!("unexpected command"),
         }
@@ -1507,6 +1569,7 @@ mod tests {
             images: Vec::new(),
             cwd: None,
             session_id: None,
+            origin_tty: None,
         });
         assert!(send(&mut left, &request).await.is_err());
     }

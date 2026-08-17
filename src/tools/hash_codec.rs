@@ -28,7 +28,8 @@ fn calculate(args: Value) -> Result<String> {
         if algorithms.trim().is_empty() || algorithms == "all" || algorithms == "mainstream" {
             vec![
                 "md5", "sha1", "sha224", "sha256", "sha384", "sha512", "sha3_224", "sha3_256",
-                "sha3_384", "sha3_512", "blake2b", "blake2s", "b2sum", "crc32", "adler32",
+                "sha3_384", "sha3_512", "blake2b", "blake2s", "b2sum", "blake3", "crc32",
+                "adler32",
             ]
         } else {
             algorithms
@@ -37,6 +38,7 @@ fn calculate(args: Value) -> Result<String> {
                 .collect()
         };
     let mut results = serde_json::Map::new();
+    let mut unsupported = Vec::new();
     for alg in algs {
         let value = match alg.to_lowercase().as_str() {
             "md5" => format!("{:x}", md5_compat::compute(&data)),
@@ -54,13 +56,20 @@ fn calculate(args: Value) -> Result<String> {
             "blake3" => blake3::hash(&data).to_hex().to_string(),
             "crc32" => format!("{:08x}", crc32fast::hash(&data)),
             "adler32" => format!("{:08x}", adler32(&data)),
-            other => format!("unsupported algorithm: {other}"),
+            other => {
+                unsupported.push(other.to_string());
+                format!("unsupported algorithm: {other}")
+            }
         };
         results.insert(alg.to_string(), Value::String(value));
     }
-    Ok(serde_json::to_string_pretty(
-        &json!({"success": true, "byte_length": data.len(), "results": results}),
-    )?)
+    // 拼错的算法名单独点名,不再无声混在 success 结果里。
+    Ok(serde_json::to_string_pretty(&json!({
+        "success": unsupported.is_empty(),
+        "byte_length": data.len(),
+        "results": results,
+        "unsupported_algorithms": unsupported,
+    }))?)
 }
 
 fn adler32(data: &[u8]) -> u32 {

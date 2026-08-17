@@ -233,9 +233,39 @@ mod tests {
 // xₙ₊₁、√π、α∈(0,1)——流式安全、表格行高零开销。尽力而为,
 // 转不动的命令原样保留,永不失败。
 
+/// 转写递归的嵌套深度上限:正常公式远低于此,超限说明是构造出的
+/// 深嵌套(如上万层 `{`),递归转写会栈溢出 abort,回退原文。
+const MAX_MATH_NESTING: usize = 64;
+
+/// 统计裸 `{` 的最大嵌套深度(`\{` 转义不计,与递归转写的分组语义一致)。
+fn max_brace_depth(chars: &[char]) -> usize {
+    let mut depth = 0usize;
+    let mut max_depth = 0usize;
+    let mut escaped = false;
+    for &ch in chars {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '{' => {
+                depth += 1;
+                max_depth = max_depth.max(depth);
+            }
+            '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    max_depth
+}
+
 /// 把 LaTeX 行内公式尽力转成 Unicode 数学文本。
 pub(crate) fn unicode_math(tex: &str) -> String {
     let chars: Vec<char> = tex.chars().collect();
+    if max_brace_depth(&chars) > MAX_MATH_NESTING {
+        return tex.to_string();
+    }
     let mut cursor = 0usize;
     let output = convert_sequence(&chars, &mut cursor, None);
     output.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -369,8 +399,31 @@ fn parenthesize(text: &str) -> String {
     let trimmed = text.trim();
     let simple = trimmed.chars().count() <= 1
         || trimmed.chars().all(|ch| ch.is_alphanumeric() || ch == '.' || ch == '′')
-        || (trimmed.starts_with('(') && trimmed.ends_with(')'));
+        || fully_parenthesized(trimmed);
     if simple { trimmed.to_string() } else { format!("({trimmed})") }
+}
+
+/// 整体被同一对匹配括号包裹才算"已括":`(a)+(b)` 两端虽是括号但
+/// 首括号在中途就闭合,仍需外层加括号,否则 `\frac{(a)+(b)}{c}`
+/// 会转写成 `(a)+(b)/c`,数学语义反转。
+fn fully_parenthesized(text: &str) -> bool {
+    if !text.starts_with('(') || !text.ends_with(')') {
+        return false;
+    }
+    let mut depth = 0usize;
+    for (index, ch) in text.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return index + ch.len_utf8() == text.len();
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 const SUPERSCRIPTS: &[(char, char)] = &[
@@ -691,6 +744,9 @@ fn frac_box(numerator: MathTextBox, denominator: MathTextBox) -> MathTextBox {
 /// [`unicode_math`] 输出一致。返回 lines(尾空格已修剪)。
 pub(crate) fn unicode_math_lines(tex: &str) -> Vec<String> {
     let chars: Vec<char> = tex.chars().collect();
+    if max_brace_depth(&chars) > MAX_MATH_NESTING {
+        return tex.lines().map(|line| line.to_string()).collect();
+    }
     let mut cursor = 0usize;
     let boxed = sequence_box(&chars, &mut cursor, None);
     boxed
@@ -817,6 +873,24 @@ fn group_box(chars: &[char], cursor: &mut usize) -> MathTextBox {
 #[cfg(test)]
 mod box_tests {
     use super::*;
+
+    #[test]
+    fn deep_nesting_falls_back_to_raw_text() {
+        // 10 万层 `{` 的递归转写会栈溢出 abort;超过深度上限必须原样返回。
+        let bomb = "{".repeat(100_000);
+        assert_eq!(unicode_math(&bomb), bomb);
+        assert_eq!(unicode_math_lines(&bomb), vec![bomb.clone()]);
+        // 上限内的正常嵌套不受影响。
+        assert_eq!(unicode_math("{{{x}}}"), "x");
+    }
+
+    #[test]
+    fn frac_parenthesizes_compound_numerators() {
+        // `(a)+(b)` 两端恰是括号但不是一对:必须整体加括号。
+        assert_eq!(unicode_math(r"\frac{(a)+(b)}{c}"), "((a)+(b))/c");
+        // 真正整体被括号包裹的不重复加括号。
+        assert_eq!(unicode_math(r"\frac{(a+b)}{c}"), "(a+b)/c");
+    }
 
     #[test]
     fn frac_stacks_vertically_with_rule() {

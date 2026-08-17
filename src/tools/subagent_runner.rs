@@ -385,17 +385,20 @@ impl SubagentRunner {
     }
 
     fn report_stats(&self, stats: &SubagentStats) {
+        // 与 stats JSON 的 token_estimate_is_actual 同口径:估算值必须带
+        // `≈` 前缀,硬编码 false 会把估算按精确值展示。
+        let estimated = stats.token_estimate_method != TokenEstimateMethod::ProviderUsage;
         let text = if is_zh() {
             format!(
                 "工具调用 {} 次　消耗词元 {}",
                 stats.tool_calls,
-                format_token_count(stats.token_estimate, false)
+                format_token_count(stats.token_estimate, estimated)
             )
         } else {
             format!(
                 "tool calls: {}　token cost: {}",
                 stats.tool_calls,
-                format_token_count(stats.token_estimate, false)
+                format_token_count(stats.token_estimate, estimated)
             )
         };
         self.progress.phase(format!("__subagent_stats__{text}"));

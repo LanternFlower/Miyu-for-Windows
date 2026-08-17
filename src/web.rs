@@ -250,7 +250,7 @@ impl TurnEngineState {
 struct TurnResources {
     client: OpenAiCompatibleClient,
     normal_tools: tools::ToolRegistry,
-    chat_tools: tools::ToolRegistry,
+    dev_tools: tools::ToolRegistry,
     restricted_tools: tools::ToolRegistry,
 }
 
@@ -304,7 +304,7 @@ impl TurnResourceCache {
         let resources = Arc::new(TurnResources {
             client: OpenAiCompatibleClient::from_config(config, paths)?,
             normal_tools: build_tool_registry(config, paths, AgentMode::Normal, false)?,
-            chat_tools: build_tool_registry(config, paths, AgentMode::Chat, false)?,
+            dev_tools: build_tool_registry(config, paths, AgentMode::Dev, false)?,
             restricted_tools,
         });
 
@@ -322,7 +322,8 @@ impl TurnResourceCache {
 #[derive(Clone)]
 struct WebAuth {
     password_digest: Option<[u8; 32]>,
-    sessions: Arc<Mutex<HashSet<String>>>,
+    /// 按登录先后有序:超限淘汰最旧令牌,而不是把全部在用会话一起登出。
+    sessions: Arc<Mutex<Vec<String>>>,
     attempts: Arc<Mutex<HashMap<IpAddr, LoginAttempt>>>,
 }
 
@@ -347,7 +348,7 @@ impl WebAuth {
         });
         Self {
             password_digest,
-            sessions: Arc::new(Mutex::new(HashSet::new())),
+            sessions: Arc::new(Mutex::new(Vec::new())),
             attempts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -360,7 +361,13 @@ impl WebAuth {
         if !self.required() {
             return true;
         }
-        supplied.is_some_and(|token| self.sessions.lock().unwrap().contains(token))
+        supplied.is_some_and(|token| {
+            self.sessions
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|existing| existing == token)
+        })
     }
 
     fn login(&self, peer: IpAddr, password: &str) -> std::result::Result<String, LoginFailure> {
@@ -396,10 +403,10 @@ impl WebAuth {
 
         let token = random_token(32);
         let mut sessions = self.sessions.lock().unwrap();
-        sessions.insert(token.clone());
+        sessions.push(token.clone());
+        // 第 65 个登录淘汰最旧的一个令牌;此前是 sessions.clear() 全员登出。
         if sessions.len() > 64 {
-            sessions.clear();
-            sessions.insert(token.clone());
+            sessions.remove(0);
         }
         Ok(token)
     }
@@ -421,6 +428,8 @@ pub(crate) struct RunInfo {
     /// True for daemon-initiated background-command wake turns; lets REPL
     /// clients discover and attach to them for live rendering.
     pub(crate) job_wake: bool,
+    /// 本回合的发起来源(goal 权限与取消语义用,见 workspace::TurnOrigin)。
+    pub(crate) turn_origin: crate::tools::workspace::TurnOrigin,
     /// Display label for wake turns: "<job_id> · <title>".
     pub(crate) job_wake_label: Option<String>,
 }
@@ -526,10 +535,17 @@ pub(crate) enum ActorCommand {
         mode: AgentMode,
         images: Vec<Option<ImageAttachment>>,
         cwd: Option<std::path::PathBuf>,
+        /// 触发回合的终端(shellhook/单次 CLI);后台任务完成回写用。
+        /// 装箱:Windows 上 OriginTty 更大,内联会顶爆 512B 队列项护栏。
+        origin_tty: Option<Box<crate::ipc::OriginTty>>,
         audience: PromptAudience,
         /// Platform-only per-turn overrides. CLI/WebUI turns leave this empty.
         profile: Option<platforms::TurnProfile>,
         cancel: tokio::sync::watch::Receiver<bool>,
+        /// 回合发起来源(缺省 Human;goal 驱动器与 job 唤醒如实声明)。
+        /// 装箱:GoalRound 变体带 String,内联会顶爆 ActorCommand 的
+        /// 512B 队列项护栏。
+        turn_origin: Box<crate::tools::workspace::TurnOrigin>,
     },
     RedoTurn {
         run_id: String,
@@ -1208,6 +1224,25 @@ impl RunEventMapper {
                 }),
             ),
             AgentEvent::SpinnerTick => {}
+            // 逐请求计量快照:round 为刚结束请求的用量(prompt+completion
+            // ≈ 当前上下文占用),turn 为回合累计。前端据此在回合中途刷新
+            // 计量条,不必等 chat.done。
+            AgentEvent::RoundUsage {
+                round,
+                turn,
+                estimated,
+            } => self.publish(
+                "chat.round_usage",
+                json!({
+                    "run_id": self.run_id,
+                    "turn_id": self.turn_id,
+                    "usage": *round,
+                    "turn_total": turn.total,
+                    "turn_prompt": turn.prompt,
+                    "turn_cache_read": turn.cache_read,
+                    "estimated": estimated,
+                }),
+            ),
             AgentEvent::CompactStart => {
                 self.publish("context.compact_start", json!({ "run_id": self.run_id }))
             }
@@ -1283,7 +1318,10 @@ struct AttachmentQuery {
 #[serde(deny_unknown_fields)]
 struct CreateTurnRequest {
     content: String,
-    mode: String,
+    /// 兼容字段:旧前端仍会带 mode;会话模式创建时定死,daemon 按会话
+    /// 记录强制,这个值只解析不采信。缺省即普通。
+    #[serde(default)]
+    mode: Option<String>,
     #[serde(default)]
     attachment_ids: Vec<String>,
     /// Target session; defaults to the global current session. The turn runs
@@ -1337,7 +1375,9 @@ struct RedoTurnRequest {
     input_id: String,
     #[serde(default)]
     content: Option<String>,
-    mode: String,
+    /// 同 CreateTurnRequest.mode:兼容旧前端,只解析不采信。
+    #[serde(default)]
+    mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1882,6 +1922,15 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
     for url in &urls {
         println!("Miyu WebUI: {url}");
     }
+    if password.is_none() && !bind_ip.is_loopback() {
+        eprintln!(
+            "{}",
+            t(
+                "WARNING: the WebUI is listening on a non-loopback address without a password; anyone who can reach this port has full control. Pass a password or bind to 127.0.0.1.",
+                "警告：WebUI 正在无密码监听非回环地址，任何能访问该端口的人都拥有完全控制权。请设置访问密码或绑定 127.0.0.1。"
+            )
+        );
+    }
     std::io::stdout().flush().ok();
 
     let serve_result = {
@@ -1922,7 +1971,7 @@ fn ensure_local_current_session(state_store: &StateStore, persona: &str) -> Resu
     }
 
     let target_session_id = match state_store
-        .list_local_sessions(persona, false)?
+        .list_local_sessions(persona)?
         .into_iter()
         .next()
     {
@@ -1944,7 +1993,7 @@ fn is_available_local_session(
     let usable = state_store
         .session_record(session_id)?
         .is_some_and(|record| {
-            record.persona == persona && record.kind == "user" && !record.archived
+            record.persona == persona && record.kind == "user"
         });
     Ok(usable && !state_store.is_platform_session(session_id)?)
 }
@@ -1963,12 +2012,12 @@ impl IpcRunGuard {
 
 impl Drop for IpcRunGuard {
     fn drop(&mut self) {
-        if !self.finished {
-            // Client disconnected mid-turn: cancel its run.
-            if let Some(info) = self.manager.lock().unwrap().active_runs.get(&self.run_id) {
-                info.request_cancel();
-            }
-        }
+        // dsh 语义(验收):回合归 daemon 所有,前端断线只是观众离席——
+        // 不取消。曾经这里在客户端断开时砍掉 run,REPL 一关回合就死;
+        // 现在 run 由 actor 跑到终态,finish_run 在完成路径里自行清理,
+        // 断线客户端留下的只是一个没人看的事件流。guard 保留为挂点
+        // (显式取消仍走 IpcCommand::Cancel)。
+        let _ = self.finished;
     }
 }
 
@@ -2132,20 +2181,35 @@ async fn handle_ipc_connection(
             )
             .await?;
         }
-        IpcCommand::GetReplSession => {
-            let persona = active_persona_scope(&state);
+        IpcCommand::GetReplSession { mode } => {
+            let dev = mode.as_deref() == Some("dev");
+            let persona = if dev {
+                crate::state::DEV_PERSONA.to_string()
+            } else {
+                active_persona_scope(&state)
+            };
             let store = &state.state_store;
             // A stale pointer (session deleted or archived elsewhere) must not
             // strand the REPL: fall back to the terminal session and heal the
-            // pointer so the next start is a plain read.
-            let session_id = store
-                .repl_session(&persona)
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| store.session_id().to_string());
+            // pointer so the next start is a plain read. Dev 无「终端会话」
+            // 可退,指针缺失时自举一个新的 dev 会话。
+            let session_id = match store.repl_session(&persona).ok().flatten() {
+                Some(session_id) => session_id,
+                None if dev => {
+                    store
+                        .create_session(crate::state::DEV_PERSONA, "", crate::state::USER_SESSION_KIND, None)
+                        .map_err(|error| anyhow::anyhow!(safe_error_message(&error)))?
+                        .session_id
+                }
+                None => store.session_id().to_string(),
+            };
             let target = ipc::SessionRef::Id { id: session_id };
             let session_id = match resolve_available_local_session_ref(&state, &target) {
                 Ok(record) => record.session_id,
+                Err(_) if dev => store
+                    .create_session(crate::state::DEV_PERSONA, "", crate::state::USER_SESSION_KIND, None)
+                    .map_err(|error| anyhow::anyhow!(safe_error_message(&error)))?
+                    .session_id,
                 Err(_) => store.session_id().to_string(),
             };
             let _ = store.set_repl_session(&persona, &session_id);
@@ -2493,8 +2557,10 @@ async fn handle_ipc_connection(
             images,
             cwd,
             session_id,
+            origin_tty,
         } => {
-            handle_ipc_turn(&state, &mut stream, content, mode, images, cwd, session_id).await?;
+            handle_ipc_turn(&state, &mut stream, content, mode, images, cwd, session_id, origin_tty)
+                .await?;
         }
         IpcCommand::QueueTurnUpdate {
             run_id,
@@ -2558,10 +2624,9 @@ async fn handle_ipc_connection(
         IpcCommand::Cancel { run_id } => {
             let cancelled = {
                 let manager = state.manager.lock().unwrap();
-                manager
-                    .active_runs
-                    .get(&run_id)
-                    .map(RunInfo::request_cancel)
+                manager.active_runs.get(&run_id).map(|run| {
+                    run.request_cancel();
+                })
             };
             if cancelled.is_some() {
                 ipc::send(&mut stream, &IpcFrame::Ack).await?;
@@ -2632,18 +2697,67 @@ async fn handle_session_command(
     let store = &state.state_store;
     let persona = active_persona_scope(state);
     match command {
-        IpcCommand::ListSessions { include_archived } => {
-            let current = store.session_id();
-            let sessions = store
-                .list_local_sessions(&persona, include_archived)
+        IpcCommand::SetRequestLogging { enabled } => {
+            // 此刻可能还没构造过任何 LLM 客户端,目录未必已安装——就地
+            // 安装,免得 current_file 返回 None、监控端拿兜底路径扑空。
+            crate::llm::request_log::install_dir(state.paths.logs_dir());
+            crate::llm::request_log::set_enabled(enabled);
+            Ok(json!({
+                "enabled": enabled,
+                "file": crate::llm::request_log::current_file()
+                    .map(|path| path.display().to_string()),
+            }))
+        }
+        IpcCommand::ResetMemory { mode } => {
+            // dev 记忆挂保留人格名下,与 Agent 构造同一把 dev_scoped 钥匙;
+            // 生成号在 reset_all 里自增,进行中的回合据此识别陈旧句柄。
+            let config = state.manager.lock().unwrap().config.clone();
+            let config = if mode.as_deref() == Some("dev") {
+                config.dev_scoped()
+            } else {
+                config
+            };
+            let memory = crate::memory::MemoryStore::new(&config, &state.paths);
+            memory
+                .reset_all(false)
                 .map_err(|error| safe_error_message(&error))?;
+            Ok(json!({}))
+        }
+        IpcCommand::ListSessions { mode } => {
+            // dev 列表以 dev REPL 指针为"当前":全局指针指向普通会话,
+            // 用它高亮永远落空。"all" 是管理面(miyu session):普通+dev
+            // 合并按更新时间排,别的人格仍不可见。
+            let dev = mode.as_deref() == Some("dev");
+            let all = mode.as_deref() == Some("all");
+            let current = if dev {
+                store
+                    .repl_session(crate::state::DEV_PERSONA)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default()
+                    .into()
+            } else {
+                store.session_id()
+            };
+            let sessions = if all {
+                sessions_with_dev(store, &persona).map_err(|error| safe_error_message(&error))?
+            } else {
+                let scope = if dev {
+                    crate::state::DEV_PERSONA.to_string()
+                } else {
+                    persona.clone()
+                };
+                store
+                    .list_local_sessions(&scope)
+                    .map_err(|error| safe_error_message(&error))?
+            };
             let sessions: Vec<Value> = sessions
                 .iter()
                 .map(|overview| session_overview_json(overview, &current))
                 .collect();
             Ok(json!({ "current": &*current, "sessions": sessions }))
         }
-        IpcCommand::CreateSession { name, switch, kind } => {
+        IpcCommand::CreateSession { name, switch, kind, mode } => {
             // Whitelisted: `ask` is the only non-user kind a client may mint,
             // and it is deliberately unswitchable — subagent audit sessions and
             // anything else stay daemon-internal.
@@ -2657,8 +2771,14 @@ async fn handle_session_command(
             // No explicit name: leave it empty; the session is auto-named
             // from the first prompt when its first turn completes.
             let name = name.map(|name| name.trim().to_string()).unwrap_or_default();
+            // dev 会话建到保留人格名下,模式由 persona 推导(见 DEV_PERSONA)。
+            let session_persona = if mode.as_deref() == Some("dev") {
+                crate::state::DEV_PERSONA
+            } else {
+                persona.as_str()
+            };
             let record = store
-                .create_session(&persona, &name, kind, None)
+                .create_session(session_persona, &name, kind, None)
                 .map_err(|error| safe_error_message(&error))?;
             if kind == crate::state::USER_SESSION_KIND {
                 state.events.publish(
@@ -2671,25 +2791,141 @@ async fn handle_session_command(
             }
             Ok(json!({ "session": session_record_json(&record) }))
         }
+        IpcCommand::ToolCall {
+            session,
+            name,
+            arguments,
+            origin,
+            depth,
+        } => {
+            if depth >= crate::tools::workspace::MAX_BRIDGE_DEPTH {
+                return Err(format!(
+                    "tool bridge recursion limit reached (depth {depth})"
+                ));
+            }
+            let session_id = match session {
+                Some(session) => {
+                    resolve_local_session_ref(state, &ipc::SessionRef::Id { id: session })?
+                        .session_id
+                }
+                None => store.session_id().to_string(),
+            };
+            let record = store
+                .session_record(&session_id)
+                .map_err(|error| safe_error_message(&error))?
+                .ok_or_else(|| "session not found".to_string())?;
+            let mode = turn_mode_for_session(store, &session_id, AgentMode::Normal);
+            // 与回合同源的 registry(guard/超时齐备);会话工作区与来源
+            // 一并作用域化,内层工具看到的世界和回合内一致。
+            let config = { state.manager.lock().unwrap().config.clone() };
+            let registry = crate::cli::build_tool_registry(&config, &state.paths, mode, false)
+                .map_err(|error| safe_error_message(&error))?;
+            if !registry.contains(&name) {
+                // 桥专属报错:dev 实测里裸 "unknown tool" 让脚本作者盲试了
+                // 一轮,这里把近似建议和"查目录"的路标一并给出。
+                return Err(format!(
+                    "tool error: {:#}. {}",
+                    registry.unknown_tool_error(&name),
+                    t(
+                        "run `miyu tool-call --list` to see tools callable in this session",
+                        "用 `miyu tool-call --list` 查看本会话可调用的工具"
+                    )
+                ));
+            }
+            let turn_origin: crate::tools::workspace::TurnOrigin = origin
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok())
+                .unwrap_or(crate::tools::workspace::TurnOrigin::Human);
+            let workspace = record
+                .workspace
+                .clone()
+                .map(std::path::PathBuf::from)
+                .filter(|path| path.is_dir())
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+            let session_arc: Arc<str> = session_id.clone().into();
+            let output = crate::tools::workspace::with_workspace(
+                workspace,
+                crate::tools::workspace::with_session(
+                    session_arc,
+                    crate::tools::workspace::with_turn_origin(
+                        turn_origin,
+                        crate::tools::workspace::with_bridge_depth(depth + 1, async {
+                            registry.call(&name, &arguments).await
+                        }),
+                    ),
+                ),
+            )
+            .await
+            .map_err(|error| format!("tool error: {error:#}"))?;
+            Ok(json!({ "output": output }))
+        }
+        IpcCommand::ToolCatalog { session, name } => {
+            // 与 ToolCall 同一条解析链(会话→模式→registry):`--list` 列出的
+            // 就是本会话真能调的集合,`--describe` 查的合同也同源。此前
+            // 客户端本地建表(按 MIYU_TURN_MODE 环境变量,run_command 并不
+            // 注入它),dev 会话里 --list 展示的是普通人格全量目录,实测
+            // 逐个调用全报 unknown tool。
+            let session_id = match session {
+                Some(session) => {
+                    resolve_local_session_ref(state, &ipc::SessionRef::Id { id: session })?
+                        .session_id
+                }
+                None => store.session_id().to_string(),
+            };
+            let mode = turn_mode_for_session(store, &session_id, AgentMode::Normal);
+            let config = { state.manager.lock().unwrap().config.clone() };
+            let registry = crate::cli::build_tool_registry(&config, &state.paths, mode, false)
+                .map_err(|error| safe_error_message(&error))?;
+            let mode_label = match mode {
+                AgentMode::Dev => "dev",
+                AgentMode::Normal => "normal",
+            };
+            match name {
+                Some(name) => {
+                    let Some(spec) = registry.get(&name) else {
+                        return Err(format!("{:#}", registry.unknown_tool_error(&name)));
+                    };
+                    Ok(json!({
+                        "mode": mode_label,
+                        "tool": {
+                            "name": spec.name,
+                            "description": spec.description,
+                            "parameters": spec.parameters,
+                        },
+                    }))
+                }
+                None => {
+                    let mut names = registry.tool_names();
+                    names.sort();
+                    let tools = names
+                        .iter()
+                        .map(|name| {
+                            json!({
+                                "name": name,
+                                "display_name": registry.display_name(name),
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    Ok(json!({ "mode": mode_label, "tools": tools }))
+                }
+            }
+        }
         IpcCommand::SetReplSession { target } => {
             let record = resolve_available_local_session_ref(state, &target)?;
             store
-                .set_repl_session(&persona, &record.session_id)
+                .set_repl_session(&record.persona, &record.session_id)
                 .map_err(|error| safe_error_message(&error))?;
-            Ok(json!({ "session": session_record_json(&record) }))
-        }
-        IpcCommand::SwitchSession { target } => {
-            let record = resolve_local_session_ref(state, &target)?;
-            if record.archived {
-                store
-                    .set_session_archived(&record.session_id, false)
-                    .map_err(|error| safe_error_message(&error))?;
-            }
-            switch_session_via_actor(state, record.session_id.clone()).await?;
             Ok(json!({ "session": session_record_json(&record) }))
         }
         IpcCommand::RenameSession { target, name } => {
             let record = resolve_local_session_ref(state, &target)?;
+            if record.session_id == crate::state::DEFAULT_SESSION_ID {
+                return Err(t(
+                    "the terminal-integration session cannot be renamed",
+                    "终端集成会话不可重命名",
+                )
+                .to_string());
+            }
             let name = name.trim();
             if name.is_empty() {
                 return Err(t("session name cannot be empty", "会话名称不能为空").to_string());
@@ -2703,37 +2939,18 @@ async fn handle_session_command(
             );
             Ok(json!({}))
         }
-        IpcCommand::ArchiveSession { target, archived } => {
-            let record = resolve_local_session_ref(state, &target)?;
-            if archived
-                && state
-                    .manager
-                    .lock()
-                    .unwrap()
-                    .session_has_runs(&record.session_id)
-            {
-                return Err(t(
-                    "the session has a reply in progress",
-                    "该会话有回复正在进行",
-                )
-                .to_string());
-            }
-            if archived && &*store.session_id() == record.session_id.as_str() {
-                let fallback = fallback_session_id(state, &record.session_id)?;
-                switch_session_via_actor(state, fallback).await?;
-            }
-            store
-                .set_session_archived(&record.session_id, archived)
-                .map_err(|error| safe_error_message(&error))?;
-            state.events.publish(
-                "session.archived",
-                json!({ "session_id": record.session_id, "archived": archived }),
-            );
-            Ok(json!({}))
-        }
         IpcCommand::DeleteSession { target } => {
             // Accepts `ask` too: a one-shot turn deletes its own session here.
             let record = resolve_local_session_ref_with_kinds(state, &target, TURN_TARGET_KINDS)?;
+            // 终端集成会话是 CLI/shellhook 的固定入口,永远只有这一个;
+            // 清空用 /reset,删除免谈(验收:WebUI 不许改默认会话)。
+            if record.session_id == crate::state::DEFAULT_SESSION_ID {
+                return Err(t(
+                    "the terminal-integration session cannot be deleted",
+                    "终端集成会话不可删除",
+                )
+                .to_string());
+            }
             reserve_admin_for_session(&state.manager, &record.session_id)
                 .map_err(|error| error.message)?;
             if &*store.session_id() == record.session_id.as_str() {
@@ -2842,10 +3059,13 @@ fn require_local_web_session(
         .is_platform_session(session_id)
         .map_err(ApiError::internal)?;
     match record {
+        // dev 会话(保留人格)对 WebUI 可见:侧栏分组列它,打开/改名/删除
+        // 也得放行,否则点进去 404「会话不存在」(验收三轮)。
         Some(record)
             if !is_platform
                 && record.kind == "user"
-                && record.persona == active_persona_scope(state) =>
+                && (record.persona == active_persona_scope(state)
+                    || record.persona == crate::state::DEV_PERSONA) =>
         {
             Ok(record)
         }
@@ -2853,24 +3073,16 @@ fn require_local_web_session(
     }
 }
 
-#[derive(Deserialize)]
-struct SessionsQuery {
-    #[serde(default)]
-    include_archived: bool,
-}
-
 async fn list_sessions_http(
     State(state): State<DaemonState>,
     headers: HeaderMap,
-    Query(query): Query<SessionsQuery>,
 ) -> std::result::Result<Response, ApiError> {
     require_auth(&headers, &state)?;
     let current = state.state_store.session_id();
     let persona = active_persona_scope(&state);
-    let sessions = state
-        .state_store
-        .list_local_sessions(&persona, query.include_archived)
-        .map_err(ApiError::internal)?;
+    // 侧栏按模式分组:普通+dev 一起下发,mode 字段区分(问题七)。
+    let sessions =
+        sessions_with_dev(&state.state_store, &persona).map_err(ApiError::internal)?;
     let sessions = sessions
         .iter()
         .map(|overview| session_overview_json(overview, &current))
@@ -2885,6 +3097,9 @@ struct CreateSessionRequest {
     name: Option<String>,
     #[serde(default)]
     switch: bool,
+    /// "dev" 建 Build 模式会话(保留人格 dev);缺省=当前人格普通会话。
+    #[serde(default)]
+    mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2904,6 +3119,7 @@ async fn create_session_http(
             name: request.name,
             switch: request.switch,
             kind: None,
+            mode: request.mode,
         },
     )
     .await
@@ -2911,30 +3127,10 @@ async fn create_session_http(
     Ok((StatusCode::CREATED, Json(data)).into_response())
 }
 
-async fn activate_session_http(
-    State(state): State<DaemonState>,
-    headers: HeaderMap,
-    Path(session_id): Path<String>,
-) -> std::result::Result<Response, ApiError> {
-    require_mutation(&headers, &state)?;
-    require_local_web_session(&state, &session_id)?;
-    let data = handle_session_command(
-        &state,
-        IpcCommand::SwitchSession {
-            target: ipc::SessionRef::Id { id: session_id },
-        },
-    )
-    .await
-    .map_err(session_api_error)?;
-    Ok(Json(data).into_response())
-}
-
 #[derive(Deserialize)]
 struct UpdateSessionRequest {
     #[serde(default)]
     name: Option<String>,
-    #[serde(default)]
-    archived: Option<bool>,
     /// `Some("")` unbinds the workspace; a non-empty value binds it.
     #[serde(default)]
     workspace: Option<String>,
@@ -2957,17 +3153,6 @@ async fn update_session_http(
             IpcCommand::RenameSession {
                 target: target(),
                 name,
-            },
-        )
-        .await
-        .map_err(session_api_error)?;
-    }
-    if let Some(archived) = request.archived {
-        handle_session_command(
-            &state,
-            IpcCommand::ArchiveSession {
-                target: target(),
-                archived,
             },
         )
         .await
@@ -3130,7 +3315,13 @@ fn resolve_local_session_ref_with_kinds(
     let is_platform = store
         .is_platform_session(&record.session_id)
         .map_err(|error| safe_error_message(&error))?;
-    if record.persona != persona || !kinds.contains(&record.kind.as_str()) || is_platform {
+    // 人格过滤只约束按名寻址与当前指针:显式 id 是不可猜测的能力凭据,
+    // 且 dev 会话(保留人格 "dev")必须能被 dev REPL 按 id 操作——否则
+    // 起回合/切换/指针全部 404(验收问题二:dev 首启即被踢回默认会话)。
+    let persona_ok = record.persona == persona
+        || record.persona == crate::state::DEV_PERSONA
+        || matches!(target, ipc::SessionRef::Id { .. });
+    if !persona_ok || !kinds.contains(&record.kind.as_str()) || is_platform {
         return Err(t("session not found", "找不到该会话").to_string());
     }
     Ok(record)
@@ -3140,11 +3331,7 @@ fn resolve_available_local_session_ref(
     state: &DaemonState,
     target: &ipc::SessionRef,
 ) -> std::result::Result<crate::state::SessionRecord, String> {
-    let record = resolve_local_session_ref(state, target)?;
-    if record.archived {
-        return Err(t("session is archived", "会话已归档").to_string());
-    }
-    Ok(record)
+    resolve_local_session_ref(state, target)
 }
 
 /// Turn targets and deletions additionally accept one-shot `ask` sessions.
@@ -3153,13 +3340,13 @@ const TURN_TARGET_KINDS: &[&str] = &[
     crate::state::ASK_SESSION_KIND,
 ];
 
-/// Most recently updated other unarchived user session, or a fresh default
-/// session when none is left.
+/// Most recently updated other user session, or a fresh default session when
+/// none is left.
 fn fallback_session_id(state: &DaemonState, exclude: &str) -> std::result::Result<String, String> {
     let persona = active_persona_scope(state);
     let sessions = state
         .state_store
-        .list_local_sessions(&persona, false)
+        .list_local_sessions(&persona)
         .map_err(|error| safe_error_message(&error))?;
     if let Some(overview) = sessions
         .iter()
@@ -3169,7 +3356,7 @@ fn fallback_session_id(state: &DaemonState, exclude: &str) -> std::result::Resul
     }
     let record = state
         .state_store
-        .create_session(&persona, t("Default session", "默认会话"), "user", None)
+        .create_session(&persona, t("Terminal session", "终端集成会话"), "user", None)
         .map_err(|error| safe_error_message(&error))?;
     state.events.publish(
         "session.created",
@@ -3229,15 +3416,30 @@ async fn switch_session_via_actor_reserved(
     }
 }
 
+/// 普通人格 + dev 保留人格的本地会话合并,按更新时间排。WebUI 侧栏与
+/// `miyu session` 管理面共用:mode 字段(session_record_json)区分分组。
+fn sessions_with_dev(
+    store: &StateStore,
+    persona: &str,
+) -> anyhow::Result<Vec<crate::state::SessionOverview>> {
+    let mut rows = store.list_local_sessions(persona)?;
+    if persona != crate::state::DEV_PERSONA {
+        rows.extend(store.list_local_sessions(crate::state::DEV_PERSONA)?);
+    }
+    rows.sort_by(|a, b| b.record.updated_at.cmp(&a.record.updated_at));
+    Ok(rows)
+}
+
 fn session_record_json(record: &crate::state::SessionRecord) -> Value {
     json!({
         "session_id": record.session_id,
         "name": record.name,
         "kind": record.kind,
         "workspace": record.workspace,
-        "archived": record.archived,
         "created_at": record.created_at,
         "updated_at": record.updated_at,
+        // 会话模式由人格推导(创建时定死),列表/选择器靠它标注类型。
+        "mode": if record.persona == crate::state::DEV_PERSONA { "dev" } else { "normal" },
     })
 }
 
@@ -3252,6 +3454,24 @@ fn session_overview_json(overview: &crate::state::SessionOverview, current: &str
 /// Resolves an optional turn-target session id: validates existence and that
 /// it is a user or one-shot session; `None` falls back to the global current
 /// session.
+/// 会话模式创建时定死:dev 人格(DEV_PERSONA)会话永远 Dev,其余永远
+/// Normal——客户端传什么都不构成中途切换路径。
+fn turn_mode_for_session(
+    store: &StateStore,
+    session_id: &str,
+    requested: AgentMode,
+) -> AgentMode {
+    match store.session_record(session_id) {
+        Ok(Some(record)) if record.persona == crate::state::DEV_PERSONA => AgentMode::Dev,
+        _ => {
+            if requested == AgentMode::Dev {
+                tracing::debug!(%session_id, "client asked for dev mode on a non-dev session; forcing normal");
+            }
+            AgentMode::Normal
+        }
+    }
+}
+
 fn resolve_turn_session(
     state: &DaemonState,
     session_id: Option<String>,
@@ -3264,9 +3484,6 @@ fn resolve_turn_session(
                 &ipc::SessionRef::Id { id: session_id },
                 TURN_TARGET_KINDS,
             )?;
-            if record.archived {
-                return Err(t("session is archived", "会话已归档").to_string());
-            }
             Ok(record.session_id.into())
         }
     }
@@ -3281,6 +3498,7 @@ async fn handle_ipc_turn(
     images: Vec<Option<ImageAttachment>>,
     cwd: Option<std::path::PathBuf>,
     session_id: Option<String>,
+    origin_tty: Option<crate::ipc::OriginTty>,
 ) -> Result<()> {
     let content = match validate_content(content) {
         Ok(content) => content,
@@ -3302,11 +3520,14 @@ async fn handle_ipc_turn(
     let run_id = random_id("run", 18);
     let session_id = match resolve_turn_session(state, session_id) {
         Ok(session_id) => session_id,
+        // (mode 在会话解析后按会话记录强制,见下。)
         Err(message) => {
             ipc::send(stream, &IpcFrame::error(message)).await?;
             return Ok(());
         }
     };
+    // 会话模式创建时定死:以会话记录为准强制,客户端传参只是遗留字段。
+    let mode = turn_mode_for_session(&state.state_store, &session_id, mode);
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
     let busy = {
         let mut manager = state.manager.lock().unwrap();
@@ -3326,6 +3547,7 @@ async fn handle_ipc_turn(
                     platform_followup: None,
                     operation: RunOperation::Create,
                     job_wake: false,
+                    turn_origin: crate::tools::workspace::TurnOrigin::Human,
                 job_wake_label: None,
                 },
             );
@@ -3354,9 +3576,11 @@ async fn handle_ipc_turn(
             mode,
             images,
             cwd,
+            origin_tty: origin_tty.map(Box::new),
             audience: PromptAudience::Owner,
             profile: None,
             cancel: cancel_rx,
+            turn_origin: Box::new(crate::tools::workspace::TurnOrigin::Human),
         })
         .is_err()
     {
@@ -3565,10 +3789,6 @@ fn router(state: DaemonState) -> Router {
         .route(
             "/api/sessions/{session_id}",
             patch(update_session_http).delete(delete_session_http),
-        )
-        .route(
-            "/api/sessions/{session_id}/activate",
-            post(activate_session_http),
         )
         .route("/api/sessions/{session_id}/turns", get(session_turns_http))
         .route(
@@ -4252,9 +4472,7 @@ async fn bootstrap(
     let external_queue_available = external_target
         .is_some_and(|target| target.queue_session_id.is_some() && target.owner_pid.is_some());
     let current_session_id = state.state_store.session_id().to_string();
-    let sessions = state
-        .state_store
-        .list_local_sessions(&config.active_persona_scope(), false)
+    let sessions = sessions_with_dev(&state.state_store, &config.active_persona_scope())
         .map_err(ApiError::internal)?
         .iter()
         .map(|overview| session_overview_json(overview, &current_session_id))
@@ -5063,7 +5281,7 @@ async fn redo_turn(
 ) -> std::result::Result<Response, ApiError> {
     require_mutation(&headers, &state)?;
     require_local_web_session(&state, &session_id)?;
-    let mode = parse_mode(&request.mode)?;
+    let mode = parse_mode(request.mode.as_deref().unwrap_or("normal"))?;
     let store = state.state_store.pinned_for_turn(&session_id);
     let candidate = store
         .redo_candidate()
@@ -5161,6 +5379,7 @@ async fn redo_turn(
                     input_id: candidate.input_id.clone(),
                 },
                 job_wake: false,
+                turn_origin: crate::tools::workspace::TurnOrigin::Human,
                 job_wake_label: None,
             },
         );
@@ -5217,7 +5436,7 @@ async fn create_turn(
     require_mutation(&headers, &state)?;
     let attachment_ids = request.attachment_ids;
     let display_content = validate_message_content(request.content, !attachment_ids.is_empty())?;
-    let mode = parse_mode(&request.mode)?;
+    let mode = parse_mode(request.mode.as_deref().unwrap_or("normal"))?;
     let session_id = resolve_turn_session(&state, request.session_id).map_err(session_api_error)?;
     state
         .state_store
@@ -5297,6 +5516,7 @@ async fn create_turn(
                 platform_followup: None,
                 operation: RunOperation::Create,
                 job_wake: false,
+                turn_origin: crate::tools::workspace::TurnOrigin::Human,
                 job_wake_label: None,
             },
         );
@@ -5316,9 +5536,11 @@ async fn create_turn(
             mode,
             images: prepared.images,
             cwd: None,
+            origin_tty: None,
             audience: PromptAudience::External,
             profile: None,
             cancel: cancel_rx,
+            turn_origin: Box::new(crate::tools::workspace::TurnOrigin::Human),
         })
         .is_err()
     {
@@ -5442,9 +5664,11 @@ async fn usage_stats_web(
 ) -> std::result::Result<Response, ApiError> {
     require_auth(&headers, &state)?;
     let range = crate::state::UsageRange::parse(query.range.as_deref().unwrap_or("1d"));
+    let config = state.manager.lock().unwrap().config.clone();
+    crate::models_cache::ensure_active_metadata(&state.paths, &config);
     let stats = state
         .state_store
-        .usage_stats(range)
+        .usage_stats(range, Some(&config))
         .map_err(ApiError::internal)?;
     Ok(Json(json!({ "ok": true, "stats": stats })).into_response())
 }
@@ -5466,9 +5690,11 @@ async fn usage_details_web(
 ) -> std::result::Result<Response, ApiError> {
     require_auth(&headers, &state)?;
     let limit = query.limit.unwrap_or(50).clamp(1, 500);
+    let config = state.manager.lock().unwrap().config.clone();
+    crate::models_cache::ensure_active_metadata(&state.paths, &config);
     let records = state
         .state_store
-        .usage_details(limit, query.src.as_deref(), query.model.as_deref())
+        .usage_details(limit, query.src.as_deref(), query.model.as_deref(), Some(&config))
         .map_err(ApiError::internal)?;
     Ok(Json(json!({ "ok": true, "records": records })).into_response())
 }
@@ -5898,13 +6124,18 @@ async fn actor_loop(
                 mode,
                 images,
                 cwd,
+                origin_tty,
                 audience,
                 profile,
                 cancel,
+                turn_origin,
             } => {
                 // Stale-turn recovery is owner-pid safe. Prompt maintenance is
                 // performed after per-turn platform overrides are applied.
                 let _ = state_store.recover_stale_turns();
+                // 会话模式定死的最终防线:无论谁构造的 StartTurn(ipc/唤醒/
+                // goal 驱动器),都按会话记录重derive 一次。
+                let mode = turn_mode_for_session(&state_store, &session_id, mode);
                 let store = state_store.pinned_for_turn(&session_id);
                 // Per-turn workspace: a workspace bound to the session wins,
                 // otherwise the calling client's cwd, otherwise the daemon
@@ -5918,6 +6149,12 @@ async fn actor_loop(
                     .or_else(|| cwd.filter(|path| path.is_dir()))
                     .or_else(|| std::env::current_dir().ok())
                     .unwrap_or_else(|| std::path::PathBuf::from("."));
+                // 平台回合的真实发起者。后台任务 spawn 时从 task-local 捕获,
+                // 完成唤醒凭它还原身份(issue #29)。
+                let platform_sender = profile
+                    .as_ref()
+                    .and_then(|profile| profile.platform.as_ref())
+                    .map(|platform| platform.sender_id.clone());
                 let task = run_turn_task(
                     config.clone(),
                     paths.clone(),
@@ -5944,7 +6181,16 @@ async fn actor_loop(
                 );
                 tokio::task::spawn_local(crate::tools::workspace::with_workspace(
                     workspace,
-                    crate::tools::workspace::with_session(session_id, task),
+                    crate::tools::workspace::with_session(
+                        session_id,
+                        crate::tools::workspace::with_origin_tty(
+                            origin_tty.as_deref().cloned(),
+                            crate::tools::workspace::with_platform_sender(
+                                platform_sender,
+                                crate::tools::workspace::with_turn_origin(*turn_origin, task),
+                            ),
+                        ),
+                    ),
                 ));
             }
             ActorCommand::RedoTurn {
@@ -6421,10 +6667,10 @@ async fn run_turn_task(
         } else {
             resources.normal_tools.clone()
         };
-        let mut chat_tools = if restricted {
+        let mut dev_tools = if restricted {
             resources.restricted_tools.clone()
         } else {
-            resources.chat_tools.clone()
+            resources.dev_tools.clone()
         };
         if !restricted {
             if let Some(context) = platform_context {
@@ -6445,11 +6691,11 @@ async fn run_turn_task(
             .is_some_and(|profile| !profile.memory_write_enabled)
         {
             normal_tools.unregister("remember_fact");
-            chat_tools.unregister("remember_fact");
+            dev_tools.unregister("remember_fact");
         }
         if platform_context.is_none() && config.tools.enabled {
             tools::register_ask_question(&mut normal_tools);
-            tools::register_ask_question(&mut chat_tools);
+            tools::register_ask_question(&mut dev_tools);
         }
         if config.tools.enabled {
             if let Some(context) = profile
@@ -6457,12 +6703,12 @@ async fn run_turn_task(
                 .and_then(|profile| profile.platform.clone())
             {
                 platforms::register_platform_tools(&mut normal_tools, context.clone());
-                platforms::register_platform_tools(&mut chat_tools, context);
+                platforms::register_platform_tools(&mut dev_tools, context);
             }
         }
         let active_tools = match mode {
             AgentMode::Normal => normal_tools.clone(),
-            AgentMode::Chat => chat_tools.clone(),
+            AgentMode::Dev => dev_tools.clone(),
         };
         let mut agent = Agent::new_for_audience(
             config.clone(),
@@ -6553,14 +6799,15 @@ async fn run_turn_task(
                 });
             }
             if let Some(context) = profile.platform.clone() {
-                agent.set_platform_context_images(context, profile.context_images.clone());
+                agent.set_platform_context_images(context.clone(), profile.context_images.clone());
+                agent.set_platform_context_files(context, profile.context_files.to_vec());
             }
         }
         if let Some(organizer) = memory_organizer.clone() {
             agent.set_memory_organizer(organizer);
         }
         agent.prepare_for_turn()?;
-        let mut control = AgentTurnControl::new(mode, normal_tools, chat_tools);
+        let mut control = AgentTurnControl::new(mode, normal_tools, dev_tools);
         if let Some(signal) = manager
             .lock()
             .unwrap()
@@ -7107,7 +7354,7 @@ fn session_for_persona(
         }
     }
     if let Some(overview) = state_store
-        .list_local_sessions(persona, false)?
+        .list_local_sessions(persona)?
         .into_iter()
         .next()
     {
@@ -7511,6 +7758,11 @@ fn clear_actor_session_content(
 /// followup when the session is mid-turn); platform-bound sessions get a
 /// plain-text broadcast into the conversation — a self-initiated platform
 /// turn would need synthetic sender semantics the plugins aren't built for.
+/// goal 续轮驱动器(任务#10,dsh goal-round-driver 的 daemon 化)。
+/// 订阅 run 生命周期事件,在会话空闲检查点推进 armed 的 active 目标:
+/// - run.completed → 尝试认领下一轮(四道栅栏见 maybe_continue_goal)
+/// - run.failed → disarm(异常不自动重试,dsh 同款;等人 resume)
+/// 取消→pause 的语义在 ipc Cancel 处理器里(那里能拿到被取消 run 的来源)。
 fn install_background_job_hook(state: &DaemonState) {
     let started_state = state.clone();
     tools::jobs::set_started_hook(Arc::new(move |overview| {
@@ -7537,6 +7789,13 @@ async fn handle_job_completion(state: DaemonState, completion: tools::jobs::JobC
             "runtime_seconds": completion.runtime_seconds,
         }),
     );
+    tracing::info!(
+        job_id = %completion.job_id,
+        wake_requested = completion.wake_requested,
+        has_session = completion.session_id.is_some(),
+        has_origin_tty = completion.origin_tty.is_some(),
+        "background job finished"
+    );
     if !completion.wake_requested {
         // The model stopped this command itself; clean the strips quietly.
         tools::jobs::acknowledge(&completion.job_id);
@@ -7546,7 +7805,7 @@ async fn handle_job_completion(state: DaemonState, completion: tools::jobs::JobC
         return;
     }
     let command_short = completion.command.chars().take(120).collect::<String>();
-    let mut pending_wake_run: Option<String> = None;
+    let mut pending_wake_run: Option<JobWakeRun> = None;
     if let Some(session_id) = completion.session_id.clone() {
         match state.state_store.is_platform_session(&session_id) {
             Ok(true) => {
@@ -7568,7 +7827,17 @@ async fn handle_job_completion(state: DaemonState, completion: tools::jobs::JobC
     // Keep the finished job visible in UI strips until its wake turn is done
     // (the report is what replaces the strip line); everything else clears
     // right away.
-    if let Some(run_id) = pending_wake_run {
+    if let Some(wake) = pending_wake_run {
+        // 流式回写与等待循环并行:回合一开跑就把思考/工具/正文追加进触发
+        // 终端,acknowledge 只关心回合何时结束。
+        if completion.origin_tty.is_some() {
+            let stream_state = state.clone();
+            let stream_completion = completion.clone();
+            let stream_wake = wake.clone();
+            tokio::spawn(async move {
+                stream_job_wake_to_origin_tty(stream_state, stream_completion, stream_wake).await;
+            });
+        }
         let deadline = std::time::Instant::now() + Duration::from_secs(600);
         while std::time::Instant::now() < deadline {
             let still_running = state
@@ -7576,7 +7845,7 @@ async fn handle_job_completion(state: DaemonState, completion: tools::jobs::JobC
                 .lock()
                 .unwrap()
                 .active_runs
-                .contains_key(&run_id);
+                .contains_key(&wake.run_id);
             if !still_running {
                 break;
             }
@@ -7589,12 +7858,363 @@ async fn handle_job_completion(state: DaemonState, completion: tools::jobs::JobC
         .publish("job.acknowledged", json!({ "job_id": completion.job_id }));
 }
 
+/// 本地会话唤醒回合的标识:run id + 事件订阅起点(在回合入队前取,保证
+/// 从 turn.started 起一帧不漏)。
+#[derive(Clone)]
+struct JobWakeRun {
+    run_id: String,
+    events_after: u64,
+}
+
+enum TtyWriteOp {
+    Write(String),
+    /// 正常收尾:flush 后给 shell 发 SIGWINCH 促使重绘提示符。
+    Finish,
+    /// 中途收笔(前台被占/超时):已写的留在屏上,不再动那个终端。
+    Abort,
+}
+
+/// 把唤醒回合流式渲染进当初触发 shellhook/单次 CLI 的终端:思考(暗色,按
+/// display.reasoning 配置)、工具行、正文逐行 Markdown。触发端进程早已退出,
+/// 由 daemon 直接写 tty 设备。三道闸全过才动笔:
+/// 1. `notifications.job_writeback_to_terminal` 开关(默认开);
+/// 2. 触发 shell 还活着且 stdin 仍指向记录的 tty——终端关闭、pid 复用都拦下;
+/// 3. shell 空闲在前台提示符(tpgid==pgrp)——正开着 vim/htop 时绝不能撕屏。
+/// 追加式输出,无光标控制;每次落笔前重查第 3 道闸,中途被占立即收笔并补
+/// 桌面通知。物理写入走专职线程,^S 流控卡死也只占一根线程。
+#[cfg_attr(not(unix), allow(unused_variables))]
+async fn stream_job_wake_to_origin_tty(
+    state: DaemonState,
+    completion: tools::jobs::JobCompletion,
+    wake: JobWakeRun,
+) {
+    let Some(origin) = completion.origin_tty.clone() else {
+        return;
+    };
+    let config = crate::config::AppConfig::load_or_default(&state.paths).unwrap_or_default();
+    if !config.notifications.job_writeback_to_terminal {
+        return;
+    }
+    let notify_fallback = |reason: &str| {
+        tracing::info!(job_id = %completion.job_id, reason, "job wake writeback fell back to a notification");
+        if config.notifications.enabled {
+            crate::notify::notify(
+                &format!("Miyu 后台任务跟进 · {}", completion.title),
+                "任务已完成,跟进回复在会话里(终端不在提示符,没有直接写入)。",
+            );
+        }
+    };
+    if !origin_shell_at_prompt(&origin) {
+        notify_fallback("shell not at prompt");
+        return;
+    }
+    #[cfg(unix)]
+    {
+    use std::os::unix::fs::OpenOptionsExt;
+    let tty = match std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NOCTTY)
+        .open(&origin.path)
+    {
+        Ok(tty) => tty,
+        Err(error) => {
+            tracing::debug!(job_id = %completion.job_id, %error, "origin tty open failed");
+            notify_fallback("tty open failed");
+            return;
+        }
+    };
+    tracing::info!(
+        job_id = %completion.job_id,
+        run_id = %wake.run_id,
+        tty = %origin.path.display(),
+        shell_pid = origin.shell_pid,
+        "streaming job wake reply to the originating terminal"
+    );
+
+    let (ops_tx, ops_rx) = std::sync::mpsc::channel::<TtyWriteOp>();
+    let shell_pid = origin.shell_pid;
+    let writer = std::thread::Builder::new()
+        .name("miyu-tty-writeback".to_string())
+        .spawn(move || origin_tty_writer(tty, shell_pid, ops_rx));
+    if writer.is_err() {
+        notify_fallback("writer thread spawn failed");
+        return;
+    }
+
+    let reasoning_mode =
+        crate::render::ReasoningDisplayMode::from_config(&config.display.reasoning);
+    // 落笔即有反馈:头部先行,正文随事件到达逐行追加。
+    let _ = ops_tx.send(TtyWriteOp::Write(format!(
+        "\r\n\x1b[1m✦ Miyu 后台任务跟进\x1b[0m \x1b[2m· {}\x1b[0m\r\n\r\n",
+        completion.title
+    )));
+
+    let mut subscription = state.events.subscribe_after(wake.events_after);
+    let deadline = std::time::Instant::now() + Duration::from_secs(900);
+    let mut reasoning_buf = String::new();
+    let mut content_buf = String::new();
+    let mut wrote_reasoning = false;
+    let mut reasoning_open = false;
+    let mut last_id = wake.events_after;
+    let mut aborted = false;
+    loop {
+        if std::time::Instant::now() > deadline {
+            aborted = true;
+            break;
+        }
+        let record = if let Some(record) = subscription.pending.pop_front() {
+            record
+        } else {
+            match tokio::time::timeout(Duration::from_secs(30), subscription.receiver.recv()).await
+            {
+                Ok(Ok(record)) => record,
+                Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
+                    subscription.pending = state.events.replay_after(last_id);
+                    continue;
+                }
+                Ok(Err(broadcast::error::RecvError::Closed)) => break,
+                Err(_) => {
+                    // 静默期顺手确认回合还活着,免得错过终态事件后干等。
+                    if !state
+                        .manager
+                        .lock()
+                        .unwrap()
+                        .active_runs
+                        .contains_key(&wake.run_id)
+                    {
+                        break;
+                    }
+                    continue;
+                }
+            }
+        };
+        last_id = record.id;
+        let Ok(data) = serde_json::from_str::<Value>(&record.data) else {
+            continue;
+        };
+        if data.get("run_id").and_then(Value::as_str) != Some(wake.run_id.as_str()) {
+            if !state
+                .manager
+                .lock()
+                .unwrap()
+                .active_runs
+                .contains_key(&wake.run_id)
+            {
+                break;
+            }
+            continue;
+        }
+
+        let mut chunk_out = String::new();
+        match record.kind.as_str() {
+            "reasoning.title" => {
+                if matches!(reasoning_mode, crate::render::ReasoningDisplayMode::Summary) {
+                    if let Some(title) = data.get("title").and_then(Value::as_str) {
+                        flush_line_buf(&mut reasoning_buf, WriteLineStyle::Reasoning, &mut chunk_out);
+                        push_rendered_line(&format!("∴ {title}"), WriteLineStyle::Reasoning, &mut chunk_out);
+                        wrote_reasoning = true;
+                        reasoning_open = true;
+                    }
+                }
+            }
+            "reasoning.delta" => {
+                if matches!(reasoning_mode, crate::render::ReasoningDisplayMode::Full) {
+                    if let Some(delta) = data.get("delta").and_then(Value::as_str) {
+                        reasoning_buf.push_str(delta);
+                        drain_line_buf(&mut reasoning_buf, WriteLineStyle::Reasoning, &mut chunk_out);
+                        wrote_reasoning = true;
+                        reasoning_open = true;
+                    }
+                }
+            }
+            "reasoning.part_end" | "reasoning.reset" => {
+                flush_line_buf(&mut reasoning_buf, WriteLineStyle::Reasoning, &mut chunk_out);
+            }
+            "tool.started" => {
+                flush_line_buf(&mut reasoning_buf, WriteLineStyle::Reasoning, &mut chunk_out);
+                if reasoning_open {
+                    chunk_out.push_str("\r\n");
+                    reasoning_open = false;
+                }
+                let name = data
+                    .get("display_name")
+                    .or_else(|| data.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("工具");
+                push_rendered_line(&format!("⚙ {name} …"), WriteLineStyle::Note, &mut chunk_out);
+            }
+            "tool.finished" => {
+                if data.get("ok").and_then(Value::as_bool) == Some(false) {
+                    let name = data
+                        .get("display_name")
+                        .or_else(|| data.get("name"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("工具");
+                    push_rendered_line(&format!("⚙ {name} 失败"), WriteLineStyle::Note, &mut chunk_out);
+                }
+            }
+            "assistant.delta" => {
+                flush_line_buf(&mut reasoning_buf, WriteLineStyle::Reasoning, &mut chunk_out);
+                if reasoning_open || (wrote_reasoning && content_buf.is_empty() && chunk_out.is_empty()) {
+                    chunk_out.push_str("\r\n");
+                    reasoning_open = false;
+                    wrote_reasoning = false;
+                }
+                if let Some(delta) = data.get("delta").and_then(Value::as_str) {
+                    content_buf.push_str(delta);
+                    drain_line_buf(&mut content_buf, WriteLineStyle::Content, &mut chunk_out);
+                }
+            }
+            "run.completed" | "run.failed" | "run.cancelled" => {
+                flush_line_buf(&mut reasoning_buf, WriteLineStyle::Reasoning, &mut chunk_out);
+                flush_line_buf(&mut content_buf, WriteLineStyle::Content, &mut chunk_out);
+                if record.kind != "run.completed" {
+                    push_rendered_line("(跟进中断)", WriteLineStyle::Note, &mut chunk_out);
+                }
+                // fish/zsh 收到 SIGWINCH 重绘提示符时,会从光标行向上清掉
+                // 自家提示符高度的行数再画(starship 双行提示符实测清 2 行)。
+                // 垫两行空白当牺牲品,免得清到正文末行。
+                chunk_out.push_str("\r\n\r\n\r\n");
+                let _ = ops_tx.send(TtyWriteOp::Write(chunk_out));
+                let _ = ops_tx.send(TtyWriteOp::Finish);
+                tracing::info!(
+                    job_id = %completion.job_id,
+                    outcome = %record.kind,
+                    "job wake reply streamed to the originating terminal"
+                );
+                return;
+            }
+            _ => {}
+        }
+        if !chunk_out.is_empty() {
+            // 落笔前重查前台闸:用户开了全屏程序就立即收笔,已写的留在屏上。
+            if !origin_shell_at_prompt(&origin) {
+                aborted = true;
+                break;
+            }
+            let _ = ops_tx.send(TtyWriteOp::Write(chunk_out));
+        }
+    }
+    let _ = ops_tx.send(TtyWriteOp::Abort);
+    if aborted {
+        notify_fallback("interrupted mid-stream");
+    }
+    }
+}
+
+/// 回写行的三种笔触:正文走 Markdown 渲染;思考用与 REPL 正常思考一致的
+/// 绿色(write_full_reasoning_chunk 同款 ANSI 10);注记(工具行/中断标记)暗色。
+#[derive(Clone, Copy, PartialEq)]
+enum WriteLineStyle {
+    Content,
+    Reasoning,
+    Note,
+}
+
+/// 行缓冲落盘:凑满整行才渲染。
+fn drain_line_buf(buf: &mut String, style: WriteLineStyle, out: &mut String) {
+    while let Some(index) = buf.find('\n') {
+        let line: String = buf.drain(..=index).collect();
+        let line = line.trim_end_matches(['\n', '\r']);
+        push_rendered_line(line, style, out);
+    }
+}
+
+fn flush_line_buf(buf: &mut String, style: WriteLineStyle, out: &mut String) {
+    if buf.trim().is_empty() {
+        buf.clear();
+        return;
+    }
+    let line = std::mem::take(buf);
+    push_rendered_line(line.trim_end(), style, out);
+}
+
+fn push_rendered_line(line: &str, style: WriteLineStyle, out: &mut String) {
+    match style {
+        WriteLineStyle::Content => out.push_str(&crate::render::render_markdown_line(line)),
+        WriteLineStyle::Reasoning => {
+            if !line.is_empty() {
+                out.push_str(&format!("\x1b[38;5;10m{line}\x1b[0m"));
+            }
+        }
+        WriteLineStyle::Note => {
+            if !line.is_empty() {
+                out.push_str(&format!("\x1b[2m{line}\x1b[0m"));
+            }
+        }
+    }
+    out.push_str("\r\n");
+}
+
+/// 三道闸的第 2、3 道:shell 活着、还挂在记录的 tty 上、且自己就是终端前台
+/// 进程组(即停在提示符,没在跑别的程序)。
+#[cfg(unix)]
+fn origin_shell_at_prompt(origin: &crate::ipc::OriginTty) -> bool {
+    let pid = origin.shell_pid;
+    let Ok(stdin_target) = std::fs::read_link(format!("/proc/{pid}/fd/0")) else {
+        return false;
+    };
+    if stdin_target != origin.path {
+        return false;
+    }
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    matches!(parse_stat_pgrp_tpgid(&stat), Some((pgrp, tpgid)) if pgrp == tpgid)
+}
+
+#[cfg(not(unix))]
+fn origin_shell_at_prompt(_origin: &crate::ipc::OriginTty) -> bool {
+    false
+}
+
+/// /proc/pid/stat 的 comm 字段可含空格和括号,必须从最后一个 \')\' 之后再按空白
+/// 切:其后第 3 个字段是 pgrp,第 6 个是 tpgid。
+#[cfg(unix)]
+fn parse_stat_pgrp_tpgid(stat: &str) -> Option<(i64, i64)> {
+    let (_, rest) = stat.rsplit_once(')')?;
+    let mut fields = rest.split_whitespace();
+    let pgrp = fields.nth(2)?.parse().ok()?;
+    let tpgid = fields.nth(2)?.parse().ok()?;
+    Some((pgrp, tpgid))
+}
+
+/// 专职写线程:tty 是同步阻塞设备(^S 流控可以永久卡住 write),隔离在自己
+/// 的线程里,卡死也只占一根线程,不拖累 daemon 的 async runtime。
+#[cfg(unix)]
+fn origin_tty_writer(
+    mut tty: std::fs::File,
+    shell_pid: u32,
+    ops: std::sync::mpsc::Receiver<TtyWriteOp>,
+) {
+    use std::io::Write;
+    for op in ops {
+        match op {
+            TtyWriteOp::Write(text) => {
+                if tty.write_all(text.as_bytes()).is_err() {
+                    return;
+                }
+            }
+            TtyWriteOp::Finish => {
+                let _ = tty.flush();
+                // 提示符被我们的输出推到半空,SIGWINCH 让 shell(fish/zsh/新
+                // bash 的 readline 都处理)原地重绘一行干净的提示符。
+                unsafe {
+                    libc::kill(shell_pid as i32, libc::SIGWINCH);
+                }
+                return;
+            }
+            TtyWriteOp::Abort => return,
+        }
+    }
+}
+
 fn wake_local_session_for_job(
     state: &DaemonState,
     session_id: Arc<str>,
     completion: &tools::jobs::JobCompletion,
     command_short: &str,
-) -> Option<String> {
+) -> Option<JobWakeRun> {
     let noun = if completion.is_subagent {
         "后台子代理"
     } else {
@@ -7647,6 +8267,12 @@ fn wake_local_session_for_job(
             })
     };
     if let Some((run_id, queue_target, audience)) = queued {
+        tracing::info!(
+            job_id = %completion.job_id,
+            run_id = %run_id,
+            has_queue_target = queue_target.is_some(),
+            "job wake joining the session's active run"
+        );
         let Some(target) = queue_target else {
             // Turn is still starting; report on the next completion poll
             // rather than racing its queue setup.
@@ -7695,6 +8321,7 @@ fn wake_local_session_for_job(
                 platform_followup: None,
                 operation: RunOperation::Create,
                 job_wake: true,
+                turn_origin: crate::tools::workspace::TurnOrigin::JobWake,
                 job_wake_label: Some(format!(
                     "{}完成 {} · {}",
                     if completion.is_subagent { "子代理" } else { "命令" },
@@ -7704,6 +8331,8 @@ fn wake_local_session_for_job(
             },
         );
     }
+    // 订阅起点在入队前取:回合的 turn.started 起所有事件都不漏给流式回写。
+    let events_after = state.events.latest_id();
     if state
         .actor_tx
         .send(ActorCommand::StartTurn {
@@ -7715,16 +8344,21 @@ fn wake_local_session_for_job(
             mode: AgentMode::Normal,
             images: Vec::new(),
             cwd: Some(completion.workspace.clone()),
+            origin_tty: completion.origin_tty.clone().map(Box::new),
             audience: PromptAudience::Owner,
             profile: None,
             cancel: cancel_rx,
+            turn_origin: Box::new(crate::tools::workspace::TurnOrigin::JobWake),
         })
         .is_err()
     {
         finish_run(&state.manager, &run_id, None);
         return None;
     }
-    Some(run_id)
+    Some(JobWakeRun {
+        run_id,
+        events_after,
+    })
 }
 
 async fn wake_platform_session_for_job(
@@ -7756,9 +8390,18 @@ async fn wake_platform_session_for_job(
     } else {
         "后台命令"
     };
+    // 与本地唤醒同款:结果直接附在唤醒里(子代理给完整结论,命令给日志尾部),
+    // 只给事实,不再指示模型「先去查一次再汇报」。
+    let result_block = tools::jobs::completion_result(
+        &completion.log_path,
+        completion.is_subagent,
+        completion.exit_code == Some(0),
+    )
+    .map(|(label, body)| format!("- {label}:\n{body}\n"))
+    .unwrap_or_default();
     let content = format!(
         "<background-job-report>{noun}「{}」已执行完毕：\n- job_id: {}\n- 任务: {}\n- 状态: {}（运行 {} 秒）\n\
-         请用 job_status 查看输出，并把结果自然地发到会话里。这是系统自动触发的跟进，不是用户消息。\
+         {result_block}这是系统自动触发的跟进，不是用户消息。\
          </background-job-report>",
         completion.title,
         completion.job_id,
@@ -7771,6 +8414,7 @@ async fn wake_platform_session_for_job(
         &binding.key.account_id,
         &binding.key.conversation_kind,
         &binding.key.conversation_id,
+        completion.platform_sender.as_deref(),
         content,
     )
     .await
@@ -9855,10 +10499,12 @@ fn parse_mode(mode: &str) -> std::result::Result<AgentMode, ApiError> {
         "normal" => Ok(AgentMode::Normal),
         // 历史会话可能存过 plan：模式已移除，回落到普通模式而不是让会话打不开。
         "plan" => Ok(AgentMode::Normal),
-        "chat" => Ok(AgentMode::Chat),
+        // 闲聊模式已删除:历史会话存过 "chat" 的回落普通模式,老会话照常打开。
+        "chat" => Ok(AgentMode::Normal),
+        "dev" => Ok(AgentMode::Dev),
         _ => Err(ApiError::new(
             StatusCode::BAD_REQUEST,
-            "mode must be normal or chat",
+            "mode must be normal or dev",
         )),
     }
 }
@@ -9866,7 +10512,7 @@ fn parse_mode(mode: &str) -> std::result::Result<AgentMode, ApiError> {
 fn mode_name(mode: AgentMode) -> &'static str {
     match mode {
         AgentMode::Normal => "normal",
-        AgentMode::Chat => "chat",
+        AgentMode::Dev => "dev",
     }
 }
 
@@ -9978,7 +10624,27 @@ pub(crate) fn safe_error_message(error: impl std::fmt::Display) -> String {
 }
 
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    // systemd stop / `kill` 发的是 SIGTERM：必须与 SIGINT 一样走优雅停机
+    // （落盘运行中回合、清理 IPC lease），否则默认动作直接杀进程。
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = sigterm.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 #[cfg(test)]
@@ -10170,6 +10836,7 @@ mod tests {
                 name: Some("一次性对话".to_string()),
                 switch: false,
                 kind: Some(crate::state::ASK_SESSION_KIND.to_string()),
+                mode: None,
             },
         )
         .await
@@ -10182,7 +10849,7 @@ mod tests {
         let listed = handle_session_command(
             &state,
             IpcCommand::ListSessions {
-                include_archived: true,
+                mode: None,
             },
         )
         .await
@@ -10193,19 +10860,12 @@ mod tests {
             .iter()
             .all(|session| session["session_id"] != ask_id.as_str()));
 
-        // A turn may target it; switching to it may not.
+        // A turn may target it. (SwitchSession 已随「终端集成会话不可改」
+        // 整体移除,外部再无切换全局指针的入口。)
         assert_eq!(
             resolve_turn_session(&state, Some(ask_id.clone())).unwrap(),
             ask_id.clone().into()
         );
-        assert!(handle_session_command(
-            &state,
-            IpcCommand::SwitchSession {
-                target: ipc::SessionRef::Id { id: ask_id.clone() },
-            },
-        )
-        .await
-        .is_err());
 
         // Other kinds are not mintable over IPC, and `ask` may not be created
         // as the session to switch into.
@@ -10215,6 +10875,7 @@ mod tests {
                 name: None,
                 switch: false,
                 kind: Some("subagent".to_string()),
+                mode: None,
             },
         )
         .await
@@ -10225,6 +10886,7 @@ mod tests {
                 name: None,
                 switch: true,
                 kind: Some(crate::state::ASK_SESSION_KIND.to_string()),
+                mode: None,
             },
         )
         .await
@@ -10331,7 +10993,7 @@ mod tests {
         let data = handle_session_command(
             &state,
             IpcCommand::ListSessions {
-                include_archived: false,
+                mode: None,
             },
         )
         .await
@@ -10369,6 +11031,174 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_bridge_executes_with_session_scope_and_depth_guard() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = DaemonState::for_test(test_paths(temp.path()), 8300).unwrap();
+        let persona = active_persona_scope(&state);
+        let session = state
+            .state_store
+            .create_session(&persona, "bridge", crate::state::USER_SESSION_KIND, None)
+            .unwrap()
+            .session_id;
+        // 会话作用域生效:get_goal 在指定会话身份下执行,拿到 goal:null。
+        let data = handle_session_command(
+            &state,
+            IpcCommand::ToolCall {
+                session: Some(session.clone()),
+                name: "job_status".to_string(),
+                arguments: "{}".to_string(),
+                origin: None,
+                depth: 0,
+            },
+        )
+        .await
+        .unwrap();
+        let output = data["output"].as_str().unwrap();
+        assert!(!output.is_empty(), "unexpected: {output}");
+        // 深度护栏。
+        let denied = handle_session_command(
+            &state,
+            IpcCommand::ToolCall {
+                session: Some(session),
+                name: "job_status".to_string(),
+                arguments: "{}".to_string(),
+                origin: None,
+                depth: crate::tools::workspace::MAX_BRIDGE_DEPTH,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(denied.contains("recursion limit"));
+    }
+
+    /// 目录↔调用同源(dev 实测回归):--list 走的 ToolCatalog 与 ToolCall
+    /// 同一条会话→模式→registry 解析链;dev 目录=dev registry,普通会话
+    /// 反之;未列出的名字调用报 unknown + `--list` 路标。
+    #[tokio::test]
+    async fn tool_catalog_matches_the_bridge_callable_set() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = DaemonState::for_test(test_paths(temp.path()), 8300).unwrap();
+        let data = handle_session_command(
+            &state,
+            IpcCommand::CreateSession {
+                name: Some("dev bridge".to_string()),
+                switch: false,
+                kind: None,
+                mode: Some("dev".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+        let dev_session = data["session"]["session_id"].as_str().unwrap().to_string();
+
+        let catalog = handle_session_command(
+            &state,
+            IpcCommand::ToolCatalog {
+                session: Some(dev_session.clone()),
+                name: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(catalog["mode"], "dev");
+        let names = catalog["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"run_command"), "{names:?}");
+        assert!(names.contains(&"apply_patch"), "{names:?}");
+        assert!(
+            !names.contains(&"trash_path"),
+            "dev 目录不应混入普通人格工具: {names:?}"
+        );
+
+        // 未列出的名字调用即报 unknown,且带 --list 路标。
+        let denied = handle_session_command(
+            &state,
+            IpcCommand::ToolCall {
+                session: Some(dev_session.clone()),
+                name: "trash_path".to_string(),
+                arguments: "{}".to_string(),
+                origin: None,
+                depth: 0,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(denied.contains("unknown tool"), "{denied}");
+        assert!(denied.contains("--list"), "{denied}");
+
+        // 普通会话(缺省=当前会话)目录反之。
+        let catalog = handle_session_command(
+            &state,
+            IpcCommand::ToolCatalog {
+                session: None,
+                name: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(catalog["mode"], "normal");
+        let names = catalog["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"trash_path"), "{names:?}");
+
+        // describe 同源返回完整合同。
+        let described = handle_session_command(
+            &state,
+            IpcCommand::ToolCatalog {
+                session: Some(dev_session),
+                name: Some("run_command".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(described["tool"]["name"], "run_command");
+        assert!(described["tool"]["parameters"]["properties"]["command"].is_object());
+    }
+
+    #[tokio::test]
+    async fn dev_sessions_live_under_the_reserved_persona_and_pin_dev_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = DaemonState::for_test(test_paths(temp.path()), 8300).unwrap();
+        // mode:"dev" 建到保留人格 dev 名下。
+        let data = handle_session_command(
+            &state,
+            IpcCommand::CreateSession {
+                name: Some("dev work".to_string()),
+                switch: false,
+                kind: None,
+                mode: Some("dev".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+        let session_id = data["session"]["session_id"].as_str().unwrap().to_string();
+        let record = state
+            .state_store
+            .session_record(&session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.persona, crate::state::DEV_PERSONA);
+        // 会话模式由记录强制:dev 会话怎么请求都是 Dev,普通会话反之。
+        assert_eq!(
+            turn_mode_for_session(&state.state_store, &session_id, AgentMode::Normal),
+            AgentMode::Dev
+        );
+        let normal_id = state.state_store.session_id().to_string();
+        assert_eq!(
+            turn_mode_for_session(&state.state_store, &normal_id, AgentMode::Dev),
+            AgentMode::Normal
+        );
+    }
+
+    #[tokio::test]
     async fn creating_a_repl_session_does_not_move_the_default_session() {
         let temp = tempfile::tempdir().unwrap();
         let state = DaemonState::for_test(test_paths(temp.path()), 8300).unwrap();
@@ -10385,6 +11215,7 @@ mod tests {
                 name: Some("repl local".to_string()),
                 switch: false,
                 kind: None,
+                mode: None,
             },
         )
         .await
@@ -10490,6 +11321,98 @@ mod tests {
             },
         )
         .is_err());
+    }
+
+    #[tokio::test]
+    async fn reset_memory_bumps_generation_in_the_requested_scope_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = DaemonState::for_test(test_paths(temp.path()), 8300).unwrap();
+        let config = state.manager.lock().unwrap().config.clone();
+        let dev_store = crate::memory::MemoryStore::new(&config.dev_scoped(), &state.paths);
+        dev_store.init().unwrap();
+        let normal_store = crate::memory::MemoryStore::new(&config, &state.paths);
+        normal_store.init().unwrap();
+        let (_, dev_gen_before) = dev_store.identity().unwrap();
+        let (_, normal_gen_before) = normal_store.identity().unwrap();
+
+        handle_session_command(
+            &state,
+            IpcCommand::ResetMemory {
+                mode: Some("dev".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+        // 只有 dev 命名空间的代数被抬升,普通人格纹丝不动。
+        let (_, dev_gen_after) = dev_store.identity().unwrap();
+        let (_, normal_gen_after) = normal_store.identity().unwrap();
+        assert_eq!(dev_gen_after, dev_gen_before + 1);
+        assert_eq!(normal_gen_after, normal_gen_before);
+    }
+
+    #[tokio::test]
+    async fn dev_sessions_resolve_by_id_and_list_under_dev_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = DaemonState::for_test(test_paths(temp.path()), 8300).unwrap();
+        let persona = active_persona_scope(&state);
+        state
+            .state_store
+            .adopt_sessions_for_persona(&persona)
+            .unwrap();
+        let dev = state
+            .state_store
+            .create_session(crate::state::DEV_PERSONA, "编译修复", "user", None)
+            .unwrap();
+
+        // 验收问题二:显式 id 寻址必须穿过人格过滤,否则 dev REPL 的
+        // 起回合/切换全部 404 并落回默认会话。
+        let resolved = resolve_local_session_ref(
+            &state,
+            &ipc::SessionRef::Id {
+                id: dev.session_id.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(resolved.session_id, dev.session_id);
+        assert_eq!(resolved.persona, crate::state::DEV_PERSONA);
+
+        // dev 会话不进普通人格的名字空间;dev 模式列表只见 dev 会话。
+        assert!(resolve_local_session_ref(
+            &state,
+            &ipc::SessionRef::Name {
+                name: "编译修复".to_string(),
+            },
+        )
+        .is_err());
+        let listed = handle_session_command(
+            &state,
+            IpcCommand::ListSessions {
+                mode: Some("dev".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+        let ids: Vec<&str> = listed["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|session| session["session_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec![dev.session_id.as_str()]);
+        let normal = handle_session_command(
+            &state,
+            IpcCommand::ListSessions {
+                mode: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(normal["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|session| session["session_id"].as_str() != Some(dev.session_id.as_str())));
     }
 
     #[test]
@@ -10655,6 +11578,7 @@ mod tests {
                 platform_followup: None,
                 operation: RunOperation::Create,
                 job_wake: false,
+                turn_origin: crate::tools::workspace::TurnOrigin::Human,
                 job_wake_label: None,
             },
         );
@@ -10836,6 +11760,7 @@ mod tests {
                 platform_followup: None,
                 operation: RunOperation::Create,
                 job_wake: false,
+                turn_origin: crate::tools::workspace::TurnOrigin::Human,
                 job_wake_label: None,
             },
         );
@@ -10867,6 +11792,7 @@ mod tests {
                 platform_followup: None,
                 operation: RunOperation::Create,
                 job_wake: false,
+                turn_origin: crate::tools::workspace::TurnOrigin::Human,
                 job_wake_label: None,
             },
         );
@@ -10933,7 +11859,11 @@ mod tests {
 
     #[test]
     fn actor_commands_keep_large_configuration_off_the_inline_queue_item() {
-        assert!(std::mem::size_of::<ActorCommand>() <= 512);
+        assert!(
+            std::mem::size_of::<ActorCommand>() <= 512,
+            "ActorCommand size = {} exceeds the 512-byte inline queue item guardrail",
+            std::mem::size_of::<ActorCommand>(),
+        );
     }
 
     #[test]
@@ -11064,6 +11994,7 @@ mod tests {
                     platform_followup: None,
                     operation: RunOperation::Create,
                     job_wake: false,
+                    turn_origin: crate::tools::workspace::TurnOrigin::Human,
                 job_wake_label: None,
                 },
             )]),
@@ -11136,6 +12067,7 @@ mod tests {
                     platform_followup: None,
                     operation: RunOperation::Create,
                     job_wake: false,
+                    turn_origin: crate::tools::workspace::TurnOrigin::Human,
                 job_wake_label: None,
                 },
             );
@@ -11178,26 +12110,14 @@ mod tests {
     }
 
     #[test]
-    fn dropped_ipc_turn_cancels_its_core_run() {
+    fn dropped_ipc_turn_detaches_without_cancelling_the_run() {
+        // dsh 语义:前端断线,回合继续——guard 掉落绝不发取消。
         let (manager, cancel_rx) = manager_with_run("run_test");
         drop(IpcRunGuard {
             manager,
             run_id: "run_test".to_string(),
             finished: false,
         });
-        assert!(*cancel_rx.borrow());
-    }
-
-    #[test]
-    fn completed_ipc_turn_does_not_send_a_late_cancel() {
-        let (manager, cancel_rx) = manager_with_run("run_test");
-        let mut guard = IpcRunGuard {
-            manager,
-            run_id: "run_test".to_string(),
-            finished: false,
-        };
-        guard.finish();
-        drop(guard);
         assert!(!*cancel_rx.borrow());
     }
 
@@ -11815,5 +12735,126 @@ mod tests {
                 .persona,
             "a"
         );
+    }
+
+    /// comm 字段可以合法地包含空格和右括号(如进程改名成 "a) b"),解析必须
+    /// 锚定在最后一个 ')' 之后,否则字段错位会把别的数字当成 tpgid。
+    #[cfg(unix)]
+    #[test]
+    fn stat_parse_survives_hostile_comm() {
+        // 正常 fish:pgrp==tpgid(停在提示符)
+        let stat = "1234 (fish) S 1000 1234 1234 34816 1234 4194304 1 0 0 0";
+        assert_eq!(parse_stat_pgrp_tpgid(stat), Some((1234, 1234)));
+        // comm 里嵌了 ") S 9 9 9 9":只有从最后一个 ')' 起切才对
+        let stat = "1234 (a) S 9 9 9 9 (b) R 1000 1234 1234 34816 5678 4194304";
+        assert_eq!(parse_stat_pgrp_tpgid(stat), Some((1234, 5678)));
+        // 前台在跑别的程序:pgrp != tpgid
+        let stat = "1234 (zsh) S 1000 1234 1234 34816 9999 4194304";
+        assert_eq!(parse_stat_pgrp_tpgid(stat), Some((1234, 9999)));
+        assert_eq!(parse_stat_pgrp_tpgid("no paren here"), None);
+    }
+
+    /// 真 PTY 全链路:python pty.fork 造出「会话首进程挂在 pts 上且是前台」的
+    /// 假 shell(exec sleep),验证 ① 在提示符判定为真 ② 写回的字节真从 master
+    /// 端读出来 ③ 进程死后判定翻假。覆盖 /proc 探测和 tty 写入两段真实内核路径。
+    #[cfg(unix)]
+    #[test]
+    fn origin_tty_gates_and_writeback_against_real_pty() {
+        let script = r#"
+import os, pty, signal, sys
+pid, master = pty.fork()
+if pid == 0:
+    os.execvp("sleep", ["sleep", "60"])
+# 子进程是会话首进程,ctty=slave,前台进程组=自己 —— 正是 shell 停在提示符的形状。
+# slave 路径从 /proc/child/fd/0 反查,不依赖 ptsname。
+slave = os.readlink(f"/proc/{pid}/fd/0")
+print(pid, slave, flush=True)
+sys.stdin.readline()  # 等 Rust 侧写完
+data = b""
+try:
+    while b"MIYU-E2E-END" not in data:
+        data += os.read(master, 4096)
+except OSError:
+    pass
+print("DATA:" + data.hex(), flush=True)
+os.kill(pid, signal.SIGKILL)
+os.waitpid(pid, 0)
+print("GONE", flush=True)
+sys.stdin.readline()  # 等 Rust 侧完成死后判定
+"#;
+        use std::io::{BufRead, BufReader, Write};
+        let Ok(mut child) = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(script)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+        else {
+            eprintln!("python3 unavailable; skipping pty gate test");
+            return;
+        };
+        let mut stdin = child.stdin.take().unwrap();
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        let head = lines.next().unwrap().unwrap();
+        let (pid, slave) = head.split_once(' ').unwrap();
+        let origin = crate::ipc::OriginTty {
+            path: std::path::PathBuf::from(slave),
+            shell_pid: pid.parse().unwrap(),
+        };
+
+        assert!(
+            origin_shell_at_prompt(&origin),
+            "pty.fork 出的会话首进程应判定为「在提示符」"
+        );
+        // 走生产写线程:Write 分片 + Finish(flush + SIGWINCH),与流式回写同路。
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let tty = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NOCTTY)
+                .open(&origin.path)
+                .unwrap();
+            let (ops_tx, ops_rx) = std::sync::mpsc::channel::<TtyWriteOp>();
+            let shell_pid = origin.shell_pid;
+            let writer = std::thread::spawn(move || origin_tty_writer(tty, shell_pid, ops_rx));
+            ops_tx
+                .send(TtyWriteOp::Write(
+                    "\x1b[1m✦ Miyu 后台任务跟进\x1b[0m\r\n".to_string(),
+                ))
+                .unwrap();
+            let mut body = String::new();
+            push_rendered_line("**粗体** 与 `代码` MIYU-E2E-END", WriteLineStyle::Content, &mut body);
+            ops_tx.send(TtyWriteOp::Write(body)).unwrap();
+            ops_tx.send(TtyWriteOp::Finish).unwrap();
+            writer.join().unwrap();
+        }
+        stdin.write_all(b"written\n").unwrap();
+
+        let data_line = loop {
+            let line = lines.next().unwrap().unwrap();
+            if let Some(rest) = line.strip_prefix("DATA:") {
+                break rest.to_string();
+            }
+        };
+        let bytes = (0..data_line.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&data_line[i..i + 2], 16).unwrap())
+            .collect::<Vec<u8>>();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("Miyu 后台任务跟进"),
+            "master 端应读到标题,实际: {text:?}"
+        );
+        assert!(text.contains("MIYU-E2E-END"), "正文应完整到达");
+        assert!(text.contains("\u{1b}["), "应带 SGR 样式");
+
+        let gone = lines.next().unwrap().unwrap();
+        assert_eq!(gone, "GONE");
+        assert!(
+            !origin_shell_at_prompt(&origin),
+            "进程死后必须判定为不可写"
+        );
+        stdin.write_all(b"done\n").unwrap();
+        let _ = child.wait();
     }
 }

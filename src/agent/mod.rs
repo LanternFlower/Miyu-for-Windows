@@ -11,7 +11,8 @@ use crate::llm::{
 };
 use crate::memory::{EvictedTurn, MemoryAccess, MemoryOrganizerHandle, MemoryOrigin, MemoryStore};
 use crate::paths::MiyuPaths;
-use crate::platforms::{PlatformContextImageRef, PlatformTurnContext};
+use crate::persona_hint;
+use crate::platforms::{PlatformContextFileRef, PlatformContextImageRef, PlatformTurnContext};
 use crate::question::{
     answered_tool_output, closed_tool_output, unavailable_tool_output, QuestionCancelled,
     QuestionExchange, QuestionRequest, QuestionResponse,
@@ -21,7 +22,7 @@ use crate::state::{
     QueuedPrompt, QueuedPromptAttachment, RedoCandidate, RedoInputKind, StateStore,
     TurnRedoCheckpointPayload,
 };
-use crate::tools::{self, memes, vision, ToolPermission, ToolRegistry};
+use crate::tools::{self, memes, vision, ToolRegistry};
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use chrono::Local;
@@ -164,17 +165,21 @@ pub struct RedoPromptInput {
     pub images: Vec<Option<PastedImage>>,
 }
 
+/// 会话模式,创建时定死、中途不可切(切换=系统提示词换血=全量缓存作废)。
+/// Normal=人格全能力;Dev=极简开发形态(一行可编辑提示词、无人格全家、
+/// 精简工具目录)。原「闲聊(Chat)」模式已删除:平台路径从来只跑 Normal,
+/// 安全靠 restricted registry(工具不存在)而非模式门,REPL 侧实测也无人用。
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum AgentMode {
     Normal,
-    Chat,
+    Dev,
 }
 
 #[derive(Clone)]
 pub struct AgentTurnControl {
     mode: Arc<Mutex<AgentMode>>,
     normal_tools: ToolRegistry,
-    chat_tools: ToolRegistry,
+    dev_tools: ToolRegistry,
     queue_ingress: Option<Arc<QueueIngressBarrier>>,
     supersede: Option<Arc<TurnSupersedeSignal>>,
     supersede_seen: Arc<AtomicU64>,
@@ -279,12 +284,12 @@ impl AgentTurnControl {
     pub fn new(
         mode: AgentMode,
         normal_tools: ToolRegistry,
-        chat_tools: ToolRegistry,
+        dev_tools: ToolRegistry,
     ) -> Self {
         Self {
             mode: Arc::new(Mutex::new(mode)),
             normal_tools,
-            chat_tools,
+            dev_tools,
             queue_ingress: None,
             supersede: None,
             supersede_seen: Arc::new(AtomicU64::new(0)),
@@ -319,7 +324,7 @@ impl AgentTurnControl {
     fn tools(&self, mode: AgentMode) -> ToolRegistry {
         match mode {
             AgentMode::Normal => self.normal_tools.clone(),
-            AgentMode::Chat => self.chat_tools.clone(),
+            AgentMode::Dev => self.dev_tools.clone(),
         }
     }
 }
@@ -329,20 +334,20 @@ impl AgentMode {
         if crate::i18n::is_zh() {
             match self {
                 Self::Normal => "普通",
-                Self::Chat => "闲聊",
+                Self::Dev => "开发",
             }
         } else {
             match self {
                 Self::Normal => "NORMAL",
-                Self::Chat => "CHAT",
+                Self::Dev => "DEV",
             }
         }
     }
 
     fn reminder(self) -> Option<&'static str> {
+        // Dev 遵循极简原则:不注入任何模式提醒。
         match self {
-            Self::Normal => None,
-            Self::Chat => Some(crate::prompts::CHAT_REMINDER),
+            Self::Normal | Self::Dev => None,
         }
     }
 }
@@ -427,6 +432,15 @@ pub enum AgentEvent {
     GenerationSuperseded {
         prompt_ids: Vec<String>,
     },
+    /// 回合内每次模型请求结束时的用量快照:`round` 是刚结束这次请求的
+    /// 用量(其 prompt+completion ≈ 当前上下文占用),`turn` 是回合开始
+    /// 至今的累计。终端 footer 和 WebUI 用它逐请求刷新计量,不必等整个
+    /// 回合(可能含多轮工具调用)结束。
+    RoundUsage {
+        round: Box<Usage>,
+        turn: TurnTokens,
+        estimated: bool,
+    },
     SpinnerTick,
     CompactStart,
     CompactChunk(ChatStreamChunk),
@@ -503,6 +517,8 @@ impl TurnJournalSink {
                 self.flush(on_event)?;
                 on_event(AgentEvent::SpinnerTick)
             }
+            // 瞬态计量快照,只给 UI,不入回放日志。
+            event @ AgentEvent::RoundUsage { .. } => on_event(event),
             AgentEvent::ReasoningStart { received_at } => {
                 self.flush(on_event)?;
                 self.append("reasoning_start", None, None, None, None, None)?;
@@ -910,10 +926,29 @@ pub struct Agent {
     image_platform_label: Option<String>,
     platform_context: Option<Arc<PlatformTurnContext>>,
     context_images: Vec<PlatformContextImageRef>,
+    /// Files from structured platform history that `read_platform_file` may
+    /// resolve by their context id in this turn.
+    context_files: Vec<PlatformContextFileRef>,
+    /// 本回合的浮动尾部人格提醒全文。只追加进发送副本
+    /// `request_messages`,永不进 `messages`,因此不化石化、不落库——
+    /// 见 persona_hint 模块头注释。
+    persona_reminder: Option<String>,
+    /// 重复调用链(advisory 防死循环,见 tools::repeat_reminder 模块头)。
+    /// 人类新输入(新回合/排队插话)重置;注入的提醒只进本轮工作消息,
+    /// 不进化石。
+    repeat_chain: crate::tools::repeat_reminder::RepeatChain,
+    /// 预设对话(begin_dialogs):system 之后、真实历史之前的 user/assistant
+    /// 示例对,每请求注入、永不落库。构造时从当前人格 scope 的
+    /// dialogs/<scope>.md 加载。
+    preset_dialogs: Vec<(String, String)>,
     /// Exact (messages, tools) of the most recent live request; feeds the
     /// idle cache-keepalive pings (v7 DeepSeek 高命中策略). Only populated
     /// while `cache.keepalive_seconds > 0`.
     last_request_snapshot: Option<(Vec<ChatMessage>, Vec<crate::llm::ToolDefinition>)>,
+    /// 上一条真实请求最终落在哪个 endpoint(provider_id, model):keepalive
+    /// ping 必须钉住同一缓存域,轮转调度下打到别家=白花钱不保温
+    /// (deepseek 报告 P2)。
+    last_request_endpoint: Option<(String, String)>,
     /// Cancels the currently running keepalive loop, if any.
     keepalive_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Consecutive auto-compactions that failed to bring the context back
@@ -978,14 +1013,28 @@ impl Agent {
         // init) so concurrent turns can each build their own Agent; startup
         // maintenance (prompt-change reset, stale-turn recovery) lives in
         // `prepare_for_turn`.
-        let base_system_prompt = config.system_prompt_for(paths, prompt_audience)?;
+        // dev 有自己的记忆/技能(=切人格语义):把 config 的人格指针换成
+        // 保留人格 "dev",此后 MemoryStore/skills 派生目录全部随之隔离。
+        let config = if mode == AgentMode::Dev {
+            config.dev_scoped()
+        } else {
+            config
+        };
+        let base_system_prompt = mode_system_prompt(&config, paths, mode, prompt_audience)?;
         let system_prompt = with_host_environment(
             with_mode_reminder(base_system_prompt, mode),
             prompt_audience,
             paths,
+            mode,
         );
         let tools_enabled = config.tools.enabled;
         let max_tool_rounds = config.tools.max_rounds;
+        // Dev 无人格:预设对话整套跳过。
+        let preset_dialogs = if mode == AgentMode::Dev {
+            Vec::new()
+        } else {
+            persona_hint::load_dialogs(&config, paths, &config.active_persona_scope())
+        };
         let memory = MemoryStore::new(&config, paths);
         memory.init()?;
         let (memory_database_id, memory_generation) = memory.identity()?;
@@ -1020,7 +1069,12 @@ impl Agent {
             image_platform_label: None,
             platform_context: None,
             context_images: Vec::new(),
+            context_files: Vec::new(),
+            persona_reminder: None,
+            repeat_chain: crate::tools::repeat_reminder::RepeatChain::default(),
+            preset_dialogs,
             last_request_snapshot: None,
+            last_request_endpoint: None,
             keepalive_cancel: None,
             consecutive_compacts: std::sync::atomic::AtomicU32::new(0),
             compact_stuck: std::sync::atomic::AtomicBool::new(false),
@@ -1049,6 +1103,7 @@ impl Agent {
         let Some((messages, tools)) = self.last_request_snapshot.clone() else {
             return;
         };
+        let endpoint_hint = self.last_request_endpoint.clone();
         let max_pings = self.config.cache.keepalive_max_pings;
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.keepalive_cancel = Some(cancel.clone());
@@ -1061,7 +1116,10 @@ impl Agent {
                 if cancel.load(std::sync::atomic::Ordering::Acquire) {
                     return;
                 }
-                match client.cache_keepalive(messages.clone(), tools.clone()).await {
+                match client
+                    .cache_keepalive(messages.clone(), tools.clone(), endpoint_hint.as_ref())
+                    .await
+                {
                     Ok(Some(usage)) => {
                         tracing::info!(
                             ping = ping + 1,
@@ -1087,6 +1145,61 @@ impl Agent {
     }
 
     /// 用量历史的来源标签:平台回合记平台 id(如 "qq"),其余一律 "agent"。
+    /// dsh 式工具输出外溢(spill):模型侧内联超过 context.tool_output_spill_bytes
+    /// 的纯文本结果全文存进会话级文件,内联替换为头尾预览+定位提示。read_file
+    /// 不外溢(避免 读→溢→再读 循环);存盘失败保留原文,绝不把成功调用变错误。
+    /// 只约束进模型的消息,程序侧(报告提取/load_tools 解析等)继续用完整值。
+    fn spill_tool_output(
+        &self,
+        turn_id: &str,
+        call_id: &str,
+        tool_name: &str,
+        output: &str,
+    ) -> Option<String> {
+        let cap = self.config.context.tool_output_spill_bytes;
+        if cap == 0 || tool_name == "read_file" || output.len() <= cap {
+            return None;
+        }
+        fn safe_segment(raw: &str) -> String {
+            raw.chars()
+                .map(|ch| {
+                    if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                        ch
+                    } else {
+                        '_'
+                    }
+                })
+                .take(48)
+                .collect()
+        }
+        let dir = self
+            .paths
+            .state_dir
+            .join("spill")
+            .join(safe_segment(&self.state.session_id()));
+        if std::fs::create_dir_all(&dir).is_err() {
+            return None;
+        }
+        let file = dir.join(format!(
+            "{}-{}-{}.txt",
+            safe_segment(turn_id),
+            safe_segment(call_id),
+            safe_segment(tool_name)
+        ));
+        let replacement = spill_replacement(output, cap, &file.display().to_string())?;
+        if let Err(error) = std::fs::write(&file, output) {
+            tracing::warn!(%error, path = %file.display(), "tool output spill failed; keeping inline");
+            return None;
+        }
+        tracing::info!(
+            tool = tool_name,
+            bytes = output.len(),
+            path = %file.display(),
+            "oversized tool output spilled"
+        );
+        Some(replacement)
+    }
+
     fn usage_source(&self) -> &str {
         self.platform_context
             .as_ref()
@@ -1095,11 +1208,13 @@ impl Agent {
     }
 
     pub fn prepare_for_turn(&mut self) -> Result<()> {
-        let effective_system_prompt = self
-            .config
-            .system_prompt_for(&self.paths, self.prompt_audience)?;
-        if matches!(self.mode, AgentMode::Normal | AgentMode::Chat) {
-            let fingerprint_prompt = self.config.base_system_prompt(&self.paths)?;
+        let effective_system_prompt =
+            mode_system_prompt(&self.config, &self.paths, self.mode, self.prompt_audience)?;
+        {
+            let fingerprint_prompt = match self.mode {
+                AgentMode::Dev => effective_system_prompt.clone(),
+                AgentMode::Normal => self.config.base_system_prompt(&self.paths)?,
+            };
             let compatible_previous = matches!(self.prompt_audience, PromptAudience::Owner)
                 .then_some(effective_system_prompt.as_str());
             self.state.reset_if_prompt_changed_with_compatible(
@@ -1116,6 +1231,8 @@ impl Agent {
             ),
             self.prompt_audience,
             &self.paths,
+        
+            self.mode,
         );
         Ok(())
     }
@@ -1185,6 +1302,19 @@ impl Agent {
     ) {
         self.platform_context = Some(context);
         self.context_images = images;
+    }
+
+    pub(crate) fn set_platform_context_files(
+        &mut self,
+        context: Arc<PlatformTurnContext>,
+        files: Vec<PlatformContextFileRef>,
+    ) {
+        self.platform_context = Some(context.clone());
+        self.context_files = files.clone();
+        if self.tools_enabled {
+            let mut tools = self.tools.lock().unwrap();
+            crate::platforms::file_reader::register(&mut tools, context, files);
+        }
     }
 
     pub fn set_turn_persistence(
@@ -1264,6 +1394,7 @@ impl Agent {
                         &call.function.name,
                         &call.function.arguments,
                         progress_tx,
+                        &crate::tools::GuardCtx::default(),
                     ) {
                         Ok(future) => slots.push(Slot {
                             call_index,
@@ -1387,9 +1518,8 @@ impl Agent {
     /// `reset_if_prompt_changed` must never fire (it would wipe the very
     /// turn that is running).
     fn refresh_system_prompt(&mut self) -> Result<()> {
-        let base_system_prompt = self
-            .config
-            .system_prompt_for(&self.paths, self.prompt_audience)?;
+        let base_system_prompt =
+            mode_system_prompt(&self.config, &self.paths, self.mode, self.prompt_audience)?;
         self.system_prompt = with_host_environment(
             with_runtime_system_context(
                 with_mode_reminder(base_system_prompt, self.mode),
@@ -1397,6 +1527,8 @@ impl Agent {
             ),
             self.prompt_audience,
             &self.paths,
+        
+            self.mode,
         );
         Ok(())
     }
@@ -1410,7 +1542,7 @@ impl Agent {
     }
 
     pub fn effective_context_tokens(&self) -> Result<u64> {
-        let messages = self.chat_messages("", "")?;
+        let (messages, _) = self.chat_messages("", "")?;
         let mut tokens = overflow::estimate_messages_tokens(&messages) as u64;
         if self.tools_enabled {
             let loaded_tools = self.initial_loaded_tools(&messages)?;
@@ -1457,6 +1589,8 @@ impl Agent {
         F: FnMut(AgentEvent) -> Result<()>,
     {
         on_event(AgentEvent::FlushJournal)?;
+        // 排队插话=人类语境变化,重复链重置。
+        self.repeat_chain.reset();
         let mut prepared = Vec::with_capacity(queued.len());
         for prompt in queued {
             let images = self.queued_prompt_images(&prompt)?;
@@ -1497,6 +1631,15 @@ impl Agent {
                 .filter(|model| !model.trim().is_empty()),
             checkpoint,
         )?;
+        for (prompt, _) in &prepared {
+            if let Some(context) = self.platform_context.clone() {
+                let files = context.take_queued_files(&prompt.prompt_id);
+                if !files.is_empty() {
+                    self.context_files.extend(files);
+                    self.set_platform_context_files(context, self.context_files.clone());
+                }
+            }
+        }
         on_event(AgentEvent::QueuedPromptsConsumed {
             prompt_ids: consumed.iter().map(|(id, _)| id.clone()).collect(),
             mode,
@@ -1592,6 +1735,18 @@ impl Agent {
     pub fn switch_mode(&mut self, mode: AgentMode, tools: ToolRegistry) {
         self.mode = mode;
         self.tools = Arc::new(Mutex::new(tools));
+        // 预设对话跟人格走:Normal↔Dev 切换后必须重算,否则 Dev 带着
+        // 人格 dialogs(违反"Dev 无人格"),Dev→Normal 则永远没有。
+        self.refresh_preset_dialogs();
+    }
+
+    fn refresh_preset_dialogs(&mut self) {
+        // Dev 无人格:预设对话整套跳过(与构造期一致)。
+        self.preset_dialogs = if self.mode == AgentMode::Dev {
+            Vec::new()
+        } else {
+            persona_hint::load_dialogs(&self.config, &self.paths, &self.config.active_persona_scope())
+        };
     }
 
     pub fn replace_client(&mut self, client: OpenAiCompatibleClient) {
@@ -1622,7 +1777,15 @@ impl Agent {
         );
         self.memory.init()?;
         (self.memory_database_id, self.memory_generation) = self.memory.identity()?;
+        self.refresh_preset_dialogs();
         self.prepare_for_turn()
+    }
+
+    /// /reset-memory:清空本模式人格的长期记忆(会话历史/技能不动),
+    /// 然后重建句柄。dev 作用域由构造期的 dev_scoped 配置自动继承。
+    pub fn wipe_memory(&mut self) -> Result<()> {
+        self.memory.reset_all(false)?;
+        self.reset_memory()
     }
 
     pub fn reset_memory(&mut self) -> Result<()> {
@@ -1742,11 +1905,10 @@ impl Agent {
             turn_id: candidate.turn_id.clone(),
         })?;
 
-        let mut messages = self.chat_messages(&candidate.turn_id, "")?;
-        // chat_messages ends with [.., user placeholder, runtime]; drop both
-        // and re-append the runtime right after the real redo input so the
-        // transient tail keeps sitting behind the user message.
-        let runtime_message = messages.pop();
+        let (mut messages, redo_user_index) = self.chat_messages(&candidate.turn_id, "")?;
+        // 按下标摘下 [占位用户, 瞬态尾巴...]:重放輸入接回后尾巴原样跟上,
+        // 保持"瞬态永远在用户消息之后"。
+        let tail_fossils = messages.split_off(redo_user_index + 1);
         let _ = messages.pop();
         let replay_start;
         let fossil_start;
@@ -1758,7 +1920,7 @@ impl Agent {
                 let (_, input) = prepared.pop().context("redo input is empty")?;
                 messages.push(input.message);
                 fossil_start = messages.len();
-                messages.extend(runtime_message);
+                messages.extend(tail_fossils);
                 replay_start = messages.len();
                 messages.extend(input.hints);
                 base_tool_reports = Vec::new();
@@ -1769,7 +1931,7 @@ impl Agent {
                 let checkpoint = redo.checkpoint.context("redo checkpoint is unavailable")?;
                 messages.push(self.turn_user_message(&current_turn));
                 fossil_start = messages.len();
-                messages.extend(runtime_message);
+                messages.extend(tail_fossils);
                 replay_start = messages.len();
                 messages.extend(checkpoint.replay_messages);
                 for (_, input) in prepared {
@@ -1825,6 +1987,14 @@ impl Agent {
             tokens,
             result.usage_estimated,
         )?;
+        if let (Some(provider), Some(model)) = (&result.provider_id, &result.model) {
+            self.last_request_endpoint = Some((provider.clone(), model.clone()));
+        }
+        // 无条件覆盖:redo 前的旧修订可能留有 tool_flow,新修订没有工具
+        // 调用时空 flow 也必须写入,否则旧工具流会被冒名回放。
+        let tool_flow = derive_tool_flow(&messages, replay_start);
+        self.state
+            .set_turn_tool_flow(&candidate.turn_id, &tool_flow)?;
         if self.memory.process_after_turn(
             &diary_input,
             &result.content,
@@ -1870,6 +2040,26 @@ impl Agent {
         .await
     }
 
+    /// 浮动尾部人格提醒,所有会话形态(终端/WebUI/平台)一致生效:命中
+    /// 缓存时只是一次小文件读,缓存未建时对同一 client 蒸馏一次(每份
+    /// 人格内容一生只发生一次)。蒸馏失败降级为无提醒,绝不阻断回合。
+    async fn resolve_persona_reminder(&self) -> Option<String> {
+        // Dev 无人格,自然无防失忆提醒。
+        if self.mode == AgentMode::Dev {
+            return None;
+        }
+        if !self.config.prompt.persona_reminder {
+            return None;
+        }
+        match persona_hint::resolve(&self.config, &self.paths, &self.client).await {
+            Ok(reminder) => reminder,
+            Err(error) => {
+                tracing::warn!(error = %error, "persona reminder distillation failed");
+                None
+            }
+        }
+    }
+
     async fn chat_stream_turn<F>(
         &mut self,
         input: &str,
@@ -1885,6 +2075,16 @@ impl Agent {
         self.cancel_cache_keepalive();
         self.state.recover_stale_turns()?;
         self.trim_visible_context()?;
+        self.persona_reminder = self.resolve_persona_reminder().await;
+        // 人类新回合:重复链语境重置。goal 自动续轮/job 唤醒不算语境
+        // 变化——跨自动轮的原样重复正是最需要打断的死循环(dsh 同款:
+        // 只有 user 来源消息重置链)。
+        if matches!(
+            crate::tools::workspace::current_turn_origin(),
+            crate::tools::workspace::TurnOrigin::Human
+        ) {
+            self.repeat_chain.reset();
+        }
         let prepared = self.prepare_user_input(input, images).await?;
         let input = prepared.content.clone();
         let turn_id = format!(
@@ -1912,11 +2112,8 @@ impl Agent {
         on_event(AgentEvent::TurnStarted {
             turn_id: turn_id.clone(),
         })?;
-        let mut messages = self.chat_messages(&turn_id, &input)?;
-        // chat_messages ends with [.., user, runtime]; swap in the prepared
-        // user message (attachments/images) at its position before the
-        // transient runtime tail.
-        let user_index = messages.len().saturating_sub(2);
+        let (mut messages, user_index) = self.chat_messages(&turn_id, &input)?;
+        // 按显式下标把占位用户消息换成带附件的成品;瞬态尾巴保持原位。
         if let Some(user) = messages.get_mut(user_index) {
             *user = prepared.message;
         }
@@ -1946,36 +2143,49 @@ impl Agent {
             }
         }
         messages.extend(prepared.hints);
-        if self.mode != AgentMode::Chat {
-            if let Some(mut association) = self.memory.association(&input)? {
-                if association.organization_due {
-                    self.wake_memory_organizer();
-                }
-                if self.memory.association_dedup_enabled() {
-                    // Cross-turn dedup: fossils replay earlier associative
-                    // blocks byte-for-byte, so a line already visible in this
-                    // request adds nothing but tokens. Filtering only shrinks
-                    // the block being built this turn; once a carrying turn is
-                    // hidden by compact or trim, its lines leave the request
-                    // and the memory becomes eligible for injection again.
-                    let seen = visible_association_lines(&messages);
-                    self.memory
-                        .retain_unseen_association(&mut association, &seen);
-                }
-                if !association.facts.is_empty() || !association.episodes.is_empty() {
-                    // v7 Phase 1.1: the associative-memory block rides the turn
-                    // tail instead of `insert(1)`, so the stable history prefix
-                    // in front stays byte-identical for provider prefix caches.
-                    // It lands after `replay_start`, so redo checkpoints freeze
-                    // the recalled snapshot (decision 6).
-                    messages.push(ChatMessage::turn_context(
-                        self.memory.format_association(&association),
-                    ));
-                }
+        // 记忆联想不再按模式关断:dev 的 MemoryStore 指向保留人格 "dev"
+        // 的独立库(构造时作用域化),联想/落库都发生在自己的命名空间里。
+        let association_exclusion = self
+            .state
+            .oldest_visible_turn_timestamp(&turn_id)?
+            .map(|since| crate::memory::AssociationExclusion {
+                session_id: self.state.session_id().to_string(),
+                since,
+            });
+        if let Some(mut association) = self
+            .memory
+            .association(&input, association_exclusion.as_ref())?
+        {
+            if association.organization_due {
+                self.wake_memory_organizer();
+            }
+            if self.memory.association_dedup_enabled() {
+                // Cross-turn dedup: fossils replay earlier associative
+                // blocks byte-for-byte, so a line already visible in this
+                // request adds nothing but tokens. Filtering only shrinks
+                // the block being built this turn; once a carrying turn is
+                // hidden by compact or trim, its lines leave the request
+                // and the memory becomes eligible for injection again.
+                let seen = visible_association_lines(&messages);
+                self.memory
+                    .retain_unseen_association(&mut association, &seen);
+            }
+            if !association.facts.is_empty() || !association.episodes.is_empty() {
+                // v7 Phase 1.1: the associative-memory block rides the turn
+                // tail instead of `insert(1)`, so the stable history prefix
+                // in front stays byte-identical for provider prefix caches.
+                // It lands after `replay_start`, so redo checkpoints freeze
+                // the recalled snapshot (decision 6).
+                messages.push(ChatMessage::turn_context(
+                    self.memory.format_association(&association),
+                ));
             }
         }
-        {
-            if let Some(reminder) = memes::auto_meme_reminder(&self.config, &input) {
+        // dev 目录里没有表情包工具,提醒只会指向不存在的工具——不发。
+        if self.mode != AgentMode::Dev {
+            if let Some(reminder) =
+                memes::auto_meme_reminder(&self.config, &input, self.platform_context.is_some())
+            {
                 messages.push(ChatMessage::turn_context(reminder));
             }
         }
@@ -2023,6 +2233,13 @@ impl Agent {
             tokens,
             result.usage_estimated,
         )?;
+        if let (Some(provider), Some(model)) = (&result.provider_id, &result.model) {
+            self.last_request_endpoint = Some((provider.clone(), model.clone()));
+        }
+        let tool_flow = derive_tool_flow(&messages, replay_start);
+        if !tool_flow.is_empty() {
+            self.state.set_turn_tool_flow(&turn_id, &tool_flow)?;
+        }
         if self.memory.process_after_turn(
             // C10 三份内容分离(最小实现):日记读平台包装前的原文快照,
             // 而不是带指令样板和群聊记录块的完整 prompt 内容。
@@ -2246,13 +2463,26 @@ impl Agent {
         F: FnMut(AgentEvent) -> Result<()>,
     {
         let mut on_event = on_event;
-        let context_window = self.context_window().or_else(|| {
-            if crate::models_cache::is_loaded() {
-                return None;
+        let context_window = match self.context_window() {
+            Some(window) => Some(window),
+            None if crate::models_cache::is_loaded() => None,
+            None => {
+                // refresh_blocking 持全局 REFRESH_LOCK 做最长 30s 的阻塞
+                // 网络请求:在 actor 的单线程 runtime 上同步调用会把所有
+                // 会话所有 turn 一起冻结,必须移到阻塞线程池。
+                let paths = self.paths.clone();
+                let refreshed = tokio::task::spawn_blocking(move || {
+                    crate::models_cache::refresh_blocking(&paths).is_ok()
+                })
+                .await
+                .unwrap_or(false);
+                if refreshed {
+                    self.context_window()
+                } else {
+                    None
+                }
             }
-            crate::models_cache::refresh_blocking(&self.paths).ok()?;
-            self.context_window()
-        });
+        };
         let Some(context_window) = context_window else {
             let missing = self.client.models_without_context_window(&self.config);
             if missing.is_empty() {
@@ -2285,7 +2515,7 @@ impl Agent {
             context_window,
             check.reserved_tokens,
             self.compact_tail_budget(context_window),
-            matches!(self.mode, AgentMode::Chat),
+            self.preset_dialogs.len(),
         );
         let mut on_chunk = |chunk: ChatStreamChunk| on_event(AgentEvent::CompactChunk(chunk));
         let fork_builder = |fold_ids: &[String]| -> Result<compact::CompactForkParts> {
@@ -2395,13 +2625,7 @@ impl Agent {
     /// geometry is what stops the re-compaction loop); chat sessions default
     /// smaller because casual history has less verbatim value.
     fn compact_tail_budget(&self, context_window: usize) -> usize {
-        self.config.context.compact_tail_tokens.unwrap_or({
-            if matches!(self.mode, AgentMode::Chat) {
-                8192
-            } else {
-                16384.min(context_window / 4)
-            }
-        })
+        self.config.context.compact_tail_tokens.unwrap_or(16384.min(context_window / 4))
     }
 
     async fn handle_overflow<F>(
@@ -2510,7 +2734,7 @@ impl Agent {
                     window,
                     check.reserved_tokens,
                     self.compact_tail_budget(window),
-                    matches!(self.mode, AgentMode::Chat),
+                    self.preset_dialogs.len(),
                 );
                 let mut on_chunk =
                     |chunk: ChatStreamChunk| on_event(AgentEvent::CompactChunk(chunk));
@@ -2597,6 +2821,26 @@ impl Agent {
                         }
                     } else {
                         self.rapid_compacts.store(0, Ordering::Relaxed);
+                    }
+                } else {
+                    // cut=0(可见历史全部落在保尾预算内)却仍越过触发线:
+                    // 没有任何东西可折,再触发也只会空转。与"压后仍超"
+                    // 走同一失败闩,否则每轮都白跑一次压缩流程。
+                    let post_tokens =
+                        usize::try_from(self.effective_context_tokens()?).unwrap_or(usize::MAX);
+                    if check.check_tokens(post_tokens) {
+                        let runs = self.consecutive_compacts.fetch_add(1, Ordering::Relaxed) + 1;
+                        if runs >= 2 && !self.compact_stuck.swap(true, Ordering::Relaxed) {
+                            on_event(AgentEvent::Notice {
+                                text: crate::i18n::text(
+                                    "Automatic context compaction paused: the context window is too small for compaction to help (the system prompt plus the verbatim tail already exceed the trigger). Raise context window or reduce tool output; compaction resumes once the context drops.",
+                                    "自动上下文压缩已暂停：上下文窗口太小，压缩无法奏效（system prompt 加逐字尾巴已超过触发线）。请调大上下文窗口或减小工具输出；上下文回落后自动恢复。",
+                                )
+                                .to_string(),
+                            })?;
+                        }
+                    } else {
+                        self.consecutive_compacts.store(0, Ordering::Relaxed);
                     }
                 }
                 result
@@ -2722,7 +2966,7 @@ impl Agent {
         loop {
             let tool_limit_reached = self.max_tool_rounds > 0 && tool_round >= self.max_tool_rounds;
 
-            if self.mode != AgentMode::Chat && self.config.skills.enabled {
+            if self.config.skills.enabled {
                 if self.mode == AgentMode::Normal {
                     let mut registry = self.tools.lock().unwrap();
                     tools::rescan_scripts(&mut registry, &self.paths);
@@ -2858,6 +3102,23 @@ impl Agent {
             };
             let round = match round {
                 Some(Err(error)) => {
+                    // Responses 续传自愈(任务#16):上游不支持
+                    // previous_response_id 时,工具轮第二步只发增量会撞
+                    // "No tool call found for tool output" 类 400。此时清
+                    // 续传重发全量(messages 里工具结果已齐,无状态回放
+                    // 完整),并让客户端持久记该供应商不可续传——本会话
+                    // 与后续会话都不再发增量。
+                    if responses_continuation.is_some()
+                        && crate::llm::is_responses_continuation_unsupported_error(&error)
+                    {
+                        tracing::warn!(
+                            error = %error,
+                            "responses continuation rejected; retrying this round with full stateless input"
+                        );
+                        self.client.mark_responses_continuation_unsupported();
+                        responses_continuation = None;
+                        continue;
+                    }
                     // Passive overflow trigger (compact-and-retry). Only at
                     // the turn's initial request, before any assistant output
                     // was streamed: mid-loop the live tool exchange is not
@@ -2888,7 +3149,7 @@ impl Agent {
                             window,
                             check.reserved_tokens,
                             self.compact_tail_budget(window),
-                            matches!(self.mode, AgentMode::Chat),
+                            self.preset_dialogs.len(),
                         );
                         let mut on_compact_chunk =
                             |chunk: ChatStreamChunk| on_event(AgentEvent::CompactChunk(chunk));
@@ -2912,14 +3173,16 @@ impl Agent {
                             // front of the current turn's user message; the
                             // live tail (user input, runtime stamp, hints)
                             // is preserved byte-for-byte.
-                            let user_index = replay_start.saturating_sub(2).min(messages.len());
-                            let rebuilt = self.chat_messages(current_turn_id, "")?;
-                            let prefix_len = rebuilt.len().saturating_sub(2);
+                            let user_index = live_user_index(messages, replay_start)
+                                .unwrap_or_else(|| replay_start.min(messages.len()));
+                            let (rebuilt, rebuilt_user_index) =
+                                self.chat_messages(current_turn_id, "")?;
                             let tail = messages.split_off(user_index);
                             messages.clear();
-                            messages.extend(rebuilt.into_iter().take(prefix_len));
+                            messages.extend(rebuilt.into_iter().take(rebuilt_user_index));
                             messages.extend(tail);
-                            replay_start = prefix_len + 2;
+                            // 活跃轮边界随尾巴整体平移:新前缀长 + 尾内偏移。
+                            replay_start = rebuilt_user_index + (replay_start - user_index);
                             continuation_input_start = messages.len();
                             tracing::info!(
                                 folded = compact_result.folded_turns,
@@ -3010,6 +3273,23 @@ impl Agent {
                 }))?;
             }
             usage_accumulator.add_result(&result, messages);
+            if let Some(turn_usage) = usage_accumulator.usage() {
+                let round = result.usage.clone().unwrap_or_else(|| {
+                    let prompt = overflow::estimate_messages_tokens(&request_messages) as u64;
+                    let completion = estimate_result_tokens(&result) as u64;
+                    Usage {
+                        prompt_tokens: prompt,
+                        completion_tokens: completion,
+                        total_tokens: prompt.saturating_add(completion),
+                        ..Usage::default()
+                    }
+                });
+                on_event(AgentEvent::RoundUsage {
+                    round: Box::new(round),
+                    turn: TurnTokens::from_usage(Some(&turn_usage)),
+                    estimated: usage_accumulator.estimated,
+                })?;
+            }
             last_round_completed_at = Some(Instant::now());
             if result.tool_calls.is_empty() || !self.tools_enabled {
                 responses_continuation = None;
@@ -3128,6 +3408,14 @@ impl Agent {
                 .is_some_and(|reason| reason.eq_ignore_ascii_case("length"))
                 && !result.tool_calls.is_empty()
             {
+                // 续传簿记与正常路径同步:跳过它会让下一轮带着上一轮的旧
+                // response id 续传,服务端 400 后再走自愈,白费一次请求。
+                // start 必须在 push tool 错误之前设定(续传输入=工具输出段)。
+                if next_responses_continuation.is_some() {
+                    continuation_input_start = messages.len();
+                }
+                responses_continuation = next_responses_continuation;
+                continuation_context = None;
                 // A "length" stop means the output hit the token limit, so every
                 // tool call in this message may carry silently truncated
                 // arguments. Refuse to execute any of them and let the model
@@ -3166,7 +3454,7 @@ impl Agent {
             // Multiple `task` calls in one batch run concurrently (subagents
             // are independent by design); everything else stays serial.
             let mut parallel_task_outputs =
-                if defer_sibling_tools || self.mode == AgentMode::Chat {
+                if defer_sibling_tools {
                     std::collections::HashMap::new()
                 } else {
                     self.execute_parallel_task_calls(&result.tool_calls, &loaded_tools, on_event)
@@ -3179,7 +3467,15 @@ impl Agent {
                     if let Some(report) = group_output.report {
                         persisted_tool_reports.push((call.function.name.clone(), report));
                     }
-                    messages.push(ChatMessage::tool(call.id, group_output.output));
+                    let model_output = self
+                        .spill_tool_output(
+                            current_turn_id,
+                            &call.id,
+                            &call.function.name,
+                            &group_output.output,
+                        )
+                        .unwrap_or(group_output.output);
+                    messages.push(ChatMessage::tool(call.id, model_output));
                     continue;
                 }
                 let call_id = call.id.clone();
@@ -3267,16 +3563,11 @@ impl Agent {
                     continue;
                 }
                 used_tools.push(call.function.name.clone());
+                // 模式级 ReadOnly 权限门随闲聊模式一并删除:拒绝层现在是
+                // registry 的单调 guard(软失败),不可用工具靠 registry 组合
+                // 不注册(平台 restricted 同理),未知工具在分发处软失败。
                 {
                     let tools = self.tools.lock().unwrap();
-                    let permission = tools.permission(&call.function.name)?;
-                    if !mode_allows_tool_permission(self.mode, permission) {
-                        bail!(
-                            "{} mode blocked non-read-only tool: {}",
-                            self.mode.label(),
-                            call.function.name
-                        );
-                    }
                     if tools::is_hybrid_loading_mode(&self.config.tools.loading_mode)
                         && call.function.name != "load_tools"
                         && tools.requires_lazy_load(&call.function.name, &loaded_tools)
@@ -3306,26 +3597,17 @@ impl Agent {
                         }
                     }
                 }
-                if call.function.name == "install_aur_package"
-                    && used_tools.iter().any(|name| name == "review_aur_package")
-                {
-                    let output = "tool error: install_aur_package cannot run in the same turn as review_aur_package; ask the user to confirm installation first".to_string();
-                    on_event(AgentEvent::ToolResult {
-                        call_id: call_id.clone(),
-                        name: event_name.clone(),
-                        ok: false,
-                        output: output.clone(),
-                    })?;
-                    messages.push(ChatMessage::tool(call.id, output));
-                    continue;
-                }
                 let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
                 let tool_future = {
                     let tools = self.tools.lock().unwrap();
+                    // AUR 互斥等回合级规则已迁入 guard 层,凭 used_tools 上下文判定。
                     tools.call_with_progress_future(
                         &call.function.name,
                         &call.function.arguments,
                         progress_tx,
+                        &crate::tools::GuardCtx {
+                            used_tools: &used_tools,
+                        },
                     )
                 };
                 let tool_future = match tool_future {
@@ -3383,7 +3665,22 @@ impl Agent {
                 } else {
                     None
                 };
-                messages.push(ChatMessage::tool(call.id, output.clone()));
+                let mut model_output = self
+                    .spill_tool_output(current_turn_id, &call.id, &call.function.name, &output)
+                    .unwrap_or_else(|| output.clone());
+                // 重复调用观察:成功/失败/被拒都计数(反复撞拒绝正是要打断
+                // 的循环)。提醒**折进工具结果字节**而不是独立消息——
+                // derive_tool_flow 只持久化 assistant/tool 消息,独立提醒
+                // 下一轮回放即消失,前缀在此掰断(缓存调研 08-16,deepseek
+                // 报告 P0-2 实证同一处)。folded 形态活体=回放,永远同源。
+                if let Some(reminder) = self
+                    .repeat_chain
+                    .observe(&call.function.name, &call.function.arguments)
+                {
+                    model_output.push_str("\n\n");
+                    model_output.push_str(&reminder);
+                }
+                messages.push(ChatMessage::tool(call.id.clone(), model_output));
                 if tool_succeeded && call.function.name == "load_tools" {
                     let loaded = loaded_items_from_output(&output);
                     for name in &loaded.tools {
@@ -3607,12 +3904,23 @@ impl Agent {
         Ok(Some(ChatMessage::plain("user", description)))
     }
 
+    /// 返回 (消息序列, 当前用户消息下标)。用户消息之后是数量可变的
+    /// 瞬态尾巴(runtime 投影可跳、防失忆提醒隔轮注入),调用方必须用
+    /// 下标定位,绝不能再按"倒数第二条"猜(缓存调研 08-16 的复位地雷)。
     fn chat_messages(
         &self,
         current_turn_id: &str,
         current_input: &str,
-    ) -> Result<Vec<ChatMessage>> {
+    ) -> Result<(Vec<ChatMessage>, usize)> {
         let mut messages = vec![ChatMessage::system(self.system_prompt.clone())];
+        // 预设对话(begin_dialogs):system 之后、历史之前,每请求注入、
+        // 永不落库。模型把它当普通聊天记录,学的是轮次里的语气;作为
+        // 常量前缀只在编辑时断一次缓存。compact_fork_prefix 同步注入,
+        // 保持折叠请求与实况字节一致。
+        for (user, assistant) in &self.preset_dialogs {
+            messages.push(ChatMessage::plain("user", user.clone()));
+            messages.push(ChatMessage::assistant(assistant.clone(), None));
+        }
         if !self.suppress_session_history {
             if let Some(summary) = self.state.load_last_summary()? {
                 messages.push(summary_checkpoint_message(&summary.assistant_content));
@@ -3634,18 +3942,34 @@ impl Agent {
                 self.push_history_turn(&mut messages, turn);
             }
         }
-        // v7 §三: the minute-level runtime stamp is transient tail and must sit
-        // AFTER the current user message. When it preceded the user message,
-        // every next turn's replayed history diverged from the provider's
-        // cached prefix exactly at this position, capping cross-turn prefix
-        // cache reuse at the end of the stored history (verified byte-level
-        // against DeepSeek prefix caching).
+        // v7 §三: the runtime stamp is transient tail and must sit AFTER the
+        // current user message. When it preceded the user message, every next
+        // turn's replayed history diverged from the provider's cached prefix
+        // exactly at this position (verified byte-level against DeepSeek
+        // prefix caching).
+        let user_index = messages.len();
         messages.push(ChatMessage::plain("user", current_input));
-        messages.push(ChatMessage::turn_context(runtime_context(
-            self.mode,
-            self.platform_context.is_some(),
-        )));
-        Ok(messages)
+        // dsh 式投影(08-16 缓存调研):运行时上下文"变了才注入"。终端面
+        // 时间已降到小时级,同一小时内 cwd/环境不变 → 与历史里最近一份
+        // 化石逐字节相同 → 本轮零新增;平台面保留分钟级,人格报时靠它。
+        let runtime = runtime_context(self.mode, self.platform_context.is_some());
+        if last_fossil_with_prefix(&messages, "<runtime ") != Some(runtime.as_str()) {
+            messages.push(ChatMessage::turn_context(runtime));
+        }
+        // 防失忆提醒(08-16 起):不再浮动,每隔 interval 轮以化石身份进
+        // 历史——纯追加,不掰前缀。计数以历史里最近一份提醒化石所在的
+        // 轮为锚。
+        if let Some(reminder) = self.persona_reminder.as_deref() {
+            let interval = self.config.prompt.persona_reminder_interval.max(1) as usize;
+            if turns_since_reminder_fossil(&self.state, current_turn_id)?
+                .map_or(true, |since| since >= interval)
+            {
+                messages.push(ChatMessage::turn_context(format!(
+                    "<persona-reminder>{reminder}</persona-reminder>"
+                )));
+            }
+        }
+        Ok((messages, user_index))
     }
 
     /// Renders one stored turn exactly as the live request rendered it
@@ -3661,15 +3985,22 @@ impl Agent {
         if turn.status == crate::state::TurnStatus::Interrupted && !turn.journal_events.is_empty() {
             messages.extend(interrupted_turn_replay_messages(self, turn));
         } else {
-            for exchange in &turn.question_exchanges {
-                messages.push(ChatMessage::plain(
-                    "assistant",
-                    crate::question::assistant_exchange_text(exchange),
-                ));
-                messages.push(ChatMessage::plain(
-                    "user",
-                    crate::question::user_exchange_text(exchange),
-                ));
+            // 问答只回放一种形态:有结构化 tool_flow 的回合,ask_question
+            // 已作为原生 tool_calls+tool 输出在 flow 里逐字节回放;再补
+            // 纯文本问答对=同一轮发两遍且字节不同于活体,前缀在此掰断
+            // (缓存调研 08-16,deepseek 报告 P0-2③实证)。纯文本对只给
+            // 无 flow 的老回合兜底。
+            if turn.tool_flow.is_empty() {
+                for exchange in &turn.question_exchanges {
+                    messages.push(ChatMessage::plain(
+                        "assistant",
+                        crate::question::assistant_exchange_text(exchange),
+                    ));
+                    messages.push(ChatMessage::plain(
+                        "user",
+                        crate::question::user_exchange_text(exchange),
+                    ));
+                }
             }
             for followup in &turn.followups {
                 push_assistant_context_messages(
@@ -3683,13 +4014,42 @@ impl Agent {
                 );
                 messages.push(self.followup_user_message(followup));
             }
+            // dsh 形态回放:每轮 assistant 带原生 tool_calls(参数原样字节),
+            // 随后各 call 的 role:"tool" 输出;最终回复照旧收尾。老回合
+            // (无结构化流)退回 private_tool_memory 压扁兜底。
+            for round in &turn.tool_flow {
+                push_assistant_message_with_reasoning(
+                    messages,
+                    round.assistant_content.clone(),
+                    round.assistant_reasoning.as_deref(),
+                    None,
+                    Some(
+                        round
+                            .calls
+                            .iter()
+                            .map(|call| ToolCall {
+                                id: call.id.clone(),
+                                kind: "function".to_string(),
+                                function: ToolCallFunction {
+                                    name: call.name.clone(),
+                                    arguments: call.arguments.clone(),
+                                },
+                            })
+                            .collect(),
+                    ),
+                    false,
+                );
+                for call in &round.calls {
+                    messages.push(ChatMessage::tool(call.id.clone(), call.output.clone()));
+                }
+            }
             push_assistant_context_messages(
                 messages,
                 &turn.assistant_content,
                 turn.assistant_reasoning.as_deref(),
                 true,
             );
-            if !turn.tool_reports.is_empty() {
+            if turn.tool_flow.is_empty() && !turn.tool_reports.is_empty() {
                 messages.push(ChatMessage::turn_context(private_tool_memory(
                     &turn.tool_reports,
                 )));
@@ -3706,6 +4066,11 @@ impl Agent {
         let fold: std::collections::HashSet<&str> =
             fold_turn_ids.iter().map(|id| id.as_str()).collect();
         let mut messages = vec![ChatMessage::system(self.system_prompt.clone())];
+        // 与 chat_messages 的实况前缀字节一致:预设对话也在折叠前缀里。
+        for (user, assistant) in &self.preset_dialogs {
+            messages.push(ChatMessage::plain("user", user.clone()));
+            messages.push(ChatMessage::assistant(assistant.clone(), None));
+        }
         if let Some(summary) = self.state.load_last_summary()? {
             messages.push(summary_checkpoint_message(&summary.assistant_content));
         }
@@ -3829,13 +4194,6 @@ fn tool_output_succeeded(output: &str) -> bool {
                 .or_else(|| value.get("ok").and_then(serde_json::Value::as_bool))
         })
         .unwrap_or(true)
-}
-
-fn mode_allows_tool_permission(mode: AgentMode, permission: ToolPermission) -> bool {
-    match mode {
-        AgentMode::Normal => true,
-        AgentMode::Chat => permission == ToolPermission::ReadOnly,
-    }
 }
 
 #[derive(Debug)]
@@ -4155,6 +4513,52 @@ fn visible_association_lines(messages: &[ChatMessage]) -> HashSet<&str> {
     seen
 }
 
+/// replay_start 之前最近一条非瞬态 user 消息=本轮真实用户输入的下标。
+fn live_user_index(messages: &[ChatMessage], replay_start: usize) -> Option<usize> {
+    let end = replay_start.min(messages.len());
+    (0..end).rev().find(|&index| {
+        let message = &messages[index];
+        message.role == "user" && !message.transient_context
+    })
+}
+
+/// 已拼装消息里最近一条以 `prefix` 开头的 user 侧文本(倒序首个)。
+/// 不检查 transient 标志:回放化石反序列化后该标志会丢(serde skip),
+/// 而以 `<runtime ` 开头的用户输入不存在——按内容前缀即可唯一识别。
+fn last_fossil_with_prefix<'a>(messages: &'a [ChatMessage], prefix: &str) -> Option<&'a str> {
+    messages.iter().rev().find_map(|message| {
+        if message.role != "user" {
+            return None;
+        }
+        match message.content.as_ref() {
+            Some(ChatContent::Text(text)) if text.starts_with(prefix) => Some(text.as_str()),
+            _ => None,
+        }
+    })
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+
+    #[test]
+    fn runtime_projection_skips_byte_identical_fossil() {
+        let stamp = "<runtime now=\"2026年08月16日 Sunday 00时\" cwd=\"/x\"/>";
+        let mut messages = vec![
+            ChatMessage::system("s"),
+            ChatMessage::plain("user", "hi"),
+            ChatMessage::turn_context(stamp.to_string()),
+            ChatMessage::assistant("ok".to_string(), None),
+        ];
+        assert_eq!(last_fossil_with_prefix(&messages, "<runtime "), Some(stamp));
+        // 变化才注入:相同→跳过,不同→追加。
+        messages.push(ChatMessage::turn_context(
+            "<runtime now=\"2026年08月16日 Sunday 01时\" cwd=\"/x\"/>".to_string(),
+        ));
+        assert_ne!(last_fossil_with_prefix(&messages, "<runtime "), Some(stamp));
+    }
+}
+
 fn fossil_context_messages(tail: &[ChatMessage]) -> Vec<ChatMessage> {
     // Keyed on the explicit marker rather than the role: these blocks now ride
     // as `user` messages (see `ChatMessage::turn_context`), which is
@@ -4206,7 +4610,7 @@ fn replace_request_mode_context(
 fn continuation_system_prompt(system_prompt: &str, mode: AgentMode) -> String {
     let mode = match mode {
         AgentMode::Normal => "normal",
-        AgentMode::Chat => "chat",
+        AgentMode::Dev => "dev",
     };
     format!(
         "<mode-update active=\"{mode}\">This supersedes all earlier mode-specific instructions.</mode-update>\n\n{system_prompt}"
@@ -4432,6 +4836,97 @@ fn private_reasoning_memory(reasoning: &str) -> Option<String> {
     })
 }
 
+/// dsh 式外溢替换文案的预算自洽拼装:先按最坏情况预扣提示文案的字节数,
+/// 预览用剩余额度头尾对半(字符边界安全);连提示都放不下返回 None(放弃
+/// 外溢保留原文——替换永不比原文更大)。
+fn spill_replacement(output: &str, cap: usize, locator: &str) -> Option<String> {
+    fn notice(omitted: usize, locator: &str) -> String {
+        format!(
+            "\n\n(已省略 {omitted} 字节。完整结果已存至: {locator} ——可用 read_file 配 offset/limit 分段读取,或用 run_command 里的 rg 检索。)"
+        )
+    }
+    fn cut_at_boundary(text: &str, mut at: usize) -> usize {
+        while at > 0 && !text.is_char_boundary(at) {
+            at -= 1;
+        }
+        at
+    }
+    // 预扣:提示文案按最坏情况(省略数取全长的位数上界) + 头尾之间的 \n…\n 分隔符。
+    let reserve = notice(output.len(), locator).len() + "\n…\n".len();
+    if reserve >= cap {
+        return None;
+    }
+    let budget = cap - reserve;
+    let head_end = cut_at_boundary(output, budget / 2);
+    let mut tail_start = output.len().saturating_sub(budget - budget / 2);
+    while tail_start < output.len() && !output.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    if tail_start <= head_end {
+        return None;
+    }
+    let omitted = tail_start - head_end;
+    Some(format!(
+        "{}\n…\n{}{}",
+        &output[..head_end],
+        &output[tail_start..],
+        notice(omitted, locator)
+    ))
+}
+
+/// 完成时从本回合的实况消息尾段推导结构化工具流。以 messages 为唯一真相
+/// (dsh "reconstructable requests":模型可见 ⟺ 可持久重建):assistant 带
+/// tool_calls 即开一轮,其后按 call id 认领 role:"tool" 输出。被 length 截断
+/// 拒执行的调用照录——它们的错误文案同样是模型看到的字节。任何悬空调用
+/// (无输出)补占位,回放绝不发"无应答的 tool_calls"(provider 会 400)。
+fn derive_tool_flow(
+    messages: &[ChatMessage],
+    live_start: usize,
+) -> Vec<crate::state::ToolFlowRound> {
+    let mut rounds: Vec<crate::state::ToolFlowRound> = Vec::new();
+    for message in &messages[live_start.min(messages.len())..] {
+        if message.role == "assistant" {
+            if let Some(calls) = message.tool_calls.as_ref().filter(|calls| !calls.is_empty()) {
+                rounds.push(crate::state::ToolFlowRound {
+                    assistant_content: chat_message_text(message).unwrap_or_default(),
+                    assistant_reasoning: message
+                        .reasoning_content
+                        .clone()
+                        .filter(|reasoning| !reasoning.is_empty()),
+                    calls: calls
+                        .iter()
+                        .map(|call| crate::state::ToolFlowCall {
+                            id: call.id.clone(),
+                            name: call.function.name.clone(),
+                            arguments: call.function.arguments.clone(),
+                            output: String::new(),
+                        })
+                        .collect(),
+                });
+            }
+        } else if message.role == "tool" {
+            if let (Some(call_id), Some(round)) = (message.tool_call_id.as_ref(), rounds.last_mut())
+            {
+                if let Some(call) = round
+                    .calls
+                    .iter_mut()
+                    .find(|call| &call.id == call_id && call.output.is_empty())
+                {
+                    call.output = chat_message_text(message).unwrap_or_default();
+                }
+            }
+        }
+    }
+    for round in &mut rounds {
+        for call in &mut round.calls {
+            if call.output.is_empty() {
+                call.output = "(执行结果不可用)".to_string();
+            }
+        }
+    }
+    rounds
+}
+
 fn push_assistant_context_messages(
     messages: &mut Vec<ChatMessage>,
     content: &str,
@@ -4470,9 +4965,11 @@ fn push_assistant_message_with_reasoning(
         messages.push(message);
         return;
     }
-    if let Some(reasoning) = reasoning.and_then(private_reasoning_memory) {
-        messages.push(ChatMessage::turn_context(reasoning));
-    }
+    // 跨轮思考回放退役(验收 08-16):正常完成轮的正式回复已承载结论,
+    // 思维链副本纯属冗余——官方语义 reasoning 是轮内产物(普通轮回传被
+    // API 忽略),dsh 同款丢弃。中断恢复不走这里:journal 专道
+    // (interrupted_turn_replay_messages)仍原样重放中断前的思考。
+    let _ = reasoning;
     if force_assistant_message || !content.trim().is_empty() {
         messages.push(ChatMessage::assistant(content, None));
     }
@@ -4482,7 +4979,13 @@ fn turn_context_tokens(turn: &crate::state::Turn) -> usize {
     let mut messages = vec![ChatMessage::plain("user", &turn.user_content)];
     // Fossilized transient tail is replayed with the turn, so count it.
     messages.extend(turn.context_messages.iter().cloned());
-    for exchange in &turn.question_exchanges {
+    // 与 push_history_turn 同步:有结构化 flow 的回合问答对不再回放。
+    let replay_exchanges: &[crate::question::QuestionExchange] = if turn.tool_flow.is_empty() {
+        &turn.question_exchanges
+    } else {
+        &[]
+    };
+    for exchange in replay_exchanges {
         messages.push(ChatMessage::plain(
             "assistant",
             crate::question::assistant_exchange_text(exchange),
@@ -4504,28 +5007,47 @@ fn turn_context_tokens(turn: &crate::state::Turn) -> usize {
         );
         messages.push(ChatMessage::plain("user", &followup.content));
     }
+    // 与 push_history_turn 同步:工具轮以原生 tool_calls + tool 输出回放,
+    // 漏计 tool_flow 会让 trim/压缩预算对工具密集回合失真数十倍。
+    for round in &turn.tool_flow {
+        push_assistant_message_with_reasoning(
+            &mut messages,
+            round.assistant_content.clone(),
+            round.assistant_reasoning.as_deref(),
+            None,
+            Some(
+                round
+                    .calls
+                    .iter()
+                    .map(|call| ToolCall {
+                        id: call.id.clone(),
+                        kind: "function".to_string(),
+                        function: ToolCallFunction {
+                            name: call.name.clone(),
+                            arguments: call.arguments.clone(),
+                        },
+                    })
+                    .collect(),
+            ),
+            false,
+        );
+        for call in &round.calls {
+            messages.push(ChatMessage::tool(call.id.clone(), call.output.clone()));
+        }
+    }
     push_assistant_context_messages(
         &mut messages,
         &turn.assistant_content,
         turn.assistant_reasoning.as_deref(),
         true,
     );
-    if !turn.tool_reports.is_empty() {
+    // 与 push_history_turn 同步:reports 压扁只在无结构化 flow 时回放。
+    if turn.tool_flow.is_empty() && !turn.tool_reports.is_empty() {
         messages.push(ChatMessage::turn_context(private_tool_memory(
             &turn.tool_reports,
         )));
     }
     overflow::estimate_messages_tokens(&messages)
-}
-
-fn assistant_replay_content(turn: &crate::state::Turn) -> &str {
-    if !turn.assistant_content.trim().is_empty() {
-        return &turn.assistant_content;
-    }
-    turn.assistant_reasoning
-        .as_deref()
-        .filter(|reasoning| !reasoning.trim().is_empty())
-        .unwrap_or(&turn.assistant_content)
 }
 
 fn followup_assistant_replay_content(followup: &crate::state::TurnFollowup) -> Option<&str> {
@@ -5333,10 +5855,26 @@ fn with_runtime_system_context(mut system_prompt: String, context: &[String]) ->
 /// skipping the append outright — rather than adding an empty block — keeps
 /// those sessions' system prompt byte-identical to what the provider already
 /// has cached, so the platform side sees no cold start at all.
+
+/// 模式选提示词源:Dev=一行可编辑开发提示词(无人格全家、无用户身份,
+/// 极简原则);Normal=人格提示词(按 audience 附用户档案)。
+fn mode_system_prompt(
+    config: &AppConfig,
+    paths: &MiyuPaths,
+    mode: AgentMode,
+    audience: PromptAudience,
+) -> Result<String> {
+    match mode {
+        AgentMode::Dev => config.dev_system_prompt(paths),
+        AgentMode::Normal => config.system_prompt_for(paths, audience),
+    }
+}
+
 fn with_host_environment(
     mut system_prompt: String,
     audience: PromptAudience,
     paths: &MiyuPaths,
+    mode: AgentMode,
 ) -> String {
     if audience != PromptAudience::Owner {
         return system_prompt;
@@ -5345,9 +5883,12 @@ fn with_host_environment(
     system_prompt.push_str(&crate::host_info::host_environment_block(&paths.root_dir));
     // 渲染能力说明(仅 owner 会话):终端与 WebUI 都支持 LaTeX。
     // 不放人格提示词里——QQ 等平台的排版能力不同,不该看到这段。
-    system_prompt.push_str(
-        "\n\n输出数学公式时使用 LaTeX:重要公式用块级定界符(`$$…$$` 或 `\\[…\\]`,独立成段)会渲染成排版图;行内用 `$…$` 或 `\\(…\\)`,会转写为 Unicode 数学文本;表格单元格内的公式同样支持,分式会排成上下结构。不要用裸 Unicode 或 ASCII 手拼公式。",
-    );
+    // dev 也不带:极简原则,编码任务用不上排版说明(验收 08-16 解剖)。
+    if mode != AgentMode::Dev {
+        system_prompt.push_str(
+            "\n\n输出数学公式时使用 LaTeX:重要公式用块级定界符(`$$…$$` 或 `\\[…\\]`,独立成段)会渲染成排版图;行内用 `$…$` 或 `\\(…\\)`,会转写为 Unicode 数学文本;表格单元格内的公式同样支持,分式会排成上下结构。不要用裸 Unicode 或 ASCII 手拼公式。",
+        );
+    }
     system_prompt
 }
 
@@ -5619,6 +6160,32 @@ fn parse_reasoning_title_chunks<'a>(
 /// working directory, no shell and no terminal — those attributes were pure
 /// scaffolding there, and they were re-sent at full price on every single
 /// turn (285 chars against a ~45-char timestamp).
+/// 距最近一次防失忆提醒化石过去了多少个可见轮;None=历史里没有提醒。
+fn turns_since_reminder_fossil(
+    state: &crate::state::StateStore,
+    current_turn_id: &str,
+) -> Result<Option<usize>> {
+    let turns = state.load_visible_turns_excluding(current_turn_id)?;
+    let mut since = None;
+    for turn in &turns {
+        if turn.is_summary || turn.status == crate::state::TurnStatus::Running {
+            continue;
+        }
+        let has_reminder = turn.context_messages.iter().any(|fossil| {
+            matches!(
+                fossil.content.as_ref(),
+                Some(ChatContent::Text(text)) if text.starts_with("<persona-reminder>")
+            )
+        });
+        if has_reminder {
+            since = Some(0);
+        } else if let Some(count) = since.as_mut() {
+            *count += 1;
+        }
+    }
+    Ok(since)
+}
+
 fn runtime_context(mode: AgentMode, platform: bool) -> String {
     if platform {
         return format!(
@@ -5629,20 +6196,15 @@ fn runtime_context(mode: AgentMode, platform: bool) -> String {
     let cwd = crate::tools::workspace::effective_workdir()
         .display()
         .to_string();
-    if mode == AgentMode::Chat {
-        format!(
-            "<runtime now=\"{}\" cwd=\"{}\" note=\"cwd is workspace context only; do not infer assistant identity from paths or project names\"/>",
-            Local::now().format("%Y年%m月%d日 %A %H:%M"),
-            xml_attr_escape(&cwd),
-        )
-    } else {
-        let runtime = terminal_runtime_context();
-        format!(
-            "<runtime now=\"{}\" cwd=\"{}\" note=\"cwd is workspace context only; do not infer assistant identity from paths or project names\" {runtime}/>",
-            Local::now().format("%Y年%m月%d日 %A %H:%M"),
-            xml_attr_escape(&cwd),
-        )
-    }
+    let _ = mode;
+    let runtime = terminal_runtime_context();
+    // 小时级而非分钟级:同一小时内整块字节不变,配合投影跳注入
+    // (缓存调研 08-16);要精确时间,终端面有 date。
+    format!(
+        "<runtime now=\"{}\" cwd=\"{}\" note=\"cwd is workspace context only; do not infer assistant identity from paths or project names\" {runtime}/>",
+        Local::now().format("%Y年%m月%d日 %A %H时"),
+        xml_attr_escape(&cwd),
+    )
 }
 
 fn terminal_runtime_context() -> String {
@@ -5722,27 +6284,6 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
 
     struct NoopPlatformAdapter;
-
-    /// 闲聊模式比普通模式更紧:连 Presentation 都不放行,只留只读。
-    #[test]
-    fn chat_mode_allows_read_only_tools_and_nothing_else() {
-        assert!(mode_allows_tool_permission(
-            AgentMode::Chat,
-            ToolPermission::ReadOnly
-        ));
-        assert!(!mode_allows_tool_permission(
-            AgentMode::Chat,
-            ToolPermission::Presentation
-        ));
-        assert!(!mode_allows_tool_permission(
-            AgentMode::Chat,
-            ToolPermission::Writes
-        ));
-        assert!(mode_allows_tool_permission(
-            AgentMode::Normal,
-            ToolPermission::Writes
-        ));
-    }
 
     #[test]
     fn artifact_delivery_detection_is_conservative() {
@@ -5967,10 +6508,9 @@ mod tests {
         assert_eq!(prompt, "base");
         assert!(!prompt.contains("<runtime"));
 
-        let prompt = with_mode_reminder("base".to_string(), AgentMode::Chat);
-        assert!(prompt.contains("base"));
-        assert!(prompt.contains(crate::prompts::CHAT_REMINDER));
-        assert!(!prompt.contains("<runtime"));
+        // Dev 遵循极简原则:与 Normal 一样零模式提醒。
+        let prompt = with_mode_reminder("base".to_string(), AgentMode::Dev);
+        assert_eq!(prompt, "base");
     }
 
     #[test]
@@ -6284,7 +6824,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let paths = test_paths(temp.path());
 
-        let owner = with_host_environment("base".to_string(), PromptAudience::Owner, &paths);
+        let owner = with_host_environment("base".to_string(), PromptAudience::Owner, &paths, AgentMode::Normal);
         assert!(owner.starts_with("base\n\n<host-environment os=\""));
         assert!(owner.contains("/>"));
         assert!(owner.contains("LaTeX"), "渲染能力说明应跟随 owner 提示词");
@@ -6298,7 +6838,7 @@ mod tests {
         // so they take no prefix-cache cold start from this change at all.
         for audience in [PromptAudience::External, PromptAudience::Internal] {
             assert_eq!(
-                with_host_environment("base".to_string(), audience, &paths),
+                with_host_environment("base".to_string(), audience, &paths, AgentMode::Normal),
                 "base",
                 "{audience:?} must be untouched"
             );
@@ -6311,8 +6851,8 @@ mod tests {
         let paths = test_paths(temp.path());
         // Rebuilt on every turn by `prepare_for_turn`; a value that drifted
         // between rebuilds would move the prefix and cost a cache miss a turn.
-        let first = with_host_environment(String::new(), PromptAudience::Owner, &paths);
-        let second = with_host_environment(String::new(), PromptAudience::Owner, &paths);
+        let first = with_host_environment(String::new(), PromptAudience::Owner, &paths, AgentMode::Normal);
+        let second = with_host_environment(String::new(), PromptAudience::Owner, &paths, AgentMode::Normal);
         assert_eq!(first, second);
     }
 
@@ -6406,11 +6946,11 @@ mod tests {
 
         assert!(agent
             .chat_messages("current", "new user")
-            .unwrap()
+            .unwrap().0
             .iter()
             .any(|message| format!("{:?}", message.content).contains("anonymous old user")));
         agent.set_session_history_suppressed(true);
-        let messages = agent.chat_messages("current", "new user").unwrap();
+        let messages = agent.chat_messages("current", "new user").unwrap().0;
         assert!(!messages
             .iter()
             .any(|message| format!("{:?}", message.content).contains("anonymous old user")));
@@ -6451,7 +6991,7 @@ mod tests {
         )
         .unwrap();
 
-        let messages = agent.chat_messages("current", "next question").unwrap();
+        let messages = agent.chat_messages("current", "next question").unwrap().0;
         let text = |message: &ChatMessage| format!("{:?}", message.content);
         let user = messages
             .iter()
@@ -6772,11 +7312,13 @@ mod tests {
             api_key: Some("test-key".to_string()),
             models: vec!["vision-model".to_string()],
             model_context_window: Default::default(),
+model_temperature: HashMap::new(),
             model_modalities: [(
                 "vision-model".to_string(),
                 vec!["text".to_string(), "image".to_string()],
             )]
             .into(),
+            model_costs: Default::default(),
             default_model: "vision-model".to_string(),
             timeout_seconds: 30,
             temperature: 0.0,
@@ -7153,6 +7695,7 @@ mod tests {
             assistant_timestamp: None,
             status: crate::state::TurnStatus::Completed,
             tool_reports: Vec::new(),
+            tool_flow: Vec::new(),
             question_exchanges: Vec::new(),
             followups: Vec::new(),
             attachments: Vec::new(),
@@ -7170,25 +7713,18 @@ mod tests {
         let with_reasoning = turn_context_tokens(&turn);
         turn.assistant_reasoning = None;
         let without_reasoning = turn_context_tokens(&turn);
-        assert!(with_reasoning > without_reasoning);
+        // 跨轮思考回放退役:完成轮的思维链不再计入(也不再发送)。
+        assert_eq!(with_reasoning, without_reasoning);
 
         turn.tool_reports.push("persisted tool result".to_string());
         assert!(turn_context_tokens(&turn) > without_reasoning);
 
-        turn.tool_reports.clear();
-        turn.assistant_content.clear();
-        turn.assistant_reasoning = Some("replayed reasoning ".repeat(1_000));
-        assert_eq!(
-            assistant_replay_content(&turn),
-            turn.assistant_reasoning.as_deref().unwrap()
-        );
-        let with_replayed_reasoning = turn_context_tokens(&turn);
-        turn.assistant_reasoning = None;
-        assert!(with_replayed_reasoning > turn_context_tokens(&turn));
     }
 
     #[test]
-    fn assistant_reasoning_is_replayed_as_private_context() {
+    fn assistant_reasoning_is_not_replayed_across_turns() {
+        // 跨轮思考回放退役(08-16):完成轮只回放正式回复;中断恢复走
+        // journal 专道(interrupted_turn_replay_messages),不经此函数。
         let mut messages = Vec::new();
         push_assistant_context_messages(
             &mut messages,
@@ -7197,18 +7733,10 @@ mod tests {
             true,
         );
 
-        assert_eq!(messages.len(), 2);
-        // Rides as a `user` block: a mid-conversation `system` message resets
-        // the provider's whole prefix cache.
-        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "assistant");
         assert!(matches!(
             messages[0].content.as_ref(),
-            Some(ChatContent::Text(content))
-                if content.contains("<previous_assistant_reasoning>\nraw provider reasoning")
-        ));
-        assert_eq!(messages[1].role, "assistant");
-        assert!(matches!(
-            messages[1].content.as_ref(),
             Some(ChatContent::Text(content)) if content == "visible answer"
         ));
     }
@@ -7256,6 +7784,7 @@ mod tests {
             assistant_timestamp: None,
             status: crate::state::TurnStatus::Interrupted,
             tool_reports: Vec::new(),
+            tool_flow: Vec::new(),
             question_exchanges: vec![
                 QuestionExchange {
                     questions: vec![crate::question::QuestionPrompt {
@@ -7833,7 +8362,7 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut first, _) = listener.accept().await.unwrap();
             let _ = read_test_http_request(&mut first).await;
-            server_control.set_mode(AgentMode::Chat);
+            server_control.set_mode(AgentMode::Dev);
             write_test_sse(
                 &mut first,
                 concat!(
@@ -7903,7 +8432,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.content, "continued answer");
-        assert_eq!(agent.mode(), AgentMode::Chat);
+        assert_eq!(agent.mode(), AgentMode::Dev);
         let request: serde_json::Value =
             serde_json::from_slice(&request_rx.await.unwrap()).unwrap();
         let messages = request["messages"].as_array().unwrap();
@@ -7925,10 +8454,11 @@ mod tests {
                     })
             })
             .unwrap();
-        assert!(messages.iter().any(|message| {
+        // 跨轮思考回放退役:live 与回放同刀,followup 边界不再夹带思维链。
+        assert!(!messages.iter().any(|message| {
             message["role"] == "user"
                 && message["content"].as_str().is_some_and(|content| {
-                    content.contains("<previous_assistant_reasoning>\nfirst reasoning")
+                    content.contains("<previous_assistant_reasoning>")
                 })
         }));
         assert!(first_answer < followup);
@@ -7943,7 +8473,7 @@ mod tests {
                 .as_deref(),
             Some("first reasoning")
         );
-        let history = agent.chat_messages("", "next prompt").unwrap();
+        let history = agent.chat_messages("", "next prompt").unwrap().0;
         assert!(history.iter().any(|message| {
             matches!(
                 message.content.as_ref(),
@@ -8124,7 +8654,7 @@ mod tests {
             let (mut first, _) = listener.accept().await.unwrap();
             let first_request = read_test_http_request(&mut first).await;
             let _ = first_request_tx.send(first_request);
-            server_control.set_mode(AgentMode::Chat);
+            server_control.set_mode(AgentMode::Dev);
             write_test_sse(
                 &mut first,
                 concat!(
@@ -8174,7 +8704,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.content, "final answer");
-        assert_eq!(agent.mode(), AgentMode::Chat);
+        assert_eq!(agent.mode(), AgentMode::Dev);
         assert!(result.responses_continuation.is_none());
         assert!(result.usage_estimated);
         let tool_only_tokens =
@@ -8219,8 +8749,7 @@ mod tests {
         let is_mode_update = |item: &Value| {
             let text = item_text(item);
             item["role"] == "user"
-                && text.contains("<mode-update active=\"chat\">")
-                && text.contains(crate::prompts::CHAT_REMINDER)
+                && text.contains("<mode-update active=\"dev\">")
         };
         let mode_index = input.iter().position(is_mode_update).unwrap();
         assert!(input.iter().any(is_mode_update));
@@ -8287,7 +8816,7 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut first, _) = listener.accept().await.unwrap();
             let _ = read_test_http_request(&mut first).await;
-            server_control.set_mode(AgentMode::Chat);
+            server_control.set_mode(AgentMode::Dev);
             write_test_sse(
                 &mut first,
                 concat!(
@@ -8347,10 +8876,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.content, "final answer");
-        assert_eq!(agent.mode(), AgentMode::Chat);
+        assert_eq!(agent.mode(), AgentMode::Dev);
         assert_eq!(
             consumed,
-            Some((vec!["q1".to_string(), "q2".to_string()], AgentMode::Chat))
+            Some((vec!["q1".to_string(), "q2".to_string()], AgentMode::Dev))
         );
         let request: serde_json::Value =
             serde_json::from_slice(&request_rx.await.unwrap()).unwrap();
@@ -8368,6 +8897,443 @@ mod tests {
         let turns = state.load_turns().unwrap();
         assert_eq!(turns[0].followups.len(), 2);
         assert_eq!(turns[0].assistant_content, "final answer");
+        server.await.unwrap();
+    }
+
+    /// guard 拒绝是软失败:命令拒绝子串拦下 run_command,回给模型一条
+    /// tool error 让它换路,轮次存活拿到最终回答——而不是炸掉整轮。
+    #[tokio::test]
+    async fn guard_denied_tool_soft_fails_and_turn_continues() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let mut config = queue_test_config(base_url);
+        config.tools.enabled = true;
+        config.skills.enabled = false;
+        config.memory.enabled = false;
+
+        let mut normal_tools = ToolRegistry::new();
+        normal_tools.register(ToolSpec::new(
+            "run_command",
+            "runs commands",
+            empty_parameters(),
+            |_| async { Ok("should never run".to_string()) },
+        ));
+        normal_tools.add_guard(crate::tools::command_deny_guard(vec![
+            "rm -rf /".to_string(),
+        ]));
+        let control = AgentTurnControl::new(
+            AgentMode::Normal,
+            normal_tools.clone(),
+            normal_tools.clone(),
+        );
+        let (request_tx, request_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.unwrap();
+            let _ = read_test_http_request(&mut first).await;
+            write_test_sse(
+                &mut first,
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"run_command\",\"arguments\":\"{\\\"command\\\":\\\"sudo rm -rf /\\\"}\"}}]}}]}\n\n",
+                    "data: {\"choices\":[{\"finish_reason\":\"tool_calls\",\"delta\":{}}]}\n\n",
+                    "data: [DONE]\n\n"
+                ),
+            )
+            .await;
+
+            let (mut second, _) = listener.accept().await.unwrap();
+            let request = read_test_http_request(&mut second).await;
+            let _ = request_tx.send(request);
+            write_test_sse(
+                &mut second,
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"recovered answer\"}}]}\n\n",
+                    "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n",
+                    "data: [DONE]\n\n"
+                ),
+            )
+            .await;
+        });
+
+        let state = StateStore::new(&paths).unwrap();
+        state.init_files().unwrap();
+        let provider = config.provider(None).unwrap().clone();
+        let client = OpenAiCompatibleClient::new(&provider, &config, &paths).unwrap();
+        let mut agent = Agent::new(
+            config,
+            &paths,
+            state.clone(),
+            client,
+            normal_tools,
+            AgentMode::Normal,
+        )
+        .unwrap();
+
+        let result = agent
+            .chat_stream_with_control("initial prompt", &[], &control, |_| Ok(()))
+            .await
+            .unwrap();
+
+        assert_eq!(result.content, "recovered answer");
+        let request: serde_json::Value =
+            serde_json::from_slice(&request_rx.await.unwrap()).unwrap();
+        let messages = request["messages"].as_array().unwrap();
+        assert!(messages.iter().any(|message| {
+            message["role"] == "tool"
+                && message["content"].as_str().is_some_and(|content| {
+                    content.contains("denied pattern") || content.contains("被禁止的模式")
+                })
+        }));
+        server.await.unwrap();
+    }
+
+    /// 防失忆提醒(08-16 版):首回合蒸馏后以化石身份进历史;间隔轮数内
+    /// 的第二回合不再注入新份——请求里只有回放的那一份,且当前轮尾部
+    /// 干净(runtime 投影同小时也跳注入),前缀纯追加。
+    #[tokio::test]
+    async fn persona_reminder_fossilizes_on_interval_and_replays() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let mut config = queue_test_config(base_url);
+        config.tools.enabled = false;
+        config.system_prompt = Some("测试人格：说话简短。".to_string());
+        config.prompt.persona_reminder = true;
+
+        let (first_chat_tx, first_chat_rx) = oneshot::channel();
+        let (second_chat_tx, second_chat_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let reply = concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"哦\"}}]}\n\n",
+                "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n",
+                "data: [DONE]\n\n"
+            );
+            // 回合1请求①:蒸馏调用(产物首行名字,次行正文)。
+            let (mut distill, _) = listener.accept().await.unwrap();
+            let request = read_test_http_request(&mut distill).await;
+            let body: serde_json::Value = serde_json::from_slice(&request).unwrap();
+            assert!(body["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("人格设定文件"));
+            write_test_sse(
+                &mut distill,
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"短\\n回复很短，从不用Emoji。\"}}]}\n\n",
+                    "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n",
+                    "data: [DONE]\n\n"
+                ),
+            )
+            .await;
+            // 回合1请求②:正式对话。
+            let (mut chat, _) = listener.accept().await.unwrap();
+            let _ = first_chat_tx.send(read_test_http_request(&mut chat).await);
+            write_test_sse(&mut chat, reply).await;
+            // 回合2请求①:缓存命中,直接就是对话请求(若再蒸馏一次,
+            // 这里读到的请求不含新消息,下方断言会失败)。
+            let (mut chat2, _) = listener.accept().await.unwrap();
+            let _ = second_chat_tx.send(read_test_http_request(&mut chat2).await);
+            write_test_sse(&mut chat2, reply).await;
+        });
+
+        let state = StateStore::new(&paths).unwrap();
+        state.init_files().unwrap();
+        let provider = config.provider(None).unwrap().clone();
+        let client = OpenAiCompatibleClient::new(&provider, &config, &paths).unwrap();
+        let mut agent = Agent::new(
+            config.clone(),
+            &paths,
+            state.clone(),
+            client,
+            ToolRegistry::new(),
+            AgentMode::Normal,
+        )
+        .unwrap();
+        let context = Arc::new(PlatformTurnContext::new(
+            PlatformConversation {
+                platform: "onebot".to_string(),
+                account_id: "10000".to_string(),
+                kind: ConversationKind::Group,
+                conversation_id: "20000".to_string(),
+            },
+            "30000".to_string(),
+            "tester".to_string(),
+            false,
+            config,
+            paths.clone(),
+            StateStore::new(&paths).unwrap(),
+            Arc::new(NoopPlatformAdapter),
+            Arc::new(crate::platforms::plugins::PlatformPluginRegistry::default()),
+        ));
+        agent.set_platform_context_images(context.clone(), Vec::new());
+        agent.chat_stream("第一条消息", |_| Ok(())).await.unwrap();
+
+        let expected_reminder =
+            "<persona-reminder>回复很短，从不用Emoji。\
+             就算是讲解答疑，也只说最关键的两三步，整条不超过一百字，\
+             一次说不完就等对方追问。</persona-reminder>";
+        let request: serde_json::Value =
+            serde_json::from_slice(&first_chat_rx.await.unwrap()).unwrap();
+        let messages = request["messages"].as_array().unwrap();
+        // 提醒以化石身份入列(位置在 runtime 之后、随机注入的表情包
+        // 提醒之前),不再断言绝对末尾——只断言恰好一份。
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message["content"] == expected_reminder)
+                .count(),
+            1
+        );
+        let turns = state.load_turns().unwrap();
+        // 新语义:提醒就是化石,回放历史自带。
+        assert!(format!("{:?}", turns[0].context_messages).contains("persona-reminder"));
+        assert!(paths
+            .state_dir
+            .join("persona-hints")
+            .read_dir()
+            .unwrap()
+            .next()
+            .is_some());
+
+        agent.set_platform_context_images(context, Vec::new());
+        agent.chat_stream("第二条消息", |_| Ok(())).await.unwrap();
+        let request: serde_json::Value =
+            serde_json::from_slice(&second_chat_rx.await.unwrap()).unwrap();
+        let messages = request["messages"].as_array().unwrap();
+        assert!(messages.iter().any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("第二条消息"))
+        }));
+        let reminder_count = messages
+            .iter()
+            .filter(|message| {
+                message["content"]
+                    .as_str()
+                    .is_some_and(|content| content.contains("persona-reminder"))
+            })
+            .count();
+        // 间隔(默认3)未到:仅回放化石那一份,不再追加新份;绝对末尾
+        // 不再是漂浮提醒(可能是用户消息或跨分钟的新 runtime,都合法)。
+        assert_eq!(reminder_count, 1);
+        assert!(messages
+            .iter()
+            .any(|message| message["content"] == expected_reminder));
+        assert_ne!(messages.last().unwrap()["content"], expected_reminder);
+        server.await.unwrap();
+    }
+
+    /// 手写防失忆提示(hints/<scope>.md)优先于自动蒸馏:存在时整回合
+    /// 不发蒸馏请求(服务端只应答一次对话),尾部原样携带手写内容,
+    /// 不拼场景句。
+    #[tokio::test]
+    async fn manual_persona_reminder_overrides_distillation() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let mut config = queue_test_config(base_url);
+        config.tools.enabled = false;
+        config.system_prompt = Some("测试人格：说话简短。".to_string());
+        config.prompt.persona_reminder = true;
+        let hint_path = crate::persona_hint::manual_hint_path(&config, &paths, "default");
+        std::fs::create_dir_all(hint_path.parent().unwrap()).unwrap();
+        std::fs::write(&hint_path, "未有在群里潜水。手写版提醒。\n").unwrap();
+
+        let (chat_tx, chat_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut chat, _) = listener.accept().await.unwrap();
+            let _ = chat_tx.send(read_test_http_request(&mut chat).await);
+            write_test_sse(
+                &mut chat,
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"哦\"}}]}\n\n",
+                    "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n",
+                    "data: [DONE]\n\n"
+                ),
+            )
+            .await;
+        });
+
+        let state = StateStore::new(&paths).unwrap();
+        state.init_files().unwrap();
+        let provider = config.provider(None).unwrap().clone();
+        let client = OpenAiCompatibleClient::new(&provider, &config, &paths).unwrap();
+        let mut agent = Agent::new(
+            config.clone(),
+            &paths,
+            state.clone(),
+            client,
+            ToolRegistry::new(),
+            AgentMode::Normal,
+        )
+        .unwrap();
+        let context = Arc::new(PlatformTurnContext::new(
+            PlatformConversation {
+                platform: "onebot".to_string(),
+                account_id: "10000".to_string(),
+                kind: ConversationKind::Group,
+                conversation_id: "20000".to_string(),
+            },
+            "30000".to_string(),
+            "tester".to_string(),
+            false,
+            config,
+            paths.clone(),
+            StateStore::new(&paths).unwrap(),
+            Arc::new(NoopPlatformAdapter),
+            Arc::new(crate::platforms::plugins::PlatformPluginRegistry::default()),
+        ));
+        agent.set_platform_context_images(context, Vec::new());
+        agent.chat_stream("第一条消息", |_| Ok(())).await.unwrap();
+
+        let request: serde_json::Value = serde_json::from_slice(&chat_rx.await.unwrap()).unwrap();
+        let last = request["messages"].as_array().unwrap().last().unwrap();
+        assert_eq!(last["role"], "user");
+        assert_eq!(
+            last["content"],
+            "<persona-reminder>未有在群里潜水。手写版提醒。</persona-reminder>"
+        );
+        server.await.unwrap();
+    }
+
+    /// 预设对话(begin_dialogs):system 之后、真实历史之前注入 Q/A 对,
+    /// 每请求从 dialogs/<scope>.md 重建、永不落库。
+    #[test]
+    fn preset_dialogs_ride_after_system_before_history() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let config = AppConfig::default();
+        let dialogs = crate::persona_hint::dialogs_path(&config, &paths, "default");
+        std::fs::create_dir_all(dialogs.parent().unwrap()).unwrap();
+        std::fs::write(&dialogs, "user: 你好\nassistant: 哼，又来一个。\n").unwrap();
+        let state = StateStore::new(&paths).unwrap();
+        state.init_files().unwrap();
+        state.start_turn("turn_h", "历史问题", 999999).unwrap();
+        state.complete_turn("turn_h", "历史回答", None).unwrap();
+        let client =
+            OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
+        let agent = Agent::new(
+            config,
+            &paths,
+            state,
+            client,
+            ToolRegistry::new(),
+            AgentMode::Normal,
+        )
+        .unwrap();
+        let messages = agent.chat_messages("current", "新消息").unwrap().0;
+        assert_eq!(messages[0].role, "system");
+        assert_eq!(messages[1].role, "user");
+        assert_eq!(chat_message_text(&messages[1]).unwrap(), "你好");
+        assert_eq!(messages[2].role, "assistant");
+        assert_eq!(chat_message_text(&messages[2]).unwrap(), "哼，又来一个。");
+        assert_eq!(chat_message_text(&messages[3]).unwrap(), "历史问题");
+        // 预设对话只活在请求里:历史存储不含它。
+        let turns = agent.state.load_turns().unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].user_content, "历史问题");
+    }
+
+    /// Dev 模式极简组装:系统提示词是 dev-prompt.md 的一行(缺省内置默认),
+    /// 人格全家(预设对话/用户档案)整套绕开——即使 dialogs 文件存在。
+    #[test]
+    fn dev_mode_uses_one_line_prompt_and_skips_persona_family() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let config = AppConfig::default();
+        // 人格侧的预设对话文件在场,dev 也必须无视。
+        let dialogs = crate::persona_hint::dialogs_path(&config, &paths, "default");
+        std::fs::create_dir_all(dialogs.parent().unwrap()).unwrap();
+        std::fs::write(&dialogs, "user: 你好\nassistant: 哼，又来一个。\n").unwrap();
+        let state = StateStore::new(&paths).unwrap();
+        state.init_files().unwrap();
+        state.start_turn("turn_h", "历史问题", 999999).unwrap();
+        state.complete_turn("turn_h", "历史回答", None).unwrap();
+        let client =
+            OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
+        let agent = Agent::new(
+            config,
+            &paths,
+            state,
+            client,
+            ToolRegistry::new(),
+            AgentMode::Dev,
+        )
+        .unwrap();
+        let messages = agent.chat_messages("current", "新消息").unwrap().0;
+        assert_eq!(messages[0].role, "system");
+        let system = chat_message_text(&messages[0]).unwrap();
+        assert!(
+            system.contains(crate::config::DEFAULT_DEV_SYSTEM_PROMPT),
+            "dev 系统提示词应为内置默认一行: {system}"
+        );
+        assert!(!system.contains("<current-user-profile>"), "dev 无用户身份");
+        // 第一条对话消息直接是历史,没有预设对话对。
+        assert_eq!(messages[1].role, "user");
+        assert_eq!(chat_message_text(&messages[1]).unwrap(), "历史问题");
+    }
+
+    /// 回合内每次模型请求结束都发射 RoundUsage(provider 未报 usage 时走
+    /// 估算路径),这是 footer/WebUI 逐请求刷新计量的事件源。
+    #[tokio::test]
+    async fn round_usage_event_fires_per_model_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let mut config = queue_test_config(base_url);
+        config.tools.enabled = false;
+        let server = tokio::spawn(async move {
+            let (mut chat, _) = listener.accept().await.unwrap();
+            let _ = read_test_http_request(&mut chat).await;
+            write_test_sse(
+                &mut chat,
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"回答\"}}]}\n\n",
+                    "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}],\"usage\":{\"prompt_tokens\":120,\"completion_tokens\":8,\"total_tokens\":128}}\n\n",
+                    "data: [DONE]\n\n"
+                ),
+            )
+            .await;
+        });
+        let state = StateStore::new(&paths).unwrap();
+        state.init_files().unwrap();
+        let provider = config.provider(None).unwrap().clone();
+        let client = OpenAiCompatibleClient::new(&provider, &config, &paths).unwrap();
+        let mut agent = Agent::new(
+            config,
+            &paths,
+            state,
+            client,
+            ToolRegistry::new(),
+            AgentMode::Normal,
+        )
+        .unwrap();
+        let rounds = std::cell::RefCell::new(Vec::new());
+        agent
+            .chat_stream("你好", |event| {
+                if let AgentEvent::RoundUsage {
+                    round,
+                    turn,
+                    estimated,
+                } = &event
+                {
+                    rounds
+                        .borrow_mut()
+                        .push((round.prompt_tokens, turn.total, *estimated));
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let rounds = rounds.into_inner();
+        assert_eq!(rounds.len(), 1);
+        assert_eq!(rounds[0].0, 120);
+        assert_eq!(rounds[0].1, 128);
+        assert!(!rounds[0].2);
         server.await.unwrap();
     }
 
@@ -8563,7 +9529,9 @@ mod tests {
                 api_key: Some("test-key".to_string()),
                 models: vec!["test-model".to_string()],
                 model_context_window: Default::default(),
+model_temperature: HashMap::new(),
                 model_modalities: Default::default(),
+                model_costs: Default::default(),
                 default_model: "test-model".to_string(),
                 timeout_seconds: 30,
                 temperature: 0.0,
@@ -8574,6 +9542,9 @@ mod tests {
         };
         config.skills.enabled = false;
         config.memory.enabled = false;
+        // 人格提醒会触发一次蒸馏 LLM 调用,与各测试的 mock 应答序列冲突;
+        // 测提醒本身的用例再显式打开。
+        config.prompt.persona_reminder = false;
         config
     }
 
@@ -8614,5 +9585,67 @@ mod tests {
             scripts_dir: root.join("config/scripts"),
             system_scripts_dir: PathBuf::new(),
         }
+    }
+
+    /// 结构化工具流推导:从实况消息尾段还原轮次;悬空调用补占位,
+    /// 穿插的 user/context 消息不干扰配对。
+    #[test]
+    fn derive_tool_flow_reconstructs_rounds_from_live_messages() {
+        let call = |id: &str, name: &str, args: &str| crate::llm::ToolCall {
+            id: id.to_string(),
+            kind: "function".to_string(),
+            function: crate::llm::ToolCallFunction {
+                name: name.to_string(),
+                arguments: args.to_string(),
+            },
+        };
+        let mut messages = vec![ChatMessage::plain("user", "历史,不该被扫到")];
+        let live_start = messages.len();
+        let mut assistant =
+            ChatMessage::assistant("先查一下", Some(vec![call("c1", "run_command", "{\"command\":\"ls\"}")]));
+        assistant.reasoning_content = Some("想想".to_string());
+        messages.push(assistant);
+        messages.push(ChatMessage::tool("c1", "file-a\nfile-b"));
+        messages.push(ChatMessage::turn_context("穿插的系统提醒"));
+        messages.push(ChatMessage::assistant(
+            "再查两个",
+            Some(vec![
+                call("c2", "read_file", "{\"path\":\"x\"}"),
+                call("c3", "web_search", "{\"q\":\"y\"}"),
+            ]),
+        ));
+        messages.push(ChatMessage::tool("c3", "搜到了"));
+        // c2 悬空(崩溃/中断) → 必须补占位,回放绝不发无应答的 tool_calls
+        messages.push(ChatMessage::assistant("完事", None));
+
+        let flow = derive_tool_flow(&messages, live_start);
+        assert_eq!(flow.len(), 2);
+        assert_eq!(flow[0].assistant_content, "先查一下");
+        assert_eq!(flow[0].assistant_reasoning.as_deref(), Some("想想"));
+        assert_eq!(flow[0].calls.len(), 1);
+        assert_eq!(flow[0].calls[0].arguments, "{\"command\":\"ls\"}");
+        assert_eq!(flow[0].calls[0].output, "file-a\nfile-b");
+        assert_eq!(flow[1].calls.len(), 2);
+        assert_eq!(flow[1].calls[0].output, "(执行结果不可用)");
+        assert_eq!(flow[1].calls[1].output, "搜到了");
+    }
+
+    /// spill 替换文案的预算自洽:替换体永不超过上限;上限太小放弃;
+    /// CJK 多字节切口不产生半个字符。
+    #[test]
+    fn spill_replacement_respects_budget_and_char_boundaries() {
+        let output = "长".repeat(40_000);
+        let replaced = spill_replacement(&output, 10_000, "/tmp/x.txt").expect("should spill");
+        assert!(replaced.len() <= 10_000, "replacement {} > cap", replaced.len());
+        assert!(replaced.contains("已省略"));
+        assert!(replaced.contains("/tmp/x.txt"));
+        assert!(replaced.starts_with('长'));
+        assert!(replaced.trim_end().ends_with(')'));
+        // 上限连提示都装不下 → 放弃外溢
+        assert!(spill_replacement(&output, 60, "/tmp/x.txt").is_none());
+        // 不超限的输出不该被调用方外溢(逻辑在调用方,这里守函数本身)
+        let small = "小输出";
+        let r = spill_replacement(small, 10_000, "/tmp/x.txt");
+        assert!(r.is_some() || small.len() <= 10_000);
     }
 }

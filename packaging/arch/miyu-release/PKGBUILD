@@ -10,7 +10,7 @@
 # 系统脚本与默认知识库（本仓库 kb/ + Shorin Wiki）。
 
 pkgname=miyu
-pkgver=0.4.1
+pkgver=0.4.3
 pkgrel=1
 pkgdesc='一个活在终端里的二次元少女。开箱即用的开源 AI 助手，支持接入通讯平台。'
 arch=('x86_64')

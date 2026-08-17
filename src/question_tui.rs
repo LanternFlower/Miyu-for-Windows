@@ -381,6 +381,8 @@ impl QuestionSession {
         if owns_terminal {
             terminal::enable_raw_mode()?;
         }
+        // 嵌在 REPL 里时看门狗早已在跑(Once 幂等);独立持有终端时这里兜底。
+        crate::cli::spawn_hangup_watchdog();
         let mut stdout = io::stdout();
         let entered = if owns_terminal {
             execute!(stdout, EnableBracketedPaste, Hide)

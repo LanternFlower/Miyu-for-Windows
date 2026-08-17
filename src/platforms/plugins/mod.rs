@@ -1,6 +1,6 @@
 use super::types::{
-    OutboundMessage, OutboundOrigin, PlatformContextImageRef, PlatformConversation,
-    PlatformInboundEvent, SendReceipt, TriggerDecision,
+    OutboundMessage, OutboundOrigin, PlatformContextFileRef, PlatformContextImageRef,
+    PlatformConversation, PlatformInboundEvent, SendReceipt, TriggerDecision,
 };
 use super::PlatformTurnContext;
 use crate::config::AppConfig;
@@ -38,7 +38,7 @@ mod group_management;
 mod meme_collector;
 mod message_history;
 mod message_recall;
-mod real_context;
+pub(crate) mod real_context;
 mod renderer;
 mod reply_processor;
 
@@ -70,6 +70,7 @@ pub(crate) struct PlatformTurnInput {
     /// stays byte-stable no matter how often they come and go.
     pub(crate) turn_system_context: Vec<String>,
     pub(crate) context_images: Vec<PlatformContextImageRef>,
+    pub(crate) context_files: Vec<PlatformContextFileRef>,
 }
 
 pub(crate) struct PlatformPersonaResetContext<'a> {
@@ -94,8 +95,10 @@ pub(super) async fn require_ai_confirmation(
     action: &str,
     arguments: &Value,
 ) -> Result<Option<String>> {
+    // 免确认门槛用 fresh 查询而非回合缓存:刚被撤权的请求者不该还能在
+    // 缓存窗口内跳过二次确认(执行侧校验同样走 fresh,两处口径一致)。
     let requester_is_manager = context
-        .group_member(&context.sender_id)
+        .group_member_fresh(&context.sender_id)
         .await?
         .is_some_and(|member| matches!(member.role.as_str(), "owner" | "admin"));
     if context.is_admin || requester_is_manager {

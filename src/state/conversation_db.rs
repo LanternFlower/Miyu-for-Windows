@@ -110,6 +110,26 @@ impl ToolFootprint {
     }
 }
 
+/// 一轮工具调用:assistant(可带思考)发起若干 call,随后各自的结果。
+/// `output` 与该轮模型实际看到的字节一致(超限时是 spill 预览),回放即重现。
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ToolFlowRound {
+    #[serde(default)]
+    pub assistant_content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assistant_reasoning: Option<String>,
+    pub calls: Vec<ToolFlowCall>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ToolFlowCall {
+    pub id: String,
+    pub name: String,
+    /// 模型原样产出的 JSON 字符串,不解析不重排(dsh:字节保真)。
+    pub arguments: String,
+    pub output: String,
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct Turn {
@@ -125,6 +145,9 @@ pub struct Turn {
     pub assistant_timestamp: Option<String>,
     pub status: TurnStatus,
     pub tool_reports: Vec<String>,
+    /// 结构化工具流(v20+):非空时历史回放走原生 tool_calls/role:"tool" 形态,
+    /// tool_reports 只服务 UI 与旧回合兜底。
+    pub tool_flow: Vec<ToolFlowRound>,
     pub question_exchanges: Vec<QuestionExchange>,
     pub followups: Vec<TurnFollowup>,
     pub attachments: Vec<UserAttachment>,
@@ -550,7 +573,7 @@ impl ConversationDb {
              VALUES (?1, '', ?2, 'user', ?3, ?3)",
             params![
                 super::migrations::DEFAULT_SESSION_ID,
-                t("Default session", "默认会话"),
+                t("Terminal session", "终端集成会话"),
                 now
             ],
         )?;
@@ -599,7 +622,7 @@ impl ConversationDb {
         };
         let valid = conn
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sessions WHERE session_id = ?1 AND persona = ?2 AND kind = ?3 AND archived = 0)",
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE session_id = ?1 AND persona = ?2 AND kind = ?3)",
                 params![session_id, persona, super::USER_SESSION_KIND],
                 |row| row.get::<_, bool>(0),
             )?;
@@ -741,29 +764,20 @@ impl ConversationDb {
 
     /// User-facing sessions of a persona, most recently updated first.
     /// Subagent sessions (`kind != 'user'`) are excluded.
-    pub fn list_sessions(
-        &self,
-        persona: &str,
-        include_archived: bool,
-    ) -> Result<Vec<SessionOverview>> {
-        self.list_sessions_filtered(persona, include_archived, false)
+    pub fn list_sessions(&self, persona: &str) -> Result<Vec<SessionOverview>> {
+        self.list_sessions_filtered(persona, false)
     }
 
     /// Local user sessions suitable for CLI/WebUI navigation. Sessions
     /// owned by a messaging-platform binding keep their history but are not
     /// exposed as local conversations.
-    pub fn list_local_sessions(
-        &self,
-        persona: &str,
-        include_archived: bool,
-    ) -> Result<Vec<SessionOverview>> {
-        self.list_sessions_filtered(persona, include_archived, true)
+    pub fn list_local_sessions(&self, persona: &str) -> Result<Vec<SessionOverview>> {
+        self.list_sessions_filtered(persona, true)
     }
 
     fn list_sessions_filtered(
         &self,
         persona: &str,
-        include_archived: bool,
         local_only: bool,
     ) -> Result<Vec<SessionOverview>> {
         let conn = self.conn.lock().unwrap();
@@ -777,14 +791,14 @@ impl ConversationDb {
                         AND hidden = 0 AND is_summary = 0
                       ORDER BY seq DESC LIMIT 1) AS last_user_content
              FROM sessions
-             WHERE persona = ?1 AND kind = 'user' AND (?2 OR archived = 0)
-               AND (?3 = 0 OR NOT EXISTS (
+             WHERE persona = ?1 AND kind = 'user'
+               AND (?2 = 0 OR NOT EXISTS (
                     SELECT 1 FROM platform_session_bindings
                     WHERE platform_session_bindings.session_id = sessions.session_id
                ))
              ORDER BY updated_at DESC"
         ))?;
-        let rows = stmt.query_map(params![persona, include_archived, local_only], |row| {
+        let rows = stmt.query_map(params![persona, local_only], |row| {
             Ok(SessionOverview {
                 record: session_record_from_row(row)?,
                 turn_count: row.get("turn_count")?,
@@ -792,6 +806,22 @@ impl ConversationDb {
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// 最老可见轮的用户时间戳(排除指定回合;Utc RFC3339)。联想自回声
+    /// 过滤用它当"仍在眼前"的下界:被 compact 藏起的轮不算。
+    pub fn oldest_visible_turn_timestamp(
+        &self,
+        session_id: &str,
+        excluding_turn_id: &str,
+    ) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.query_row(
+            "SELECT MIN(user_timestamp) FROM turns
+              WHERE session_id = ?1 AND hidden = 0 AND is_summary = 0 AND turn_id != ?2",
+            params![session_id, excluding_turn_id],
+            |row| row.get::<_, Option<String>>(0),
+        )?)
     }
 
     pub fn is_platform_session(&self, session_id: &str) -> Result<bool> {
@@ -814,7 +844,7 @@ impl ConversationDb {
                   WHERE sessions.persona = ?1
                     AND sessions.kind = 'user'
                     AND (
-                        (sessions.archived = 0 AND NOT EXISTS (
+                        (NOT EXISTS (
                             SELECT 1 FROM platform_session_bindings
                              WHERE platform_session_bindings.session_id = sessions.session_id
                         ))
@@ -1000,20 +1030,6 @@ impl ConversationDb {
         self.update_session_field(session_id, "model_override", value)
     }
 
-    pub fn set_session_archived(&self, session_id: &str, archived: bool) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        let updated = conn.execute(
-            "UPDATE sessions SET archived = ?2, updated_at = ?3 WHERE session_id = ?1",
-            params![session_id, archived, Utc::now().to_rfc3339()],
-        )?;
-        if updated == 0 {
-            bail!("session not found: {session_id}");
-        }
-        Ok(())
-    }
-
-    /// Deletes the session row; turns, queued prompts, loaded items, and
-    /// (via turns) images and question exchanges are removed by FK cascade.
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
@@ -1753,13 +1769,24 @@ impl ConversationDb {
     /// Deletes subagent audit sessions older than the retention window;
     /// their turns/images/queues cascade away.
     pub fn delete_subagent_sessions_older_than(&self, days: i64) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
-        let deleted = conn.execute(
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // 与 delete_ask_sessions_older_than 同理:queued_prompts.session_id
+        // 经 ALTER 而来没有级联外键,必须先手动清,否则留孤儿行。
+        tx.execute(
+            "DELETE FROM queued_prompts WHERE session_id IN (
+                 SELECT session_id FROM sessions
+                 WHERE kind = 'subagent'
+                   AND datetime(updated_at) < datetime('now', '-' || ?1 || ' days'))",
+            params![days],
+        )?;
+        let deleted = tx.execute(
             "DELETE FROM sessions
              WHERE kind = 'subagent'
                AND datetime(updated_at) < datetime('now', '-' || ?1 || ' days')",
             params![days],
         )?;
+        tx.commit()?;
         Ok(deleted)
     }
 
@@ -2171,6 +2198,17 @@ impl ConversationDb {
         Ok(())
     }
 
+    /// 完成后落一次结构化工具流。独立 UPDATE 而非扩 complete 签名:调用点多,
+    /// 且流为空(无工具回合)时根本不写。
+    pub fn set_turn_tool_flow(&self, turn_id: &str, flow: &[ToolFlowRound]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE turns SET tool_flow = ?1 WHERE turn_id = ?2",
+            params![serde_json::to_string(flow)?, turn_id],
+        )?;
+        Ok(())
+    }
+
     #[allow(dead_code)]
     pub fn complete_turn(
         &self,
@@ -2225,6 +2263,7 @@ impl ConversationDb {
         if affected != 1 {
             bail!("turn changed before it could be completed");
         }
+        bump_completion_seq_locked(&tx, turn_id)?;
         // Snapshot the display transcript before the journal goes: the tables
         // below are load-bearing for in-flight turn recovery, so they keep
         // being wiped on completion exactly as before.
@@ -2280,6 +2319,13 @@ impl ConversationDb {
             "DELETE FROM turn_redo_backups WHERE turn_id = ?1 AND revision = ?2",
             params![turn_id, revision],
         )?;
+        // redo 重写了整个回合:先清掉旧修订的重放转写再按新修订快照,
+        // 否则重开 REPL 仍显示被弃用的旧回复(空 journal 时也必须清)。
+        tx.execute(
+            "UPDATE turns SET replay_journal = NULL WHERE turn_id = ?1",
+            params![turn_id],
+        )?;
+        store_replay_journal(&tx, turn_id)?;
         tx.execute(
             "DELETE FROM turn_journal_segments WHERE turn_id = ?1",
             params![turn_id],
@@ -2311,6 +2357,7 @@ impl ConversationDb {
              WHERE turn_id = ?4 AND revision = ?5 AND status = 'running'",
             params![content, reasoning, now, turn_id, revision],
         )?;
+        bump_completion_seq_locked(&tx, turn_id)?;
         tx.execute(
             "UPDATE turn_journal_segments
              SET status = 'interrupted', finished_at = ?1
@@ -3775,7 +3822,7 @@ impl ConversationDb {
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, display_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
-                    token_total, token_usage_estimated, revision, context_messages, token_prompt, token_cache_read
+                    token_total, token_usage_estimated, revision, context_messages, token_prompt, token_cache_read, tool_flow
              FROM turns WHERE session_id = ?1 ORDER BY seq ASC",
         )?;
         let mut turns = stmt
@@ -3795,7 +3842,7 @@ impl ConversationDb {
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, display_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
-                    token_total, token_usage_estimated, revision, context_messages, token_prompt, token_cache_read
+                    token_total, token_usage_estimated, revision, context_messages, token_prompt, token_cache_read, tool_flow
              FROM turns WHERE session_id = ?1 AND turn_id != ?2 ORDER BY seq ASC",
         )?;
         let mut turns = stmt
@@ -3815,7 +3862,7 @@ impl ConversationDb {
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, display_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
-                    token_total, token_usage_estimated, revision, context_messages, token_prompt, token_cache_read
+                    token_total, token_usage_estimated, revision, context_messages, token_prompt, token_cache_read, tool_flow
              FROM turns WHERE session_id = ?1 AND hidden = 0 ORDER BY seq ASC",
         )?;
         let mut turns = stmt
@@ -3834,7 +3881,7 @@ impl ConversationDb {
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, display_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
-                    token_total, token_usage_estimated, revision, context_messages, token_prompt, token_cache_read
+                    token_total, token_usage_estimated, revision, context_messages, token_prompt, token_cache_read, tool_flow
              FROM turns WHERE session_id = ?1 AND hidden = 0 AND turn_id != ?2 ORDER BY seq ASC",
         )?;
         let mut turns = stmt
@@ -3887,7 +3934,7 @@ impl ConversationDb {
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, display_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
-                    token_total, token_usage_estimated, revision, context_messages, token_prompt, token_cache_read
+                    token_total, token_usage_estimated, revision, context_messages, token_prompt, token_cache_read, tool_flow
              FROM turns WHERE session_id = ?1 AND is_summary = 1 AND hidden = 0 ORDER BY seq DESC LIMIT 1",
         )?;
         let turn = stmt
@@ -3920,7 +3967,7 @@ impl ConversationDb {
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, display_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
-                    token_total, token_usage_estimated, revision, context_messages, token_prompt, token_cache_read
+                    token_total, token_usage_estimated, revision, context_messages, token_prompt, token_cache_read, tool_flow
              FROM turns WHERE session_id = ?1 AND is_summary = 0 ORDER BY seq ASC LIMIT ?2",
         )?;
         let mut to_remove: Vec<Turn> = stmt
@@ -3946,7 +3993,7 @@ impl ConversationDb {
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, display_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_provider_id, assistant_model, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
-                    token_total, token_usage_estimated, revision, context_messages, token_prompt, token_cache_read
+                    token_total, token_usage_estimated, revision, context_messages, token_prompt, token_cache_read, tool_flow
              FROM turns
              WHERE session_id = ?1 AND hidden = 0 AND is_summary = 0 AND status != 'running'
              ORDER BY seq ASC LIMIT ?2",
@@ -4249,7 +4296,7 @@ impl ConversationDb {
                   WHERE sessions.persona = ?1
                     AND sessions.kind = 'user'
                     AND (
-                        (sessions.archived = 0 AND NOT EXISTS (
+                        (NOT EXISTS (
                             SELECT 1 FROM platform_session_bindings
                              WHERE platform_session_bindings.session_id = sessions.session_id
                         ))
@@ -4649,6 +4696,7 @@ impl ConversationDb {
                 params![content, reasoning, now, turn_id, revision],
             )?;
             if turn_affected == 1 {
+                bump_completion_seq_locked(&tx, turn_id)?;
                 tx.execute(
                     "UPDATE turn_journal_segments
                      SET status = 'interrupted', finished_at = ?1
@@ -5032,6 +5080,30 @@ fn touch_session_last_request(tx: &Transaction<'_>, turn_id: &str) -> Result<()>
     Ok(())
 }
 
+/// 并发回合完成序追加(消除插入型缓存断点):回合从 running 首次转为
+/// 可回放(completed/interrupted)时,若同会话已有 seq 更靠后的可回放
+/// 回合,按原 seq 插回会落在后续请求已缓存前缀的中间,之后每个请求都
+/// 从那里断链(群聊约 1/5 回合重叠)。把 seq 提升到会话全局 max+1,让
+/// "已完成历史"跨请求保持 append-only——这也更忠实:并发回合的实况
+/// 请求本来就没见过彼此,群聊时间线由各回合的群聊转储自己承载。
+/// 只动首次完成的回合(revision=0):redo 修订的位置已被历史请求看过,
+/// 原位改写才是正确语义。
+fn bump_completion_seq_locked(tx: &Transaction<'_>, turn_id: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE turns AS t
+            SET seq = (SELECT MAX(o.seq) + 1 FROM turns AS o
+                        WHERE o.session_id = t.session_id)
+          WHERE t.turn_id = ?1
+            AND t.revision = 0
+            AND EXISTS (SELECT 1 FROM turns AS later
+                         WHERE later.session_id = t.session_id
+                           AND later.seq > t.seq
+                           AND later.status != 'running')",
+        params![turn_id],
+    )?;
+    Ok(())
+}
+
 fn interrupted_projection_locked(
     tx: &Transaction<'_>,
     turn_id: &str,
@@ -5311,6 +5383,8 @@ fn map_turn_row(row: &rusqlite::Row) -> rusqlite::Result<Turn> {
     let context_messages_json: String = row.get::<_, Option<String>>(18)?.unwrap_or_default();
     let context_messages: Vec<ChatMessage> =
         serde_json::from_str(&context_messages_json).unwrap_or_default();
+    let tool_flow_json: String = row.get::<_, Option<String>>(21)?.unwrap_or_default();
+    let tool_flow: Vec<ToolFlowRound> = serde_json::from_str(&tool_flow_json).unwrap_or_default();
     Ok(Turn {
         turn_id: row.get(0)?,
         seq: row.get(1)?,
@@ -5324,6 +5398,7 @@ fn map_turn_row(row: &rusqlite::Row) -> rusqlite::Result<Turn> {
         assistant_timestamp: row.get(9)?,
         status: TurnStatus::from_str(row.get::<_, String>(10)?.as_str()),
         tool_reports,
+        tool_flow,
         question_exchanges: Vec::new(),
         followups: Vec::new(),
         attachments: Vec::new(),
@@ -5447,10 +5522,13 @@ pub struct TurnReplay {
 /// output blobs — is dropped; what is left is the ordered prose/tool sequence
 /// the REPL redraws when the session is reopened.
 fn store_replay_journal(tx: &Transaction, turn_id: &str) -> Result<()> {
+    // 只取当前修订的事件:被 redo 的 interrupted 回合会同时残留新旧两个
+    // revision 的事件(interrupt 不删 segments),混着快照会串台。
     let mut stmt = tx.prepare(
         "SELECT kind, call_id, name, text_payload, ok
            FROM turn_journal_events
           WHERE turn_id = ?1
+            AND revision = (SELECT revision FROM turns WHERE turn_id = ?1)
             AND kind IN ('assistant_content', 'tool_call', 'tool_result')
           ORDER BY event_id",
     )?;
@@ -5842,3 +5920,4 @@ fn attach_followup_attachments_locked(conn: &Connection, turns: &mut [Turn]) -> 
     }
     Ok(())
 }
+

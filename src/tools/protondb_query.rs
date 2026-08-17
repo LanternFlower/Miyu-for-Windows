@@ -110,6 +110,8 @@ async fn protondb_query(args: Value) -> Result<String> {
             "total": total_reports,
             "returned": extracted.len(),
             "items": extracted,
+            // 拉取失败与"确实没人评论"必须可区分,否则模型会把故障当成零评论。
+            "fetch_error": reports.get("error").cloned().unwrap_or(Value::Null),
         },
         "protondb_url": format!("https://www.protondb.com/app/{app_id}"),
     }))?)

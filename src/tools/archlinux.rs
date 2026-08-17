@@ -765,12 +765,13 @@ fn tokenize_xml(xml: &str) -> Vec<XmlToken> {
 }
 
 fn decode_xml_entities(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
+    // `&amp;` 必须最后解:排第一会把字面 `&amp;lt;` 双重解码成 `<`。
+    s.replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 fn clip_string(s: &str, max_chars: usize) -> String {

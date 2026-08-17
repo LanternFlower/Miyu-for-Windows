@@ -45,16 +45,20 @@ async fn search(args: Value) -> Result<String> {
     if !section.is_empty() {
         url.push_str(&format!("&section={}", urlencoding::encode(section)));
     }
-    let html = reqwest::get(url).await?.error_for_status()?.text().await?;
+    let html = fetch_text(&url).await?;
     let mut results = Vec::new();
     for line in html.lines() {
         if let Some(pos) = line.find("/man/") {
             let tail = &line[pos + 5..];
-            if let Some(end) = tail.find('.').or_else(|| tail.find('"')) {
-                let name = tail[..end].trim_matches('/');
-                if !name.is_empty() && !results.iter().any(|item: &String| item.contains(name)) {
-                    results.push(format!("- {name}: {ARCH_BASE}/man/{tail}"));
-                }
+            // 在 href 闭合处截断，避免把 `">systemd(1)</a>` 之类 HTML 垃圾带进链接。
+            let href_end = tail
+                .find(['"', '\'', '<', '>'])
+                .unwrap_or(tail.len());
+            let href = &tail[..href_end];
+            let end = href.find('.').unwrap_or(href.len());
+            let name = href[..end].trim_matches('/');
+            if !name.is_empty() && !results.iter().any(|item: &String| item.contains(name)) {
+                results.push(format!("- {name}: {ARCH_BASE}/man/{href}"));
             }
         }
         if results.len() >= limit {
@@ -99,7 +103,8 @@ async fn get_page(args: Value) -> Result<String> {
     }
     if try_man7 {
         for sec in &sections {
-            let url = format!("{MAN7_BASE}/man{}/{name}.{sec}.html", &sec[..1]);
+            let sec_initial = sec.chars().next().unwrap_or('1');
+            let url = format!("{MAN7_BASE}/man{sec_initial}/{name}.{sec}.html");
             if let Ok(html) = fetch_text(&url).await {
                 let text = html_conversion::to_text_async(html, 120).await?;
                 return Ok(clip(&format!("Source: {url}\n\n{text}"), max_chars));
@@ -110,7 +115,11 @@ async fn get_page(args: Value) -> Result<String> {
 }
 
 async fn fetch_text(url: &str) -> Result<String> {
-    let response = reqwest::get(url).await?.error_for_status()?;
+    let response = http_response::shared_client()
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()?;
     http_response::read_text(response, http_response::MAX_HTML_RESPONSE_BYTES).await
 }
 

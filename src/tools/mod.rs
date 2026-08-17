@@ -32,11 +32,13 @@ mod package_advisor;
 mod patch_preview;
 mod protondb_query;
 mod registry;
+pub(crate) mod repeat_reminder;
 mod scripts;
 mod skills;
 mod subagent_runner;
 mod task;
 mod todowrite;
+pub(crate) mod usage_query;
 pub mod tool_descriptions;
 pub mod vision;
 mod weather;
@@ -54,8 +56,8 @@ use std::sync::RwLock;
 
 #[allow(unused_imports)]
 pub use registry::{
-    empty_parameters, CommandOutputStream, ToolFuture, ToolPermission, ToolProgress,
-    ToolProgressEvent, ToolRegistry, ToolSpec,
+    empty_parameters, CommandOutputStream, GuardCtx, ToolFuture, ToolGuard, ToolPermission,
+    ToolProgress, ToolProgressEvent, ToolRegistry, ToolSpec,
 };
 pub(crate) use scripts::rescan_scripts;
 pub(crate) use skills::{apply_skill_refresh, prepare_skill_refresh};
@@ -157,7 +159,7 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "run_command" => t("Run command", "运行命令"),
         "job_status" => t("Check background tasks", "查询后台任务"),
         "job_stop" => t("Stop background task", "停止后台任务"),
-        "apply_patch" => t("Apply patch", "应用补丁"),
+        "apply_patch" => t("Edit files", "编辑文件"),
         "apply_artifact_patch" => t("Edit preview file", "修改预览文件"),
         "create_artifact" => t("Create preview file", "创建预览文件"),
         "read_artifact" => t("Read preview file", "读取预览文件"),
@@ -292,14 +294,58 @@ pub fn clear_aur_review_state(paths: &MiyuPaths) -> anyhow::Result<()> {
     package_advisor::clear_aur_review_state(paths)
 }
 
+/// AUR 装包互斥:review 与 install 不同轮,逼一次"给用户看过再装"的确认。
+/// 原为 chat_with_tools 循环里的硬编码特判,迁入 guard 层后对所有分发路径
+/// (主循环/子代理/工具桥)一致生效。
+pub(crate) fn aur_review_install_guard() -> ToolGuard {
+    std::sync::Arc::new(|tool, _args, ctx| {
+        (tool.name == "install_aur_package"
+            && ctx.used_tools.iter().any(|name| name == "review_aur_package"))
+        .then(|| {
+            "install_aur_package cannot run in the same turn as review_aur_package; \
+             ask the user to confirm installation first"
+                .to_string()
+        })
+    })
+}
+
+/// run_command 命令拒绝子串(config.tools.command_deny)。命中即拒,
+/// 防提示注入与模型手滑;拒绝以 tool error 回给模型,轮次存活。
+pub(crate) fn command_deny_guard(patterns: Vec<String>) -> ToolGuard {
+    std::sync::Arc::new(move |tool, args, _ctx| {
+        if tool.name != "run_command" {
+            return None;
+        }
+        let command = args.get("command").and_then(serde_json::Value::as_str)?;
+        patterns
+            .iter()
+            .find(|pattern| !pattern.is_empty() && command.contains(pattern.as_str()))
+            .map(|pattern| {
+                crate::i18n::agent_is_zh()
+                    .then(|| format!("命令包含被禁止的模式 `{pattern}`,已拒绝执行"))
+                    .unwrap_or_else(|| {
+                        format!("command contains the denied pattern `{pattern}` and was rejected")
+                    })
+            })
+    })
+}
+
+fn install_builtin_guards(registry: &mut ToolRegistry, config: &AppConfig) {
+    registry.add_guard(aur_review_install_guard());
+    registry.add_guard(command_deny_guard(config.tools.command_deny.clone()));
+}
+
 pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
+    registry.set_default_timeout_secs(config.tools.default_timeout_secs);
+    install_builtin_guards(&mut registry, config);
     default_tools::register(&mut registry, config.skills.allow_command_execution);
     jobs::register_management(&mut registry);
+    usage_query::register(&mut registry, paths.state_dir.join("usage-history.jsonl"), config.clone());
+    // 编辑器只留 apply_patch(聚合增/改/删,diff 渲染载体);write_file/
+    // edit_file/edit_string 与 dev 同步退场(验收四轮:normal 也去冗余)。
     apply_patch::register(&mut registry);
-    write::register(&mut registry);
-    edit_replace::register(&mut registry);
-    todowrite::register(&mut registry);
+    todowrite::register(&mut registry, paths.clone());
     alarm::register(&mut registry, paths.clone());
     clipboard::register(&mut registry, paths.clone());
     web::register_fetch(&mut registry);
@@ -441,20 +487,44 @@ pub fn uses_load_tools(mode: &str) -> bool {
     is_hybrid_loading_mode(mode) || is_stub_loading_mode(mode)
 }
 
-pub fn chat_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
+/// Build/Dev 模式工具目录:极简开发形态,"模型可见表面积最小化"。
+/// 只注册:run_command+后台任务管理、apply_patch(唯一编辑器,聚合
+/// 增/改/删文件,存在意义=diff 渲染)、todo、goal、task 子代理、web
+/// 检索与 MCP。读检索(read_file/glob/grep)、check_os_info、
+/// trash_path、知识库、多余编辑器都不注册——bash+coreutils 干得更好
+/// (验收三轮裁剪)。人格/娱乐/平台类一概不存在。记忆工具**注册**,
+/// 但作用域切到保留人格 "dev" 的独立命名空间(`dev_scoped`)。
+/// ask_question 等界面胶水与 normal 同路,由 daemon/CLI 按 surface 追加。
+pub fn dev_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
+    registry.set_default_timeout_secs(config.tools.default_timeout_secs);
+    install_builtin_guards(&mut registry, config);
+    // 验收三轮裁剪定稿:凡 coreutils 干得更好的都不注册——读检索
+    // (read_file/glob/grep)、check_os_info、trash_path、知识库全砍;
+    // 编辑只留 apply_patch(Add/Update/Delete File 全聚合,留它是为了
+    // diff 渲染),write_file/edit_file/edit_string 一并退场。
+    default_tools::register_run_command(&mut registry, config.skills.allow_command_execution);
+    jobs::register_management(&mut registry);
+    apply_patch::register(&mut registry);
+    todowrite::register(&mut registry, paths.clone());
     web::register_fetch(&mut registry);
     if config.plugins.web.enabled {
         web::register(&mut registry, config.plugins.web.clone());
     }
     if config.plugins.vision.enabled {
+        // 看图对 coding 是刚需(UI 截图排错、设计稿、测试产出的图表);
+        // 聊天模型不带眼睛时由 vision 插件路由给专用视觉模型。
         vision::register(&mut registry, config.clone(), paths.clone(), true);
     }
-    if config.plugins.memes.enabled {
-        memes::register_chat(&mut registry, config.clone(), paths.clone());
+    if config.memory_config().enabled {
+        // dev 独立记忆:同一套工具,库切到保留人格 "dev" 的命名空间,
+        // 与默认人格的记忆互不可见(验收问题一:开发模式也要有记忆)。
+        memory::register(&mut registry, config.dev_scoped(), paths.clone());
     }
-    if config.plugins.api_quota.enabled {
-        api_quota::register(&mut registry, config.plugins.api_quota.clone());
+    let task_tools = registry.clone();
+    task::register(&mut registry, config.clone(), paths.clone(), task_tools);
+    if config.mcp.enabled {
+        mcp::register(&mut registry, config.clone());
     }
     if uses_load_tools(&config.tools.loading_mode) {
         load_tools::register(&mut registry);
@@ -469,6 +539,7 @@ pub fn chat_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
 /// output under the plugin's output directory, never an arbitrary host path.
 pub fn restricted_platform_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
+    registry.set_default_timeout_secs(config.tools.default_timeout_secs);
     web::register_fetch(&mut registry);
     weather::register(&mut registry);
     caniplayonlinux_query::register(&mut registry);
@@ -502,6 +573,23 @@ pub fn restricted_platform_registry(config: &AppConfig, paths: &MiyuPaths) -> To
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 回归:dev 模式要有看图(vision_analyze),且随 vision 插件开关走。
+    #[test]
+    fn dev_registry_vision_follows_plugin_switch() {
+        let paths = crate::paths::MiyuPaths::new().unwrap();
+        let mut config = crate::config::AppConfig::default();
+        let names = |registry: &ToolRegistry| -> Vec<String> {
+            registry
+                .definitions()
+                .iter()
+                .map(|d| d.function.name.clone())
+                .collect()
+        };
+        assert!(names(&dev_registry(&config, &paths)).contains(&"vision_analyze".to_string()));
+        config.plugins.vision.enabled = false;
+        assert!(!names(&dev_registry(&config, &paths)).contains(&"vision_analyze".to_string()));
+    }
 
     fn test_paths(root: &std::path::Path) -> MiyuPaths {
         MiyuPaths {
@@ -659,8 +747,8 @@ mod tests {
             false,
         )
         .unwrap();
-        let chat =
-            crate::cli::build_tool_registry(&config, &paths, crate::agent::AgentMode::Chat, false)
+        let dev =
+            crate::cli::build_tool_registry(&config, &paths, crate::agent::AgentMode::Dev, false)
                 .unwrap();
 
         for name in [
@@ -671,10 +759,10 @@ mod tests {
             "list_skill_drafts",
         ] {
             assert!(normal.contains(name), "{name}");
-            assert!(!chat.contains(name), "{name}");
+            assert!(!dev.contains(name), "{name}");
         }
         assert!(normal.contains("load_skill"));
-        assert!(chat.contains("load_skill"));
+        assert!(dev.contains("load_skill"));
     }
 
     #[test]
@@ -748,8 +836,9 @@ mod tier_schema_probe {
             "tier missing: {}",
             task.function.parameters
         );
-        // Unconfigured pools are announced as falling back to main.
-        assert!(task.function.description.contains("cheap=["));
+        // 全未配置=零追加(08-16 tools 瘦身:三行"未配置"是零信息,还把
+        // 动态文本焊进 tools 数组);配置了档位才出现状态。
+        assert!(!task.function.description.contains("cheap=["));
     }
 
     /// The description suffix lists the concrete models per tier pool.

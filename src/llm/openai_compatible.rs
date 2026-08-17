@@ -696,6 +696,44 @@ pub(crate) fn thinking_variant_options_for_model(
     }
 }
 
+/// Responses 续传健康位(任务#16 自愈)。跨 clone 共享:压缩器等辅助克隆
+/// 与主客户端看到同一份;置位即进程内立即生效,并持久化到
+/// provider-capabilities.json 供后续会话读取。多供应商混池时按主
+/// provider 记录(续传本就钉在单端点上,混池仅有过度抑制的轻微风险)。
+#[derive(Clone)]
+struct ResponsesContinuationHealth {
+    unsupported: Arc<std::sync::atomic::AtomicBool>,
+    store: std::path::PathBuf,
+    base_url: String,
+    provider_id: String,
+}
+
+impl ResponsesContinuationHealth {
+    fn for_provider(paths: &MiyuPaths, provider: &ProviderConfig) -> Self {
+        let store = crate::llm::provider_capabilities::store_path(&paths.cache_dir);
+        let unsupported = crate::llm::provider_capabilities::continuation_unsupported(
+            &store,
+            &provider.base_url,
+        );
+        Self {
+            unsupported: Arc::new(std::sync::atomic::AtomicBool::new(unsupported)),
+            store,
+            base_url: provider.base_url.clone(),
+            provider_id: provider.id.clone(),
+        }
+    }
+
+    /// 测试用:无持久化、乐观放行。
+    fn detached() -> Self {
+        Self {
+            unsupported: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            store: std::path::PathBuf::new(),
+            base_url: String::new(),
+            provider_id: String::new(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct OpenAiCompatibleClient {
     client: Client,
@@ -714,6 +752,7 @@ pub struct OpenAiCompatibleClient {
     /// clone the client and set this so a runaway summary cannot eat the
     /// window; None leaves the provider default untouched.
     max_tokens_override: Option<u32>,
+    continuation_health: ResponsesContinuationHealth,
     /// Scope tag for the per-request cache accounting log ("chat", "qq-judge",
     /// "compact", …). Auxiliary callers override it via `with_request_scope`
     /// so cache stats separate the main conversation from side channels.
@@ -783,6 +822,17 @@ impl LlmScheduler {
         }
     }
 
+    /// The endpoint whose cooldown lifts first, for the single probe sent when
+    /// every endpoint is cooling down. `None` sorts ahead of any deadline, so
+    /// an endpoint with no cooldown recorded wins outright.
+    fn soonest_ready_index(&self, endpoints: &[LlmEndpoint]) -> Option<usize> {
+        endpoints
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, endpoint)| self.cooldowns.get(&endpoint.id()).copied())
+            .map(|(index, _)| index)
+    }
+
     fn mark_success(&mut self, id: &str) {
         self.cooldowns.remove(id);
     }
@@ -806,6 +856,14 @@ fn ordered_endpoint_indices(endpoints: &[LlmEndpoint]) -> Vec<usize> {
         .lock()
         .map(|mut scheduler| scheduler.ordered_indices(endpoints))
         .unwrap_or_else(|_| (0..endpoints.len()).collect())
+}
+
+fn soonest_ready_endpoint_index(endpoints: &[LlmEndpoint]) -> Option<usize> {
+    LLM_SCHEDULER
+        .lock()
+        .ok()
+        .and_then(|scheduler| scheduler.soonest_ready_index(endpoints))
+        .or_else(|| (!endpoints.is_empty()).then_some(0))
 }
 
 fn mark_endpoint_success(endpoint: &LlmEndpoint) {
@@ -853,6 +911,23 @@ fn endpoint_failover_allowed(error: &anyhow::Error) -> bool {
     !error
         .downcast_ref::<HttpStatusFailure>()
         .is_some_and(|failure| failure.kind == HttpFailureKind::InvalidRequest)
+}
+
+/// Whether the *same* endpoint may be tried again inside one request. A 429 or
+/// a rejected key is a verdict on that provider/model/key, not a moment in
+/// time: the retries `MIN_ENDPOINT_ATTEMPTS` pads in would fire back-to-back
+/// with no backoff and spend more of a quota that already said no — which on a
+/// shared free tier is what exhausted it. Failover to a *different* endpoint is
+/// unaffected; that is `endpoint_failover_allowed`'s job.
+fn same_endpoint_retry_allowed(error: &anyhow::Error) -> bool {
+    !error
+        .downcast_ref::<HttpStatusFailure>()
+        .is_some_and(|failure| {
+            matches!(
+                failure.kind,
+                HttpFailureKind::Authentication | HttpFailureKind::RateLimit
+            )
+        })
 }
 
 fn endpoint_client(provider: &ProviderConfig) -> Result<Client> {
@@ -920,12 +995,41 @@ impl OpenAiCompatibleClient {
         &self.provider.id
     }
 
+    /// 该端点的 Responses 续传是否已被记为不可用(记录或本进程自愈置位)。
+    fn responses_continuation_suppressed(&self) -> bool {
+        self.continuation_health
+            .unsupported
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// 自愈标记:上游拒了 previous_response_id(任务#16 签名 400)。进程内
+    /// 立即生效并持久化;首个标记者负责落盘,后续幂等。
+    pub fn mark_responses_continuation_unsupported(&self) {
+        let health = &self.continuation_health;
+        if !health
+            .unsupported
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            if !health.base_url.is_empty() {
+                crate::llm::provider_capabilities::record_continuation_unsupported(
+                    &health.store,
+                    &health.base_url,
+                );
+            }
+            tracing::warn!(
+                provider = %health.provider_id,
+                "responses continuation rejected upstream; falling back to stateless full replay for this provider"
+            );
+        }
+    }
+
     pub fn from_config(config: &AppConfig, paths: &MiyuPaths) -> Result<Self> {
         super::cache_log::configure(paths, &config.cache);
         let endpoints = llm_endpoints(config, paths)?;
         let first = endpoints
             .first()
             .with_context(|| "no active provider/model endpoint is configured")?;
+        let continuation_health = ResponsesContinuationHealth::for_provider(paths, &first.provider);
         let mut client = Self {
             client: first.client.clone(),
             provider: first.provider.clone(),
@@ -938,6 +1042,7 @@ impl OpenAiCompatibleClient {
             request_timeouts: None,
             max_tokens_override: None,
             request_scope: "chat",
+            continuation_health,
         };
         client.restore_saved_thinking_variants(paths);
         Ok(client)
@@ -988,6 +1093,7 @@ impl OpenAiCompatibleClient {
                 errors.join("\n- ")
             ),
         };
+        let continuation_health = ResponsesContinuationHealth::for_provider(paths, &first.provider);
         let mut client = Self {
             client: first.client.clone(),
             provider: first.provider.clone(),
@@ -1000,6 +1106,7 @@ impl OpenAiCompatibleClient {
             request_timeouts: None,
             max_tokens_override: None,
             request_scope: "chat",
+            continuation_health,
         };
         client.restore_saved_thinking_variants(paths);
         Ok(client)
@@ -1028,6 +1135,7 @@ impl OpenAiCompatibleClient {
             api_key: key.value.clone(),
             key_index: key.index,
         };
+        let continuation_health = ResponsesContinuationHealth::for_provider(paths, provider);
         let mut client = Self {
             client,
             provider: provider.clone(),
@@ -1040,6 +1148,7 @@ impl OpenAiCompatibleClient {
             request_timeouts: None,
             max_tokens_override: None,
             request_scope: "chat",
+            continuation_health,
         };
         client.restore_saved_thinking_variants(paths);
         Ok(client)
@@ -1127,6 +1236,8 @@ impl OpenAiCompatibleClient {
             request_timeouts: self.request_timeouts,
             max_tokens_override: self.max_tokens_override,
             request_scope: self.request_scope,
+            // failover 换端点共享同一健康位(续传本就钉在原端点)。
+            continuation_health: self.continuation_health.clone(),
         }
     }
 
@@ -1200,6 +1311,7 @@ impl OpenAiCompatibleClient {
     }
 
     fn restore_saved_thinking_variants(&mut self, paths: &MiyuPaths) {
+        crate::llm::request_log::install_dir(paths.logs_dir());
         let preferences = load_thinking_variant_preferences(paths);
         let selections = self
             .endpoint_model_preferences()
@@ -1422,10 +1534,19 @@ impl OpenAiCompatibleClient {
         &self,
         messages: Vec<ChatMessage>,
         tools: Vec<ToolDefinition>,
+        endpoint_hint: Option<&(String, String)>,
     ) -> Result<Option<Usage>> {
         let endpoints = self.endpoints.as_ref();
-        let order = ordered_endpoint_indices(endpoints);
-        let index = order.first().copied().unwrap_or(0);
+        // 钉住上一条真实请求的 endpoint:缓存按 (供应商, 前缀) 存活,
+        // 轮转选出的"下一家"没有这份前缀,ping 过去只是白买 miss。
+        let hinted = endpoint_hint.and_then(|(provider, model)| {
+            endpoints.iter().position(|endpoint| {
+                endpoint.provider.id == *provider && endpoint.provider.default_model == *model
+            })
+        });
+        let index = hinted.unwrap_or_else(|| {
+            ordered_endpoint_indices(endpoints).first().copied().unwrap_or(0)
+        });
         let endpoint = endpoints
             .get(index)
             .context("no LLM endpoint configured for cache keepalive")?;
@@ -1450,7 +1571,7 @@ impl OpenAiCompatibleClient {
         let request = ChatRequest {
             model: self.provider.default_model.clone(),
             messages,
-            temperature: self.provider.temperature,
+            temperature: self.provider.effective_temperature(),
             stream: false,
             stream_options: None,
             max_tokens: Some(1),
@@ -1480,6 +1601,16 @@ impl OpenAiCompatibleClient {
                 usage.normalize_cache_fields();
                 usage
             });
+        // 保温 ping 也进 cache-usage 记账:不然命中率诊断里多出一段
+        // "看不见的流量"(deepseek 报告 P2 的观测盲区)。
+        super::cache_log::record(
+            "keepalive",
+            &self.provider.id,
+            &self.provider.default_model,
+            0,
+            &request_id,
+            usage.as_ref(),
+        );
         Ok(usage)
     }
 
@@ -1511,18 +1642,27 @@ impl OpenAiCompatibleClient {
         } else {
             ordered_endpoint_indices(endpoints)
         };
-        if order.is_empty() {
+        // Every endpoint is cooling down. Refusing outright would strand a
+        // single-endpoint user for the whole cooldown, so one probe still goes
+        // out — but exactly one, and to whichever endpoint recovers first.
+        // Refilling the pool here (and then padding it below) meant a rate
+        // limit cost three requests per turn *for the entire cooldown*, which
+        // made the cooldown worse than useless.
+        let probe_only = order.is_empty();
+        if probe_only {
             tracing::warn!(
                 request_id,
                 endpoint_count = endpoints.len(),
                 all_endpoints_cooling_down = true,
                 "{}",
                 t(
-                    "All LLM endpoints are cooling down; attempting the full pool",
-                    "所有 LLM 端点均在冷却；将尝试完整端点池"
+                    "All LLM endpoints are cooling down; sending a single probe",
+                    "所有 LLM 端点均在冷却；仅发送一次探测请求"
                 )
             );
-            order = (0..endpoints.len()).collect();
+            order = soonest_ready_endpoint_index(endpoints)
+                .into_iter()
+                .collect();
         }
         // A dropped stream or a 5xx is a moment in time, not a verdict on the
         // endpoint. Tying the number of attempts to the number of configured
@@ -1530,8 +1670,10 @@ impl OpenAiCompatibleClient {
         // which is backwards: they are the ones with nowhere else to go. Pad
         // the attempt list by cycling so every setup gets the same budget.
         // Errors that a retry cannot fix still stop on the first attempt —
-        // `endpoint_failover_allowed` returns before the next one is tried.
-        if !order.is_empty() && order.len() < MIN_ENDPOINT_ATTEMPTS {
+        // `endpoint_failover_allowed` returns before the next one is tried,
+        // and `same_endpoint_retry_allowed` skips the padded repeats of an
+        // endpoint that answered 429/401.
+        if !probe_only && !order.is_empty() && order.len() < MIN_ENDPOINT_ATTEMPTS {
             let cycle: Vec<usize> = order.clone();
             while order.len() < MIN_ENDPOINT_ATTEMPTS {
                 order.extend(cycle.iter().copied());
@@ -1547,8 +1689,19 @@ impl OpenAiCompatibleClient {
             "{}",
             t("LLM request started", "LLM 请求已开始")
         );
+        let mut exhausted: Vec<String> = Vec::new();
+        let mut previous_endpoint: Option<String> = None;
         for (attempt, index) in order.into_iter().enumerate() {
             let endpoint = &endpoints[index];
+            if exhausted.contains(&endpoint.id()) {
+                continue;
+            }
+            // 同端点的填充重试稍作退避:5xx/断流是瞬时故障,零间隔连打同
+            // 一端点多半撞上同一故障;切到不同端点仍零间隔(failover 不变)。
+            if previous_endpoint.as_deref() == Some(endpoint.id().as_str()) {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            previous_endpoint = Some(endpoint.id());
             let client = self.with_endpoint(endpoint);
             if attempt > 0 {
                 on_chunk(ChatStreamChunk {
@@ -1670,6 +1823,9 @@ impl OpenAiCompatibleClient {
                         endpoint.provider.default_model,
                         endpoint.key_index + 1
                     ));
+                    if !same_endpoint_retry_allowed(&err) {
+                        exhausted.push(endpoint.id());
+                    }
                     if attempt_committed {
                         return Err(err.context(
                             "LLM stream failed after emitting output; endpoint failover was suppressed",
@@ -1754,7 +1910,7 @@ impl OpenAiCompatibleClient {
         let mut request = ChatRequest {
             model: self.provider.default_model.clone(),
             messages,
-            temperature: self.provider.temperature,
+            temperature: self.provider.effective_temperature(),
             stream: true,
             stream_options: Some(ChatStreamOptions {
                 include_usage: true,
@@ -1873,6 +2029,14 @@ impl OpenAiCompatibleClient {
         request_id: &str,
         stage: &'static str,
     ) -> Result<reqwest::Response> {
+        crate::llm::request_log::record(
+            &self.provider.id,
+            &self.provider.default_model,
+            "chat",
+            self.request_scope,
+            url,
+            request,
+        );
         self.send_with_transport_retry(request_id, stage, || {
             self.client
                 .post(url)
@@ -2431,7 +2595,7 @@ impl OpenAiCompatibleClient {
                 .max_tokens_override
                 .map(|cap| cap.min(self.provider.anthropic_max_tokens))
                 .unwrap_or(self.provider.anthropic_max_tokens),
-            temperature: Some(self.provider.temperature),
+            temperature: Some(self.provider.effective_temperature()),
             thinking: variant_thinking,
             extra_body,
         }
@@ -2444,6 +2608,14 @@ impl OpenAiCompatibleClient {
         stage: &'static str,
     ) -> Result<reqwest::Response> {
         let url = format!("{}/messages", self.provider.base_url.trim_end_matches('/'));
+        crate::llm::request_log::record(
+            &self.provider.id,
+            &self.provider.default_model,
+            "anthropic",
+            self.request_scope,
+            &url,
+            request,
+        );
         self.send_with_transport_retry(request_id, stage, || {
             self.client
                 .post(&url)
@@ -2473,6 +2645,7 @@ impl OpenAiCompatibleClient {
             for data in buffer.push(&chunk)? {
                 if handle_anthropic_sse_data(&data, &mut state, &mut *on_chunk)? {
                     let signature = state.thinking_signature.take();
+                    let stop_reason = state.stop_reason.take();
                     let mut result = finalize_stream_result(
                         state.content,
                         state.reasoning,
@@ -2481,6 +2654,7 @@ impl OpenAiCompatibleClient {
                         dsml,
                     )?;
                     result.thinking_signature = signature;
+                    result.finish_reason = map_anthropic_stop_reason(stop_reason);
                     return Ok(result);
                 }
             }
@@ -2504,6 +2678,7 @@ impl OpenAiCompatibleClient {
         )?;
         let reasoning_part_active = state.reasoning_part_active;
         let signature = state.thinking_signature.take();
+        let stop_reason = state.stop_reason.take();
         let mut result = finalize_stream_result(
             state.content,
             state.reasoning,
@@ -2512,6 +2687,7 @@ impl OpenAiCompatibleClient {
             dsml,
         )?;
         result.thinking_signature = signature;
+        result.finish_reason = map_anthropic_stop_reason(stop_reason);
         if reasoning_part_active {
             on_chunk(ChatStreamChunk {
                 kind: ChatStreamKind::ReasoningPartEnd,
@@ -2555,7 +2731,7 @@ impl OpenAiCompatibleClient {
             stream: true,
             tools: (!tools.is_empty()).then(|| lower_responses_tools(tools)),
             reasoning: self.responses_reasoning(),
-            temperature: Some(self.provider.temperature),
+            temperature: Some(self.provider.effective_temperature()),
             extra_body,
         };
         let reasoning_effort = request
@@ -2578,6 +2754,14 @@ impl OpenAiCompatibleClient {
             t("Responses request configured", "Responses 请求配置完成")
         );
         let url = format!("{}/responses", self.provider.base_url.trim_end_matches('/'));
+        crate::llm::request_log::record(
+            &self.provider.id,
+            &self.provider.default_model,
+            "responses",
+            self.request_scope,
+            &url,
+            &request,
+        );
         let response = self
             .send_with_transport_retry(request_id, "responses.send", || {
                 self.client
@@ -2641,6 +2825,7 @@ impl OpenAiCompatibleClient {
                         dsml,
                         response_id,
                         store_disabled,
+                        self.responses_continuation_suppressed(),
                     )
                     .map(Some);
                 }
@@ -2668,7 +2853,16 @@ impl OpenAiCompatibleClient {
             }
         }
         if !terminal_event_received {
-            bail!("OpenAI Responses stream ended before a terminal event");
+            // 与 chat 路径 (:finish_reason 缺失分支) 同型:截断按传输失败
+            // 分类,冷却/重试机制才会把这种端点降权,而不是裸错误穿透。
+            return Err(
+                anyhow::anyhow!("OpenAI Responses stream ended before a terminal event").context(
+                    TransportFailure {
+                        stage: "responses.stream",
+                        kind: TransportFailureKind::Other,
+                    },
+                ),
+            );
         }
         finalize_responses_stream_result(
             content,
@@ -2678,6 +2872,7 @@ impl OpenAiCompatibleClient {
             dsml,
             response_id,
             store_disabled,
+            self.responses_continuation_suppressed(),
         )
         .map(Some)
     }
@@ -3538,6 +3733,10 @@ struct AnthropicStreamDelta {
     partial_json: Option<String>,
     #[serde(default, deserialize_with = "null_as_default")]
     signature: Option<String>,
+    /// `message_delta` 携带终止原因;丢掉它会让 Anthropic 路径的
+    /// finish_reason 恒为 None,max_tokens 截断的工具参数照常执行。
+    #[serde(default, deserialize_with = "null_as_default")]
+    stop_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3570,6 +3769,20 @@ struct AnthropicStreamState {
     thinking_signature: Option<String>,
     usage: Option<Usage>,
     tool_calls: AnthropicToolAccumulator,
+    stop_reason: Option<String>,
+}
+
+/// Anthropic stop_reason → OpenAI 风格 finish_reason(消费方按后者判断)。
+fn map_anthropic_stop_reason(stop_reason: Option<String>) -> Option<String> {
+    stop_reason.map(|reason| {
+        match reason.as_str() {
+            "max_tokens" => "length",
+            "tool_use" => "tool_calls",
+            "end_turn" | "stop_sequence" => "stop",
+            other => other,
+        }
+        .to_string()
+    })
 }
 
 /// Upper bound on streamed tool calls per response. Indices come from the
@@ -4720,6 +4933,13 @@ where
             if let Some(usage) = event.usage {
                 merge_anthropic_usage(&mut state.usage, usage);
             }
+            if let Some(stop_reason) = event
+                .delta
+                .as_ref()
+                .and_then(|delta| delta.stop_reason.clone())
+            {
+                state.stop_reason = Some(stop_reason);
+            }
             flush_anthropic_state(state, on_chunk)?;
         }
         "message_stop" => {
@@ -4908,9 +5128,16 @@ fn finalize_responses_stream_result(
     dsml_enabled: bool,
     response_id: Option<String>,
     store_disabled: bool,
+    continuation_unsupported: bool,
 ) -> Result<ChatResult> {
     let mut result = finalize_stream_result(content, reasoning, usage, tool_calls, dsml_enabled)?;
     if result.tool_calls.is_empty() {
+        return Ok(result);
+    }
+    // 该端点续传已被记为不可用(能力记录/自愈置位):不设 continuation,
+    // 工具轮走无状态全量回放(lower_responses_messages 重放
+    // function_call/function_call_output 是完整配对的)。
+    if continuation_unsupported {
         return Ok(result);
     }
     if store_disabled {
@@ -5209,8 +5436,26 @@ fn clean_plain_text(mut text: String) -> String {
 mod tests {
     use super::*;
     use crate::llm::{ChatContent, ChatContentPart, ImageUrlContent};
+    use std::sync::atomic::AtomicUsize;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    #[test]
+    fn strip_tagged_sections_handles_truncated_open_tag() {
+        // 流被 finish_reason=length 截断在标签中间：恰以 `<system-reminder`
+        // 结尾（无 `>`）曾触发 content_start 越界 panic。
+        let text = "text before <system-reminder".to_string();
+        assert_eq!(
+            strip_tagged_sections(text, "system-reminder"),
+            "text before "
+        );
+        let multibyte = "前文<system-reminder中".to_string();
+        assert_eq!(strip_tagged_sections(multibyte, "system-reminder"), "前文");
+        let normal = "a<system-reminder>hidden</system-reminder>b".to_string();
+        assert_eq!(strip_tagged_sections(normal, "system-reminder"), "ab");
+        let unclosed = "a<system-reminder>hidden".to_string();
+        assert_eq!(strip_tagged_sections(unclosed, "system-reminder"), "a");
+    }
 
     #[derive(Debug)]
     struct ResponsesTestOutput {
@@ -6084,6 +6329,7 @@ mod tests {
             false,
             Some("resp_1".to_string()),
             true,
+            false,
         )
         .unwrap_err();
         assert!(store_error.to_string().contains("store=false"));
@@ -6092,13 +6338,29 @@ mod tests {
             String::new(),
             String::new(),
             None,
-            vec![tool_call],
+            vec![tool_call.clone()],
             false,
             None,
+            false,
             false,
         )
         .unwrap_err();
         assert!(id_error.to_string().contains("without a response ID"));
+
+        // 续传被记为不可用:带工具调用也不设 continuation(无状态全量回放),
+        // 且不再要求 response_id。
+        let suppressed = finalize_responses_stream_result(
+            String::new(),
+            String::new(),
+            None,
+            vec![tool_call],
+            false,
+            None,
+            false,
+            true,
+        )
+        .unwrap();
+        assert!(suppressed.responses_continuation.is_none());
     }
 
     #[tokio::test]
@@ -6568,6 +6830,7 @@ mod tests {
             }),
             max_tokens_override: None,
             request_scope: "chat",
+            continuation_health: ResponsesContinuationHealth::detached(),
         };
 
         let result = client
@@ -6997,6 +7260,7 @@ mod tests {
             request_timeouts: None,
             max_tokens_override: None,
             request_scope: "chat",
+            continuation_health: ResponsesContinuationHealth::detached(),
         };
         let initial_result = initial_client
             .chat_stream(vec![ChatMessage::plain("user", "hi")], Vec::new(), |_| {
@@ -7032,6 +7296,7 @@ mod tests {
             request_timeouts: None,
             max_tokens_override: None,
             request_scope: "chat",
+            continuation_health: ResponsesContinuationHealth::detached(),
         };
 
         let result = client
@@ -7168,6 +7433,7 @@ mod tests {
             request_timeouts: None,
             max_tokens_override: None,
             request_scope: "chat",
+            continuation_health: ResponsesContinuationHealth::detached(),
         };
         let mut chunks = Vec::new();
 
@@ -7253,6 +7519,7 @@ mod tests {
             request_timeouts: None,
             max_tokens_override: None,
             request_scope: "chat",
+            continuation_health: ResponsesContinuationHealth::detached(),
         };
 
         let result = client
@@ -7480,6 +7747,7 @@ mod tests {
             request_timeouts: None,
             max_tokens_override: None,
             request_scope: "chat",
+            continuation_health: ResponsesContinuationHealth::detached(),
         };
 
         let error = client
@@ -7658,6 +7926,139 @@ mod tests {
         stream.write_all(response.as_bytes()).await.unwrap();
     }
 
+    /// Serves an endless stream of opencode-zen-shaped 429s, counting hits.
+    /// The listener is bound before the task is spawned: `#[tokio::test]` runs
+    /// a current-thread runtime, so handing the address back over a blocking
+    /// channel would deadlock the only thread that could serve it.
+    async fn spawn_rate_limited_endpoint() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>)
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                read_http_headers(&mut stream).await;
+                counter.fetch_add(1, Ordering::SeqCst);
+                let body = concat!(
+                    r#"{"type":"error","error":{"type":"FreeUsageLimitError","#,
+                    r#""message":"Error from provider (Console): Rate limit exceeded."}}"#
+                );
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 429 Too Many Requests\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+        (url, hits, server)
+    }
+
+    fn rate_limit_test_endpoint(id: &str, url: &str) -> LlmEndpoint {
+        let mut provider = test_provider(id, url);
+        provider.protocol = "openai-chat".to_string();
+        provider.default_model = "big-pickle".to_string();
+        LlmEndpoint {
+            client: reqwest::Client::new(),
+            provider,
+            api_key: "public".to_string(),
+            key_index: 0,
+        }
+    }
+
+    fn client_over(endpoints: Vec<LlmEndpoint>) -> OpenAiCompatibleClient {
+        let first = endpoints[0].clone();
+        OpenAiCompatibleClient {
+            client: first.client.clone(),
+            provider: first.provider.clone(),
+            api_key: first.api_key.clone(),
+            endpoints: Arc::new(endpoints),
+            thinking_variants: HashMap::new(),
+            reasoning_visibility: ReasoningVisibility::Summary,
+            buffered_delivery: false,
+            detailed_reasoning_summary: false,
+            request_timeouts: None,
+            max_tokens_override: None,
+            request_scope: "chat",
+            continuation_health: ResponsesContinuationHealth::detached(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rate_limited_endpoint_costs_one_request_per_turn_not_three() {
+        // Regression: `MIN_ENDPOINT_ATTEMPTS` padded the attempt list by
+        // cycling the only endpoint, so a single 429 fired three back-to-back
+        // requests with no backoff — and the 600s cooldown then refilled the
+        // whole pool, repeating the triple every turn for the entire cooldown.
+        let (url, hits, server) = spawn_rate_limited_endpoint().await;
+        let client = client_over(vec![rate_limit_test_endpoint(
+            "rate-limit-single-endpoint-test",
+            &url,
+        )]);
+
+        for turn in 1..=3 {
+            let before = hits.load(Ordering::SeqCst);
+            let error = client
+                .chat_stream(vec![ChatMessage::plain("user", "hi")], Vec::new(), |_| {
+                    Ok(())
+                })
+                .await
+                .unwrap_err();
+            assert!(
+                format!("{error:#}").contains("429"),
+                "turn {turn} did not surface the rate limit: {error:#}"
+            );
+            assert_eq!(
+                hits.load(Ordering::SeqCst) - before,
+                1,
+                "turn {turn} spent more than one request on a rate-limited endpoint"
+            );
+        }
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_rate_limited_endpoint_still_fails_over_to_a_different_one() {
+        // The same-endpoint suppression must not cost cross-endpoint failover:
+        // each distinct endpoint is still tried exactly once.
+        let (first_url, first_hits, first_server) = spawn_rate_limited_endpoint().await;
+        let (second_url, second_hits, second_server) = spawn_rate_limited_endpoint().await;
+        let client = client_over(vec![
+            rate_limit_test_endpoint("rate-limit-failover-first-test", &first_url),
+            rate_limit_test_endpoint("rate-limit-failover-second-test", &second_url),
+        ]);
+
+        let error = client
+            .chat_stream(vec![ChatMessage::plain("user", "hi")], Vec::new(), |_| {
+                Ok(())
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(first_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(second_hits.load(Ordering::SeqCst), 1);
+        let rendered = format!("{error:#}");
+        for id in [
+            "rate-limit-failover-first-test",
+            "rate-limit-failover-second-test",
+        ] {
+            assert!(
+                rendered.contains(id),
+                "{id} missing from the failure report: {rendered}"
+            );
+        }
+
+        first_server.abort();
+        second_server.abort();
+    }
+
     fn test_client(provider: ProviderConfig) -> OpenAiCompatibleClient {
         let client = reqwest::Client::new();
         let endpoint = LlmEndpoint {
@@ -7678,6 +8079,7 @@ mod tests {
             request_timeouts: None,
             max_tokens_override: None,
             request_scope: "chat",
+            continuation_health: ResponsesContinuationHealth::detached(),
         }
     }
 
@@ -7708,7 +8110,9 @@ mod tests {
             api_key: None,
             models: Vec::new(),
             model_context_window: std::collections::HashMap::new(),
+            model_temperature: std::collections::HashMap::new(),
             model_modalities: std::collections::HashMap::new(),
+            model_costs: std::collections::HashMap::new(),
             default_model: String::new(),
             timeout_seconds: 60,
             temperature: 1.0,
@@ -8068,6 +8472,7 @@ mod tests {
             request_timeouts: None,
             max_tokens_override: None,
             request_scope: "chat",
+            continuation_health: ResponsesContinuationHealth::detached(),
         };
 
         let first_endpoint = client.with_endpoint(&client.endpoints[0]);
@@ -8242,17 +8647,20 @@ mod tests {
 }
 
 fn strip_tagged_sections(mut text: String, tag: &str) -> String {
-    let open = format!("<{tag}>");
     let close = format!("</{tag}>");
     let open_prefix = format!("<{tag}");
     loop {
         let Some(start) = text.find(&open_prefix) else {
             break;
         };
-        let content_start = text[start..]
-            .find('>')
-            .map(|offset| start + offset + 1)
-            .unwrap_or(start + open.len());
+        // start 之后没有任何 `>`（流在标签中间被截断）时，`</tag>` 也必然
+        // 不存在：直接按未闭合标签截掉其后全部内容。用 `start + open.len()`
+        // 猜内容起点会在文本恰以 `<tag` 结尾时越界 panic。
+        let Some(offset) = text[start..].find('>') else {
+            text.replace_range(start.., "");
+            break;
+        };
+        let content_start = start + offset + 1;
         let Some(relative_end) = text[content_start..].find(&close) else {
             text.replace_range(start.., "");
             break;

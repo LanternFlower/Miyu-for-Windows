@@ -106,8 +106,6 @@ mod tests {
         for text in [
             include_str!("prompts/miyu.md"),
             include_str!("prompts/compact.md"),
-            include_str!("prompts/compact_chat.md"),
-            include_str!("prompts/chat.md"),
             include_str!("../README.md"),
         ] {
             assert_eq!(estimate_tokens(text), reference.count_ordinary(text));

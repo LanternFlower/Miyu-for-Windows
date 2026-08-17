@@ -1341,13 +1341,9 @@ fn parse_json_object(text: &str) -> Result<Value> {
             return Ok(value);
         }
     }
-    let start = trimmed
-        .find('{')
-        .context("affection JSON has no opening brace")?;
-    let end = trimmed
-        .rfind('}')
-        .context("affection JSON has no closing brace")?;
-    let value: Value = serde_json::from_str(&trimmed[start..=end])?;
+    let json_text = crate::json_extract::extract_json_object(trimmed)
+        .context("affection output contains no complete JSON object")?;
+    let value: Value = serde_json::from_str(json_text)?;
     if !value.is_object() {
         bail!("affection response is not a JSON object");
     }

@@ -451,8 +451,10 @@ fn normalize_moderation(value: &Value, minimum: f64) -> ModerationResult {
     // Treat a threshold-crossing severity as a violation even when the model
     // omitted or contradicted the boolean field. The safety precheck is
     // deliberately fail-closed; the subsequent agent still receives only a
-    // bounded, sanitized summary.
-    let violation = severity >= minimum;
+    // bounded, sanitized summary. severity 必须严格为正:否则配置
+    // moderation_min_severity=0.0(合法值)时 0>=0 恒真,所有消息都被判
+    // 违规,正常模式退化为每条必回复。
+    let violation = severity >= minimum && severity > 0.0;
     ModerationResult {
         violation,
         severity: if violation { severity } else { 0.0 },
@@ -521,13 +523,9 @@ fn parse_json_object(text: &str) -> Result<Value> {
             return Ok(value);
         }
     }
-    let start = trimmed
-        .find('{')
-        .context("judge JSON has no opening brace")?;
-    let end = trimmed
-        .rfind('}')
-        .context("judge JSON has no closing brace")?;
-    let value: Value = serde_json::from_str(&trimmed[start..=end])?;
+    let json_text = crate::json_extract::extract_json_object(trimmed)
+        .context("judge output contains no complete JSON object")?;
+    let value: Value = serde_json::from_str(json_text)?;
     if !value.is_object() {
         bail!("judge JSON is not an object");
     }

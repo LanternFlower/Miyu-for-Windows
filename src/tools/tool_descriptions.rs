@@ -28,6 +28,10 @@ pub struct ToolDescription {
     pub load_policy: LoadPolicy,
     #[serde(default)]
     pub groups: Vec<String>,
+    /// 按工具超时（秒）。缺省=吃 registry 默认兜底；0=豁免（自管超时或
+    /// 天生长跑的工具，如 run_command/task/deep_research）。
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

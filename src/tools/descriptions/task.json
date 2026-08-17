@@ -54,5 +54,6 @@
   "load_policy": "summary",
   "groups": [
     "agent"
-  ]
+  ],
+  "timeout_seconds": 0
 }
