@@ -8150,7 +8150,10 @@ fn parse_provider_model_choice(value: &str) -> (String, String) {
 /// Opens `path` in an external text editor, blocking until it exits.
 /// Prefers `$VISUAL`/`$EDITOR` (which may include arguments such as
 /// `code --wait`), then falls back to `notepad` on Windows and
-/// `vim`/`nano`/`vi` on Unix.
+/// `vim`/`nano`/`vi` on Unix. Windows Notepad is launched without waiting:
+/// current versions may either reuse an existing process and return at once,
+/// or keep the process alive after the edited tab closes. The caller keeps
+/// the temporary file alive until the user confirms that it has been saved.
 fn open_text_editor(path: &std::path::Path) -> std::io::Result<()> {
     for var in ["VISUAL", "EDITOR"] {
         if let Some(command) = std::env::var(var).ok().filter(|v| !v.trim().is_empty()) {
@@ -8168,7 +8171,12 @@ fn open_text_editor(path: &std::path::Path) -> std::io::Result<()> {
         &["vim", "nano", "vi"]
     };
     for editor in candidates {
-        if Command::new(*editor).arg(path).status().is_ok() {
+        let launched = if cfg!(windows) {
+            Command::new(*editor).arg(path).spawn().map(|_| ())
+        } else {
+            Command::new(*editor).arg(path).status().map(|_| ())
+        };
+        if launched.is_ok() {
             return Ok(());
         }
     }
@@ -8267,6 +8275,20 @@ fn edit_dialog_pair(
     Ok(Some((question, answer)))
 }
 
+fn textarea_temp_file(value: &str) -> std::io::Result<tempfile::TempPath> {
+    let mut file = tempfile::Builder::new()
+        .prefix("miyu-persona-")
+        .suffix(".md")
+        .tempfile()?;
+    file.write_all(value.as_bytes())?;
+    file.flush()?;
+    // Close the file handle before handing the path to Windows Notepad.
+    // Keeping NamedTempFile open can make the tab look editable while its
+    // eventual save is detached from the path Miyu reads back. TempPath keeps
+    // automatic cleanup without retaining that handle.
+    Ok(file.into_temp_path())
+}
+
 fn edit_textarea(stdout: &mut io::Stdout, value: &mut String) -> Result<()> {
     execute!(
         stdout,
@@ -8277,9 +8299,8 @@ fn edit_textarea(stdout: &mut io::Stdout, value: &mut String) -> Result<()> {
     )?;
     stdout.flush()?;
     terminal::disable_raw_mode()?;
-    let mut file = tempfile::NamedTempFile::new()?;
-    file.write_all(value.as_bytes())?;
-    let path = file.path().to_path_buf();
+    let temp_path = textarea_temp_file(value)?;
+    let path = temp_path.to_path_buf();
     let status = open_text_editor(&path);
     if let Err(err) = status {
         if is_zh() {
@@ -8287,6 +8308,18 @@ fn edit_textarea(stdout: &mut io::Stdout, value: &mut String) -> Result<()> {
         } else {
             eprintln!("Failed to open editor: {err}");
         }
+    } else if cfg!(windows) {
+        writeln!(
+            stdout,
+            "{}",
+            t(
+                "Save the file in the editor, then return here and press Enter to continue.",
+                "请在编辑器中保存文件，然后回到这里按 Enter 继续。"
+            )
+        )?;
+        stdout.flush()?;
+        let mut confirmation = String::new();
+        io::stdin().read_line(&mut confirmation)?;
     }
     *value = std::fs::read_to_string(&path)?.trim().to_string();
     terminal::enable_raw_mode()?;
@@ -9004,6 +9037,7 @@ mod tests {
         route_pool_summary, t, thinking_variant_field, upsert_group_join_approval_group,
         validate_reply_processor_settings, vision_provider_model_choice_values, Field,
         PersonaMenuTarget, ReplyProcessorSettingsForm, REPLY_PROCESSOR_PLUGIN_ID,
+        textarea_temp_file,
     };
     use crate::config::{
         AppConfig, PlatformConversationKind, PlatformModelPoolInheritance, PlatformPersonaOverride,
@@ -9011,6 +9045,14 @@ mod tests {
         REAL_CONTEXT_PLUGIN_ID,
     };
     use crate::llm::ThinkingVariantOptions;
+
+    #[test]
+    fn textarea_temp_file_is_markdown_and_reopenable_for_writing() {
+        let path = textarea_temp_file("before").unwrap();
+        assert_eq!(path.extension().and_then(|value| value.to_str()), Some("md"));
+        std::fs::write(&path, "after").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "after");
+    }
 
     #[test]
     fn sensitive_field_is_masked_until_actively_edited() {
