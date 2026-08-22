@@ -26,17 +26,18 @@ use crate::paths::MiyuPaths;
 /// 蒸馏指令。要求两行输出:首行篇幅类型(短|长),次行风格备忘正文。
 /// 正文全部用陈述句,且必须含一条从设定文件推断的整体篇幅陈述
 /// (不许一律默认写很短——话痨型人格要如实蒸出爱长篇),不提场景平台。
-const DISTILL_PROMPT: &str = "下面是一份AI人格设定文件。请输出两行:\
-第一行只写一个字——设定倾向简短回复写「短」,倾向详尽长篇写「长」,\
-依据是设定里的句长限制、换行规则、使用场景和语气,没有依据就按人格气质判断;\
-第二行是把其中「说话风格与硬性规则」蒸馏成的一段不超过130字的第三人称陈述,\
-用于放在对话请求末尾提醒模型保持人设。第二行的要求:全部用陈述句(描述这个人格是什么样、从不做什么),不写命令;\
-必须包含一条整体篇幅的陈述——回复通常多长;设定倾向详尽讲解就如实写爱长篇展开,\
-不要一律默认写很短;不要自行添加「需要解释时会展开」之类的例外条款;\
-不用列表、内部不换行;优先覆盖设定里最容易被违反的硬规则\
-(句子长度、Emoji、标点、换行、括号补充、加粗、语气、格式);\
-不要提设定文件本身,不要以人格的名字开头,也不要描述对话发生的场景或平台。\
-除这两行外不要输出任何其他内容。";
+const DISTILL_PROMPT: &str = "Below is an AI persona definition file. Output exactly two lines:\
+the first line is a single character — write 「短」 if the persona leans toward brief replies, 「长」 if it leans toward long, detailed ones,\
+judging from the file's sentence-length limits, line-break rules, usage scenarios and tone; with no such evidence, judge from the persona's temperament.\
+The second line distills the persona's speaking style and hard rules into one third-person statement of at most 130 characters,\
+to be placed at the end of chat requests as a reminder to stay in character. Requirements for the second line: write it in the same language as the persona file;\
+use only declarative sentences (what this persona is like, what it never does), no commands;\
+it must include one statement about overall reply length — how long replies usually are; if the persona favors detailed explanations, faithfully say it likes to write at length,\
+do not default to very short; do not add exception clauses of your own such as 'expands when explanation is needed';\
+no lists and no line breaks within the line; prioritize the hard rules in the file that are easiest to violate\
+(sentence length, emoji, punctuation, line breaks, parenthetical asides, bold text, tone, formatting);\
+do not mention the definition file itself, do not start with the persona's name, and do not describe the scene or platform of the conversation.\
+Output nothing beyond these two lines.";
 
 /// 简短型人格的定长讲解条款,由代码追加、不经蒸馏——A/B 实测这一条是
 /// 技术答疑压缩的全部来源(0/6→4/6,中位 243→112 字),而交给蒸馏

@@ -1,6 +1,5 @@
 use super::{ToolRegistry, ToolSpec};
 use crate::alarm::{self, AlarmRecord, AlarmStatus};
-use crate::i18n::agent_text as t;
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
 use chrono::Local;
@@ -9,57 +8,41 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
 
+/// 三件闹钟工具合并成一件 `alarm`(08-17):set/list/cancel 是同一个对象的
+/// 三种操作,拆开只是让 tools 数组多背两份外壳。
 pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
-    let set_paths = paths.clone();
     registry.register(ToolSpec::new(
-        "set_alarm",
-        t(
-            "Set a local alarm or countdown. Accepts duration like 30s, 10m, 1h 30m, or a time like 14:30. The alarm runs in a background Miyu process and uses Miyu's embedded sound.",
-            "设置本地闹钟或倒计时。支持 30s、10m、1h 30m 或 14:30。闹钟在后台 Miyu 进程运行，并使用 Miyu 内置声音。",
-        ),
+        "alarm",
+        "Manage local alarms. action=set schedules one (time accepts 30s, 10m, 1h 30m, or 14:30); action=list shows scheduled and ringing alarms; action=cancel removes one by id. Alarms run in a background Miyu process with Miyu's embedded sound.",
         json!({
             "type": "object",
             "properties": {
-                "time": { "type": "string", "description": t("Duration or clock time.", "时长或时钟时间。") },
-                "label": { "type": "string", "description": t("Optional alarm label.", "可选闹钟标签。") },
-                "audio_file": { "type": "string", "description": t("Optional local .wav or .mp3 audio file to play instead of Miyu's built-in alarm sound.", "可选本地 .wav 或 .mp3 音频文件，用它替代 Miyu 内置闹钟音。") }
+                "action": {
+                    "type": "string",
+                    "enum": ["set", "list", "cancel"],
+                    "description": "set schedules, list shows, cancel removes."
+                },
+                "time": { "type": "string", "description": "Required for set: duration or clock time." },
+                "label": { "type": "string", "description": "Optional alarm label for set." },
+                "audio_file": { "type": "string", "description": "Optional local .wav or .mp3 for set, replacing Miyu's built-in sound." },
+                "id": { "type": "string", "description": "Required for cancel: alarm id from set or list." }
             },
-            "required": ["time"],
+            "required": ["action"],
             "additionalProperties": false
         }),
         move |args| {
-            let paths = set_paths.clone();
-            async move { set_alarm(args, paths).await }
-        },
-    ).writes());
-    let list_paths = paths.clone();
-    registry.register(ToolSpec::new(
-        "list_alarms",
-        t(
-            "List currently scheduled or ringing local alarms.",
-            "列出当前已设定或正在响的本地闹钟。",
-        ),
-        json!({"type":"object","properties":{},"additionalProperties":false}),
-        move |_args| {
-            let paths = list_paths.clone();
-            async move { list_alarms(paths).await }
-        },
-    ));
-    let cancel_paths = paths.clone();
-    registry.register(ToolSpec::new(
-        "cancel_alarm",
-        t(
-            "Cancel a scheduled or ringing alarm by id. Use list_alarms first if the id is unknown.",
-            "按 id 取消已设定或正在响的闹钟。不知道 id 时先用 list_alarms。",
-        ),
-        json!({"type":"object","properties":{"id":{"type":"string","description":t("Alarm id from set_alarm or list_alarms.","set_alarm 或 list_alarms 返回的闹钟 id。")}},"required":["id"],"additionalProperties":false}),
-        move |args| {
-            let paths = cancel_paths.clone();
-            async move { cancel_alarm(args, paths).await }
+            let paths = paths.clone();
+            async move {
+                match args.get("action").and_then(Value::as_str).unwrap_or_default() {
+                    "set" => set_alarm(args, paths).await,
+                    "list" => list_alarms(paths).await,
+                    "cancel" => cancel_alarm(args, paths).await,
+                    other => bail!("unknown action: {other}; expected set, list or cancel"),
+                }
+            }
         },
     ).writes());
 }
-
 async fn set_alarm(args: Value, paths: MiyuPaths) -> Result<String> {
     let time = args
         .get("time")
@@ -86,7 +69,7 @@ async fn set_alarm(args: Value, paths: MiyuPaths) -> Result<String> {
         Local::now().timestamp_millis(),
         std::process::id()
     );
-    let exe = std::env::current_exe()?;
+    let exe = crate::paths::miyu_executable()?;
     let mut command = Command::new(exe);
     command
         .arg("__alarm-worker")
@@ -193,7 +176,7 @@ fn resolve_audio_file(value: &str) -> Result<PathBuf> {
 
 fn expand_path(value: &str) -> PathBuf {
     if let Some(rest) = value.strip_prefix("~/") {
-        if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+        if let Some(home) = crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
             return home.join(rest);
         }
     }

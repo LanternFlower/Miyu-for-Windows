@@ -288,7 +288,7 @@ pub fn clip_inline(value: &str, max_chars: usize) -> String {
 }
 
 pub fn finalization_prompt() -> &'static str {
-    "<tool_budget_reached>工具预算已用尽。不要再请求工具。请只基于上面的任务描述和已执行工具结果输出最终结果；缺少信息的地方明确说明。</tool_budget_reached>"
+    "<tool_budget_reached>The tool budget is exhausted. Do not request any more tools. Produce the final result based only on the task description above and the tool results already executed; state explicitly where information is missing.</tool_budget_reached>"
 }
 
 pub struct SubagentRunner {
@@ -349,11 +349,7 @@ impl SubagentRunner {
                 Some((mut messages, steps)) => {
                     messages.push(ChatMessage::plain(
                         "user",
-                        if is_zh() {
-                            "上次连接在此处中断。已完成的工具结果都保留在上文中；请从中断处继续完成原任务，不要重复已经完成的步骤。"
-                        } else {
-                            "The previous connection dropped here. All completed tool results are preserved above; continue the original task from where it stopped without repeating finished steps."
-                        },
+                        "The previous connection dropped here. All completed tool results are preserved above; continue the original task from where it stopped without repeating finished steps.",
                     ));
                     (messages, steps)
                 }

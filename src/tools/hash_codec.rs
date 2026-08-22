@@ -5,9 +5,31 @@ use blake2::{Blake2b512, Blake2s256};
 use serde_json::{json, Value};
 use sha1::Digest as Sha1Digest;
 
+/// 哈希与解码合并成一件 `codec`(08-17):两者都是"给一段输入换个表示",
+/// 分成两个工具只是让 tools 数组多背一份外壳。
 pub fn register(registry: &mut ToolRegistry) {
-    registry.register(ToolSpec::new("calculate_hash", "Calculate hashes for text/hex/base64 input. Supports md5, sha1, sha224, sha256, sha384, sha512, sha3_224, sha3_256, sha3_384, sha3_512, blake2b, b2sum, blake2s, blake3, crc32, adler32, and all/mainstream. b2sum matches GNU/coreutils b2sum: BLAKE2b-512. For shell echo semantics include the trailing newline in input_text.", json!({"type":"object","properties":{"input_text":{"type":"string","description":"Input text bytes. Include \\n when matching shell commands like echo."},"algorithms":{"type":"string"},"input_format":{"type":"string","enum":["text","hex","base64"]}},"required":["input_text"],"additionalProperties":false}), |args| async move { calculate(args) }));
-    registry.register(ToolSpec::new("decode_encoded_text", "Decode base64, hex, url, html, or rot13 encoded text.", json!({"type":"object","properties":{"input_text":{"type":"string"},"input_format":{"type":"string","enum":["base64","hex","url","html","rot13"]},"text_encoding":{"type":"string"}},"required":["input_text","input_format"],"additionalProperties":false}), |args| async move { decode(args) }));
+    registry.register(ToolSpec::new(
+        "codec",
+        "编解码工具。op=hash 计算哈希（md5/sha1/sha224/sha256/sha384/sha512/sha3_*/blake2b/b2sum/blake2s/blake3/crc32/adler32，或 all/mainstream 全算）；op=decode 解码 base64、hex、url、html 或 rot13。要匹配 shell echo 的语义，input_text 里要带上末尾换行。",
+        json!({
+            "type": "object",
+            "properties": {
+                "op": { "type": "string", "enum": ["hash", "decode"], "description": "hash 计算哈希，decode 解码。" },
+                "input_text": { "type": "string", "description": "输入文本字节。匹配 echo 这类 shell 命令时要带 \\n。" },
+                "input_format": { "type": "string", "enum": ["text", "hex", "base64", "url", "html", "rot13"], "description": "输入编码。op=hash 时可选 text/hex/base64（默认 text）；op=decode 时必填，指明待解码的编码。" },
+                "algorithms": { "type": "string", "description": "仅 op=hash：算法名，逗号或空格分隔；all/mainstream 表示全算。默认 sha256。" }
+            },
+            "required": ["op", "input_text"],
+            "additionalProperties": false
+        }),
+        |args| async move {
+            match args.get("op").and_then(Value::as_str).unwrap_or_default() {
+                "hash" => calculate(args),
+                "decode" => decode(args),
+                other => anyhow::bail!("unknown op: {other}; expected hash or decode"),
+            }
+        },
+    ));
 }
 
 fn calculate(args: Value) -> Result<String> {

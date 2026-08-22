@@ -1,17 +1,25 @@
 {
   "name": "search_knowledge_base",
   "display_name": "搜索知识库",
-  "description": "Search the local knowledge base content. Returns file paths and original text snippets. Use read_knowledge_base_file if snippets are insufficient. ",
+  "description": "Search the local knowledge base: by=content searches file contents (default); by=name finds files by file name, directory, extension, or path fragment.\nContent search returns paths plus verbatim snippets; when a snippet is not enough, read the full file with read_knowledge_base_file. Name search returns relative paths. Only mention paths when useful or when the user asks.",
   "parameters": {
     "type": "object",
     "properties": {
       "query": {
         "type": "string",
-        "description": "Search keywords or user question."
+        "description": "Search terms, the user's question, or — with by=name — a file name, directory, extension, or path fragment."
+      },
+      "by": {
+        "type": "string",
+        "enum": [
+          "content",
+          "name"
+        ],
+        "description": "content searches contents, name searches paths. Defaults to content."
       },
       "max_results": {
         "type": "integer",
-        "description": "Optional result limit."
+        "description": "Optional limit on the number of results."
       }
     },
     "required": [

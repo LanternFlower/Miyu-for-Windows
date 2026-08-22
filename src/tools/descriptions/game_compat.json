@@ -1,0 +1,27 @@
+{
+  "name": "game_compat",
+  "display_name": "游戏兼容性",
+  "description": "Query a game's compatibility on Linux. A single call concurrently aggregates three sources: ProtonDB ratings and player reports, AreWeAntiCheatYet anti-cheat status (Supported/Running/Planned/Broken/Denied), and a caniplayonlinux verdict snapshot. Accepts a Steam App ID (numeric) or a game name; Chinese game names can be queried directly. Returns Markdown. Content is parsed live from third-party sites: treat any field not returned as unknown and do not fabricate it; a missing source does not mean a negative verdict.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Steam App ID or game name."
+      },
+      "max_reports": {
+        "type": "integer",
+        "description": "Number of ProtonDB reports, default 8, max 40. Use 0 for the verdict only, without reports."
+      }
+    },
+    "required": [
+      "query"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false,
+  "load_policy": "group",
+  "groups": [
+    "gaming"
+  ]
+}

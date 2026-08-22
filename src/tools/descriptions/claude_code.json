@@ -1,0 +1,41 @@
+{
+  "name": "claude_code",
+  "display_name": "Claude Code",
+  "description": "Delegate a coding or automation task to the locally installed Claude Code CLI, which runs headless with the user's Claude subscription login. The CLI does not see this conversation: include all required context, file paths, constraints, and acceptance criteria in the prompt. It runs in the current session workspace unless cwd is given, can read and edit files there, and runs its own agent loop until the task is done. Returns the final answer plus a session_id; pass that session_id as the resume parameter in a later call to continue the same Claude Code session with its context intact.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Complete task prompt for Claude Code. Must be self-contained: include required context, since the CLI does not see this conversation."
+      },
+      "cwd": {
+        "type": "string",
+        "description": "Optional working directory. Defaults to the current session workspace."
+      },
+      "model": {
+        "type": "string",
+        "description": "Optional Claude model alias or full name. Omit to use the user's default subscription model."
+      },
+      "append_system_prompt": {
+        "type": "string",
+        "description": "Optional extra system prompt appended to Claude Code's default one."
+      },
+      "resume": {
+        "type": "string",
+        "description": "Optional Claude Code session id from a previous call's session_id. Resumes that session to continue follow-up work instead of starting over."
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
+  "permission": "writes",
+  "always_loaded": false,
+  "load_policy": "summary",
+  "groups": [
+    "agent"
+  ],
+  "timeout_seconds": 0
+}

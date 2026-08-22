@@ -1,4 +1,4 @@
-use crate::cli::WebArgs;
+use crate::args::WebArgs;
 use crate::paths::MiyuPaths;
 use anyhow::Result;
 

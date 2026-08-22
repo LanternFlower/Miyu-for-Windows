@@ -52,7 +52,7 @@ pub fn uninstall(paths: &MiyuPaths) -> Result<bool> {
 }
 
 fn home_file(name: &str) -> std::path::PathBuf {
-    directories::BaseDirs::new()
+    crate::platform_dirs::PlatformDirs::new()
         .map(|dirs| dirs.home_dir().join(name))
         .unwrap_or_else(|| std::path::PathBuf::from(name))
 }

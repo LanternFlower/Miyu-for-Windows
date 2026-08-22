@@ -1,7 +1,7 @@
 {
   "name": "web_search",
   "display_name": "网络搜索",
-  "description": "搜索网络",
+  "description": "Search the web",
   "parameters": {
     "type": "object",
     "properties": {

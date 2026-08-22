@@ -24,19 +24,9 @@
   const DEFAULT_BOARD_TITLE = "今天想聊些什么？";
   const DEFAULT_BOARD_SUBTITLE = "从一个问题、计划或此刻的想法开始。";
   const DEFAULT_STARTER_PROMPTS = ["查询今天的天气", "分析一个问题", "发表情包打个招呼吧", "搜索一张图片"];
-  const THINKING_VARIANT_LABELS = Object.freeze({
-    default: "默认",
-    none: "关闭",
-    minimal: "最小",
-    low: "低",
-    medium: "中",
-    high: "高",
-    xhigh: "极高",
-    max: "最大",
-    on: "开启",
-    off: "关闭",
-    auto: "自动"
-  });
+  // 档位一律用供应商原值(max/high/minimal…),不翻译:译名和文档、和模型
+  // 实际认的参数值对不上,查起来反而费劲。"没设"这一档没有原值,只好写字。
+  const THINKING_VARIANT_DEFAULT_LABEL = "default";
 
   function layoutViewportWidth() {
     return (window.innerWidth || document.documentElement.clientWidth || 0) / UI_SCALE;
@@ -73,6 +63,11 @@
     "layout-grid": [["rect", { x: "3", y: "3", width: "7", height: "7", rx: "1" }], ["rect", { x: "14", y: "3", width: "7", height: "7", rx: "1" }], ["rect", { x: "14", y: "14", width: "7", height: "7", rx: "1" }], ["rect", { x: "3", y: "14", width: "7", height: "7", rx: "1" }]],
     "chart-column": [["path", { d: "M3 3v16a2 2 0 0 0 2 2h16" }], ["path", { d: "M7 15v-4m5 4V8m5 7v-6" }]],
     "chevron-right": [["path", { d: "m9 18 6-6-6-6" }]],
+    // 目标状态行用（lucide: target / pause / play / x）
+    "target": [["circle", { cx: "12", cy: "12", r: "10" }], ["circle", { cx: "12", cy: "12", r: "6" }], ["circle", { cx: "12", cy: "12", r: "2" }]],
+    "pause": [["rect", { x: "14", y: "4", width: "4", height: "16", rx: "1" }], ["rect", { x: "6", y: "4", width: "4", height: "16", rx: "1" }]],
+    "play": [["polygon", { points: "6 3 20 12 6 21 6 3" }]],
+    "x": [["path", { d: "M18 6 6 18" }], ["path", { d: "m6 6 12 12" }]],
     "circle-alert": [["circle", { cx: "12", cy: "12", r: "10" }], ["line", { x1: "12", x2: "12", y1: "8", y2: "12" }], ["line", { x1: "12", x2: "12.01", y1: "16", y2: "16" }]],
     "circle-help": [["circle", { cx: "12", cy: "12", r: "10" }], ["path", { d: "M9.09 9a3 3 0 1 1 5.83 1c0 2-3 3-3 3" }], ["path", { d: "M12 17h.01" }]],
     "circle-stop": [["circle", { cx: "12", cy: "12", r: "10" }], ["rect", { width: "6", height: "6", x: "9", y: "9", rx: "1" }]],
@@ -162,11 +157,13 @@
     "run.failed",
     "conversation.reset",
     "conversation.pop",
+    "conversation.compacted",
     "session.created",
     "session.renamed",
     "session.deleted",
     "session.current_changed",
     "session.updated",
+    "session.reordered",
     "job.started",
     "job.finished",
     "job.acknowledged",
@@ -197,6 +194,7 @@
     contextTrack: document.getElementById("contextTrack"),
     contextBar: document.getElementById("contextBar"),
     consoleButton: document.getElementById("consoleButton"),
+    sidebarSettingsButton: document.getElementById("sidebarSettingsButton"),
     consoleView: document.getElementById("consoleView"),
     consoleBack: document.getElementById("consoleBack"),
     conRailToggle: document.getElementById("conRailToggle"),
@@ -218,22 +216,10 @@
     sidebarThemeButton: document.getElementById("sidebarThemeButton"),
     brandAvatar: document.getElementById("brandAvatar"),
     brandName: document.getElementById("brandName"),
-    conversationTitle: document.getElementById("conversationTitle"),
-    conversationMeta: document.getElementById("conversationMeta"),
-    modeBadge: document.getElementById("modeBadge"),
-    thinkingVariantButton: document.getElementById("thinkingVariantButton"),
-    thinkingVariantPopover: document.getElementById("thinkingVariantPopover"),
-    thinkingModelList: document.getElementById("thinkingModelList"),
-    thinkingLevelList: document.getElementById("thinkingLevelList"),
-    thinkingModelName: document.getElementById("thinkingModelName"),
-    thinkingModelProvider: document.getElementById("thinkingModelProvider"),
     modelMenuWrap: document.getElementById("modelMenuWrap"),
     modelButton: document.getElementById("modelButton"),
-    modelMark: document.getElementById("modelMark"),
     modelLabel: document.getElementById("modelLabel"),
     modelMenu: document.getElementById("modelMenu"),
-    themeButton: document.getElementById("themeButton"),
-    topbarSettingsButton: document.getElementById("topbarSettingsButton"),
     artifactToggleButton: document.getElementById("artifactToggleButton"),
     artifactWorkspace: document.getElementById("artifactWorkspace"),
     artifactResizeHandle: document.getElementById("artifactResizeHandle"),
@@ -274,7 +260,11 @@
     promptGrid: document.getElementById("promptGrid"),
     jumpBottomButton: document.getElementById("jumpBottomButton"),
     composerDock: document.getElementById("composerDock"),
+    stageTodos: document.getElementById("stageTodos"),
+    modelLevelMenu: document.getElementById("modelLevelMenu"),
+    composerRunIndicator: document.getElementById("composerRunIndicator"),
     jobsStrip: document.getElementById("jobsStrip"),
+    goalBar: document.getElementById("goalBar"),
     liveStopRail: document.getElementById("liveStopRail"),
     questionDock: document.getElementById("questionDock"),
     composerForm: document.getElementById("composerForm"),
@@ -286,9 +276,6 @@
     composerState: document.getElementById("composerState"),
     characterCount: document.getElementById("characterCount"),
     sendButton: document.getElementById("sendButton"),
-    drawerScrim: document.getElementById("drawerScrim"),
-    settingsDrawer: document.getElementById("settingsDrawer"),
-    settingsClose: document.getElementById("settingsClose"),
     settingsNav: document.querySelector(".settings-nav"),
     settingsPanels: Array.from(document.querySelectorAll("[data-settings-panel]")),
     settingsModelMark: document.getElementById("settingsModelMark"),
@@ -314,6 +301,10 @@
     settingsStatus: document.getElementById("settingsStatus"),
     toastRegion: document.getElementById("toastRegion"),
     resetDialog: document.getElementById("resetDialog"),
+    popDialog: document.getElementById("popDialog"),
+    popDialogList: document.getElementById("popDialogList"),
+    popDialogAll: document.getElementById("popDialogAll"),
+    popConfirmButton: document.getElementById("popConfirmButton"),
     resetCancelButton: document.getElementById("resetCancelButton"),
     resetConfirmButton: document.getElementById("resetConfirmButton")
   };
@@ -347,9 +338,15 @@
     viewLoadGeneration: 0,
     viewSyncTimer: null,
     runsBySession: new Map(),
+    // 跑完了、但用户还没切进去看过的会话。
+    // 「完成」不是能持续的状态（否则每个会话都会永远挂着「已完成」），
+    // 「未读」才是——产生于回合结束，消失于用户切进那个会话。
+    unreadSessions: new Set(),
     liveRuns: new Map(),
     sessionMenuFor: null,
     sessionRenaming: null,
+    sessionDragId: null,
+    lastReorderIds: "",
     modeChooserOpen: false,
     modeChooserKeyHandler: null,
     sessionBusy: false,
@@ -373,6 +370,12 @@
     modelSelectionSubmitting: false,
     stagedModelKeys: null,
     stagedFollowGlobal: false,
+    stagedVariants: null,
+    stageTodos: null,
+    goal: null,
+    goalGeneration: 0,
+    stageTodosGeneration: 0,
+    expandedLevelKey: null,
     modelMenuTouched: false,
     modelMenuError: "",
     sessionModelOverride: null,
@@ -395,6 +398,16 @@
     artifactMaximized: false,
     artifactWidthRatio: 0.5,
     artifactSourceCache: new Map(),
+    // artifact 列表有两个来源：回合产出的 `turn.artifacts`（每次同步重建），
+    // 和用户手动送进来的（气泡上点「在预览工作区打开」）。后者不在任何回合的
+    // artifacts 里，光靠重建会在下一个回合到达时被整体覆盖掉——图片刚打开就
+    // 没了。所以手动那批单独留一份，同步时并进去。
+    //
+    // 两份都按会话分。回合产出的天然分会话（同步喂进来的就是当前会话的
+    // turns），这两份要是全局的，A 会话置顶的图会出现在 B 会话的列表里，
+    // 在 A 里删掉的也会连累 B。
+    pinnedArtifacts: new Map(),
+    dismissedArtifactIds: new Map(),
     colorScheme: null,
     matugenAvailable: null,
     reasoningExpanded: false,
@@ -407,6 +420,9 @@
     scrollRequestId: 0,
     programmaticScroll: false,
     settingsOpener: null,
+    consolePanel: "usage",
+    commandRunning: false,
+    brailleFrame: 0,
     sidebarOpener: null,
     sidebarCollapsed: false,
     sidebarAutoCollapsed: false,
@@ -415,13 +431,9 @@
     healthTimer: null,
     terminalRunIds: new Set(),
     thinkingVariantModels: [],
-    thinkingVariantActiveKey: null,
     thinkingVariantLoading: false,
     thinkingVariantLoadGeneration: 0,
     thinkingVariantError: "",
-    thinkingVariantConfirmed: new Map(),
-    thinkingVariantRevisions: new Map(),
-    thinkingVariantWriteChain: Promise.resolve(),
     composing: false,
     settingsView: "interface",
     configLoaded: false,
@@ -509,7 +521,7 @@
       button.setAttribute("aria-pressed", String(button.dataset.themeChoice === selected));
     });
     const nextIcon = selected === "graphite" ? "sun" : "moon";
-    for (const button of [elements.themeButton, elements.sidebarThemeButton]) {
+    for (const button of [elements.sidebarThemeButton]) {
       const slot = button.querySelector(".icon-slot");
       slot.replaceChildren(createIcon(nextIcon));
       button.title = selected === "graphite" ? "切换到晨光主题" : "切换到夜阑主题";
@@ -590,9 +602,8 @@
   }
 
   function thinkingVariantLabel(variant, short = false) {
-    if (variant == null) return short ? "默认" : "模型默认";
-    const value = String(variant);
-    return THINKING_VARIANT_LABELS[value.toLowerCase()] || value;
+    if (variant == null) return short ? THINKING_VARIANT_DEFAULT_LABEL : "模型默认";
+    return String(variant);
   }
 
   function normalizeThinkingVariantModels(value) {
@@ -613,165 +624,13 @@
     });
   }
 
-  function thinkingVariantModel(key = state.thinkingVariantActiveKey) {
-    return state.thinkingVariantModels.find((model) => modelKey(model) === key) || null;
-  }
 
-  function thinkingVariantDisplay(model) {
-    const configured = state.models.find((candidate) => modelKey(candidate) === modelKey(model));
-    return {
-      name: String(configured?.model || model?.model || ""),
-      provider: String(configured?.provider_name || configured?.provider_id || model?.provider_id || "")
-    };
-  }
 
-  function updateThinkingVariantTrigger() {
-    const models = state.thinkingVariantModels;
-    const hasOverride = models.some((model) => model.selected != null);
-    elements.thinkingVariantButton.classList.toggle("has-override", hasOverride);
-    if (state.thinkingVariantError && models.length === 0) {
-      elements.thinkingVariantButton.title = state.thinkingVariantError;
-      elements.thinkingVariantButton.setAttribute("aria-label", `思考程度暂不可用：${state.thinkingVariantError}`);
-      return;
-    }
-    const summary = models.length === 1
-      ? thinkingVariantLabel(models[0].selected)
-      : `${models.length} 个模型`;
-    elements.thinkingVariantButton.title = models.length ? `思考程度：${summary}` : "当前模型没有可配置的思考档位";
-    elements.thinkingVariantButton.setAttribute("aria-label", elements.thinkingVariantButton.title);
-  }
 
-  function renderThinkingVariantModels() {
-    const models = state.thinkingVariantModels;
-    if (!models.some((model) => modelKey(model) === state.thinkingVariantActiveKey)) {
-      state.thinkingVariantActiveKey = models.length ? modelKey(models[0]) : null;
-    }
-    const fragment = document.createDocumentFragment();
-    for (const model of models) {
-      const key = modelKey(model);
-      const selected = key === state.thinkingVariantActiveKey;
-      const display = thinkingVariantDisplay(model);
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "thinking-model-option";
-      button.dataset.modelKey = key;
-      button.setAttribute("role", "option");
-      button.setAttribute("aria-selected", String(selected));
-      button.tabIndex = selected ? 0 : -1;
-      button.title = `${display.provider} / ${model.model}`;
-      const name = document.createElement("span");
-      name.className = "thinking-model-option-name";
-      name.textContent = display.name;
-      const level = document.createElement("span");
-      level.className = "thinking-model-option-level";
-      level.textContent = thinkingVariantLabel(model.selected, true);
-      button.append(name, level);
-      button.addEventListener("click", () => {
-        state.thinkingVariantActiveKey = key;
-        renderThinkingVariantMenu();
-        Array.from(elements.thinkingModelList.querySelectorAll(".thinking-model-option"))
-          .find((option) => option.dataset.modelKey === key)?.focus();
-      });
-      fragment.appendChild(button);
-    }
-    if (!models.length) {
-      const empty = document.createElement("div");
-      empty.className = "thinking-variant-empty";
-      empty.textContent = "当前模型没有可配置的思考档位";
-      fragment.appendChild(empty);
-    }
-    elements.thinkingModelList.replaceChildren(fragment);
-  }
 
-  function renderThinkingVariantLevels() {
-    const model = thinkingVariantModel();
-    elements.thinkingLevelList.replaceChildren();
-    if (!model) {
-      elements.thinkingModelName.textContent = "";
-      elements.thinkingModelProvider.textContent = "";
-      return;
-    }
-    const display = thinkingVariantDisplay(model);
-    elements.thinkingModelName.textContent = display.name;
-    elements.thinkingModelName.title = model.model;
-    elements.thinkingModelProvider.textContent = `${display.provider} / ${model.model}`;
-    elements.thinkingModelProvider.title = elements.thinkingModelProvider.textContent;
-    const fragment = document.createDocumentFragment();
-    for (const variant of [null, ...model.variants]) {
-      const selected = model.selected === variant;
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "thinking-level-option";
-      button.setAttribute("role", "radio");
-      button.setAttribute("aria-checked", String(selected));
-      button.tabIndex = selected ? 0 : -1;
-      button.title = variant == null ? "使用模型默认设置" : String(variant);
-      const check = document.createElement("span");
-      check.className = "thinking-level-check";
-      check.setAttribute("aria-hidden", "true");
-      const label = document.createElement("span");
-      label.className = "thinking-level-name";
-      label.textContent = thinkingVariantLabel(variant);
-      button.append(check, label);
-      button.addEventListener("click", () => selectThinkingVariant(modelKey(model), variant));
-      fragment.appendChild(button);
-    }
-    elements.thinkingLevelList.appendChild(fragment);
-  }
 
-  function renderThinkingVariantMenu() {
-    renderThinkingVariantModels();
-    renderThinkingVariantLevels();
-    // 单模型（非混合池）没有可选的模型，跳过模型栏，点开即是档位单选。
-    const singleModel = state.thinkingVariantModels.length <= 1;
-    const modelPane = elements.thinkingModelList.closest(".thinking-model-pane");
-    if (modelPane) {
-      modelPane.hidden = singleModel;
-      modelPane.closest(".thinking-variant-layout")?.classList.toggle("single-model", singleModel);
-    }
-    updateThinkingVariantTrigger();
-    positionThinkingVariantPopover();
-  }
 
-  function positionThinkingVariantPopover() {
-    const popover = elements.thinkingVariantPopover;
-    if (popover.hidden) return;
-    const trigger = elements.thinkingVariantButton.getBoundingClientRect();
-    const margin = 9;
-    const gap = 8;
-    const availableWidth = Math.max(180, window.innerWidth - margin * 2);
-    popover.style.maxWidth = `${visualPixelsToLayout(availableWidth)}px`;
-    popover.style.minWidth = `${Math.min(286, visualPixelsToLayout(availableWidth))}px`;
-    popover.style.maxHeight = `${visualPixelsToLayout(Math.max(150, trigger.top - margin - gap))}px`;
-    const measuredWidth = popover.offsetWidth * UI_SCALE;
-    const measuredHeight = popover.offsetHeight * UI_SCALE;
-    const left = Math.min(
-      Math.max(margin, trigger.left),
-      window.innerWidth - measuredWidth - margin
-    );
-    const top = Math.max(margin, trigger.top - measuredHeight - gap);
-    popover.style.left = `${visualPixelsToLayout(left)}px`;
-    popover.style.top = `${visualPixelsToLayout(top)}px`;
-  }
 
-  function openThinkingVariantPopover() {
-    if (elements.thinkingVariantButton.disabled || !state.thinkingVariantModels.length) return;
-    closeModelMenu();
-    renderThinkingVariantMenu();
-    elements.thinkingVariantPopover.hidden = false;
-    elements.thinkingVariantButton.setAttribute("aria-expanded", "true");
-    window.requestAnimationFrame(() => {
-      positionThinkingVariantPopover();
-      elements.thinkingLevelList.querySelector('[aria-checked="true"]')?.focus();
-    });
-  }
-
-  function closeThinkingVariantPopover({ restoreFocus = false } = {}) {
-    if (elements.thinkingVariantPopover.hidden) return;
-    elements.thinkingVariantPopover.hidden = true;
-    elements.thinkingVariantButton.setAttribute("aria-expanded", "false");
-    if (restoreFocus) elements.thinkingVariantButton.focus();
-  }
 
   async function loadThinkingVariants() {
     const generation = ++state.thinkingVariantLoadGeneration;
@@ -783,16 +642,10 @@
       const payload = await response.json();
       if (generation !== state.thinkingVariantLoadGeneration) return;
       state.thinkingVariantModels = normalizeThinkingVariantModels(payload?.options);
-      state.thinkingVariantConfirmed = new Map(
-        state.thinkingVariantModels.map((model) => [modelKey(model), model.selected])
-      );
-      state.thinkingVariantRevisions.clear();
-      renderThinkingVariantMenu();
+      updateCurrentModelDisplay();
     } catch (error) {
       if (generation !== state.thinkingVariantLoadGeneration) return;
       state.thinkingVariantError = error.message || "无法载入思考档位";
-      if (!state.thinkingVariantModels.length) closeThinkingVariantPopover();
-      updateThinkingVariantTrigger();
     } finally {
       if (generation === state.thinkingVariantLoadGeneration) {
         state.thinkingVariantLoading = false;
@@ -801,85 +654,8 @@
     }
   }
 
-  function selectThinkingVariant(key, variant) {
-    const model = thinkingVariantModel(key);
-    if (!model || model.selected === variant) return;
-    model.selected = variant;
-    state.thinkingVariantRevisions.set(key, (state.thinkingVariantRevisions.get(key) || 0) + 1);
-    renderThinkingVariantMenu();
-    elements.thinkingLevelList.querySelector('[aria-checked="true"]')?.focus();
-    state.thinkingVariantWriteChain = state.thinkingVariantWriteChain
-      .catch(() => {})
-      .then(() => persistLatestThinkingVariant(key));
-  }
 
-  async function persistLatestThinkingVariant(key) {
-    const model = thinkingVariantModel(key);
-    if (!model) return;
-    const desired = model.selected;
-    const confirmed = state.thinkingVariantConfirmed.has(key)
-      ? state.thinkingVariantConfirmed.get(key)
-      : null;
-    if (desired === confirmed) return;
-    const revision = state.thinkingVariantRevisions.get(key) || 0;
-    try {
-      const response = await apiRequest("/api/models/thinking-variants", {
-        method: "PUT",
-        body: JSON.stringify({
-          updates: [{
-            provider_id: model.provider_id,
-            model: model.model,
-            selected: desired
-          }]
-        })
-      });
-      const payload = await response.json();
-      const returned = normalizeThinkingVariantModels(payload?.options)
-        .find((candidate) => modelKey(candidate) === key);
-      const applied = returned ? returned.selected : desired;
-      state.thinkingVariantConfirmed.set(key, applied);
-      const current = thinkingVariantModel(key);
-      if (current && state.thinkingVariantRevisions.get(key) === revision && current.selected !== applied) {
-        current.selected = applied;
-        renderThinkingVariantMenu();
-      } else {
-        updateThinkingVariantTrigger();
-      }
-    } catch (error) {
-      const current = thinkingVariantModel(key);
-      if (current && state.thinkingVariantRevisions.get(key) === revision) {
-        current.selected = confirmed;
-        renderThinkingVariantMenu();
-        showToast(error.message || "思考程度未保存", "error");
-      }
-    }
-  }
 
-  function handleThinkingVariantKeydown(event) {
-    const inModels = event.target.closest("#thinkingModelList");
-    const inLevels = event.target.closest("#thinkingLevelList");
-    const container = inModels || inLevels;
-    if (!container) return;
-    const selector = inModels ? ".thinking-model-option" : ".thinking-level-option";
-    const items = Array.from(container.querySelectorAll(selector));
-    const index = items.indexOf(document.activeElement);
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      event.preventDefault();
-      const direction = event.key === "ArrowDown" ? 1 : -1;
-      items[(index + direction + items.length) % items.length]?.focus();
-    } else if (event.key === "Home" || event.key === "End") {
-      event.preventDefault();
-      items[event.key === "Home" ? 0 : items.length - 1]?.focus();
-    } else if (event.key === "ArrowRight" && inModels) {
-      event.preventDefault();
-      (elements.thinkingLevelList.querySelector('[aria-checked="true"]')
-        || elements.thinkingLevelList.querySelector(".thinking-level-option"))?.focus();
-    } else if (event.key === "ArrowLeft" && inLevels) {
-      event.preventDefault();
-      (elements.thinkingModelList.querySelector('[aria-selected="true"]')
-        || elements.thinkingModelList.querySelector(".thinking-model-option"))?.focus();
-    }
-  }
 
   function closeSidebar() {
     elements.sidebar.classList.remove("open");
@@ -926,43 +702,62 @@
       .filter((node) => !node.hidden && node.getClientRects().length > 0);
   }
 
+  // 设置以前是从右侧滑出来的抽屉,自带遮罩和焦点陷阱。现在它是控制台的一个
+  // 标签页——控制台本来就是个整页视图,设置这么大一坨挂在抽屉里,和「数据统计」
+  // 各占一套导航,没道理。这两个函数保留下来当入口,内部转成开控制台。
   function openSettings(opener = document.activeElement) {
     state.settingsOpener = opener;
     closeModelMenu();
-    closeThinkingVariantPopover();
-    elements.settingsDrawer.classList.add("open");
-    elements.settingsDrawer.setAttribute("aria-hidden", "false");
-    elements.drawerScrim.classList.add("visible");
-    elements.drawerScrim.tabIndex = 0;
-    window.requestAnimationFrame(() => elements.settingsClose.focus());
-    if (!state.configLoaded && !state.configLoading) loadConfigDraft();
+    consoleOpen("settings");
   }
 
   function closeSettings({ restoreFocus = true } = {}) {
-    if (!elements.settingsDrawer.classList.contains("open")) return;
-    elements.settingsDrawer.classList.remove("open");
-    elements.settingsDrawer.setAttribute("aria-hidden", "true");
-    elements.drawerScrim.classList.remove("visible");
-    elements.drawerScrim.tabIndex = -1;
+    if (!settingsIsOpen()) return;
+    consoleClose();
     if (restoreFocus && state.settingsOpener instanceof HTMLElement) state.settingsOpener.focus();
     state.settingsOpener = null;
   }
 
+  function settingsIsOpen() {
+    return consoleIsOpen() && state.consolePanel === "settings";
+  }
+
   function openModelMenu() {
     if (elements.modelButton.disabled || state.models.length === 0) return;
-    closeThinkingVariantPopover();
     resetModelMenuStaging();
     renderModelMenu();
     elements.modelMenu.hidden = false;
     elements.modelButton.setAttribute("aria-expanded", "true");
+    positionModelMenu();
     refreshSessionModelOverride();
     const selected = elements.modelMenu.querySelector(".model-menu-item.selected:not(:disabled)");
     const first = elements.modelMenu.querySelector(".model-menu-item:not(:disabled)");
     window.requestAnimationFrame(() => (selected || first)?.focus());
   }
 
+  /// 菜单不在按钮的父元素里(`.composer` 会把它裁掉,见 index.html),所以
+  /// 位置得自己算：贴按钮左边、浮在按钮上方,再夹回 dock 的可视范围内。
+  function positionModelMenu() {
+    if (elements.modelMenu.hidden) return;
+    const dock = elements.composerDock.getBoundingClientRect();
+    const button = elements.modelButton.getBoundingClientRect();
+    const gap = 8;
+    const margin = 8;
+    const width = elements.modelMenu.offsetWidth * UI_SCALE;
+    const left = Math.min(
+      Math.max(margin, button.left),
+      Math.max(margin, window.innerWidth - width - margin)
+    );
+    elements.modelMenu.style.left = `${visualPixelsToLayout(left - dock.left)}px`;
+    elements.modelMenu.style.bottom = `${visualPixelsToLayout(dock.bottom - button.top + gap)}px`;
+    // 上方剩多少就开多高,顶不出视口。
+    const room = visualPixelsToLayout(Math.max(160, button.top - gap - margin));
+    elements.modelMenu.style.maxHeight = `${Math.min(420, room)}px`;
+  }
+
   function closeModelMenu({ restoreFocus = false, discard = true } = {}) {
     if (elements.modelMenu.hidden) return;
+    closeLevelMenu();
     elements.modelMenu.hidden = true;
     elements.modelButton.setAttribute("aria-expanded", "false");
     if (discard) {
@@ -2907,21 +2702,21 @@
     const pool = override ? override.map(describeOverrideModel) : active;
     const scope = override ? "本会话固定" : "跟随全局";
     if (pool.length === 0) {
-      elements.modelMark.textContent = "--";
       elements.modelLabel.textContent = state.models.length ? "未选择模型" : "未配置模型";
       elements.modelLabel.title = `${elements.modelLabel.textContent}（${scope}）`;
       return;
     }
     if (pool.length > 1) {
       const title = pool.map((model) => `${model.provider_name || model.provider_id || ""} · ${model.model || ""}`).join("\n");
-      elements.modelMark.textContent = "MX";
       elements.modelLabel.textContent = `混合模型 · ${pool.length}`;
       elements.modelLabel.title = `${scope}\n${title}`;
       return;
     }
     const selected = pool[0];
-    elements.modelMark.textContent = modelMark(selected);
-    elements.modelLabel.textContent = String(selected.model || "");
+    // 档位并进按钮文字——它原本有自己的按钮,合并后这里是唯一能看到它的地方。
+    const level = state.thinkingVariantModels.find((model) => modelKey(model) === modelKey(selected))?.selected;
+    const name = String(selected.model || "");
+    elements.modelLabel.textContent = level == null ? name : `${name} · ${thinkingVariantLabel(level, true)}`;
     elements.modelLabel.title = `${selected.provider_name || selected.provider_id || ""} · ${selected.model || ""}（${scope}）`;
   }
 
@@ -2937,8 +2732,29 @@
     const override = viewSessionModelOverride();
     state.stagedFollowGlobal = !override;
     state.stagedModelKeys = new Set((override || []).map(modelKey));
+    // 思考档位以前是另一个按钮、另一个浮层,即点即写。现在它和模型选择合成
+    // 一个面板,就得跟模型选择一样先暂存,由同一个「确认」一起提交——否则同一
+    // 个面板里一半改动立刻生效、一半要按确认,「取消」也说不清取消的是什么。
+    state.stagedVariants = new Map(
+      state.thinkingVariantModels.map((model) => [modelKey(model), model.selected ?? null])
+    );
+    state.expandedLevelKey = null;
     state.modelMenuTouched = false;
     state.modelMenuError = "";
+  }
+
+  /// 某个模型可选的档位;没有可配置档位的模型返回空数组(那一行就不长小片)。
+  function variantOptionsFor(key) {
+    const entry = state.thinkingVariantModels.find((model) => modelKey(model) === key);
+    return entry ? entry.variants : [];
+  }
+
+  function stagedVariantFor(key) {
+    if (state.stagedVariants instanceof Map && state.stagedVariants.has(key)) {
+      return state.stagedVariants.get(key);
+    }
+    const entry = state.thinkingVariantModels.find((model) => modelKey(model) === key);
+    return entry ? entry.selected ?? null : null;
   }
 
   function modelMenuStaging() {
@@ -2950,6 +2766,9 @@
   }
 
   function renderModelMenu() {
+    // 重画整张列表会把滚动位置清零。展开档位、选档位都要重画,不记住就
+    // 每次都弹回顶部,而用户正看着列表中间某一行。
+    const scrollTop = elements.modelMenu.querySelector(".model-menu-list")?.scrollTop ?? 0;
     elements.modelMenu.replaceChildren();
     const staging = modelMenuStaging();
     const globalKeys = new Set(activeModels().map(modelKey));
@@ -2964,9 +2783,6 @@
     follow.setAttribute("role", "menuitemcheckbox");
     follow.setAttribute("aria-checked", String(staging.follow));
     follow.classList.toggle("selected", staging.follow);
-    const followMark = document.createElement("span");
-    followMark.className = "model-mark";
-    followMark.textContent = "全";
     const followCopy = document.createElement("span");
     followCopy.className = "model-menu-copy";
     const followName = document.createElement("strong");
@@ -2978,7 +2794,7 @@
     followCheck.className = "icon-slot check-slot";
     followCheck.setAttribute("aria-hidden", "true");
     if (staging.follow) followCheck.appendChild(createIcon("check"));
-    follow.append(followMark, followCopy, followCheck);
+    follow.append(followCopy, followCheck);
     follow.addEventListener("click", chooseFollowGlobal);
     list.appendChild(follow);
 
@@ -2995,9 +2811,6 @@
       button.classList.toggle("selected", selected);
       button.classList.toggle("from-global", checked && staging.follow);
 
-      const mark = document.createElement("span");
-      mark.className = "model-mark";
-      mark.textContent = modelMark(model);
       const copy = document.createElement("span");
       copy.className = "model-menu-copy";
       const name = document.createElement("strong");
@@ -3009,9 +2822,34 @@
       check.className = "icon-slot check-slot";
       check.setAttribute("aria-hidden", "true");
       if (checked) check.appendChild(createIcon("check"));
-      button.append(mark, copy, check);
+      button.append(copy, check);
       button.addEventListener("click", () => toggleStagedModel(button.dataset.modelKey));
-      list.appendChild(button);
+
+      // 档位小片和展开的档位行都得在这个按钮外面——按钮里套按钮是非法嵌套,
+      // 浏览器会把内层拎出去,点击就落到外层的「选中模型」上。
+      const key = button.dataset.modelKey;
+      const variants = variantOptionsFor(key);
+      if (!variants.length) {
+        list.appendChild(button);
+        continue;
+      }
+      const row = document.createElement("div");
+      row.className = "model-menu-row";
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "model-level-chip";
+      chip.setAttribute("aria-expanded", String(state.expandedLevelKey === key));
+      chip.title = `思考程度：${thinkingVariantLabel(stagedVariantFor(key))}`;
+      const chipText = document.createElement("span");
+      chipText.textContent = thinkingVariantLabel(stagedVariantFor(key), true);
+      chip.append(chipText, makeIconSlot("chevron-down"));
+      chip.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (state.expandedLevelKey === key) closeLevelMenu();
+        else openLevelMenu(key, chip, model.model);
+      });
+      row.append(button, chip);
+      list.appendChild(row);
     }
 
     const footer = document.createElement("footer");
@@ -3035,6 +2873,9 @@
     confirm.addEventListener("click", confirmModelSelection);
     footer.append(feedback, cancel, confirm);
     elements.modelMenu.append(list, footer);
+    if (scrollTop) list.scrollTop = scrollTop;
+    // 展开/收起档位会改变菜单高度，位置要跟着重算。
+    positionModelMenu();
     updateModelMenuState();
     updateCurrentModelDisplay();
     refreshLiveEndpointVisibility();
@@ -3080,6 +2921,78 @@
     state.modelMenuTouched = true;
     state.modelMenuError = "";
     updateModelMenuState();
+  }
+
+  /// 档位选项做成独立浮层,挂在 composer-dock 上。
+  ///
+  /// 内联铺开会把下面的模型整体往下顶,列表本来就长,一展开就更难找；浮层
+  /// 又不能放进 `.model-menu`——那个为了圆角开了 overflow: hidden,列表自己
+  /// 还滚动,浮层会被切掉。所以和模型菜单平级,自己算位置。
+  function openLevelMenu(key, chip, modelName) {
+    const variants = variantOptionsFor(key);
+    if (!variants.length) return;
+    state.expandedLevelKey = key;
+    const menu = elements.modelLevelMenu;
+    menu.replaceChildren();
+    menu.setAttribute("aria-label", `${modelName} 的思考程度`);
+    for (const variant of [null, ...variants]) {
+      const staged = stagedVariantFor(key) === variant;
+      const option = document.createElement("button");
+      option.type = "button";
+      option.className = "model-level-option";
+      option.setAttribute("role", "radio");
+      option.setAttribute("aria-checked", String(staged));
+      option.classList.toggle("selected", staged);
+      option.textContent = thinkingVariantLabel(variant);
+      option.title = variant == null ? "使用模型默认设置" : String(variant);
+      option.addEventListener("click", (event) => {
+        event.stopPropagation();
+        stageVariant(key, variant);
+      });
+      menu.appendChild(option);
+    }
+    menu.hidden = false;
+    chip.setAttribute("aria-expanded", "true");
+    positionLevelMenu(chip);
+  }
+
+  function positionLevelMenu(chip) {
+    const menu = elements.modelLevelMenu;
+    if (menu.hidden) return;
+    const dock = elements.composerDock.getBoundingClientRect();
+    const anchor = chip.getBoundingClientRect();
+    const margin = 8;
+    const width = menu.offsetWidth * UI_SCALE;
+    const height = menu.offsetHeight * UI_SCALE;
+    // 贴小片右缘往左展开,竖直方向和小片对齐;上下都夹回视口。
+    const left = Math.min(
+      Math.max(margin, anchor.right - width),
+      Math.max(margin, window.innerWidth - width - margin)
+    );
+    const top = Math.min(
+      Math.max(margin, anchor.top - 4),
+      Math.max(margin, window.innerHeight - height - margin)
+    );
+    menu.style.left = `${visualPixelsToLayout(left - dock.left)}px`;
+    menu.style.top = `${visualPixelsToLayout(top - dock.top)}px`;
+  }
+
+  function closeLevelMenu() {
+    if (elements.modelLevelMenu.hidden) return;
+    elements.modelLevelMenu.hidden = true;
+    state.expandedLevelKey = null;
+    elements.modelMenu
+      .querySelectorAll('.model-level-chip[aria-expanded="true"]')
+      .forEach((chip) => chip.setAttribute("aria-expanded", "false"));
+  }
+
+  function stageVariant(key, variant) {
+    if (!(state.stagedVariants instanceof Map) || state.modelSelectionSubmitting) return;
+    state.stagedVariants.set(key, variant);
+    closeLevelMenu();
+    state.modelMenuTouched = true;
+    state.modelMenuError = "";
+    renderModelMenu();
   }
 
   function toggleStagedModel(key) {
@@ -3238,7 +3151,9 @@
     // 菜单只留「清空对话」;其余会话不再提供「设为默认」。
     const actions = [];
     if (!isDefault) actions.push({ label: "重命名", handler: () => beginSessionRename(id) });
-    if (isDefault) actions.push({ label: "清空对话", handler: requestClearConversation });
+    // 清空对本来只给默认会话（它不能改名/删除，拿这个顶位），可普通会话一样
+    // 需要「留着会话、只丢历史」——删掉重建会连模型/工作目录覆盖一起丢。
+    actions.push({ label: "清空对话", handler: requestClearConversation });
     if (!isDefault) actions.push({ label: "删除", danger: true, handler: () => deleteSession(id) });
     for (const action of actions) {
       const button = document.createElement("button");
@@ -3256,6 +3171,13 @@
     return menu;
   }
 
+  // 终端集成会话（固定 id "default"）不在侧栏列出：它是 shellhook 那条车道，
+  // 由终端驱动，在 WebUI 的会话列表里既不该被误点进去、更不该被误删。真要看
+  // 它的历史，用 REPL 的 /session 切过去。
+  function isTerminalSession(sessionId) {
+    return String(sessionId || "") === "default";
+  }
+
   function buildSessionItem(session) {
     const id = String(session?.session_id || "");
     const isView = Boolean(id) && id === state.viewSessionId;
@@ -3266,6 +3188,8 @@
     item.dataset.sessionId = id;
 
     const renaming = state.sessionRenaming === id;
+    // 侧栏拖拽排序(组内):HTML5 DnD,drop 时全量提交新顺序。
+    if (!renaming) attachSessionDrag(item, session, id);
     const main = document.createElement(renaming ? "div" : "button");
     main.className = `session-item-main${renaming ? " is-renaming" : ""}`;
     if (!renaming) {
@@ -3273,8 +3197,24 @@
       main.title = isView ? sessionDisplayName(session) : `查看「${sessionDisplayName(session)}」`;
       main.addEventListener("click", () => openSessionView(id));
     }
-    const icon = id === "default" ? "terminal" : session?.mode === "dev" ? "code" : "message-circle";
-    main.appendChild(makeIconSlot(icon));
+    // 行首那一格只放状态指示器。模式图标搬去了分组标题——同一组里每行都
+    // 画一遍相同的图标，重复十几次也说不出新东西，还占着状态该用的位置。
+    // 空着的时候格子仍在，文字左缘不会因为有没有指示器而移位。
+    const lead = document.createElement("span");
+    lead.className = "session-lead";
+    if (sessionHasRuns(id)) {
+      const spinner = document.createElement("span");
+      spinner.className = "session-run-spinner";
+      spinner.title = "有回复正在运行";
+      spinner.textContent = BRAILLE_FRAMES[state.brailleFrame % BRAILLE_FRAMES.length];
+      lead.appendChild(spinner);
+    } else if (state.unreadSessions.has(id)) {
+      const dot = document.createElement("span");
+      dot.className = "session-unread-dot";
+      dot.title = "有未读的新回复";
+      lead.appendChild(dot);
+    }
+    main.appendChild(lead);
 
     const copy = document.createElement("span");
     copy.className = "session-copy";
@@ -3335,13 +3275,6 @@
 
     const trailing = document.createElement("span");
     trailing.className = "session-trailing";
-
-    if (sessionHasRuns(id)) {
-      const dot = document.createElement("span");
-      dot.className = "session-run-dot";
-      dot.title = "有回复正在运行";
-      trailing.appendChild(dot);
-    }
 
     const menuButton = document.createElement("button");
     menuButton.type = "button";
@@ -3404,27 +3337,128 @@
       elements.sessionItems.appendChild(buildFallbackSessionItem());
       return;
     }
-    // 侧栏三段:终端集成会话置顶,其余按会话模式分组(创建时定死)。
-    const terminal = state.sessions.filter((session) => String(session?.session_id) === "default");
+    // 侧栏按会话模式分组(创建时定死)。终端集成会话不列出——它是 shellhook
+    // 那条车道,由终端驱动,WebUI 里既不该被误点进去也不该被误删;要看它的
+    // 历史用 REPL 的 /session 切过去。
     const normal = state.sessions.filter(
-      (session) => String(session?.session_id) !== "default" && session?.mode !== "dev"
+      (session) => !isTerminalSession(session?.session_id) && session?.mode !== "dev"
     );
-    const dev = state.sessions.filter((session) => session?.mode === "dev");
-    for (const session of terminal) elements.sessionItems.appendChild(buildSessionItem(session));
+    const dev = state.sessions.filter(
+      (session) => !isTerminalSession(session?.session_id) && session?.mode === "dev"
+    );
     if (normal.length) {
-      elements.sessionItems.appendChild(buildSessionGroupHeader("普通模式"));
+      elements.sessionItems.appendChild(buildSessionGroupHeader("普通模式", "message-circle"));
       for (const session of normal) elements.sessionItems.appendChild(buildSessionItem(session));
     }
     if (dev.length) {
-      elements.sessionItems.appendChild(buildSessionGroupHeader("开发模式"));
+      elements.sessionItems.appendChild(buildSessionGroupHeader("开发模式", "code"));
       for (const session of dev) elements.sessionItems.appendChild(buildSessionItem(session));
     }
   }
 
-  function buildSessionGroupHeader(label) {
+  // 和 REPL 的 `wait_spinner.rs::BRAILLE_FRAMES` 同一组帧。
+  const BRAILLE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+  /// 一个计时器喂所有转圈。
+  ///
+  /// 每个转圈各起一个 interval 的话,列表一重画就要收拾一批计时器,漏一个就
+  /// 是一个永远跑下去的定时器;而且各自起跑点不同,几行并排时相位乱跳。
+  /// 共用一个帧号还有个好处:重画时新建的元素直接落在当前帧上,不会从头闪。
+  function startBrailleTicker() {
+    window.setInterval(() => {
+      if (document.hidden) return;
+      const spinners = document.querySelectorAll(".session-run-spinner");
+      if (!spinners.length) return;
+      state.brailleFrame = (state.brailleFrame + 1) % BRAILLE_FRAMES.length;
+      const glyph = BRAILLE_FRAMES[state.brailleFrame];
+      for (const spinner of spinners) spinner.textContent = glyph;
+    }, 90);
+  }
+
+  function clearSessionDropMarkers() {
+    if (!elements.sessionItems) return;
+    for (const el of elements.sessionItems.querySelectorAll(".drop-before, .drop-after")) {
+      el.classList.remove("drop-before", "drop-after");
+    }
+  }
+
+  function attachSessionDrag(item, session, id) {
+    item.draggable = true;
+    item.addEventListener("dragstart", (event) => {
+      state.sessionDragId = id;
+      item.classList.add("is-dragging");
+      event.dataTransfer.effectAllowed = "move";
+      try { event.dataTransfer.setData("text/plain", id); } catch (_) { /* 老内核 */ }
+    });
+    item.addEventListener("dragend", () => {
+      state.sessionDragId = null;
+      item.classList.remove("is-dragging");
+      clearSessionDropMarkers();
+    });
+    item.addEventListener("dragover", (event) => {
+      const dragId = state.sessionDragId;
+      if (!dragId || dragId === id) return;
+      // 只在同一分组(普通/dev)内排序,跨组语义(改会话模式)不存在。
+      const dragging = findSession(dragId);
+      if (!dragging || (dragging?.mode === "dev") !== (session?.mode === "dev")) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      const rect = item.getBoundingClientRect();
+      const before = event.clientY < rect.top + rect.height / 2;
+      clearSessionDropMarkers();
+      item.classList.add(before ? "drop-before" : "drop-after");
+    });
+    item.addEventListener("dragleave", (event) => {
+      if (event.relatedTarget && item.contains(event.relatedTarget)) return;
+      item.classList.remove("drop-before", "drop-after");
+    });
+    item.addEventListener("drop", (event) => {
+      const dragId = state.sessionDragId;
+      if (!dragId || dragId === id) return;
+      event.preventDefault();
+      const before = item.classList.contains("drop-before");
+      clearSessionDropMarkers();
+      state.sessionDragId = null;
+      commitSessionReorder(dragId, id, before);
+    });
+  }
+
+  async function commitSessionReorder(dragId, targetId, before) {
+    const list = state.sessions;
+    const from = list.findIndex((s) => String(s?.session_id) === String(dragId));
+    if (from < 0) return;
+    const [moved] = list.splice(from, 1);
+    let to = list.findIndex((s) => String(s?.session_id) === String(targetId));
+    if (to < 0) {
+      list.splice(from, 0, moved);
+      return;
+    }
+    list.splice(before ? to : to + 1, 0, moved);
+    renderSessionList();
+    // 全量提交当前顺序(两组按数组序混排;后端按序重写 sort_key,分组是
+    // 前端展示层的事)。终端车道会话不参与。
+    const ids = list
+      .filter((s) => !isTerminalSession(s?.session_id))
+      .map((s) => String(s.session_id));
+    state.lastReorderIds = ids.join("\n");
+    try {
+      await apiRequest("/api/sessions/order", {
+        method: "PUT",
+        body: JSON.stringify({ session_ids: ids })
+      });
+    } catch (error) {
+      showToast(error.message || "排序保存失败", "error");
+      refreshSessions();
+    }
+  }
+
+  function buildSessionGroupHeader(label, icon) {
     const header = document.createElement("div");
     header.className = "session-group-header";
-    header.textContent = label;
+    if (icon) header.appendChild(makeIconSlot(icon));
+    const text = document.createElement("span");
+    text.textContent = label;
+    header.appendChild(text);
     return header;
   }
 
@@ -3481,6 +3515,9 @@
 
   async function loadSessionView(sessionId, { quiet = false, userInitiated = false } = {}) {
     if (!sessionId || (quiet && sessionId !== state.viewSessionId) || (state.viewLoading && !userInitiated)) return;
+    // 命令回执是会话内的临时记录，换会话就清掉——否则会串到别的会话里。
+    // 回执按会话记账（commands.js），切走再切回来仍在原位，这里不再清空。
+    if (state.unreadSessions.delete(sessionId)) renderSessionList();
     const generation = ++state.viewLoadGeneration;
     state.viewLoading = true;
     try {
@@ -3512,15 +3549,32 @@
     elements.liveStopRail.hidden = true;
   }
 
+  // 切换会话不再销毁还在跑的直播状态:事件环只留 4096 条,长回复从 0 重放
+  // 必撞 resync,已渲染的内容就永远回不来了。改成离屏保活——DOM 游离但事件
+  // 照常写入,切回来原样重挂(reattachLiveArticles)。只清掉已结束的残壳。
+  function retireLiveRunsForSwitch() {
+    for (const [runId, live] of [...state.liveRuns.entries()]) {
+      if (live.ended) {
+        disposeLiveState(live);
+        state.liveRuns.delete(runId);
+      }
+    }
+    // 停止栏与问题坞都是全局元素,先清空;切回时按会话重挂。
+    elements.liveStopRail.replaceChildren();
+    elements.liveStopRail.hidden = true;
+  }
+
   function applySessionView(payload) {
     const sessionId = String(payload?.session_id || "");
     if (!sessionId) return;
     if (state.viewSessionId && state.viewSessionId !== sessionId && state.composerAttachments.length) {
       clearComposerAttachments(true);
     }
-    disposeAllLiveRuns();
+    retireLiveRunsForSwitch();
     clearViewSyncTimer();
     state.viewSessionId = sessionId;
+    // 记住浏览位置，刷新后回到这里而不是跳去终端车道（见 preferredBootSession）。
+    if (!isTerminalSession(sessionId)) safeStorageSet(VIEW_SESSION_KEY, sessionId);
     if (state.sessionModelOverrideFor !== sessionId) {
       // 会话切换：先按"跟随全局"显示，再异步取回该会话的覆盖池。
       state.sessionModelOverride = null;
@@ -3528,6 +3582,9 @@
       updateCurrentModelDisplay();
       refreshSessionModelOverride(sessionId);
     }
+    // 上下文条跟着看的会话走：不拉的话它一直显示上一个会话的数字，
+    // 直到这个会话跑完一轮才被 run 事件纠正。
+    refreshSessionContext(sessionId);
     state.turns = Array.isArray(payload?.turns)
       ? payload.turns.sort((a, b) => asFiniteNumber(a?.seq) - asFiniteNumber(b?.seq))
       : [];
@@ -3543,7 +3600,7 @@
     state.viewRunningTurnId = !runs.length && typeof payload?.running_turn_id === "string" && payload.running_turn_id
       ? payload.running_turn_id
       : null;
-    renderConversation();
+    renderConversation({ forceScroll: true });
     renderQueueTray();
     renderJobsStrip();
     restoreLiveRuns(runs);
@@ -3567,6 +3624,7 @@
     const redo = operation === "redo";
     const runningTurn = redo || userText || !claimTurn ? null : findUnclaimedRunningTurn();
     const live = createLiveState(runId, {
+      sessionId: options.sessionId,
       turnId: turnId || runningTurn?.id || null,
       userText: userText || runningTurn?.user_content || "",
       userAttachments: runningTurn?.attachments || [],
@@ -3580,7 +3638,7 @@
     return live;
   }
 
-  function beginRunReplay() {
+  function beginRunReplay(runIds = null) {
     // 事件环形缓冲已滚过上限时,after=0 必然触发 resync_required →
     // bootstrap → 又 replay 的循环:短窗口内连续吃到 resync 就放弃从头
     // 重放,live 状态由 bootstrap 快照兜底,增量从当前事件 id 继续。
@@ -3590,17 +3648,22 @@
       connectEventSource(state.lastEventId);
       return;
     }
-    state.replayRunIds = new Set(state.liveRuns.keys());
+    // 只重放传入的 run(全新空壳);离屏保活的 live 已吃过这些事件,再放
+    // 一遍正文就翻倍了。
+    state.replayRunIds = runIds ? new Set(runIds) : new Set(state.liveRuns.keys());
     state.replayCutoff = Math.max(state.lastEventId, state.replayCutoff, state.latestEventId);
     state.lastEventId = 0;
     connectEventSource(0);
   }
 
   function restoreLiveRuns(runs) {
-    let restored = false;
+    // 只有全新空壳需要事件重放;离屏保活切回来的 live 内容都在,重放反而
+    // 会把正文写两遍。
+    const fresh = new Set();
     for (const run of runs) {
       const runId = String(run?.run_id || "");
       if (!runId || state.terminalRunIds.has(runId)) continue;
+      const kept = state.liveRuns.has(runId);
       const live = createLiveForRun(runId, "", {
         operation: String(run?.operation || "create"),
         turnId: String(run?.turn_id || "") || null,
@@ -3611,19 +3674,78 @@
       })) {
         live.redoCommitted = true;
       }
-      restored = true;
+      // 立刻把气泡建出来,不等下一个事件。
+      //
+      // 事件环只留 4096 条,而一次流式回复光 delta 就能把它冲掉,所以
+      // `beginRunReplay()` 从 0 重放几乎必然撞上 resync——两轮之后放弃,
+      // 恢复的 run 就只剩一个空壳:没有气泡、没有停止按钮,要等下一个
+      // delta 才有东西可看。模型正在思考或跑长工具时,这段空白能有几十秒,
+      // 用户看到的是「明明在跑却什么都没有,也停不掉」。
+      //
+      // 气泡先立起来,停止按钮和等待动效就都回来了;正文由后续事件续上。
+      if (live.operation !== "redo") {
+        ensureLiveArticle(live);
+        showTypingIndicator(live);
+      }
+      if (!kept) fresh.add(runId);
     }
-    if (restored) beginRunReplay();
+    if (fresh.size) beginRunReplay(fresh);
   }
 
   async function openFallbackSessionView(excludedSessionId) {
     const excluded = String(excludedSessionId || "");
     if (state.viewSessionId !== excluded) return;
-    const fallback = state.currentSessionId && state.currentSessionId !== excluded
+    // deleteSession() 和 session.deleted 事件会各来一次，且到达可能有先后：
+    // 只防并发的旗标挡不住"第一次兜底完成后第二次才到"的时序，两边各建一个
+    // 新会话，删一个凭空多出两个。按被删会话 id 上一次性闩锁：同一场删除，
+    // 兜底只发生一次。
+    if (state.fallbackInFlight || state.fallbackDoneFor === excluded) return;
+    state.fallbackInFlight = true;
+    state.fallbackDoneFor = excluded;
+    try {
+      await openFallbackSessionViewInner(excluded);
+    } finally {
+      state.fallbackInFlight = false;
+    }
+  }
+
+  async function openFallbackSessionViewInner(excluded) {
+    // 终端集成会话不能当兜底：它在侧栏里是隐藏的，掉进去看着就像「我的对话
+    // 全没了」。一个可见会话都不剩时走 loadBootstrap()，让空状态兜底。
+    const fallback = state.currentSessionId
+      && state.currentSessionId !== excluded
+      && !isTerminalSession(state.currentSessionId)
       ? state.currentSessionId
-      : String(state.sessions.find((session) => String(session?.session_id) !== excluded)?.session_id || "");
-    if (fallback) await loadSessionView(fallback);
-    else await loadBootstrap();
+      : String(state.sessions.find((session) => {
+          const id = String(session?.session_id || "");
+          return id !== excluded && !isTerminalSession(id);
+        })?.session_id || "");
+    if (fallback) {
+      await loadSessionView(fallback);
+      return;
+    }
+    // 一个可见会话都不剩：直接新建一个顶上。落进空状态的话，用户面对的是一个
+    // 不在侧栏里的「幽灵视图」，在里面打字实际写进隐藏的终端集成车道。
+    // 不走 createSession()——删除流程还举着 sessionBusy，它会直接返回。
+    try {
+      const response = await apiRequest("/api/sessions", {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      const record = (await response.json())?.session;
+      const sessionId = String(record?.session_id || "");
+      if (sessionId) {
+        if (!findSession(sessionId)) {
+          state.sessions.unshift(record);
+          renderSessionList();
+        }
+        await loadSessionView(sessionId);
+        return;
+      }
+    } catch (_) {
+      // 新建失败（离线等）：退回空状态兜底，至少不落进隐藏车道。
+    }
+    await loadBootstrap();
   }
 
   async function deleteSession(sessionId) {
@@ -3645,6 +3767,12 @@
   }
 
   function handleSessionEvent(name, data) {
+    if (name === "session.reordered") {
+      // 发起端已乐观重排(lastReorderIds 一致就不用刷);其它客户端拉一次。
+      const ids = Array.isArray(data?.session_ids) ? data.session_ids.map(String).join("\n") : "";
+      if (ids && ids !== state.lastReorderIds) refreshSessions();
+      return;
+    }
     const sessionId = String(data?.session_id || "");
     if (!sessionId) return;
     if (name === "session.created") {
@@ -3691,25 +3819,34 @@
     }
   }
 
+  // 顶栏没了,会话标题和「正在回复 · 工作区」那行副标题跟着没了——侧栏里
+  // 本来就高亮着当前会话,标题是第二份;运行状态现在由侧栏的转圈和输入框那排
+  // 的指示器表达,比一行小字显眼。剩下的是让侧栏重画。
   function updateConversationChrome() {
-    updateModeBadge();
-    const details = deriveConversationDetails();
-    const current = multiSessionEnabled() ? viewSessionEntry() : null;
-    const title = current ? sessionDisplayName(current) : details.title;
-    elements.conversationTitle.textContent = title;
-    elements.conversationTitle.title = title;
-    const workspace = String(current?.workspace || "").trim();
-    let meta;
-    if (conversationRunning()) {
-      meta = state.liveRuns.size > 1 ? `${formatInteger(state.liveRuns.size)} 路回复进行中` : "正在回复";
-    } else meta = details.timestamp ? formatRelativeTime(details.timestamp) : "尚未开始";
-    elements.conversationMeta.textContent = workspace ? `${meta} · ${workspace}` : meta;
-    elements.conversationMeta.title = workspace;
     renderSessionList();
   }
 
+  // 离屏保活的 live 属于别的会话,不算「本视图在跑」。
+  function liveViewed(live) {
+    return !live?.sessionId || String(live.sessionId) === String(state.viewSessionId || "");
+  }
+
+  // 这个 turn 是否被本会话某个还在跑的 live 气泡认领:认领中的回合,
+  // 持久化渲染只画用户消息——checkpoint 落库的部分正文与气泡是同一份内容,
+  // 两边都画就是切回后正文翻倍。
+  function liveClaimsTurn(turnId) {
+    if (!turnId) return false;
+    for (const live of state.liveRuns.values()) {
+      if (!live.ended && liveViewed(live) && String(live.turnId) === String(turnId)) return true;
+    }
+    return false;
+  }
+
   function conversationRunning() {
-    return state.liveRuns.size > 0 || Boolean(state.viewRunningTurnId);
+    for (const live of state.liveRuns.values()) {
+      if (liveViewed(live)) return true;
+    }
+    return Boolean(state.viewRunningTurnId);
   }
 
   function activeTurnUpdateTarget(sessionId) {
@@ -3991,6 +4128,7 @@
   }
 
   function updateControlState() {
+    syncRunIndicator();
     const running = conversationRunning();
     const busy = state.adminBusy || state.submitting;
     const locked = state.blocked || state.adminBusy || state.modeChooserOpen;
@@ -4005,10 +4143,6 @@
     elements.newChatButton.disabled = state.blocked || busy || state.sessionBusy || state.viewLoading;
     // 会话级模型覆盖允许在回复进行中调整，下一轮生效。
     elements.modelButton.disabled = state.blocked || state.models.length === 0;
-    elements.thinkingVariantButton.disabled = state.blocked || running || busy
-      || state.thinkingVariantLoading || state.thinkingVariantModels.length === 0;
-    if (elements.thinkingVariantButton.disabled) closeThinkingVariantPopover();
-    updateThinkingVariantTrigger();
     elements.promptGrid.querySelectorAll("button").forEach((button) => {
       button.disabled = state.blocked || running || busy;
     });
@@ -4070,7 +4204,14 @@
     });
   }
 
-  function contentAdded() {
+  // anchor(可选):live 对象或 DOM 节点。离屏保活的 live(别会话)或已游离
+  // 的节点长内容,不该滚动当前视图。
+  function contentAdded(anchor) {
+    if (anchor) {
+      if (anchor.nodeType) {
+        if (!anchor.isConnected) return;
+      } else if (anchor.runId && !liveViewed(anchor)) return;
+    }
     if (state.followOutput) scrollToBottom();
     else elements.jumpBottomButton.hidden = false;
   }
@@ -4756,26 +4897,49 @@
     container.replaceChildren(fragment);
   }
 
-  function createDayDivider(timestamp) {
-    const divider = document.createElement("div");
-    divider.className = "day-divider";
-    divider.dataset.dayKey = dayKey(timestamp);
-    const label = document.createElement("span");
-    label.textContent = formatDayLabel(timestamp);
-    divider.appendChild(label);
-    return divider;
+  /// daemon 自己合成的轮，不是任何人敲的：后台任务唤醒、目标续轮。
+  ///
+  /// 判据收口在这里——原来两处各写一遍前缀列表，加一种合成轮就得记得改两个
+  /// 地方，漏一个的表现是「时间线里画成用户气泡、但滚动到底又不算用户消息」。
+  function isSyntheticTurnContent(raw) {
+    const text = String(raw || "");
+    return text.startsWith("[后台任务完成]")
+      || text.startsWith("[后台命令完成]")
+      || text.startsWith("[目标续轮]")
+      || text.startsWith("<background-job-report>")
+      || text.startsWith("<goal_round>");
   }
 
-  function appendDayDividerIfNeeded(timestamp) {
-    const dividers = elements.timeline.querySelectorAll(".day-divider");
-    const lastDivider = dividers[dividers.length - 1];
-    if (!lastDivider || lastDivider.dataset.dayKey !== dayKey(timestamp)) elements.timeline.appendChild(createDayDivider(timestamp));
+  /// `createUserMessage` 对目标续轮返回 null（那一轮在时间线里不画）。
+  /// 每个调用点各写一遍判空太容易漏，统一走这里。
+  function appendUserMessage(parent, content, timestamp, attributes = {}) {
+    const node = createUserMessage(content, timestamp, attributes);
+    if (node) parent.appendChild(node);
+    return node;
   }
 
   function createUserMessage(content, timestamp, attributes = {}) {
     // 系统自动触发的后台任务跟进不是真实用户输入，渲染为居中系统事件而不是用户气泡。
     const rawContent = String(content || "");
-    if (rawContent.startsWith("[后台任务完成]") || rawContent.startsWith("[后台命令完成]") || rawContent.startsWith("<background-job-report>")) {
+    // 目标续轮在时间线里什么都不画：输入框上方的状态行已经在说「进行中 ·
+    // 第 N 轮」，对话流里每轮再来一条居中提示只是噪声，几十轮下来会把真正
+    // 的内容淹掉。AI 的输出照常显示。
+    if (rawContent.startsWith("[目标续轮]") || rawContent.startsWith("<goal_round>")) {
+      return null;
+    }
+    // 目标变更通知走的是排队消息管线（步间送达、随回合持久化），但它是一次
+    // 操作的回执，不是用户说的话——画成居中提示而不是用户气泡。
+    if (rawContent.startsWith("[目标已变更] ")) {
+      const notice = document.createElement("div");
+      notice.className = "system-event is-command-result";
+      if (attributes.turnId) notice.dataset.turnId = attributes.turnId;
+      const label = document.createElement("span");
+      label.textContent = `目标已变更：${rawContent.slice("[目标已变更] ".length)}`;
+      label.title = formatDateTime(timestamp);
+      notice.appendChild(label);
+      return notice;
+    }
+    if (isSyntheticTurnContent(rawContent)) {
       const notice = document.createElement("div");
       notice.className = "system-event";
       if (attributes.turnId) notice.dataset.turnId = attributes.turnId;
@@ -4973,9 +5137,36 @@
     }
   }
 
+  /// artifact 的归属会话。预览面板永远只画当前正在看的那个会话。
+  function artifactScope() {
+    return String(state.viewSessionId || state.currentSessionId || "");
+  }
+
+  function pinnedArtifactsForScope() {
+    const scope = artifactScope();
+    let pinned = state.pinnedArtifacts.get(scope);
+    if (!pinned) {
+      pinned = new Map();
+      state.pinnedArtifacts.set(scope, pinned);
+    }
+    return pinned;
+  }
+
+  function dismissedArtifactsForScope() {
+    const scope = artifactScope();
+    let dismissed = state.dismissedArtifactIds.get(scope);
+    if (!dismissed) {
+      dismissed = new Set();
+      state.dismissedArtifactIds.set(scope, dismissed);
+    }
+    return dismissed;
+  }
+
   function registerArtifact(source, { autoOpen = false } = {}) {
     const artifact = normalizeArtifact(source, source?.kind || "file");
     if (!artifact) return;
+    pinnedArtifactsForScope().set(artifact.id, artifact);
+    dismissedArtifactsForScope().delete(artifact.id);
     const index = state.artifacts.findIndex((item) => item.id === artifact.id);
     if (index >= 0) state.artifacts[index] = artifact;
     else state.artifacts.push(artifact);
@@ -4991,15 +5182,323 @@
     if (state.artifactOpen) renderArtifactWorkspace();
   }
 
-  function syncArtifactsFromTurns(turns) {
-    const artifacts = [];
+  /// 常驻任务面板：当前会话的待办。
+  ///
+  /// 两条更新路径。进会话/刷新走 `GET /api/sessions/{id}/todos`——工具事件
+  /// 只在 `todowrite` 跑的那一刻发生一次,不问一次就只有空面板；回合里 AI
+  /// 改了待办则直接吃 `tool.finished` 的输出,不必再往返一趟。
+  function renderStageTodos(todos) {
+    state.stageTodos = todos?.length ? todos : null;
+    const panel = elements.stageTodos;
+    panel.replaceChildren();
+    const card = state.stageTodos ? window.MiyuTodos?.renderList(state.stageTodos) : null;
+    if (!card) {
+      panel.hidden = true;
+      return;
+    }
+    panel.appendChild(card);
+    panel.hidden = false;
+  }
+
+  const GOAL_PHASE_LABELS = Object.freeze({
+    active: "进行中",
+    paused: "已暂停",
+    blocked: "受阻",
+    complete: "已完成",
+  });
+
+  /// 目标状态行。
+  ///
+  /// 目标是会话级的长期状态，不该只在对话流里闪一条消息就没了——那条消息会
+  /// 被后面几十轮顶到看不见的地方。贴在输入框上方，随状态刷新，能直接操作。
+  function renderGoalBar() {
+    const bar = elements.goalBar;
+    bar.replaceChildren();
+    const goal = state.goal;
+    // 完成的目标不再占位：那一行的作用是「它还在做这件事」，做完了就该让开。
+    // 想回顾结果，AI 的结案陈词就在对话流里。
+    if (!goal || goal.phase === "complete") {
+      bar.hidden = true;
+      return;
+    }
+    bar.hidden = false;
+    bar.dataset.phase = String(goal.phase || "");
+
+    const mark = document.createElement("span");
+    mark.className = "goal-bar-mark";
+    mark.appendChild(makeIconSlot("target"));
+
+    // 一行装下：目标 + 状态。轮数上限不显示——256 是防跑飞的兜底，不是进度
+    // 条的分母，写出来只会让人以为要跑 256 轮。
+    const objective = document.createElement("strong");
+    objective.className = "goal-bar-objective";
+    objective.textContent = String(goal.objective || "");
+    objective.title = "点击修改目标";
+    objective.tabIndex = 0;
+    objective.setAttribute("role", "button");
+    const startEdit = () => beginGoalEdit(objective, goal);
+    objective.addEventListener("click", startEdit);
+    objective.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        startEdit();
+      }
+    });
+
+    const meta = document.createElement("small");
+    meta.className = "goal-bar-meta";
+    // active 但没武装 = 目标还在、只是不会自己往前跑了（被打断过或重启过）。
+    const phase = goal.phase === "active" && !goal.armed
+      ? "已停下"
+      : GOAL_PHASE_LABELS[goal.phase] || goal.phase;
+    meta.textContent = `${phase} · 第 ${goal.rounds_started} 轮`;
+    if (goal.blocked_message) meta.title = goal.blocked_message;
+
+    const actions = document.createElement("span");
+    actions.className = "goal-bar-actions";
+    // 按钮跟着阶段变：暂停的目标不该还挂着「暂停」。
+    // 编辑排在最前：点文字也能改，但一个明确的按钮才看得出「这行可以改」。
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "goal-bar-button";
+    edit.title = "修改目标";
+    edit.setAttribute("aria-label", "修改目标");
+    edit.append(makeIconSlot("square-pen"));
+    edit.addEventListener("click", startEdit);
+    actions.appendChild(edit);
+    const buttons = goal.phase === "active" && goal.armed
+      ? [["pause", "暂停", "pause"], ["clear", "清除", "x"]]
+      : [["resume", "继续", "play"], ["clear", "清除", "x"]];
+    for (const [action, label, icon] of buttons) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "goal-bar-button";
+      button.title = label;
+      button.setAttribute("aria-label", label);
+      button.append(makeIconSlot(icon));
+      button.addEventListener("click", () => runGoalAction(action));
+      actions.appendChild(button);
+    }
+    bar.append(mark, objective, meta, actions);
+  }
+
+  /// 就地改目标：点一下文字变输入框，回车提交，Esc 放弃。
+  function beginGoalEdit(node, goal) {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "goal-bar-edit";
+    input.value = String(goal.objective || "");
+    input.setAttribute("aria-label", "修改目标");
+    // `finish` 会被回车和失焦各触发一次——提交时把输入框换掉，那一下又会
+    // 触发 blur。没有这个闸就会连发两次 edit。
+    let settled = false;
+    const finish = (commit) => {
+      if (settled) return;
+      settled = true;
+      const next = input.value.trim();
+      if (commit && next && next !== goal.objective) runGoalAction(`edit ${next}`);
+      else renderGoalBar();
+    };
+    input.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Enter") {
+        event.preventDefault();
+        finish(true);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        finish(false);
+      }
+    });
+    input.addEventListener("blur", () => finish(true));
+    node.replaceWith(input);
+    input.focus();
+    input.select();
+  }
+
+  async function runGoalAction(action) {
+    try {
+      const response = await apiRequest("/api/goal", {
+        method: "POST",
+        body: JSON.stringify({ session_id: state.viewSessionId, input: action }),
+      });
+      // 服务端把「拒绝」也当成一次成功的命令执行（HTTP 200 + 一段说明文字），
+      // 所以不能只看 HTTP 状态——不弹出来的话，改目标失败时状态行只是悄悄
+      // 变回原样，看着像点了没反应。
+      const text = String((await response.json())?.text || "");
+      if (/^(用法|\/goal |本会话)/.test(text)) showToast(text.split("\n")[0], "error");
+      // edit 命中正在跑的续轮时，daemon 会掐掉旧轮、按新目标重开一轮——
+      // 中断和新气泡就是时间线上的反馈，这里只补一个轻量确认。
+      else if (action.startsWith("edit ")) showToast(`目标已变更：${text.split("\n")[1] || ""}`);
+    } catch (error) {
+      showToast(error?.message || "目标操作失败", "error");
+    }
+    loadGoal(state.viewSessionId);
+  }
+
+  /// `/pop`（无参数）的轮次多选器：列出可弹出的轮次（最旧在前，与按数量
+  /// 弹出同一口径），勾选后按 turn_ids 弹出。
+  async function openPopPicker() {
+    const sessionId = state.viewSessionId;
+    if (!sessionId) return;
+    let turns = [];
+    try {
+      const response = await apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}/poppable`);
+      turns = (await response.json())?.turns || [];
+    } catch (error) {
+      showToast(error.message || "读取可弹出轮次失败", "error");
+      return;
+    }
+    const list = elements.popDialogList;
+    list.replaceChildren();
+    elements.popDialogAll.checked = false;
+    if (!turns.length) {
+      const empty = document.createElement("div");
+      empty.className = "pop-dialog-empty";
+      empty.textContent = "当前上下文没有可弹出的轮次";
+      list.appendChild(empty);
+    }
+    const boxes = [];
     for (const turn of turns) {
-      for (const source of [...(Array.isArray(turn?.assets) ? turn.assets : []), ...(Array.isArray(turn?.artifacts) ? turn.artifacts : [])]) {
+      const row = document.createElement("label");
+      row.className = "pop-dialog-row";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.value = String(turn?.turn_id || "");
+      const preview = document.createElement("span");
+      preview.className = "pop-row-preview";
+      preview.textContent = String(turn?.preview || "").trim() || "（空消息）";
+      const meta = document.createElement("span");
+      meta.className = "pop-row-meta";
+      const tokens = asFiniteNumber(turn?.tokens);
+      meta.textContent = [formatTime(turn?.timestamp), tokens ? formatTokens(tokens) : ""]
+        .filter(Boolean)
+        .join(" · ");
+      row.append(box, preview, meta);
+      list.appendChild(row);
+      boxes.push(box);
+    }
+    const refresh = () => {
+      const selected = boxes.filter((box) => box.checked).length;
+      elements.popConfirmButton.disabled = selected === 0;
+      elements.popConfirmButton.textContent = selected ? `弹出所选（${selected}）` : "弹出所选";
+      elements.popDialogAll.checked = boxes.length > 0 && selected === boxes.length;
+    };
+    // onchange 直接赋值而不是 addEventListener：每次打开都重建列表，
+    // 累加监听器会让旧闭包一直陪跑。
+    boxes.forEach((box) => { box.onchange = refresh; });
+    elements.popDialogAll.onchange = () => {
+      boxes.forEach((box) => { box.checked = elements.popDialogAll.checked; });
+      refresh();
+    };
+    elements.popConfirmButton.onclick = async () => {
+      const turnIds = boxes.filter((box) => box.checked).map((box) => box.value);
+      if (!turnIds.length) return;
+      elements.popConfirmButton.disabled = true;
+      try {
+        const response = await apiRequest("/api/conversation/pop", {
+          method: "POST",
+          body: JSON.stringify({ session_id: sessionId, turn_ids: turnIds }),
+        });
+        const removed = (await response.json())?.result?.turns || 0;
+        elements.popDialog.close();
+        await loadSessionView(sessionId, { quiet: true });
+        showToast(`已从上下文弹出 ${removed} 轮`);
+      } catch (error) {
+        elements.popConfirmButton.disabled = false;
+        showToast(error.message || "弹出失败", "error");
+      }
+    };
+    refresh();
+    if (typeof elements.popDialog.showModal === "function") elements.popDialog.showModal();
+    else elements.popDialog.setAttribute("open", "");
+  }
+
+  // 命令回执的锚点回合。优先锚到正在流式输出的那一轮：它落盘后 id 不变，
+  // 回执就一直钉在它后面；只认「最后一个已落盘回合」的话，运行中敲的命令
+  // 会因为这一轮还没落盘而没有锚点，被顶到时间线最前面。
+  function commandAnchorTurnId() {
+    const live = [...state.liveRuns.values()].find((entry) => entry && !entry.ended && entry.turnId);
+    if (live) return String(live.turnId);
+    return state.turns.length ? String(state.turns[state.turns.length - 1]?.id || "") : "";
+  }
+
+  async function refreshSessionContext(sessionId) {
+    const scope = String(sessionId || "");
+    if (!scope) return;
+    const generation = (state.contextGeneration = (state.contextGeneration || 0) + 1);
+    try {
+      const response = await apiRequest(`/api/sessions/${encodeURIComponent(scope)}/context`);
+      const payload = await response.json();
+      // 用户可能在响应回来之前又切走了：旧响应不许覆盖新会话的数字。
+      if (generation !== state.contextGeneration || state.viewSessionId !== scope) return;
+      state.context.tokens = Math.max(0, asFiniteNumber(payload?.context_tokens));
+      state.context.window = payload?.context_window == null
+        ? null
+        : Math.max(0, asFiniteNumber(payload.context_window));
+      updateContext();
+    } catch (_) {
+      // 拉不到就保持现状，等 run 事件里的增量。
+    }
+  }
+
+  async function loadGoal(sessionId) {
+    const scope = String(sessionId || "");
+    if (!scope) {
+      state.goal = null;
+      renderGoalBar();
+      return;
+    }
+    const generation = ++state.goalGeneration;
+    try {
+      const response = await apiRequest(`/api/sessions/${encodeURIComponent(scope)}/goal`);
+      const payload = await response.json();
+      if (generation !== state.goalGeneration) return;
+      state.goal = payload?.goal || null;
+    } catch (_) {
+      if (generation !== state.goalGeneration) return;
+      state.goal = null;
+    }
+    renderGoalBar();
+  }
+
+  async function loadStageTodos(sessionId) {
+    const scope = String(sessionId || "");
+    if (!scope) {
+      renderStageTodos(null);
+      return;
+    }
+    const generation = ++state.stageTodosGeneration;
+    try {
+      const response = await apiRequest(`/api/sessions/${encodeURIComponent(scope)}/todos`);
+      const payload = await response.json();
+      if (generation !== state.stageTodosGeneration) return;
+      renderStageTodos(window.MiyuTodos?.normalize(payload?.todos) || null);
+    } catch (_) {
+      // 面板是附带信息,拿不到就空着,不打扰对话。
+      if (generation === state.stageTodosGeneration) renderStageTodos(null);
+    }
+  }
+
+  function syncArtifactsFromTurns(turns) {
+    let artifacts = [];
+    for (const turn of turns) {
+      // 只收真正的 artifact。`turn.assets` 是对话里内联显示的图片（打印/生成
+      // 的图），它们已经在气泡里画出来了，再塞进 artifact 面板等于同一张图占
+      // 两个位置，还会把面板自动切到图片上、盖住用户正在看的东西。
+      // 要把图当 artifact 展示，走 present_artifact/create_artifact —— 那条
+      // 路产出的就是 turn.artifacts。
+      for (const source of Array.isArray(turn?.artifacts) ? turn.artifacts : []) {
         const artifact = normalizeArtifact(source, "file");
         if (artifact && !artifacts.some((item) => item.id === artifact.id)) artifacts.push(artifact);
       }
     }
-    state.artifacts = artifacts;
+    // 手动送进来的补在后面：它们不属于任何回合，只活在这份 state 里。
+    for (const artifact of pinnedArtifactsForScope().values()) {
+      if (!artifacts.some((item) => item.id === artifact.id)) artifacts.push(artifact);
+    }
+    const dismissed = dismissedArtifactsForScope();
+    state.artifacts = artifacts.filter((item) => !dismissed.has(item.id));
+    artifacts = state.artifacts;
     if (!artifacts.some((item) => item.id === state.selectedArtifactId)) {
       state.selectedArtifactId = artifacts.at(-1)?.id || null;
       state.artifactMode = defaultArtifactMode(artifacts.at(-1));
@@ -5035,17 +5534,6 @@
     if (artifact?.kind === "pdf") return "PDF";
     if (artifact?.kind === "image") return String(artifact.mime || "IMAGE").split("/").pop().toUpperCase();
     return "FILE";
-  }
-
-  function artifactIconButton(icon, label, handler) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "icon-button";
-    button.title = label;
-    button.setAttribute("aria-label", label);
-    button.appendChild(makeIconSlot(icon));
-    button.addEventListener("click", handler);
-    return button;
   }
 
   function renderArtifactImage(artifact) {
@@ -5191,6 +5679,8 @@
   function renderArtifactResourceMenu(artifact) {
     elements.artifactResourceMenu.replaceChildren();
     for (const item of state.artifacts) {
+      const row = document.createElement("div");
+      row.className = "artifact-resource-row";
       const button = document.createElement("button");
       button.type = "button";
       button.role = "menuitem";
@@ -5210,9 +5700,48 @@
         closeArtifactResourceMenu();
         renderArtifactWorkspace();
       });
-      elements.artifactResourceMenu.appendChild(button);
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "icon-button artifact-resource-remove";
+      remove.title = "从列表移除";
+      remove.setAttribute("aria-label", `从列表移除 ${item.name}`);
+      remove.appendChild(makeIconSlot("x"));
+      remove.addEventListener("click", (event) => {
+        event.stopPropagation();
+        dismissArtifact(item.id);
+      });
+      row.append(button, remove);
+      elements.artifactResourceMenu.appendChild(row);
     }
-    elements.artifactTitleButton.disabled = state.artifacts.length <= 1;
+    // 只有一个 artifact 时也要能开这个菜单——删除按钮在菜单里，禁掉就等于
+    // 「最后一个删不掉」。当初禁它是因为菜单只用来切换，一个项目没得切。
+    elements.artifactTitleButton.disabled = state.artifacts.length === 0;
+  }
+
+  /// 从列表里拿掉一个 artifact。回合产出的那些下次同步会重新长出来，所以
+  /// 得把 id 记进 dismissed 才删得掉。
+  function dismissArtifact(id) {
+    dismissedArtifactsForScope().add(id);
+    pinnedArtifactsForScope().delete(id);
+    state.artifactSourceCache.delete(id);
+    state.artifacts = state.artifacts.filter((item) => item.id !== id);
+    if (state.selectedArtifactId === id) {
+      const next = state.artifacts.at(-1);
+      state.selectedArtifactId = next?.id || null;
+      state.artifactMode = defaultArtifactMode(next);
+      state.artifactZoom = 1;
+      state.artifactPanX = 0;
+      state.artifactPanY = 0;
+    }
+    if (!state.artifacts.length) {
+      closeArtifactResourceMenu();
+      setArtifactWorkspaceOpen(false);
+      elements.artifactToggleButton.hidden = true;
+      elements.artifactToggleButton.classList.remove("has-new-artifact");
+      return;
+    }
+    renderArtifactWorkspace();
+    renderArtifactResourceMenu(state.artifacts.find((item) => item.id === state.selectedArtifactId));
   }
 
   function renderArtifactWorkspace() {
@@ -5229,7 +5758,8 @@
     elements.artifactTitle.textContent = artifact.name;
     elements.artifactTitle.title = artifact.name;
     elements.artifactTypeLabel.textContent = artifactTypeLabel(artifact);
-    elements.artifactDownloadButton.href = artifact.url;
+    // ?download=1 → 后端强制 attachment,markdown/pdf 也直接落盘而不是再开预览。
+    elements.artifactDownloadButton.href = `${artifact.url}?download=1`;
     elements.artifactPreviewButton.parentElement.hidden = isImage;
     elements.artifactImageActions.hidden = !isImage;
     elements.artifactImageExternalButton.href = isImage ? artifact.url : "";
@@ -5311,18 +5841,6 @@
     return Number.isInteger(number) && number > 0 && number <= 100_000 ? number : null;
   }
 
-  function createAssetAction(iconName, label, href, download = false) {
-    const link = document.createElement("a");
-    link.href = href;
-    link.title = label;
-    link.setAttribute("aria-label", label);
-    link.rel = "noopener noreferrer";
-    if (download) link.setAttribute("download", "");
-    else link.target = "_blank";
-    link.appendChild(makeIconSlot(iconName));
-    return link;
-  }
-
   function createConversationMedia(asset, { eager = false } = {}) {
     const source = asset && typeof asset === "object" ? asset : {};
     const url = safeAssetUrl(source.url);
@@ -5331,7 +5849,6 @@
     const width = validAssetDimension(source.width);
     const height = validAssetDimension(source.height);
     const alt = String(source.alt || "").trim() || "Miyu 生成的图片";
-    const hideCaption = Boolean(source.hide_caption);
 
     const figure = document.createElement("figure");
     figure.className = "conversation-media";
@@ -5364,7 +5881,7 @@
         image.remove();
         fallback.hidden = false;
         figure.classList.add("is-error");
-        contentAdded();
+        contentAdded(figure);
       }, { once: true });
       image.addEventListener("load", contentAdded, { once: true });
       image.src = url;
@@ -5373,31 +5890,33 @@
       visual.appendChild(fallback);
     }
 
-    const caption = document.createElement("figcaption");
-    caption.className = "conversation-media-caption";
-    if (!hideCaption) {
-      const captionText = document.createElement("span");
-      captionText.textContent = alt;
-      captionText.title = alt;
-      caption.appendChild(captionText);
-    } else {
-      caption.classList.add("is-actions-only");
-    }
-    if (url) {
-      const actions = document.createElement("span");
-      actions.className = "conversation-media-actions";
-      actions.append(
-        artifactIconButton("panel-right", "在预览工作区打开", () => {
-          registerArtifact({ ...source, url, name: alt, kind: "image" });
-          setArtifactWorkspaceOpen(true);
-        }),
-        createAssetAction("external-link", "在新窗口打开图片", url),
-        createAssetAction("download", "下载图片", url, true)
-      );
-      caption.appendChild(actions);
+    // 图下面既不挂文件名也不挂按钮——每张图多占一行、还把气泡撑得很吵。
+    // 名字(表情包是描述)和那三个按钮都跟着灯箱走(web/lightbox.js)。
+    // `alt` 仍然写在 img 上,读屏和图裂时靠它。
+    if (url && imageMime) {
+      visual.classList.add("is-zoomable");
+      visual.tabIndex = 0;
+      visual.setAttribute("role", "button");
+      visual.setAttribute("aria-label", `放大预览 ${alt}`);
+      const openLightbox = () => {
+        window.MiyuLightbox?.open({
+          url,
+          name: alt,
+          onOpenInWorkspace: () => {
+            registerArtifact({ ...source, url, name: alt, kind: "image" });
+            setArtifactWorkspaceOpen(true);
+          },
+        });
+      };
+      visual.addEventListener("click", openLightbox);
+      visual.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          openLightbox();
+        }
+      });
     }
     figure.appendChild(visual);
-    if (caption.childElementCount) figure.appendChild(caption);
     return figure;
   }
 
@@ -5491,6 +6010,9 @@
     content = "",
     reasoning = "",
     reasoningTitle = "已思考",
+    // 工具轮次（持久化回合用）。实时那份由事件流按到达顺序往 blocks 里插，
+    // 推理、正文、工具卡是交错的；这里从 turn.tool_flow 重建同样的顺序。
+    toolRounds = [],
     assets = [],
     timestamp = null,
     tokenTotal = 0,
@@ -5528,6 +6050,35 @@
     assistantContent.className = "assistant-content";
     const blocks = document.createElement("div");
     blocks.className = "assistant-blocks";
+    // 逐轮重建:每一轮是「思考 → 正文 → 这轮调的工具」,轮次之间按顺序排,
+    // 最后才是本回合的最终思考与回答。把所有工具堆到最前面是错的——那样
+    // 一个十轮的回合会先甩出二十个工具卡,中间说了什么全看不见了。
+    //
+    // 卡片必须挂在 blocks 里:样式表是 `.assistant-blocks > .tool-card`,
+    // 挂在外面选择器不命中,会退化成一行裸文本。
+    for (const round of Array.isArray(toolRounds) ? toolRounds : []) {
+      const roundReasoning = String(round?.assistant_reasoning || "");
+      if (roundReasoning.trim() && !reasoningHidden()) {
+        const parsed = splitReasoningText(roundReasoning);
+        blocks.appendChild(createReasoningBlock(parsed.body, "已思考", false).element);
+      }
+      const roundContent = String(round?.assistant_content || "");
+      if (roundContent.trim()) {
+        const markdown = document.createElement("div");
+        markdown.className = "markdown-body";
+        renderMarkdown(markdown, roundContent);
+        blocks.appendChild(markdown);
+      }
+      for (const call of Array.isArray(round?.calls) ? round.calls : []) {
+        blocks.appendChild(createPersistedToolCard(call));
+        // share_file 的富预览(播放器/图片/下载条)重建:实时靠 tool.finished
+        // 的输出渲染,刷新/切换后从落库的 tool_flow 输出里复原同一份。
+        if (window.MiyuShared?.isShareTool(String(call?.name || ""))) {
+          const shared = window.MiyuShared.renderCard(String(call?.output || ""));
+          if (shared) blocks.appendChild(shared);
+        }
+      }
+    }
     if (String(reasoning || "").trim() && !reasoningHidden()) {
       const parsed = splitReasoningText(reasoning);
       blocks.appendChild(createReasoningBlock(parsed.body, "已思考", false).element);
@@ -5641,6 +6192,9 @@
     const status = document.createElement("div");
     status.className = "turn-status-line";
     status.dataset.turnStatus = String(turn?.id || "");
+    // 也标上 turn-id：命令回执按「锚点回合的最后一个 [data-turn-id] 节点」
+    // 插入，不标的话回执会插在这条状态行**之前**，时间顺序看着是乱的。
+    if (turn?.id) status.dataset.turnId = String(turn.id);
     const isInterrupted = turn?.status === "interrupted";
     status.classList.toggle("is-interrupted", isInterrupted);
     status.appendChild(makeIconSlot(isInterrupted ? "circle-alert" : "loader-circle"));
@@ -5666,12 +6220,12 @@
     const candidate = state.redoCandidate && String(state.redoCandidate.turn_id) === turnId
       ? state.redoCandidate
       : null;
-    elements.timeline.appendChild(createUserMessage(turn?.user_content || "", turn?.user_timestamp, {
+    appendUserMessage(elements.timeline, turn?.user_content || "", turn?.user_timestamp, {
       turnId,
       inputId: turnId,
       revisionTarget: candidate && String(candidate.input_id) === turnId ? candidate : null,
       attachments: turn?.attachments
-    }));
+    });
 
     /*
      * 本页会话内完成的 turn:优先复用 live 流式渲染出的 article(含按时序排列的
@@ -5679,6 +6233,7 @@
      * 历史重载(后端快照没有 parts 顺序)才退回扁平重建。
      */
     const stash = turnId && turn?.status !== "running" ? state.finishedTurnArticles.get(turnId) : null;
+    const claimed = turn?.status === "running" && liveClaimsTurn(turnId);
     let stashIndex = 0;
     const takeStash = (kind) => {
       if (!stash || stashIndex >= stash.length || stash[stashIndex].kind !== kind) return null;
@@ -5686,7 +6241,7 @@
     };
 
     // 已回答的问题卡在 live article 内部原位保留;仅在无存档时用快照重建。
-    if (!stash) {
+    if (!stash && !claimed) {
       const exchanges = Array.isArray(turn?.question_exchanges) ? turn.question_exchanges : [];
       for (const exchange of exchanges) elements.timeline.appendChild(createPersistedQuestion(exchange, turnId));
     }
@@ -5698,7 +6253,7 @@
       const stashedSegment = takeStash("segment");
       if (stashedSegment) {
         elements.timeline.appendChild(stashedSegment);
-      } else if (precedingContent.trim() || precedingReasoning.trim()) {
+      } else if (!claimed && (precedingContent.trim() || precedingReasoning.trim())) {
         elements.timeline.appendChild(createAssistantMessage({
           content: precedingContent,
           reasoning: precedingReasoning,
@@ -5710,16 +6265,23 @@
           activeContext: turn?.active_context !== false
         }));
       }
-      elements.timeline.appendChild(createUserMessage(followup?.content || "", followup?.submitted_at, {
+      appendUserMessage(elements.timeline, followup?.content || "", followup?.submitted_at, {
         turnId,
         followupId: String(followup?.id || ""),
         inputId: String(followup?.id || ""),
         revisionTarget: candidate && String(candidate.input_id) === String(followup?.id || "") ? candidate : null,
         attachments: followup?.attachments
-      }));
+      });
     }
     let leftoverSegment;
     while ((leftoverSegment = takeStash("segment"))) elements.timeline.appendChild(leftoverSegment);
+
+    // 这一轮调过的工具。`stash` 存在说明刚在本端实时渲染过，实时卡片还在
+    // 原位，不要再画一遍。卡片要交给助手消息放进它的 `assistant-blocks`
+    // 里——挂在外面样式选择器不命中，会退化成一行裸文本。
+    const persistedToolRounds = stash
+      ? []
+      : (Array.isArray(turn?.tool_flow) ? turn.tool_flow : []);
 
     const assistantContent = String(turn?.assistant_content || "");
     const assistantReasoning = String(turn?.assistant_reasoning || "");
@@ -5730,10 +6292,17 @@
       stashedFinal.dataset.segmentKind = "final";
       setAssistantRedoAction(stashedFinal, candidate);
       elements.timeline.appendChild(stashedFinal);
-    } else if (assistantContent.trim() || assistantReasoning.trim() || assets.length) {
+    } else if (
+      !claimed
+      && (assistantContent.trim()
+        || assistantReasoning.trim()
+        || assets.length
+        || persistedToolRounds.length)
+    ) {
       elements.timeline.appendChild(createAssistantMessage({
         content: assistantContent,
         reasoning: assistantReasoning,
+        toolRounds: persistedToolRounds,
         providerId: turn?.provider_id,
         model: turn?.model,
         assets,
@@ -5749,7 +6318,7 @@
         muted: turn?.active_context === false
       }));
     }
-    if (turn?.status === "running" || turn?.status === "interrupted") elements.timeline.appendChild(createTurnStatus(turn));
+    if ((turn?.status === "running" && !claimed) || turn?.status === "interrupted") elements.timeline.appendChild(createTurnStatus(turn));
     else if (!stashedFinal && !assistantContent.trim() && !assistantReasoning.trim() && (asFiniteNumber(turn?.token_total) > 0 || turn?.active_context === false)) {
       const metadata = createTurnStatus({ ...turn, status: "completed" });
       metadata.querySelector("span:nth-child(2)").textContent = "本轮已完成";
@@ -5758,18 +6327,27 @@
     }
   }
 
-  function renderConversation() {
+  function renderConversation({ forceScroll = false } = {}) {
     elements.loadingState.hidden = true;
     elements.blockedState.hidden = true;
     clearQuestionDock();
+    // 回合运行期间每秒轮询都可能整段重建（refreshViewSnapshot）。用户正往回
+    // 翻历史时不能每秒被拽回底部：只有明确导航（换会话/启动）或用户本来就
+    // 跟着输出走时才滚到底，否则原地恢复滚动位置。
+    const keepScroll = !forceScroll && !state.followOutput;
+    const previousScrollTop = elements.chatScroll.scrollTop;
     elements.timeline.replaceChildren();
     const turns = [...state.turns].sort((left, right) => asFiniteNumber(left?.seq) - asFiniteNumber(right?.seq));
     state.turns = turns;
     syncArtifactsFromTurns(turns);
+    loadStageTodos(state.viewSessionId);
+    loadGoal(state.viewSessionId);
     if (state.finishedTurnArticles.size) {
       const knownTurnIds = new Set(turns.map((turn) => String(turn?.id)));
-      for (const key of [...state.finishedTurnArticles.keys()]) {
-        if (!knownTurnIds.has(key)) state.finishedTurnArticles.delete(key);
+      for (const [key, list] of [...state.finishedTurnArticles.entries()]) {
+        // 别的会话离屏完成的存档不在本会话的 turns 里,不能因此被剪掉。
+        const foreign = list.some((entry) => entry.sessionId && String(entry.sessionId) !== String(state.viewSessionId || ""));
+        if (!foreign && !knownTurnIds.has(key)) state.finishedTurnArticles.delete(key);
       }
     }
     if (turns.length === 0) {
@@ -5778,28 +6356,72 @@
     } else {
       elements.emptyState.hidden = true;
       elements.timeline.hidden = false;
-      let previousDay = null;
-      for (const turn of turns) {
-        const currentDay = dayKey(turn?.user_timestamp);
-        if (currentDay !== previousDay) {
-          elements.timeline.appendChild(createDayDivider(turn?.user_timestamp));
-          previousDay = currentDay;
+      // 不再插日期分隔条：它在回执/流式气泡之间来回跳位置，信息量又低
+      // （悬停消息时间戳就有完整日期）。
+      for (const turn of turns) renderPersistedTurn(turn);
+    }
+    // 命令回执不是回合，不在 state.turns 里；timeline 每次重建都要补回来。
+    window.MiyuCommands?.renderNotices(elements.timeline, state.viewSessionId);
+    reattachLiveArticles();
+    // 落盘回合数为 0 不等于屏幕上没内容：回执和正在流式输出的气泡都不在
+    // state.turns 里。只按 turns 判空的话，运行中一次重绘就把画面整个换成
+    // 欢迎页，气泡瞬间蒸发。
+    if (elements.timeline.childElementCount > 0) {
+      elements.emptyState.hidden = true;
+      elements.timeline.hidden = false;
+    }
+    if (keepScroll) {
+      // 同步恢复（不等下一帧），重建就不会闪一下再跳回来。上方内容高度
+      // 变化仍可能让视口偏移，先接受这个近似。
+      elements.chatScroll.scrollTop = previousScrollTop;
+      state.nearBottom = isNearBottom();
+      elements.jumpBottomButton.hidden = false;
+    } else {
+      state.nearBottom = true;
+      state.followOutput = true;
+      elements.jumpBottomButton.hidden = true;
+      window.requestAnimationFrame(() => {
+        elements.chatScroll.scrollTop = elements.chatScroll.scrollHeight;
+      });
+    }
+    updateConversationChrome();
+  }
+
+  /// 把还在跑的 live 气泡挂回重建后的时间线。
+  ///
+  /// `renderConversation` 会 `replaceChildren()` 整段重建，而 live 气泡不在
+  /// `state.turns` 里——重建之后它就脱离了文档，后续的 assistant.delta 全写
+  /// 进一个看不见的节点，直到回合结束、那一轮作为持久化回合被画出来，内容才
+  /// 整段冒出来。自己发消息时不会中途重画，所以这个洞只在 daemon 自己发起的
+  /// 回合上露出来（目标续轮、后台任务唤醒）：它们的回合一落盘就触发重画。
+  function reattachLiveArticles() {
+    for (const live of state.liveRuns.values()) {
+      if (!live.article || live.ended) continue;
+      // 离屏保活的别会话气泡不能挂进当前时间线。
+      if (!liveViewed(live)) continue;
+      // 落库的 running 占位与直播气泡是同一轮:重挂前撤掉占位。
+      removeRunningStatus(live.turnId);
+      if (!live.article.isConnected) elements.timeline.appendChild(live.article);
+      if (live.stopButton && !live.stopButton.isConnected) {
+        elements.liveStopRail.appendChild(live.stopButton);
+        elements.liveStopRail.hidden = false;
+      }
+      // 切走时被 clearQuestionDock 摘下的待答问题,切回原样归位。
+      for (const question of live.questions?.values?.() || []) {
+        if (question.pending && question.card && !question.card.isConnected) {
+          elements.questionDock.appendChild(question.card);
         }
-        renderPersistedTurn(turn);
       }
     }
-    state.nearBottom = true;
-    state.followOutput = true;
-    elements.jumpBottomButton.hidden = true;
-    updateConversationChrome();
-    window.requestAnimationFrame(() => {
-      elements.chatScroll.scrollTop = elements.chatScroll.scrollHeight;
-    });
+    updateQuestionDock();
+    syncRunIndicator();
   }
 
   function createLiveState(runId, options = {}) {
     return {
       runId,
+      // 归属会话:切走时离屏保活、切回按它过滤重挂(retireLiveRunsForSwitch)。
+      sessionId: String(options.sessionId || state.viewSessionId || ""),
       turnId: options.turnId || null,
       userText: options.userText || "",
       userAttachments: Array.isArray(options.userAttachments) ? options.userAttachments : [],
@@ -5842,7 +6464,7 @@
 
   function isJobFollowupContent(content) {
     const raw = String(content || "");
-    return raw.startsWith("[后台任务完成]") || raw.startsWith("[后台命令完成]") || raw.startsWith("<background-job-report>");
+    return isSyntheticTurnContent(raw);
   }
 
   function renderQueueTray() {
@@ -5925,11 +6547,12 @@
 
   function ensureLiveUser(live, content) {
     if (!live || live.userRendered) return;
+    // 离屏 live 不往当前时间线插用户消息;切回时落库回合会带上它。
+    if (!liveViewed(live)) return;
     const text = String(content || live.userText || "");
     if (!text.trim() && !live.userAttachments.length) return;
     live.userText = text;
     ensureTimelineVisible();
-    appendDayDividerIfNeeded(new Date());
     const message = createUserMessage(text, new Date(), {
       runId: live.runId,
       attachments: live.userAttachments
@@ -5989,51 +6612,58 @@
     return indicator;
   }
 
-  /* 发送后、第一个内容 part 到达前:气泡内三点弹跳等待动画 */
+  /* 运行指示器挪到了输入框那一排（`composerRunIndicator`）：气泡内那份只在
+     「第一个块到达前」出现（`childElementCount > 0` 就直接 return），推理块或
+     工具卡一出来就没了——而那两个阶段恰恰是最需要「它还在动」的时候。
+     现在由回合状态统一驱动，见 `syncRunIndicator`。 */
   function showTypingIndicator(live) {
-    if (!live || live.ended || live.typing) return;
+    if (!live || live.ended) return;
     ensureLiveArticle(live);
-    if (live.blocks.childElementCount > 0) return;
+    syncRunIndicator();
+    // 气泡里这份只管「还没开口」这一段:等待期给个落点,不然气泡是空的。
+    // 整个回合期间的指示由输入框那排负责(推理、工具阶段它也在转)。
+    if (live.typing || live.blocks.childElementCount > 0) return;
     const indicator = createTypingIndicator();
     live.blocks.appendChild(indicator);
     live.typing = indicator;
-    contentAdded();
+    contentAdded(live);
   }
 
+  // 只要这个视图里有回合在跑就转，与是正文、推理还是工具无关。
+  function syncRunIndicator() {
+    const indicator = elements.composerRunIndicator;
+    if (!indicator) return;
+    indicator.hidden = !conversationRunning();
+  }
+
+  // 三点已挪到输入框那排，这里只保留 `is-streaming` 状态位（正文流式时的
+  // 样式还靠它），不再往气泡里塞节点、也不再做那段位移补间。
   function promoteTypingIndicator(live) {
     if (!live || live.ended) return;
     ensureLiveArticle(live);
-    let indicator = live.typing;
-    if (indicator?.classList.contains("is-streaming")) return;
-    const start = indicator?.getBoundingClientRect() || null;
-    if (!indicator) {
-      indicator = createTypingIndicator();
-      live.typing = indicator;
+    // 开口了就撤掉气泡里那份等待动画,它的语义只有「还没开口」。
+    if (live.typing) {
+      live.typing.remove();
+      live.typing = null;
     }
-    live.streamRail.hidden = false;
-    live.streamRail.appendChild(indicator);
-    indicator.classList.add("is-streaming");
     live.article.classList.add("is-streaming");
-    if (start && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      const finish = indicator.getBoundingClientRect();
-      live.typingAnimation?.cancel();
-      live.typingAnimation = indicator.animate([
-        { transform: `translate(${visualPixelsToLayout(start.left - finish.left)}px, ${visualPixelsToLayout(start.top - finish.top)}px)` },
-        { transform: "translate(0, 0)" }
-      ], { duration: 260, easing: "cubic-bezier(0.2, 0, 0, 1)" });
-    }
-    contentAdded();
+    syncRunIndicator();
   }
 
   function clearTypingIndicator(live, { waitingOnly = false } = {}) {
-    if (!live?.typing) return;
-    if (waitingOnly && live.typing.classList.contains("is-streaming")) return;
-    live.typingAnimation?.cancel();
-    live.typingAnimation = null;
-    live.typing.remove();
-    live.typing = null;
+    if (!live) return;
+    // 气泡里那份是「还没开口」的占位，有任何内容落进来就撤。
+    if (live.typing) {
+      live.typing.remove();
+      live.typing = null;
+    }
+    if (waitingOnly) {
+      syncRunIndicator();
+      return;
+    }
     if (live.streamRail) live.streamRail.hidden = true;
     live.article?.classList.remove("is-streaming");
+    syncRunIndicator();
   }
 
   /* 完成态保时序:live 渲染出的 article 按 turn 存档,重渲染时原样复用 */
@@ -6046,7 +6676,9 @@
     live.article.dataset.segmentKind = kind;
     const key = String(live.turnId);
     const list = state.finishedTurnArticles.get(key) || [];
-    list.push({ kind, article: live.article });
+    // sessionId 随存:重建时的清理只能剪本会话的存档(离屏完成的轮要留到
+    // 用户切回它的会话时复用)。
+    list.push({ kind, article: live.article, sessionId: live.sessionId || "" });
     state.finishedTurnArticles.set(key, list);
   }
 
@@ -6093,9 +6725,13 @@
 
   function ensureLiveArticle(live) {
     if (live.article) return live.article;
-    ensureTimelineVisible();
-    ensureLiveUser(live, live.userText);
-    removeRunningStatus(live.turnId);
+    // 离屏 live 的气泡建成游离节点继续吃事件,切回时 reattach 挂载。
+    const viewed = liveViewed(live);
+    if (viewed) {
+      ensureTimelineVisible();
+      ensureLiveUser(live, live.userText);
+      removeRunningStatus(live.turnId);
+    }
     const article = document.createElement("article");
     article.className = "message assistant-message live-assistant";
     article.dataset.role = "assistant";
@@ -6123,11 +6759,13 @@
     stop.appendChild(makeIconSlot("stop-square"));
     stop.addEventListener("click", () => cancelLiveRun(live));
     header.append(avatar, identity);
-    for (const existing of elements.liveStopRail.querySelectorAll(".live-stop-button")) {
-      if (existing.dataset.runId === live.runId) existing.remove();
+    if (viewed) {
+      for (const existing of elements.liveStopRail.querySelectorAll(".live-stop-button")) {
+        if (existing.dataset.runId === live.runId) existing.remove();
+      }
+      elements.liveStopRail.appendChild(stop);
+      elements.liveStopRail.hidden = false;
     }
-    elements.liveStopRail.appendChild(stop);
-    elements.liveStopRail.hidden = false;
     const assistantContent = document.createElement("div");
     assistantContent.className = "assistant-content is-slim";
     const blocks = document.createElement("div");
@@ -6152,7 +6790,7 @@
     streamRail.className = "assistant-stream-rail";
     streamRail.hidden = true;
     article.append(header, bubble, meta, streamRail);
-    elements.timeline.appendChild(article);
+    if (viewed) elements.timeline.appendChild(article);
     live.article = article;
     live.blocks = blocks;
     live.headerStatus = status;
@@ -6162,7 +6800,7 @@
     live.copyButton = copy;
     live.streamRail = streamRail;
     updateLiveStopButton(live);
-    contentAdded();
+    contentAdded(live);
     return article;
   }
 
@@ -6175,7 +6813,7 @@
     block.renderFrame = window.requestAnimationFrame(() => {
       block.renderFrame = null;
       renderMarkdown(block.element, block.raw);
-      contentAdded();
+      contentAdded(block.element);
     });
   }
 
@@ -6204,7 +6842,7 @@
     } else {
       scheduleMarkdownRender(live.currentText);
     }
-    contentAdded();
+    contentAdded(live);
   }
 
   function resetSupersededGeneration(live) {
@@ -6295,6 +6933,7 @@
       // 惰性创建:只记状态,签等第一段真实思考文本(reasoning.delta)到达才出现,
       // 避免不输出思考的模型挂着空的「正在思考」签和空面板
       finalizeLiveReasoning(live);
+      resetPreparingWindow(live);
       live.reasoningStarted = true;
       live.reasoningClockStart = performance.now();
       breakLiveText(live);
@@ -6322,7 +6961,7 @@
       reasoning.raw += delta;
       reasoning.body.textContent = reasoning.raw;
       live.assistantReasoning = collectLiveReasoning(live);
-      contentAdded();
+      contentAdded(live);
       return;
     }
     if (name === "reasoning.part_end") {
@@ -6374,9 +7013,10 @@
   function toolSubject(name, value) {
     const args = parsedToolArguments(value);
     const toolName = String(name || "");
-    if (toolName === "run_command") {
+    if (toolName === "run_command" || toolName === "Bash") {
       const line = compactLine(args.command || args.cmd);
-      return args.background === true ? `[后台] ${line}` : line;
+      const background = args.background === true || args.run_in_background === true;
+      return background ? `[后台] ${line}` : line;
     }
     if (toolName === "read_file") {
       const path = compactPath(args.path);
@@ -6462,6 +7102,92 @@
     return `[较早输出已省略]\n${combined.slice(combined.length - MAX_TOOL_OUTPUT_CHARS)}`;
   }
 
+  // 持久化回合里的工具卡片（只读）。
+  //
+  // 不复用 `createTool`：那个和实时流状态强耦合（往 live.tools 注册、跟踪
+  // 分块输出、进度更新），拿持久化数据去喂它要伪造一个 live 对象，很脆。
+  // 这里只画「调了什么、给了什么参数、返回了什么」，CSS 类沿用同一套，
+  // 所以看起来和实时那份一致。
+  //
+  // 数据来自 `turn.tool_flow`，库里一直有——以前 API 不发，于是 WebUI 的
+  // 工具信息只在事件流里活过一次，切走再回来就没了。
+  function createPersistedToolCard(call) {
+    const card = document.createElement("section");
+    card.className = state.toolExpanded ? "tool-card" : "tool-card collapsed";
+    const name = String(call?.name || "");
+    if (name === "run_command" || name === "Bash") card.classList.add("is-command");
+    if (name === "task") card.classList.add("is-task");
+    // 图标配色来自 is-success（金）/ is-failure（红）。两个都不加会退回默认色，
+    // 看起来就是「颜色不对」。
+    //
+    // 成败没有单独落库，但也不需要：运行时那个 ok 本来就是从输出文本算的
+    // （`tool_output_succeeded`：输出是 JSON 且 success/ok 为 false 才算失败，
+    // 其余一律成功），这里照抄同一条规则，两边判定必然一致。
+    // 成败由后端算好（`web::dto::tool_call_succeeded`）：规则有两条——硬失败
+    // 看 `tool error:` 前缀，业务失败看输出 JSON 的 success/ok。抄到这里就成
+    // 了第二份真相，改一条忘另一条，同一次调用实时是红的、刷新变绿的。
+    const ok = call?.ok !== false;
+    card.classList.add(ok ? "is-success" : "is-failure");
+
+    const head = document.createElement("button");
+    head.className = "tool-head";
+    head.type = "button";
+    head.setAttribute("aria-expanded", String(Boolean(state.toolExpanded)));
+    const icon = document.createElement("span");
+    icon.className = "tool-icon";
+    icon.appendChild(makeIconSlot(toolIconName(name)));
+    // 与实时同构的三段：友好名（粗体）/ 技术名（小字）/ 主语摘要。
+    // 只画技术名的话，用户看到的就是 archlinux_official_package_query 这种。
+    const title = document.createElement("span");
+    title.className = "tool-title";
+    const displayName = document.createElement("strong");
+    displayName.textContent = String(call?.display_name || name || "工具");
+    const realName = document.createElement("small");
+    realName.className = "tool-technical-name";
+    realName.textContent = name;
+    const summary = document.createElement("small");
+    summary.className = "tool-summary";
+    summary.textContent = toolSubject(name, call?.arguments) || "";
+    title.append(displayName, realName, summary);
+    // 与实时那份同构：head 是 icon / title / status / chevron 四段。少了
+    // status 这段，回看时卡片会比实时的窄一块，右边空一片。
+    const status = document.createElement("span");
+    status.className = "tool-status";
+    const statusText = document.createElement("span");
+    statusText.textContent = ok ? "完成" : "失败";
+    status.append(makeIconSlot(ok ? "check" : "circle-alert"), statusText);
+    head.append(icon, title, status, makeIconSlot("chevron-down", "tool-chevron"));
+    head.addEventListener("click", () => {
+      const collapsed = card.classList.toggle("collapsed");
+      head.setAttribute("aria-expanded", String(!collapsed));
+    });
+
+    const body = document.createElement("div");
+    body.className = "tool-body";
+    const argumentText = prettyArguments(call?.arguments);
+    if (argumentText) {
+      const detail = createToolDetail("参数", true);
+      detail.content.textContent = argumentText;
+      detail.wrapper.hidden = false;
+      body.appendChild(detail.wrapper);
+    }
+    const output = String(call?.output || "");
+    if (output) {
+      const detail = createToolDetail("结果", true);
+      detail.content.textContent = output;
+      detail.wrapper.hidden = false;
+      body.appendChild(detail.wrapper);
+    }
+    card.append(head, body);
+    // 待办列表挂在签外面,收起态也看得见——那是给人看的产出,不是调试信息。
+    const todos = window.MiyuTodos?.isTodoTool(name) ? window.MiyuTodos.render(output) : null;
+    if (todos) card.appendChild(todos);
+    // 分享附件同理:文件卡片是交付物,直接出现在气泡里,点击即下载。
+    const shared = window.MiyuShared?.isShareTool(name) ? window.MiyuShared.renderCard(output) : null;
+    if (shared) card.appendChild(shared);
+    return card;
+  }
+
   function createToolDetail(labelText, preformatted = false) {
     const wrapper = document.createElement("div");
     wrapper.className = "tool-detail";
@@ -6513,7 +7239,7 @@
     tool.outputRenderFrame = window.requestAnimationFrame(() => {
       tool.outputRenderFrame = null;
       renderCommandOutputPreview(tool);
-      contentAdded();
+      contentAdded(tool.card);
     });
   }
 
@@ -6521,7 +7247,7 @@
   // 未列家族回落扳手。全部 lucide 线稿,无 emoji。
   function toolIconName(name) {
     const n = String(name || "");
-    if (["run_command", "job_status", "job_stop"].includes(n)) return "terminal";
+    if (["run_command", "Bash", "job_status", "job_stop"].includes(n)) return "terminal";
     if (["web_search", "web_fetch", "search_web", "webfetch"].includes(n)) return "globe";
     if (n === "search_web_images") return "image-search";
     if (n === "apply_patch" || n === "apply_artifact_patch") return "square-pen";
@@ -6562,7 +7288,7 @@
     const card = document.createElement("section");
     card.className = state.toolExpanded ? "tool-card" : "tool-card collapsed";
     card.dataset.toolId = toolId;
-    const isCommand = String(data?.name || "") === "run_command";
+    const isCommand = ["run_command", "Bash"].includes(String(data?.name || ""));
     if (isCommand) card.classList.add("is-command");
     const isTask = String(data?.name || "") === "task" || /^task[:：]/i.test(String(data?.display_name || ""));
     if (isTask) card.classList.add("is-task");
@@ -6681,7 +7407,7 @@
     live.tools.set(toolId, tool);
     live.blocks.appendChild(card);
     syncBubbleWidth(live.article);
-    contentAdded();
+    contentAdded(live);
     return tool;
   }
 
@@ -6704,7 +7430,38 @@
     if (!live?.preparingTool) return;
     live.preparingTool.remove();
     live.preparingTool = null;
-    contentAdded();
+    stopPreparingTimer(live);
+    contentAdded(live);
+  }
+
+  function stopPreparingTimer(live) {
+    if (!live?.preparingTimer) return;
+    window.clearInterval(live.preparingTimer);
+    live.preparingTimer = null;
+  }
+
+  /// 准备窗口结束：秒表归零，下一批重新计。
+  ///
+  /// 只在**工具真的跑完**或新一轮思考开始时调用,不在 `tool.started` 时调用
+  /// ——批量调用里第二个工具的准备提示紧接着第一个的开工到来,那还是同一个
+  /// 等待窗口,归零的话屏幕上的秒数来回横跳(与 REPL 的
+  /// `tool_preparing_since` 同一套语义)。
+  function resetPreparingWindow(live) {
+    if (!live) return;
+    live.preparingSince = null;
+    clearPreparingTool(live);
+  }
+
+  function renderPreparingLabel(live) {
+    const tag = live?.preparingTool;
+    if (!tag) return;
+    const label = tag.querySelector(".tool-preparing-label");
+    if (!label) return;
+    const base = tag.dataset.phaseLabel || "";
+    const elapsed = live.preparingSince == null
+      ? ""
+      : formatToolDuration(performance.now() - live.preparingSince);
+    label.textContent = elapsed ? `${base} · ${elapsed}` : base;
   }
 
   function handleToolPreparing(live, data) {
@@ -6713,18 +7470,23 @@
     ensureLiveArticle(live);
     clearTypingIndicator(live, { waitingOnly: true });
     finalizeLiveReasoning(live);
+    // 窗口起点只认第一次——批量里换了工具不重新计时。
+    if (live.preparingSince == null) live.preparingSince = performance.now();
     if (live.preparingTool?.dataset.toolName === name) return;
     clearPreparingTool(live);
     const tag = document.createElement("div");
     tag.className = "tool-preparing-tag";
     tag.dataset.toolName = name;
+    tag.dataset.phaseLabel = preparingToolLabel(name, data?.phase);
     const label = document.createElement("span");
-    label.textContent = preparingToolLabel(name, data?.phase);
+    label.className = "tool-preparing-label";
     tag.append(makeIconSlot("loader-circle", "is-spinning"), label);
     live.blocks.appendChild(tag);
     live.preparingTool = tag;
+    renderPreparingLabel(live);
+    live.preparingTimer = window.setInterval(() => renderPreparingLabel(live), 200);
     syncBubbleWidth(live.article);
-    contentAdded();
+    contentAdded(live);
   }
 
   function handleToolEvent(name, live, data) {
@@ -6733,6 +7495,8 @@
       return;
     }
     if (name === "tool.started") {
+      // 只撤标签,不清 `preparingSince`：同一批里下一个工具的准备提示紧接着
+      // 到来,那还是同一个等待窗口。
       clearPreparingTool(live);
       createTool(live, data);
       return;
@@ -6750,7 +7514,9 @@
           live.contextOperation = null;
           live.assets.push(asset);
           live.blocks.appendChild(createConversationMedia(asset, { eager: true }));
-          registerArtifact({ ...asset, name: String(asset.alt || "生成的图片"), kind: "image" }, { autoOpen: true });
+          // 不自动进 artifact:图片已经在气泡里画出来了,再塞进面板等于同一张
+          // 图占两个位置,还会把面板自动切过去盖住用户正在看的东西——表情包
+          // 也会。要在工作区看，气泡上有「在预览工作区打开」按钮。
           syncBubbleWidth(live.article);
           tool.imageCount += 1;
         }
@@ -6843,6 +7609,25 @@
       tool.resultDetail.content.textContent = tool.resultDetail.raw;
       tool.resultDetail.wrapper.hidden = !tool.resultDetail.raw;
       const ok = Boolean(data?.ok);
+      resetPreparingWindow(live);
+      // 只刷正在看的那个会话——后台会话的 todowrite 不该改屏幕上这块面板。
+      if (ok && window.MiyuTodos?.isTodoTool(tool.name)
+        && runSessionId(live.runId) === String(state.viewSessionId || "")) {
+        renderStageTodos(window.MiyuTodos.parse(output));
+      }
+      // 与回看那份同构（`createPersistedToolCard`）：待办列表挂在签外面。
+      // 只在这里画会让实时和刷新后长得不一样,那正是工具签之前踩过的坑。
+      if (ok && window.MiyuTodos?.isTodoTool(tool.name)) {
+        const todos = window.MiyuTodos.render(output);
+        tool.card.querySelector(".todo-panel")?.remove();
+        if (todos) tool.card.appendChild(todos);
+      }
+      // 分享附件同坑同修:实时完成时也要挂,否则只有刷新后才能看到卡片。
+      if (ok && window.MiyuShared?.isShareTool(tool.name)) {
+        const shared = window.MiyuShared.renderCard(output);
+        tool.card.querySelector(".shared-attachment")?.remove();
+        if (shared) tool.card.appendChild(shared);
+      }
       scheduleCommandOutputPreview(tool, data?.preview);
       updateToolStatus(tool, ok ? "完成" : "失败", ok ? "check" : "circle-alert", ok ? "is-success" : "is-failure");
       updateToolSummary(tool);
@@ -6857,7 +7642,7 @@
         tool.head.setAttribute("aria-expanded", "false");
       }
     }
-    contentAdded();
+    contentAdded(live);
   }
 
   function questionHasAnswer(questionState, index = questionState.pageIndex) {
@@ -7023,7 +7808,7 @@
     renderQuestionAnswerSummary(questionState, answers);
     moveQuestionToTimeline(questionState);
     updateControlState();
-    contentAdded();
+    contentAdded(questionState.card);
   }
 
   function markQuestionClosed(questionState) {
@@ -7041,7 +7826,7 @@
     updateControlState();
     showToast("回答界面已关闭");
     if (restoreFocus) window.requestAnimationFrame(focusComposerIfDesktop);
-    contentAdded();
+    contentAdded(questionState.card);
   }
 
   async function closeQuestion(questionState) {
@@ -7342,12 +8127,13 @@
       submitQuestion(questionState);
     });
     live.questions.set(questionId, questionState);
-    elements.questionDock.appendChild(card);
+    // 离屏 live 的问题卡先游离,切回时 reattachLiveArticles 归位。
+    if (liveViewed(live)) elements.questionDock.appendChild(card);
     updateQuestionDock();
     setQuestionPage(questionState, 0);
     updateQuestionOptionClasses(questionState);
     updateControlState();
-    contentAdded();
+    contentAdded(live);
     return questionState;
   }
 
@@ -7387,7 +8173,7 @@
     live.blocks.appendChild(block);
     syncBubbleWidth(live.article);
     live.contextOperation = operation;
-    contentAdded();
+    contentAdded(live);
     return operation;
   }
 
@@ -7414,7 +8200,7 @@
       operation.output.hidden = false;
       live.contextOperation = null;
     }
-    contentAdded();
+    contentAdded(live);
   }
 
   function jobStatusDisplay(status) {
@@ -7524,6 +8310,7 @@
   }
 
   setInterval(() => {
+    if (document.hidden) return;
     const visible = visibleBackgroundJobs();
     if (!visible.length) return;
     // 只更新计时文本：全量重建会重启 CSS 旋转动画，导致 spinner 每秒瞬移回原点。
@@ -7595,12 +8382,12 @@
     const consumed = state.queuedPrompts.filter((prompt) => ids.has(String(prompt?.id)));
     state.queuedPrompts = state.queuedPrompts.filter((prompt) => !ids.has(String(prompt?.id)));
     for (const prompt of consumed) {
-      elements.timeline.appendChild(createUserMessage(prompt?.content || "", prompt?.submitted_at || new Date(), {
+      appendUserMessage(elements.timeline, prompt?.content || "", prompt?.submitted_at || new Date(), {
         turnId: live.turnId,
         runId: live.runId,
         followupId: prompt?.id,
         attachments: prompt?.attachments
-      }));
+      });
     }
     renderQueueTray();
 
@@ -7625,7 +8412,7 @@
     live.questions = new Map();
     live.contextOperation = null;
     showTypingIndicator(live);
-    contentAdded();
+    contentAdded(live);
   }
 
   function updateLocalTurnFromLive(live, terminalStatus, data) {
@@ -7743,12 +8530,30 @@
       if (live.meta) live.meta.textContent = "";
     }
 
-    updateLocalTurnFromLive(live, kind, data);
-    stashLiveArticle(live, "final");
+    // 离屏 live 属于别的会话:state.turns 是当前视图的,不能往里塞。
+    if (liveViewed(live)) updateLocalTurnFromLive(live, kind, data);
+    // 刚起步就被掐掉的轮（目标编辑打断最常见）：气泡里什么都没有，留着就是
+    // 一个空壳。丢弃它，让下面的静默重拉用落库的中断轮接管。
+    const emptyCancelled = kind === "cancelled"
+      && !String(live.assistantText || "").trim()
+      && !(live.reasoningParts && live.reasoningParts.length)
+      && !(live.tools && live.tools.size);
+    if (emptyCancelled) {
+      disposeLiveState(live);
+      state.liveRuns.delete(runId);
+    } else {
+      stashLiveArticle(live, "final");
+    }
+    if (kind === "cancelled" && data?.session_id && String(data.session_id) === String(state.viewSessionId || "")) {
+      // 中断轮已落库（含部分输出与状态），静默重拉让「本轮已中断」标记
+      // 立即出现，不等下一次轮询。
+      loadSessionView(state.viewSessionId, { quiet: true });
+    }
     if (kind === "completed" || kind === "cancelled") {
-      // 上下文条展示全局（默认会话）上下文；其他会话的 run 不覆盖它。
+      // 上下文条跟着正在看的会话走（没有视图时退回终端车道）。
       // cancelled 也要刷新：被中断的轮次已经持久化进上下文。
-      const updatesGlobalContext = !data?.session_id || String(data.session_id) === String(state.currentSessionId || "");
+      const updatesGlobalContext = !data?.session_id
+        || String(data.session_id) === String(state.viewSessionId || state.currentSessionId || "");
       if (updatesGlobalContext) {
         if (data?.context_tokens != null) state.context.tokens = Math.max(0, asFiniteNumber(data.context_tokens));
         state.context.window = data?.context_window == null ? state.context.window : Math.max(0, asFiniteNumber(data.context_window));
@@ -7772,10 +8577,10 @@
     updateRuntimeUsage(data?.usage || null, Boolean(data?.usage_estimated));
     updateConversationChrome();
     updateControlState();
-    contentAdded();
+    contentAdded(live);
     if (state.liveRuns.size === 0) {
       window.requestAnimationFrame(() => {
-        if (!state.blocked && !elements.settingsDrawer.classList.contains("open")) focusComposerIfDesktop();
+        if (!state.blocked && !consoleIsOpen()) focusComposerIfDesktop();
       });
       window.setTimeout(() => {
         if (state.liveRuns.size === 0) refreshViewSnapshot();
@@ -7850,6 +8655,8 @@
 
   async function ensureActiveTurnUser(live, turnId) {
     if (!live || live.userRendered || !turnId) return;
+    // 离屏 live 不补渲用户消息(下面拉的是当前视图的 turns,张冠李戴)。
+    if (!liveViewed(live)) return;
     const existing = state.turns.find((turn) => String(turn?.id) === String(turnId));
     if (existing) {
       live.userText = String(existing.user_content || "");
@@ -7878,12 +8685,20 @@
     const sessionId = typeof data?.session_id === "string" && data.session_id ? data.session_id : runSessionId(runId);
     const terminal = name === "run.completed" || name === "run.cancelled" || name === "run.failed";
     if (name === "run.started" && sessionId) trackRun(sessionId, runId);
+    // 正在看的会话不算未读——用户就在现场看着它跑完。
+    if (terminal && sessionId && sessionId !== state.viewSessionId) {
+      if (!state.unreadSessions.has(sessionId)) {
+        state.unreadSessions.add(sessionId);
+        renderSessionList();
+      }
+    }
 
     let live = state.liveRuns.get(runId);
     if (!live && !terminal && !state.terminalRunIds.has(runId) && sessionId && sessionId === state.viewSessionId) {
       // 视图会话里出现的新 run（本端发起、他端发起或重放）都会挂上 live 块。
       // run.started 意味着全新的 turn，不去认领时间线里已有的 running turn。
       live = createLiveForRun(runId, "", {
+        sessionId,
         claimTurn: name !== "run.started",
         operation: String(data?.operation || "create"),
         turnId: String(data?.turn_id || "") || null,
@@ -7905,13 +8720,15 @@
       return;
     }
     if (terminal) {
+      // 一轮跑完，目标的轮次/阶段可能都变了（模型自己报了完成或受阻）。
+      if (sessionId && sessionId === state.viewSessionId) loadGoal(sessionId);
       untrackRun(runId);
       if (live) {
         finishLiveRun(name.slice("run.".length), data, live);
       } else {
         state.terminalRunIds.add(runId);
         if (state.terminalRunIds.size > 30) state.terminalRunIds.delete(state.terminalRunIds.values().next().value);
-        if (name === "run.completed" && data?.session_id && String(data.session_id) === String(state.currentSessionId || "")) {
+        if (name === "run.completed" && data?.session_id && String(data.session_id) === String(state.viewSessionId || state.currentSessionId || "")) {
           if (data?.context_tokens != null) state.context.tokens = Math.max(0, asFiniteNumber(data.context_tokens));
           state.context.window = data?.context_window == null ? state.context.window : Math.max(0, asFiniteNumber(data.context_window));
           updateContext();
@@ -8030,7 +8847,7 @@
       }
       return;
     }
-    if (name === "conversation.reset" || name === "conversation.pop") {
+    if (name === "conversation.reset" || name === "conversation.pop" || name === "conversation.compacted") {
       const sessionId = typeof data?.session_id === "string" ? data.session_id : "";
       if (sessionId && sessionId !== state.viewSessionId) {
         refreshSessions();
@@ -8130,6 +8947,27 @@
     if (unauthorized) window.requestAnimationFrame(() => elements.loginPassword.focus());
   }
 
+  const VIEW_SESSION_KEY = "miyu.web.viewSession";
+
+  /// 页面加载后该打开哪个会话。
+  ///
+  /// 不能直接用 daemon 的 `current_session`：那个指针归终端车道所有（shellhook
+  /// 与 CLI 用它），而终端集成会话在 WebUI 的侧栏里是隐藏的——刷新一下就掉进
+  /// 一个列表里根本看不到的会话，看着像「我的对话没了」。
+  ///
+  /// 顺序：上次浏览的 → 当前指针（如果它在列表里可见）→ 列表第一个。
+  function preferredBootSession() {
+    const remembered = safeStorageGet(VIEW_SESSION_KEY);
+    if (remembered && findSession(remembered) && !isTerminalSession(remembered)) return remembered;
+    if (state.currentSessionId
+      && findSession(state.currentSessionId)
+      && !isTerminalSession(state.currentSessionId)) {
+      return state.currentSessionId;
+    }
+    const visible = state.sessions.find((session) => !isTerminalSession(session?.session_id));
+    return visible ? String(visible.session_id) : "";
+  }
+
   function applyBootstrap(snapshot) {
     state.blocked = false;
     clearViewSyncTimer();
@@ -8164,13 +9002,15 @@
     updateContext();
     state.replayRunIds = null;
     state.replayCutoff = 0;
+    const boot = preferredBootSession();
+    if (boot && boot !== state.viewSessionId) state.viewSessionId = boot;
     const keepView = state.viewSessionId && state.viewSessionId !== state.currentSessionId && findSession(state.viewSessionId);
     if (keepView) {
       // 视图停留在非默认会话：全局重载不改变浏览位置，改用会话接口回填。
       state.lastEventId = state.latestEventId;
       connectEventSource(state.latestEventId);
       loadSessionView(state.viewSessionId, { quiet: true });
-    } else if (state.currentSessionId) {
+    } else if (state.currentSessionId && !isTerminalSession(state.currentSessionId)) {
       applySessionView({
         session_id: state.currentSessionId,
         turns: snapshot?.turns,
@@ -8184,18 +9024,21 @@
         connectEventSource(state.latestEventId);
       }
     } else {
-      // 单会话兜底：没有会话指针时直接使用 bootstrap 快照。
+      // 单会话兜底：没有会话指针时直接使用 bootstrap 快照。指针指着隐藏的
+      // 终端车道时快照里的 turns 属于那条车道，画出来就是把隐藏会话泄漏给
+      // WebUI——那种情况按空状态处理。
+      const hiddenLane = isTerminalSession(state.currentSessionId);
       state.viewSessionId = null;
       state.sessionModelOverride = null;
       state.sessionModelOverrideFor = "";
       updateCurrentModelDisplay();
-      state.viewRunningTurnId = typeof snapshot?.running_turn_id === "string" && snapshot.running_turn_id ? snapshot.running_turn_id : null;
-      state.turns = Array.isArray(snapshot?.turns) ? snapshot.turns.sort((a, b) => asFiniteNumber(a?.seq) - asFiniteNumber(b?.seq)) : [];
-      state.queuedPrompts = Array.isArray(snapshot?.queued_prompts) ? snapshot.queued_prompts : [];
-      state.redoCandidate = snapshot?.redo_candidate && typeof snapshot.redo_candidate === "object"
+      state.viewRunningTurnId = !hiddenLane && typeof snapshot?.running_turn_id === "string" && snapshot.running_turn_id ? snapshot.running_turn_id : null;
+      state.turns = !hiddenLane && Array.isArray(snapshot?.turns) ? snapshot.turns.sort((a, b) => asFiniteNumber(a?.seq) - asFiniteNumber(b?.seq)) : [];
+      state.queuedPrompts = !hiddenLane && Array.isArray(snapshot?.queued_prompts) ? snapshot.queued_prompts : [];
+      state.redoCandidate = !hiddenLane && snapshot?.redo_candidate && typeof snapshot.redo_candidate === "object"
         ? snapshot.redo_candidate
         : null;
-      renderConversation();
+      renderConversation({ forceScroll: true });
       renderQueueTray();
       state.lastEventId = state.latestEventId;
       connectEventSource(state.latestEventId);
@@ -8278,6 +9121,28 @@
     }
   }
 
+  /// 把面板里改过的思考档位一次写回。档位是**全局按模型**存的偏好,和会话
+  /// 的模型选择不是一个作用域,所以是两次请求;这里先写档位——它失败了就整个
+  /// 确认中止,不会出现「模型换了但档位没跟上」的半套状态。
+  async function commitStagedVariants() {
+    if (!(state.stagedVariants instanceof Map)) return;
+    const updates = [];
+    for (const model of state.thinkingVariantModels) {
+      const key = modelKey(model);
+      if (!state.stagedVariants.has(key)) continue;
+      const desired = state.stagedVariants.get(key);
+      if (desired === (model.selected ?? null)) continue;
+      updates.push({ provider_id: model.provider_id, model: model.model, selected: desired });
+    }
+    if (!updates.length) return;
+    const response = await apiRequest("/api/models/thinking-variants", {
+      method: "PUT",
+      body: JSON.stringify({ updates })
+    });
+    const payload = await response.json();
+    state.thinkingVariantModels = normalizeThinkingVariantModels(payload?.options);
+  }
+
   async function confirmModelSelection() {
     if (!(state.stagedModelKeys instanceof Set) || state.modelSelectionSubmitting) return;
     const sessionId = String(state.viewSessionId || state.currentSessionId || "");
@@ -8299,6 +9164,7 @@
     updateModelMenuState();
     let applied = false;
     try {
+      await commitStagedVariants();
       const response = await apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}/models`, {
         method: "PUT",
         body: JSON.stringify({
@@ -8336,6 +9202,61 @@
     const queueing = conversationRunning();
     const updateTarget = queueing ? activeTurnUpdateTarget(sessionId) : null;
     const content = elements.composerInput.value.trim();
+    // 命中命令表就当命令执行，不当消息发。不命中的 `/xxx` 照常发给模型
+    // ——与 REPL 同一语义（slash_commands::parse_repl_input）。
+    if (window.MiyuCommands?.match(content)) {
+      window.MiyuCommands.hide();
+      // 同一条命令不能重入。命令往往要等服务端干完活（/reset 要清库、/compact
+      // 要重算上下文），这期间用户看不出回车生效没有，很自然会再敲一次。
+      if (state.commandRunning) return;
+      state.commandRunning = true;
+      // **先**清输入框，再去跑。原来是跑完才清，命令跑多久输入框就挂着原文
+      // 多久——看着就像回车没反应，于是连按几次、连触发几次。
+      elements.composerInput.value = "";
+      resizeComposer();
+      updateControlState();
+      let handled = false;
+      try {
+        handled = await window.MiyuCommands.tryRun(content, {
+          apiRequest,
+          sessionId: state.viewSessionId,
+          mode: viewSessionEntry()?.mode === "dev" ? "dev" : "normal",
+          redraw: renderConversation,
+          // 目标状态行不在对话流里，重绘对话动不到它。
+          reloadGoal: () => loadGoal(state.viewSessionId),
+          toast: (text) => showToast(text),
+          // /stop：停掉当前视图里正在跑的回复；返回空串表示没有在跑的。
+          stopRun: async () => {
+            const live = [...state.liveRuns.values()].find((entry) => entry && !entry.ended);
+            if (!live) return "";
+            await cancelLiveRun(live);
+            return live.cancellationRequested ? "已请求停止当前回复" : "";
+          },
+          // 命令改了服务端状态（/reset 清空历史）时用它重拉，光重绘不够。
+          reload: async () => {
+            if (state.viewSessionId && state.viewSessionId !== state.currentSessionId) {
+              await loadSessionView(state.viewSessionId, { quiet: true });
+            } else {
+              await loadBootstrap();
+            }
+          },
+          // 敲命令那一刻排在最后的回合（含还在流式输出的）。回执插在它之后，
+          // 之后来的新回合就不会把回执顶下去。
+          anchorTurnId: commandAnchorTurnId(),
+          // /pop、/compact 这类要重排上下文的命令不能插在运行中的回合上。
+          isRunning: () => [...state.liveRuns.values()].some((entry) => entry && !entry.ended),
+          // /pop 无参数时的轮次多选器。
+          openPopPicker: () => openPopPicker(),
+        });
+      } finally {
+        state.commandRunning = false;
+        updateControlState();
+      }
+      if (handled) return;
+      // 命令表里有、却没被处理：把原文还给用户，别让它凭空消失。
+      elements.composerInput.value = content;
+      resizeComposer();
+    }
     const readyAttachments = state.composerAttachments.filter((item) => item.status === "ready");
     const attachmentIds = readyAttachments.map((item) => item.id);
     const sentAttachments = readyAttachments.map((item) => ({
@@ -8427,10 +9348,15 @@
       }
     } catch (error) {
       if (!queueing) state.pendingSubmission = null;
-      showInlineError(error.status === 409
-        ? "回复状态刚刚发生变化，正在同步"
-        : error.message);
-      showToast(error.status === 409 ? "回复状态已同步，请重新发送" : error.message, "error");
+      // 409 = 后端认为这个会话已经在跑，而前端以为没有。原文案（「正在同步」
+      // ＋「请重新发送」）把机器的调度问题说成用户该重来一遍，而且说了两遍。
+      // 现在只留一条，说清楚发生了什么。
+      if (error.status === 409) {
+        showToast("这条没发出去：会话刚开始新的一轮，再发一次", "error");
+      } else {
+        showInlineError(error.message);
+        showToast(error.message, "error");
+      }
       if (error.status === 409) {
         if (sessionId) await loadSessionView(sessionId, { quiet: true });
         else await loadBootstrap();
@@ -8527,15 +9453,6 @@
     return session?.mode === "dev" ? "dev" : "normal";
   }
 
-  function updateModeBadge() {
-    if (!elements.modeBadge) return;
-    const mode = activeSessionMode();
-    elements.modeBadge.dataset.mode = mode;
-    const label = elements.modeBadge.querySelector(".mode-label");
-    if (label) label.textContent = mode === "dev" ? "开发" : "普通";
-    elements.modeBadge.title = mode === "dev" ? "开发模式会话（创建时定死）" : "普通模式会话（创建时定死）";
-  }
-
   function requestNewConversation() {
     if (multiSessionEnabled()) {
       openModeChooser();
@@ -8588,23 +9505,35 @@
     }
   }
 
+  /// 光标是不是已经在某个能打字的地方。
+  ///
+  /// `contenteditable` 也算——artifact 的源码视图和将来的富文本都是它,漏判
+  /// 会让 `/` 快捷键在用户正打字时抢走焦点。
+  function typingSomewhere() {
+    const node = document.activeElement;
+    if (!node) return false;
+    if (node.isContentEditable) return true;
+    const tag = node.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+  }
+
   function handleGlobalKeydown(event) {
-    if (elements.settingsDrawer.classList.contains("open") && event.key === "Tab") {
-      const focusable = getFocusable(elements.settingsDrawer);
-      if (!focusable.length) {
-        event.preventDefault();
-        elements.settingsDrawer.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
+    // `/` 直接跳到输入框(YouTube 那套)。只聚焦,不把斜杠本身送进去——
+    // 快捷键是「跳过去」,不是「替我打一个字」;真要发命令,落到输入框之后
+    // 再敲一次 `/` 就行,那一下会正常触发命令菜单。
+    if (event.key === "/"
+      && !event.ctrlKey && !event.metaKey && !event.altKey
+      && !typingSomewhere()
+      && !state.blocked
+      && !consoleIsOpen()
+      && !window.MiyuLightbox?.isOpen()
+      && !elements.resetDialog.open
+      && !elements.composerInput.disabled) {
+      event.preventDefault();
+      elements.composerInput.focus();
+      const at = elements.composerInput.value.length;
+      elements.composerInput.setSelectionRange(at, at);
+      return;
     }
     if (event.key === "Escape") {
       if (elements.resetDialog.open) return;
@@ -8619,17 +9548,12 @@
         closeSessionMenu();
         return;
       }
-      if (!elements.thinkingVariantPopover.hidden) {
-        event.preventDefault();
-        closeThinkingVariantPopover({ restoreFocus: true });
-        return;
-      }
       if (!elements.modelMenu.hidden) {
         event.preventDefault();
         closeModelMenu({ restoreFocus: true });
         return;
       }
-      if (elements.settingsDrawer.classList.contains("open")) {
+      if (settingsIsOpen()) {
         event.preventDefault();
         closeSettings();
         return;
@@ -8815,12 +9739,10 @@
     return rate.toFixed(2);
   }
 
-  function consoleOpen() {
+  function consoleOpen(panel = "usage") {
     elements.consoleView.hidden = false;
     elements.consoleView.setAttribute("aria-hidden", "false");
-    updateChartColors();
-    loadUsageStats();
-    loadUsageRecords();
+    setConsolePanel(panel);
   }
   function consoleClose() {
     elements.consoleView.hidden = true;
@@ -8829,6 +9751,26 @@
   }
   function consoleIsOpen() {
     return !elements.consoleView.hidden;
+  }
+
+  /// 切控制台标签页。数据统计的图表要等真正显示了才量得到尺寸,配置也是进了
+  /// 设置页才拉——都放在这里,免得开个控制台把两边的请求都打出去。
+  function setConsolePanel(panel) {
+    state.consolePanel = panel;
+    for (const item of elements.consoleView.querySelectorAll(".con-rail-item[data-console-panel]")) {
+      item.classList.toggle("active", item.dataset.consolePanel === panel);
+    }
+    for (const pane of elements.consoleView.querySelectorAll(".con-panel[data-console-panel]")) {
+      pane.hidden = pane.dataset.consolePanel !== panel;
+    }
+    if (panel === "usage") {
+      updateChartColors();
+      loadUsageStats();
+      loadUsageRecords();
+    } else {
+      usageTipHide();
+    }
+    if (panel === "settings" && !state.configLoaded && !state.configLoading) loadConfigDraft();
   }
 
   async function loadUsageStats() {
@@ -9301,6 +10243,9 @@
     elements.consoleBack.addEventListener("click", () => consoleClose());
     elements.conRailToggle.addEventListener("click", () =>
       elements.consoleView.classList.toggle("rail-collapsed"));
+    for (const item of elements.consoleView.querySelectorAll(".con-rail-item[data-console-panel]")) {
+      item.addEventListener("click", () => setConsolePanel(item.dataset.consolePanel));
+    }
     elements.usageRangeSeg.addEventListener("click", (event) => {
       const button = event.target.closest("button");
       if (!button) return;
@@ -9334,7 +10279,7 @@
     elements.sidebarScrim.addEventListener("click", closeSidebar);
     elements.sidebarCollapseButton?.addEventListener("click", () => setSidebarCollapsed(true));
     elements.sidebarExpandButton?.addEventListener("click", () => setSidebarCollapsed(false));
-    elements.topbarSettingsButton.addEventListener("click", (event) => openSettings(event.currentTarget));
+    elements.sidebarSettingsButton.addEventListener("click", (event) => openSettings(event.currentTarget));
     elements.artifactToggleButton.addEventListener("click", () => setArtifactWorkspaceOpen(!state.artifactOpen));
     elements.artifactCloseButton.addEventListener("click", () => setArtifactWorkspaceOpen(false));
     elements.artifactPreviewButton.addEventListener("click", () => setArtifactMode("preview"));
@@ -9384,8 +10329,6 @@
       elements.artifactResizeHandle.addEventListener("pointerup", finish);
       elements.artifactResizeHandle.addEventListener("pointercancel", finish);
     });
-    elements.settingsClose.addEventListener("click", () => closeSettings());
-    elements.drawerScrim.addEventListener("click", () => closeSettings());
     elements.settingsNav.querySelectorAll("[data-settings-view]").forEach((button) => {
       button.addEventListener("click", () => setSettingsView(button.dataset.settingsView));
     });
@@ -9412,18 +10355,12 @@
     elements.reloadConfigButton.addEventListener("click", loadConfigDraft);
     elements.saveConfigButton.addEventListener("click", saveConfigDraft);
     elements.applyAdvancedConfigButton.addEventListener("click", applyAdvancedConfig);
-    elements.themeButton.addEventListener("click", () => setTheme(elements.body.dataset.theme === "graphite" ? "linen" : "graphite"));
     elements.sidebarThemeButton.addEventListener("click", () => setTheme(elements.body.dataset.theme === "graphite" ? "linen" : "graphite"));
     document.querySelectorAll("[data-theme-choice]").forEach((button) => button.addEventListener("click", () => setTheme(button.dataset.themeChoice)));
     document.querySelectorAll("[data-scheme-choice]").forEach((button) => button.addEventListener("click", () => setColorScheme(button.dataset.schemeChoice)));
     document.querySelectorAll("[data-chat-font]").forEach((button) => button.addEventListener("click", () => setChatFontSize(button.dataset.chatFont)));
     elements.reasoningExpandToggle?.addEventListener("click", () => setReasoningExpanded(!state.reasoningExpanded));
     elements.toolExpandToggle?.addEventListener("click", () => setToolExpanded(!state.toolExpanded));
-    elements.thinkingVariantButton.addEventListener("click", () => {
-      if (elements.thinkingVariantPopover.hidden) openThinkingVariantPopover();
-      else closeThinkingVariantPopover({ restoreFocus: true });
-    });
-    elements.thinkingVariantPopover.addEventListener("keydown", handleThinkingVariantKeydown);
     elements.modelButton.addEventListener("click", (event) => {
       event.stopPropagation();
       if (elements.modelMenu.hidden) openModelMenu();
@@ -9445,14 +10382,17 @@
       }
     });
     document.addEventListener("pointerdown", (event) => {
-      if (!elements.thinkingVariantPopover.hidden
-        && !event.target.closest("#thinkingVariantPopover")
-        && !event.target.closest("#thinkingVariantButton")) {
-        closeThinkingVariantPopover();
-      }
     });
     document.addEventListener("click", (event) => {
-      if (!elements.modelMenu.hidden && !event.target.closest("#modelMenuWrap")) closeModelMenu();
+      if (!elements.modelLevelMenu.hidden && !event.target.closest("#modelLevelMenu")) {
+        closeLevelMenu();
+      }
+      if (!elements.modelMenu.hidden
+        && !event.target.closest("#modelMenuWrap")
+        && !event.target.closest("#modelMenu")
+        && !event.target.closest("#modelLevelMenu")) {
+        closeModelMenu();
+      }
       if (state.sessionMenuFor && !event.target.closest(".session-menu") && !event.target.closest(".session-menu-button")) closeSessionMenu();
       if (!elements.artifactResourceMenu.hidden && !event.target.closest(".artifact-resource-wrap")) closeArtifactResourceMenu();
     });
@@ -9465,6 +10405,15 @@
       });
     });
     elements.composerInput.addEventListener("input", resizeComposer);
+    // 斜杠命令的补全菜单（逻辑在 commands.js，这里只喂输入、收回填）
+    elements.composerInput.addEventListener("input", () => {
+      window.MiyuCommands?.onInput(elements.composerInput.value, elements.composerDock, (name) => {
+        elements.composerInput.value = name;
+        elements.composerInput.focus();
+        resizeComposer();
+      });
+    });
+    elements.composerInput.addEventListener("blur", () => window.MiyuCommands?.hide());
     elements.attachButton.addEventListener("click", () => elements.attachmentInput.click());
     elements.attachmentInput.addEventListener("change", () => {
       addComposerFiles(elements.attachmentInput.files);
@@ -9508,6 +10457,12 @@
       state.composing = false;
     });
     elements.composerInput.addEventListener("keydown", (event) => {
+      // 菜单开着时它先吃掉上下键与 Tab/Enter：补全后再按一次回车才执行，
+      // 与 REPL 一致，用户有机会反悔。
+      if (window.MiyuCommands?.handleKey(event)) {
+        event.preventDefault();
+        return;
+      }
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !state.composing && event.keyCode !== 229) {
         event.preventDefault();
         if (!elements.sendButton.disabled) elements.composerForm.requestSubmit();
@@ -9544,13 +10499,11 @@
     window.addEventListener("resize", () => {
       updateJumpButtonOffset();
       syncArtifactLayout();
-      positionThinkingVariantPopover();
+      positionModelMenu();
     }, { passive: true });
     new ResizeObserver(syncArtifactLayout).observe(elements.mainStage);
     if (window.visualViewport) {
       window.visualViewport.addEventListener("resize", syncAppHeight, { passive: true });
-      window.visualViewport.addEventListener("resize", positionThinkingVariantPopover, { passive: true });
-      window.visualViewport.addEventListener("scroll", positionThinkingVariantPopover, { passive: true });
       syncAppHeight();
     }
     document.addEventListener("keydown", handleGlobalKeydown);
@@ -9582,6 +10535,17 @@
     bindEvents();
     resizeComposer();
     updateSettingsControls();
+    // 命令目录从服务端拉，前端不维护第二份清单。拉失败就当没有命令，
+    // 所有 / 开头的输入照常发给模型。
+    window.MiyuCommands?.load(apiRequest);
+    // 灯箱自己不会画图标（图标集在这边），把工厂函数递过去。
+    window.MiyuLightbox?.init({ makeIconSlot });
+    startBrailleTicker();
+    // G2:页面不可见时给 body 挂 miyu-paused,CSS 据此暂停全部装饰动画。
+    // 实测(Xvfb+Chrome)不挂这个时隐藏窗口的合成负载与可见时完全一样。
+    const syncPaused = () => document.body.classList.toggle("miyu-paused", document.hidden);
+    document.addEventListener("visibilitychange", syncPaused);
+    syncPaused();
     loadBootstrap();
   }
 

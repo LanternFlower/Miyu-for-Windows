@@ -1,26 +1,35 @@
 {
   "name": "recall_memories",
   "display_name": "召回记忆",
-  "description": "搜索长期知识点、近期日记和长期日记。",
+  "description": "Search remembered knowledge points and past events; scope=episode searches only diary-style past events.\nTruncated entries in associative memory carry an id; use recall_memories id=<id> to fetch the full text. Use include_forgotten to include forgotten memories when needed. Read-only; does not change memory state.",
   "parameters": {
     "type": "object",
     "properties": {
       "query": {
         "type": "string",
-        "description": "搜索关键词或问题。"
+        "description": "Search keywords or a question. May be omitted only when fetching directly by id."
+      },
+      "id": {
+        "type": "integer",
+        "description": "Fetch the full text of a single memory directly by id."
+      },
+      "scope": {
+        "type": "string",
+        "enum": [
+          "all",
+          "episode"
+        ],
+        "description": "all searches knowledge points and events (default); episode searches only past events."
       },
       "max_results": {
         "type": "integer",
-        "description": "可选结果数量限制。"
+        "description": "Optional limit on the number of results."
       },
       "include_forgotten": {
         "type": "boolean",
-        "description": "是否包含已遗忘记忆。"
+        "description": "Whether to include forgotten memories."
       }
-    },
-    "required": [
-      "query"
-    ]
+    }
   },
   "permission": "readonly",
   "always_loaded": false,

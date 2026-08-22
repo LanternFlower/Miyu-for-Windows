@@ -11,6 +11,13 @@ use std::process::{Command, Stdio};
 
 const SHORIN_WIKI_REMOTE: &str = "https://github.com/SHORiN-KiWATA/Shorin-ArchLinux-Guide.git";
 const UPDATE_CHECK_INTERVAL_SECS: i64 = 24 * 60 * 60;
+/// `git ls-remote` 的预算。正常连 GitHub 约 0.4 秒，5 秒是 12 倍余量。
+///
+/// 有上限这件事本身比数值重要：这条检查在 REPL 启动路径上同步跑，网络黑洞
+/// （公司防火墙 DROP、VPN 掉包、强制门户）时 git 自己要 **135 秒**才放弃，
+/// 用户看到的就是 `miyu` 启动卡死两分钟。超时了就跳过这轮检查——它只是
+/// 「知识库有更新」的提示，不值得挡在提示符前面。
+const REMOTE_HEAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const SPARSE_CHECKOUT_PATTERN: &str = "*.md";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -119,13 +126,13 @@ pub fn notice_if_update_available(paths: &MiyuPaths) -> Result<Option<String>> {
     Ok(Some(message))
 }
 
-pub fn check_update_if_due(paths: &MiyuPaths) -> Result<()> {
+pub async fn check_update_if_due(paths: &MiyuPaths) -> Result<()> {
     let mut state = load_state(paths)?;
     if !should_check(&state) {
         return Ok(());
     }
     state.last_checked_at = Utc::now().to_rfc3339();
-    if let Ok(remote) = remote_head() {
+    if let Ok(remote) = remote_head().await {
         state.remote_commit = remote.clone();
         state.update_available =
             !state.shorin_wiki_commit.is_empty() && state.shorin_wiki_commit != remote;
@@ -377,12 +384,25 @@ fn should_check(state: &DefaultKbState) -> bool {
     Utc::now().timestamp() - last.timestamp() >= UPDATE_CHECK_INTERVAL_SECS
 }
 
-fn remote_head() -> Result<String> {
+async fn remote_head() -> Result<String> {
+    remote_head_bounded(SHORIN_WIKI_REMOTE, REMOTE_HEAD_TIMEOUT).await
+}
+
+async fn remote_head_bounded(remote: &str, budget: std::time::Duration) -> Result<String> {
     let git = git_command()?;
-    let output = Command::new(git)
-        .args(["ls-remote", SHORIN_WIKI_REMOTE, "HEAD"])
-        .stderr(Stdio::null())
-        .output()?;
+    // 走 tokio 的 Command 是为了拿 `kill_on_drop`：超时后 future 被丢弃，子进程
+    // 跟着被杀，而不是留一个还在等 TCP 的 git 挂在后台。仓库里其它带超时的外部
+    // 命令（diagnostics、package_advisor、rg）都是这个写法。
+    let output = tokio::time::timeout(
+        budget,
+        tokio::process::Command::new(git)
+            .args(["ls-remote", remote, "HEAD"])
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("git ls-remote timed out"))??;
     if !output.status.success() {
         bail!("git ls-remote failed");
     }
@@ -614,5 +634,30 @@ mod tests {
         assert_eq!(std::fs::read_to_string(repo.join("new")).unwrap(), "new");
         assert!(!repo.join("old").exists());
         assert!(!repo.with_extension("backup").exists());
+    }
+}
+
+#[cfg(test)]
+mod remote_head_tests {
+    use super::*;
+
+    /// 10.255.255.1 是 RFC1918 里一个不会有人应答的地址，`git ls-remote` 打过去
+    /// 会一直等 TCP——实测 git 自己要 **135 秒**才放弃。这条检查在 REPL 启动路径
+    /// 上，所以必须有上限。
+    ///
+    /// 用 200 ms 预算测，跑得比一次 `cargo test` 的启动还快。断言只看「有没有
+    /// 被上限兜住」，不看具体返回什么：没网的环境里 connect 会立刻
+    /// EHOSTUNREACH，照样是「很快返回」，测试不会假红。
+    #[tokio::test]
+    async fn remote_head_gives_up_instead_of_hanging() {
+        let budget = std::time::Duration::from_millis(200);
+        let started = std::time::Instant::now();
+        let result = remote_head_bounded("https://10.255.255.1/nope.git", budget).await;
+        let waited = started.elapsed();
+        assert!(result.is_err(), "黑洞地址不该返回成功");
+        assert!(
+            waited < std::time::Duration::from_secs(3),
+            "等了 {waited:?}，超时没兜住"
+        );
     }
 }

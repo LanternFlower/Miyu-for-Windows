@@ -83,9 +83,45 @@ impl QuestionExchange {
     }
 }
 
+/// 把被写成「JSON 字符串」的数组还原成数组。
+///
+/// 模型经常把结构化参数序列化一次再传。别的工具由
+/// `tools::registry::coerce_declared_shapes` 在注册表分发处统一还原，但
+/// `ask_question` 要拿到交互通道，是**唯一一个完全绕过注册表**的工具（见
+/// `agent::turn_loop` 里按名字的特判），那条修复到不了这里。
+///
+/// 保守处理：只有当值确实是以 `[` 开头、且能解析成数组的字符串时才换。
+fn restore_array_in_place(object: &mut serde_json::Map<String, serde_json::Value>, key: &str) {
+    let Some(serde_json::Value::String(text)) = object.get(key) else {
+        return;
+    };
+    let text = text.trim();
+    if !text.starts_with('[') {
+        return;
+    }
+    if let Some(array) = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .filter(serde_json::Value::is_array)
+    {
+        object.insert(key.to_string(), array);
+    }
+}
+
 impl QuestionRequest {
     pub fn parse(arguments: &str) -> Result<Self> {
-        let request: Self = serde_json::from_str(arguments)?;
+        let mut value: serde_json::Value = serde_json::from_str(arguments)?;
+        if let Some(object) = value.as_object_mut() {
+            restore_array_in_place(object, "questions");
+            // 嵌套一层的 options 同样会被序列化成字符串
+            if let Some(questions) = object.get_mut("questions").and_then(|q| q.as_array_mut()) {
+                for question in questions {
+                    if let Some(question) = question.as_object_mut() {
+                        restore_array_in_place(question, "options");
+                    }
+                }
+            }
+        }
+        let request: Self = serde_json::from_value(value)?;
         request.validate()?;
         Ok(request)
     }
@@ -221,7 +257,7 @@ pub fn closed_tool_output() -> String {
 }
 
 pub fn assistant_exchange_text(exchange: &QuestionExchange) -> String {
-    let mut output = String::from("补充确认：");
+    let mut output = String::from("Clarification questions:");
     for (index, question) in exchange.questions.iter().enumerate() {
         output.push_str(&format!(
             "\n{}. [{}] {}",
@@ -236,16 +272,16 @@ pub fn assistant_exchange_text(exchange: &QuestionExchange) -> String {
             }
         }
         if question.custom {
-            output.push_str("\n   - 可输入自定义答案");
+            output.push_str("\n   - custom answer allowed");
         }
     }
     output
 }
 
 pub fn user_exchange_text(exchange: &QuestionExchange) -> String {
-    let mut output = String::from("补充回答：");
+    let mut output = String::from("Clarification answers:");
     for (question, answers) in exchange.questions.iter().zip(&exchange.answers) {
-        output.push_str(&format!("\n- {}：{}", question.header, answers.join("、")));
+        output.push_str(&format!("\n- {}: {}", question.header, answers.join(", ")));
     }
     output
 }
@@ -333,7 +369,7 @@ mod tests {
         let exchange = QuestionExchange::new(request(), vec![vec!["全部".to_string()]]).unwrap();
         let text = assistant_exchange_text(&exchange);
         assert!(text.contains("全部: 修改全部相关文件"));
-        assert!(text.contains("可输入自定义答案"));
+        assert!(text.contains("custom answer allowed"));
     }
 
     #[test]
@@ -343,5 +379,45 @@ mod tests {
         assert!(output["instruction"]
             .as_str()
             .is_some_and(|instruction| instruction.contains("without providing answers")));
+    }
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::*;
+
+    /// 模型经常把结构化参数序列化成字符串再传（见
+    /// `tools::registry::coerce_declared_shapes` 的文档注释）。`ask_question`
+    /// 不走注册表分发，所以这条路上必须自己还原。
+    #[test]
+    fn questions_serialized_as_a_json_string_are_restored() {
+        let arguments = r#"{"questions":"[{\"header\":\"选项\",\"question\":\"选哪个？\",\"options\":[{\"label\":\"A\",\"description\":\"甲\"}]}]"}"#;
+        let request = QuestionRequest::parse(arguments).expect("字符串形态的 questions 应能解析");
+        assert_eq!(request.questions.len(), 1);
+        assert_eq!(request.questions[0].header, "选项");
+    }
+
+    /// 嵌套一层的 options 也会被序列化成字符串。
+    #[test]
+    fn nested_options_serialized_as_a_json_string_are_restored() {
+        let arguments = r#"{"questions":[{"header":"选项","question":"选哪个？","options":"[{\"label\":\"A\",\"description\":\"甲\"}]"}]}"#;
+        let request = QuestionRequest::parse(arguments).expect("字符串形态的 options 应能解析");
+        assert_eq!(request.questions[0].options.len(), 1);
+        assert_eq!(request.questions[0].options[0].label, "A");
+    }
+
+    /// 该报错的还是要报错：不能因为兼容就把乱七八糟的输入也吞下去。
+    #[test]
+    fn a_string_that_is_not_an_array_still_fails() {
+        let arguments = r#"{"questions":"随便写的一句话"}"#;
+        assert!(QuestionRequest::parse(arguments).is_err());
+    }
+
+    /// 正常形态不能因为兼容而走样。
+    #[test]
+    fn questions_as_a_real_array_still_parse() {
+        let arguments = r#"{"questions":[{"header":"选项","question":"选哪个？","options":[{"label":"A","description":"甲"}]}]}"#;
+        let request = QuestionRequest::parse(arguments).expect("数组形态的 questions 应能解析");
+        assert_eq!(request.questions.len(), 1);
     }
 }

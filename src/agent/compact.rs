@@ -340,7 +340,13 @@ impl Compactor {
         } else {
             let first_attempt = tokio::time::timeout(
                 SUMMARY_TIMEOUT,
-                self.summarize_fold(fold, prev_text.as_deref(), &mut compact_usage, &mut usage_estimated, on_chunk),
+                self.summarize_fold(
+                    fold,
+                    prev_text.as_deref(),
+                    &mut compact_usage,
+                    &mut usage_estimated,
+                    on_chunk,
+                ),
             )
             .await;
             match first_attempt {
@@ -348,7 +354,13 @@ impl Compactor {
                 Ok(Err(first_error)) => {
                     match tokio::time::timeout(
                         SUMMARY_TIMEOUT,
-                        self.summarize_fold(fold, prev_text.as_deref(), &mut compact_usage, &mut usage_estimated, on_chunk),
+                        self.summarize_fold(
+                            fold,
+                            prev_text.as_deref(),
+                            &mut compact_usage,
+                            &mut usage_estimated,
+                            on_chunk,
+                        ),
                     )
                     .await
                     {
@@ -516,8 +528,12 @@ fn add_usage(total: &mut Usage, usage: &Usage) {
     // 缓存字段曾被丢弃:fork 式折叠明明大量命中,summary 轮与用量史却
     // 记 0,Σ 命中率随折叠次数被系统性低估(deepseek 报告 P1 实证)。
     if let Some(hit) = usage.prompt_cache_hit_tokens {
-        total.prompt_cache_hit_tokens =
-            Some(total.prompt_cache_hit_tokens.unwrap_or(0).saturating_add(hit));
+        total.prompt_cache_hit_tokens = Some(
+            total
+                .prompt_cache_hit_tokens
+                .unwrap_or(0)
+                .saturating_add(hit),
+        );
     }
     if let Some(miss) = usage.prompt_cache_miss_tokens {
         total.prompt_cache_miss_tokens = Some(
@@ -730,7 +746,7 @@ fn turn_to_text(turn: &Turn) -> String {
     }
     // v20+ 工具密集回合的主体在 tool_flow 里(reports 多为空):漏计它,
     // 压缩预算会把"40 轮"当成保尾额度塞进 16K,压后必然仍超。
-    for round in &turn.tool_flow {
+    for round in turn.tool_flow.iter().filter(|round| !round.remote) {
         output.push_str(&round.assistant_content);
         if let Some(reasoning) = &round.assistant_reasoning {
             output.push_str(reasoning);
@@ -775,8 +791,14 @@ where
         let combined_tokens = estimate_tokens(&combined);
 
         if combined_tokens <= usable_tokens {
-            let result =
-                compact_single_pass_text(client, system_prompt, &combined, previous_summary, on_chunk).await?;
+            let result = compact_single_pass_text(
+                client,
+                system_prompt,
+                &combined,
+                previous_summary,
+                on_chunk,
+            )
+            .await?;
             add_usage(&mut total_usage, &result.usage);
             usage_estimated |= result.usage_estimated;
             return Ok(CompactTextResult {
@@ -795,7 +817,10 @@ where
             if batch_tokens + s_tokens > usable_tokens && !batch.is_empty() {
                 let batch_text = batch.join("\n\n---\n\n");
                 let merged =
-                    compact_single_pass_text(client, system_prompt, &batch_text, None, &mut |_| Ok(())).await?;
+                    compact_single_pass_text(client, system_prompt, &batch_text, None, &mut |_| {
+                        Ok(())
+                    })
+                    .await?;
                 add_usage(&mut total_usage, &merged.usage);
                 usage_estimated |= merged.usage_estimated;
                 next.push(merged.text);
@@ -808,7 +833,8 @@ where
         if !batch.is_empty() {
             let batch_text = batch.join("\n\n---\n\n");
             let merged =
-                compact_single_pass_text(client, system_prompt, &batch_text, None, &mut |_| Ok(())).await?;
+                compact_single_pass_text(client, system_prompt, &batch_text, None, &mut |_| Ok(()))
+                    .await?;
             add_usage(&mut total_usage, &merged.usage);
             usage_estimated |= merged.usage_estimated;
             next.push(merged.text);
@@ -816,8 +842,14 @@ where
 
         if next.len() >= current.len() {
             let combined = current.join("\n\n---\n\n");
-            let result =
-                compact_single_pass_text(client, system_prompt, &combined, previous_summary, on_chunk).await?;
+            let result = compact_single_pass_text(
+                client,
+                system_prompt,
+                &combined,
+                previous_summary,
+                on_chunk,
+            )
+            .await?;
             add_usage(&mut total_usage, &result.usage);
             usage_estimated |= result.usage_estimated;
             return Ok(CompactTextResult {
@@ -830,7 +862,9 @@ where
     }
 
     let combined = current.join("\n\n---\n\n");
-    let result = compact_single_pass_text(client, system_prompt, &combined, previous_summary, on_chunk).await?;
+    let result =
+        compact_single_pass_text(client, system_prompt, &combined, previous_summary, on_chunk)
+            .await?;
     add_usage(&mut total_usage, &result.usage);
     usage_estimated |= result.usage_estimated;
     Ok(CompactTextResult {
@@ -920,10 +954,7 @@ mod tests {
         // Anchor sent back to the LLM must not contain the code-owned block.
         assert_eq!(strip_footprint_sections(&summary), "## Goal\nstuff");
         let empty = crate::state::ToolFootprint::default();
-        assert_eq!(
-            append_footprint_sections("x".to_string(), &empty),
-            "x"
-        );
+        assert_eq!(append_footprint_sections("x".to_string(), &empty), "x");
     }
 
     #[test]

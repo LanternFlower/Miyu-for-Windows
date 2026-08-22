@@ -1,0 +1,24 @@
+{
+  "name": "create_goal",
+  "display_name": "创建目标",
+  "description": "Create the single persistent goal for this session when the human's current request is a long-running task that must keep progressing across multiple automatic rounds. Infer this intent from phrasing in any language; do not create a goal for trivial work that fits in a single round. Only turns initiated directly by the human may call this; calls from automatic rounds are rejected.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "objective": {
+        "type": "string",
+        "description": "The concrete completion goal distilled from the human's request."
+      },
+      "max_goal_rounds": {
+        "type": "integer",
+        "description": "Optional: upper limit on automatic round continuations (positive integer). Uses the default if omitted."
+      }
+    },
+    "required": ["objective"],
+    "additionalProperties": false
+  },
+  "permission": "writes",
+  "always_loaded": false,
+  "load_policy": "summary",
+  "groups": ["planning"]
+}

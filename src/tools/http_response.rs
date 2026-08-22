@@ -21,6 +21,27 @@ pub(super) async fn read_text(response: reqwest::Response, max_bytes: usize) -> 
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// 读取正文，超出上限就截断而不是整体失败。
+///
+/// 只适合调用方随后还要再截一刀的场景（例如页面正文最终只保留前若干
+/// 字符）——那里的字节上限本就是内存护栏，不是「内容必须完整」的断言。
+/// 需要完整正文才有意义的（JSON 解析等）继续用会报错的 `read_bytes`。
+pub(super) async fn read_text_prefix(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<String> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        let room = max_bytes.saturating_sub(body.len());
+        if chunk.len() >= room {
+            body.extend_from_slice(&chunk[..room]);
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
 pub(super) async fn read_json<T>(response: reqwest::Response, max_bytes: usize) -> Result<T>
 where
     T: DeserializeOwned,

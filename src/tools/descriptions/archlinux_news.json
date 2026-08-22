@@ -1,13 +1,13 @@
 {
   "name": "archlinux_news",
   "display_name": "Arch 新闻",
-  "description": "获取 Arch Linux 最新新闻。",
+  "description": "Fetch the latest Arch Linux news.",
   "parameters": {
     "type": "object",
     "properties": {
       "limit": {
         "type": "integer",
-        "description": "返回文章数量上限（1-20），默认 10。"
+        "description": "Maximum number of articles to return (1-20), default 10."
       }
     }
   },

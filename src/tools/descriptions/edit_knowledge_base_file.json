@@ -1,7 +1,7 @@
 {
   "name": "edit_knowledge_base_file",
   "display_name": "编辑知识库",
-  "description": "Edit an existing knowledge-base file by replacing an inclusive 1-based line range. Use after search_knowledge_base/read_knowledge_base_file identifies the exact file and line numbers.",
+  "description": "Replace knowledge-base file content by an inclusive 1-based line range.\nUse after search_knowledge_base/read_knowledge_base_file identifies the exact file and line numbers.",
   "parameters": {
     "type": "object",
     "properties": {

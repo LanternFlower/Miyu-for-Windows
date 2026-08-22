@@ -1,4 +1,4 @@
-use super::{empty_parameters, ToolRegistry, ToolSpec};
+use super::{ToolRegistry, ToolSpec};
 use rand::{seq::SliceRandom, Rng};
 use serde_json::{json, Value};
 
@@ -169,46 +169,46 @@ const FORTUNE_DIVINATIONS: &[(&str, &str)] = &[
     ("大凶", "最差、最险恶的运势。多伴随口舌、破财或灾祸。"),
 ];
 
+/// 四件玄学工具合并成一件(08-17):它们的共同点是"摇一次随机结果、不负责
+/// 解释",分成四个工具只是让 tools 数组多背三份外壳和三份几乎相同的说明。
 pub fn register(registry: &mut ToolRegistry) {
     registry.register(ToolSpec::new(
-        "draw_zhouyi_hexagram",
-        "随机抽取一个周易六十四卦卦名。适用于起卦、周易占卜、卦象相关请求。工具只负责随机抽取，不负责解释。",
-        empty_parameters(),
-        |_| async { Ok(choice(ZHOUYI_HEXAGRAMS).to_string()) },
-    ));
-    registry.register(ToolSpec::new(
-        "draw_tarot_card",
-        "随机抽取一张完整 78 张塔罗牌中的牌，并随机给出正位或逆位。工具只负责抽牌，不负责解释。",
-        empty_parameters(),
-        |_| async {
-            let card = choice(TAROT_CARDS);
-            let orientation = choice(&["正位", "逆位"]);
-            Ok(format!("{card}（{orientation}）"))
-        },
-    ));
-    registry.register(ToolSpec::new(
-        "draw_fortune_lot",
-        "随机进行一次吉凶占，返回吉凶等级和含义。适用于占卜吉凶、运势、玄学相关请求。工具只负责随机给出吉凶，不负责解释。",
-        empty_parameters(),
-        |_| async {
-            let (luck, meaning) = choice(FORTUNE_DIVINATIONS);
-            Ok(format!("{luck}：{meaning}"))
-        },
-    ));
-    registry.register(ToolSpec::new(
-        "roll_dice",
-        "掷骰子并返回每颗骰子点数和总和。适用于骰子、跑团检定、d6/d20 等请求。",
+        "divine",
+        "随机占卜。method 选 zhouyi 周易起卦、tarot 抽塔罗牌（含正逆位）、fortune 吉凶占、dice 掷骰子。工具只负责摇结果，解释由你来做。",
         json!({
             "type": "object",
             "properties": {
-                "count": { "type": "integer", "description": "骰子数量，默认 1，最多 100。" },
-                "sides": { "type": "integer", "description": "每颗骰子的面数，默认 6，最多 1000。" },
-                "modifier": { "type": "integer", "description": "可选总和修正值。" }
+                "method": {
+                    "type": "string",
+                    "enum": ["zhouyi", "tarot", "fortune", "dice"],
+                    "description": "占卜方式：zhouyi 六十四卦，tarot 塔罗牌，fortune 吉凶，dice 骰子。"
+                },
+                "count": { "type": "integer", "description": "仅 dice：骰子数量，默认 1，最多 100。" },
+                "sides": { "type": "integer", "description": "仅 dice：每颗骰子面数，默认 6，最多 1000。" },
+                "modifier": { "type": "integer", "description": "仅 dice：可选总和修正值。" }
             },
+            "required": ["method"],
             "additionalProperties": false
         }),
-        |args| async move { roll_dice(args) },
+        |args| async move { divine(args) },
     ));
+}
+
+fn divine(args: Value) -> anyhow::Result<String> {
+    match args.get("method").and_then(Value::as_str).unwrap_or_default() {
+        "zhouyi" => Ok(choice(ZHOUYI_HEXAGRAMS).to_string()),
+        "tarot" => {
+            let card = choice(TAROT_CARDS);
+            let orientation = choice(&["正位", "逆位"]);
+            Ok(format!("{card}（{orientation}）"))
+        }
+        "fortune" => {
+            let (luck, meaning) = choice(FORTUNE_DIVINATIONS);
+            Ok(format!("{luck}：{meaning}"))
+        }
+        "dice" => roll_dice(args),
+        other => anyhow::bail!("unknown method: {other}; expected zhouyi, tarot, fortune or dice"),
+    }
 }
 
 fn roll_dice(args: Value) -> anyhow::Result<String> {

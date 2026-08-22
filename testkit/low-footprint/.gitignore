@@ -1,0 +1,6 @@
+homes/
+xdg-run/
+results/
+stub-*.jsonl
+chrome-stderr.log
+__pycache__/

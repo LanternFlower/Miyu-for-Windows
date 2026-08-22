@@ -6,16 +6,17 @@
 #
 # 用法（在干净目录中）：
 #   PACKAGER='Miyu Release <noreply@example.com>' makepkg -Cf
-# 产物不含字体（由 AUR 包装包从 Noto 上游下载），含 MIT LICENSE、内置表情、
-# 系统脚本与默认知识库（本仓库 kb/ + Shorin Wiki）。
+# 字体(Noto CJK / Noto Emoji / JetBrains Mono)自 0.4.4 起 vendor 在源码树
+# assets/fonts 下并随资产打包；另含 MIT LICENSE、内置表情、系统脚本与
+# 默认知识库（本仓库 kb/ + Shorin Wiki）。
 
 pkgname=miyu
-pkgver=0.4.3
+pkgver=0.4.5
 pkgrel=1
 pkgdesc='一个活在终端里的二次元少女。开箱即用的开源 AI 助手，支持接入通讯平台。'
 arch=('x86_64')
 url='https://github.com/SHORiN-KiWATA/Miyu'
-license=('MIT')
+license=('MIT' 'OFL-1.1')
 options=('!lto' '!debug')
 export LC_ALL=C.UTF-8
 depends=('alsa-lib' 'chafa' 'gcc-libs' 'glibc' 'ripgrep')
@@ -49,6 +50,12 @@ package() {
   cd miyu
   install -Dm755 "target/release/miyu" "${pkgdir}/usr/bin/miyu"
   install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 "assets/fonts/NotoSansCJK-Regular.ttc" "${pkgdir}/usr/share/miyu/fonts/NotoSansCJK-Regular.ttc"
+  install -Dm644 "assets/fonts/NotoColorEmoji.ttf" "${pkgdir}/usr/share/miyu/fonts/NotoColorEmoji.ttf"
+  install -Dm644 "assets/fonts/JetBrainsMono-Regular.ttf" "${pkgdir}/usr/share/miyu/fonts/JetBrainsMono-Regular.ttf"
+  install -Dm644 "assets/fonts/NotoSansCJK.LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/NotoSansCJK.LICENSE"
+  install -Dm644 "assets/fonts/NotoColorEmoji.LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/NotoColorEmoji.LICENSE"
+  install -Dm644 "assets/fonts/JetBrainsMono.LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/JetBrainsMono.LICENSE"
 
   if [[ -d src/memes ]]; then
     while IFS= read -r -d '' file; do

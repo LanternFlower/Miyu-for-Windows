@@ -56,9 +56,7 @@ pub(crate) enum ParsedPlatformCommand {
     Wipe {
         confirmed: bool,
     },
-    ResetMemory {
-        confirmed: bool,
-    },
+    ResetMemory,
     Stop {
         has_arguments: bool,
     },
@@ -94,12 +92,15 @@ pub(crate) fn parse(config: &PlatformsConfig, text: &str) -> Option<ParsedPlatfo
         };
         Some(ParsedPlatformCommand::Wipe { confirmed })
     } else if command.eq_ignore_ascii_case(RESET_MEMORY_COMMAND_ID) {
-        let confirmed = match (parts.next(), parts.next()) {
-            (None, None) => false,
-            (Some(argument), None) if argument.eq_ignore_ascii_case("confirm") => true,
+        // 不再要二次确认(与本地三条路一致):这条命令本来就是 AdminOnly,
+        // 清的只是长期记忆,会话历史/技能/知识库都不动。仍然收下 `confirm`
+        // 这个词——老习惯打出来不该被当成普通聊天发给模型。
+        match (parts.next(), parts.next()) {
+            (None, None) => {}
+            (Some(argument), None) if argument.eq_ignore_ascii_case("confirm") => {}
             _ => return None,
-        };
-        Some(ParsedPlatformCommand::ResetMemory { confirmed })
+        }
+        Some(ParsedPlatformCommand::ResetMemory)
     } else if command.eq_ignore_ascii_case(STOP_COMMAND_ID) {
         let has_arguments = parts.next().is_some();
         Some(ParsedPlatformCommand::Stop { has_arguments })
@@ -148,15 +149,6 @@ pub(crate) fn reset_usage_message(config: &PlatformsConfig) -> String {
     usage_message(config, RESET_COMMAND_ID)
 }
 
-pub(crate) fn reset_memory_confirm_message(config: &PlatformsConfig) -> String {
-    let command = command_text(config, RESET_MEMORY_COMMAND_ID);
-    t_owned(
-        format!(
-            "This erases this persona's long-term memory (facts, diary, episodes) and cannot be undone. Send `{command} confirm` to go ahead."
-        ),
-        format!("这会清空当前人格的长期记忆（事实/日记/经历），不可撤销。确认请发送 `{command} confirm`。"),
-    )
-}
 
 pub(crate) fn wipe_confirm_message(config: &PlatformsConfig) -> String {
     let wipe = command_text(config, WIPE_COMMAND_ID);
@@ -216,14 +208,16 @@ mod tests {
             Some(ParsedPlatformCommand::Wipe { confirmed: true })
         );
         assert_eq!(parse(&config, "/wipe now"), None);
+        // 不再需要二次确认;`confirm` 仍然收下,免得老习惯打出来被当成聊天。
         assert_eq!(
             parse(&config, "/reset-memory"),
-            Some(ParsedPlatformCommand::ResetMemory { confirmed: false })
+            Some(ParsedPlatformCommand::ResetMemory)
         );
         assert_eq!(
             parse(&config, "/reset-memory confirm"),
-            Some(ParsedPlatformCommand::ResetMemory { confirmed: true })
+            Some(ParsedPlatformCommand::ResetMemory)
         );
+        assert_eq!(parse(&config, "/reset-memory now"), None);
 
         // Opening `/reset` up to a group used to hand out the memory wipe with
         // it, because both scopes shared one descriptor.

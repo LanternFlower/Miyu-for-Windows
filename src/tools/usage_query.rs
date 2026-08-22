@@ -3,7 +3,6 @@
 //! 实现,两边只是 usage-history 路径的来源不同。
 
 use super::{ToolRegistry, ToolSpec};
-use crate::i18n::agent_text as t;
 use crate::state::usage;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -13,17 +12,14 @@ pub fn register(registry: &mut ToolRegistry, history_file: PathBuf, config: crat
     registry.register(
         ToolSpec::new(
             "query_token_usage",
-            t(
-                "Query Miyu's token usage statistics: totals, request count, cache hit rate, and the per-source (agent / messaging platforms) model breakdown. range: 1d (rolling 24h, default) / 7d / 30d / all.",
-                "查询 Miyu 的 token 消耗统计:总量、请求数、缓存命中率,以及按来源(智能体/通讯平台)的模型构成。range 可选 1d(近 24 小时,默认)/ 7d / 30d / all。",
-            ),
+            "Query Miyu's token usage statistics: totals, request count, cache hit rate, and the per-source (agent / messaging platforms) model breakdown. range: 1d (rolling 24h, default) / 7d / 30d / all.",
             json!({
                 "type": "object",
                 "properties": {
                     "range": {
                         "type": "string",
                         "enum": ["1d", "7d", "30d", "all"],
-                        "description": t("Time range, defaults to 1d (rolling 24h).", "统计范围,默认 1d(近 24 小时)。")
+                        "description": "Time range, defaults to 1d (rolling 24h)."
                     }
                 },
                 "additionalProperties": false
@@ -34,7 +30,7 @@ pub fn register(registry: &mut ToolRegistry, history_file: PathBuf, config: crat
                 async move { query(arguments, history_file, config).await }
             },
         )
-        .with_display_name(t("Token usage", "用量统计")),
+        .with_display_name("Token usage"),
     );
 }
 
@@ -80,20 +76,8 @@ pub(crate) fn format_usage_summary(stats: &crate::state::UsageStats, range_key: 
         ),
         format!("请求 {} 次 · 缓存命中率 {hit:.0}%", stats.totals.requests),
     ];
-    if stats.totals.costed_requests > 0 {
-        let coverage = if stats.totals.costed_requests < stats.totals.requests {
-            format!(
-                "(估算覆盖 {}/{} 次请求)",
-                stats.totals.costed_requests, stats.totals.requests
-            )
-        } else {
-            String::new()
-        };
-        lines.push(format!(
-            "估算消费 ≈${:.4}{coverage}",
-            stats.totals.cost
-        ));
-    }
+    // 金额估算不进工具输出(用户 08-20 裁定:models.dev 价目对不齐实际计费,
+    // 数字不准还容易被模型当真话复述)。WebUI 控制台的统计图表照旧。
     for source in &stats.sources {
         let name = match source.src.as_str() {
             "agent" => "智能体".to_string(),

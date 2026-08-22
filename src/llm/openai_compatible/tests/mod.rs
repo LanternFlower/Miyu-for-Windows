@@ -1,0 +1,14 @@
+//! OpenAI 兼容客户端的测试，按协议与关注点分文件。
+//!
+//! 原本是一个三千多行的 `mod tests`。三套线路协议（chat / responses / anthropic）
+//! 各有各的流式事件形态，混在一起看不出哪条守着哪个契约。
+
+mod shared;
+mod responses;
+mod anthropic;
+mod chat_stream;
+mod claude_code;
+mod failover;
+mod thinking;
+mod extra_body;
+mod endpoint_retry;

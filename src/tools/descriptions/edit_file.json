@@ -1,25 +1,25 @@
 {
   "name": "edit_file",
   "display_name": "编辑文件",
-  "description": "按 1 起始的闭区间行号替换现有 UTF-8 文件内容。应先用 read_file 确认准确行号。复杂编辑、多处修改或同一文件多处修改时优先使用 apply_patch。",
+  "description": "Replace content of an existing UTF-8 file by an inclusive 1-based line range.\nUse read_file first to confirm the exact line numbers. For complex edits, multiple changes, or multiple edits to the same file, prefer apply_patch.",
   "parameters": {
     "type": "object",
     "properties": {
       "path": {
         "type": "string",
-        "description": "工作区相对路径或绝对文件路径。"
+        "description": "Workspace-relative or absolute file path."
       },
       "start_line": {
         "type": "integer",
-        "description": "要替换的第一行，1 起始。"
+        "description": "First line to replace, 1-based."
       },
       "end_line": {
         "type": "integer",
-        "description": "要替换的最后一行，闭区间。"
+        "description": "Last line to replace, inclusive."
       },
       "replacement": {
         "type": "string",
-        "description": "替换文本，可包含多行；空文本会删除指定行范围。"
+        "description": "Replacement text; may contain multiple lines. Empty text deletes the specified line range."
       }
     },
     "required": [

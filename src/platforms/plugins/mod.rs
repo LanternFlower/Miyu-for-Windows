@@ -1,17 +1,16 @@
-use super::types::{
-    OutboundMessage, OutboundOrigin, PlatformContextFileRef, PlatformContextImageRef,
-    PlatformConversation, PlatformInboundEvent, SendReceipt, TriggerDecision,
-};
 use super::PlatformTurnContext;
 use crate::config::AppConfig;
 use crate::paths::MiyuPaths;
+use crate::platform_types::{
+    OutboundMessage, OutboundOrigin, PlatformContextFileRef, PlatformContextImageRef,
+    PlatformConversation, PlatformInboundEvent, SendReceipt, TriggerDecision,
+};
 use crate::state::PlatformSessionBinding;
 use crate::tools::ToolRegistry;
 use anyhow::Result;
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
 use std::sync::Arc;
-
 pub(super) const FIXED_OUTPUT_METADATA_KEY: &str = "platform.fixed_output";
 pub(super) const SUPPRESS_FINAL_REPLY_METADATA_KEY: &str = "platform.suppress_final_reply";
 pub(super) const SUPPRESS_PRIOR_REPLY_METADATA_KEY: &str = "platform.suppress_prior_reply";
@@ -39,6 +38,7 @@ mod meme_collector;
 mod message_history;
 mod message_recall;
 pub(crate) mod real_context;
+pub(crate) mod scheduled_messages;
 mod renderer;
 mod reply_processor;
 
@@ -133,7 +133,9 @@ pub(super) async fn require_ai_confirmation(
             "success": false,
             "confirmation_required": true,
             "confirmation_token": token,
-            "message": "当前请求者不是 Miyu 管理员或 QQ 群主/群管理员。请在本轮中再次调用同一个工具，显式携带 confirmation_token，并保持目标和其他参数不变。",
+            // 声明式+先说"不是拒绝":旧文案以否定句开头,模型会读成权限
+            // 拒绝直接放弃(非管理员触发"群管用不了"的实际根因,08-20)。
+            "message": "This is an automatic double-check, not a permission denial. The requester is not a Miyu admin or a QQ group owner/admin, so the platform asks you to confirm the action yourself before it runs. If you judge the action appropriate, call the same tool again in this turn with this confirmation_token and every other parameter unchanged; the repeated call executes normally.",
             "action": action,
         })
         .to_string(),
@@ -422,6 +424,7 @@ impl PlatformPluginRegistry {
             Arc::new(meme_collector::MemeCollectorPlugin::new()),
             Arc::new(Arc::new(group_management::GroupManagementPlugin::new())),
             Arc::new(reply_processor::ReplyProcessorPlugin::new()?),
+            Arc::new(scheduled_messages::ScheduledMessagesPlugin::new()),
         ]))
     }
 

@@ -1,0 +1,24 @@
+{
+  "name": "alarm",
+  "display_name": "闹钟",
+  "description": "Manage local alarms: action=set to set one, list to list them, cancel to cancel one.\ntime accepts 30s, 10m, 1h 30m, or 14:30. Alarms run in the background Miyu process using a built-in sound; pass audio_file to use a local .wav/.mp3 instead.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["set", "list", "cancel"],
+        "description": "set to set, list to list, cancel to cancel."
+      },
+      "time": { "type": "string", "description": "Required for action=set: a duration or a clock time." },
+      "label": { "type": "string", "description": "Optional for action=set: alarm label." },
+      "audio_file": { "type": "string", "description": "Optional for action=set: local .wav or .mp3 file." },
+      "id": { "type": "string", "description": "Required for action=cancel: alarm id." }
+    },
+    "required": ["action"]
+  },
+  "permission": "writes",
+  "always_loaded": false,
+  "load_policy": "group",
+  "groups": ["alarms"]
+}

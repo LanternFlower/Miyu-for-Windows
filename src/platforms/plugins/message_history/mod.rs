@@ -370,8 +370,7 @@ pub(super) fn register_group_member_tool(
     maximum: usize,
 ) {
     tools::register_group_members(registry, context.clone(), maximum);
-    tools::register_group_avatar(registry, context.clone());
-    tools::register_avatar_download(registry, context);
+    tools::register_avatar(registry, context);
 }
 
 fn event_message_id(event: &PlatformInboundEvent) -> String {

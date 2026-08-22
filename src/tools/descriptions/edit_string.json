@@ -1,25 +1,25 @@
 {
   "name": "edit_string",
   "display_name": "精确编辑",
-  "description": "通过精确字符串匹配替换编辑文件。适合小范围单点修改；复杂编辑、多处修改或同一文件多处修改时优先使用 apply_patch。不要并行多次调用本工具修改同一文件。",
+  "description": "Edit a file by replacing an exact string match.\nBest for small, single-point changes; for complex edits, multiple changes, or multiple edits to the same file, prefer apply_patch. Do not make multiple parallel calls to this tool against the same file.",
   "parameters": {
     "type": "object",
     "properties": {
       "path": {
         "type": "string",
-        "description": "文件路径。支持绝对路径、工作区相对路径和 ~/ 路径。"
+        "description": "File path. Supports absolute paths, workspace-relative paths, and ~/ paths."
       },
       "old_string": {
         "type": "string",
-        "description": "要替换的精确文本。必须完全匹配包括空白和缩进。"
+        "description": "Exact text to replace. Must match exactly, including whitespace and indentation."
       },
       "new_string": {
         "type": "string",
-        "description": "替换文本。必须与 old_string 不同。"
+        "description": "Replacement text. Must differ from old_string."
       },
       "replace_all": {
         "type": "boolean",
-        "description": "替换所有匹配项（默认 false）。",
+        "description": "Replace all occurrences (default false).",
         "default": false
       }
     },

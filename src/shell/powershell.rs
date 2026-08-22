@@ -99,7 +99,7 @@ fn profile_path() -> PathBuf {
     directories::UserDirs::new()
         .and_then(|dirs| dirs.document_dir().map(Path::to_path_buf))
         .or_else(|| {
-            directories::BaseDirs::new().map(|base| base.home_dir().join("Documents"))
+            crate::platform_dirs::PlatformDirs::new().map(|base| base.home_dir().join("Documents"))
         })
         .unwrap_or_else(|| PathBuf::from("Documents"))
         .join("PowerShell")

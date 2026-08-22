@@ -1,21 +1,21 @@
 {
   "name": "create_artifact",
   "display_name": "创建预览文件",
-  "description": "在 Miyu 托管的 Artifact 工作区创建或更新完整交付物，并立即展示到 WebUI。用户明确要求报告、文档、网页、表格、数据文件、独立代码文件或可下载成品时优先调用。内容完成后再调用；普通项目源码修改不要调用。",
+  "description": "Create or update a complete deliverable in the Miyu-hosted Artifact workspace and show it in the WebUI immediately. Prefer this tool when the user explicitly asks for a report, document, web page, table, data file, standalone code file, or downloadable finished product. Call it only after the content is complete; do not call it for ordinary project source-code edits.",
   "parameters": {
     "type": "object",
     "properties": {
       "filename": {
         "type": "string",
-        "description": "包含正确扩展名的安全文件名，例如 report.md、index.html 或 data.json；不允许包含目录。"
+        "description": "Safe filename with the correct extension, e.g. report.md, index.html, or data.json; directories are not allowed."
       },
       "content": {
         "type": "string",
-        "description": "完整的最终文件内容。"
+        "description": "The complete final file content."
       },
       "title": {
         "type": "string",
-        "description": "可选显示标题。"
+        "description": "Optional display title."
       }
     },
     "required": ["filename", "content"],

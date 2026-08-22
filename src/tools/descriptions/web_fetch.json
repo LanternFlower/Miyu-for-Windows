@@ -1,7 +1,7 @@
 {
   "name": "web_fetch",
   "display_name": "读取网页",
-  "description": "Fetch a URL and return markdown, text, or html.Does not search the web.",
+  "description": "Fetch a URL and return markdown, text, or html. Does not search the web.",
   "parameters": {
     "type": "object",
     "properties": {

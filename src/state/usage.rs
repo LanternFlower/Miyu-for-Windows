@@ -213,7 +213,11 @@ fn record_usage_at(
     }
     let record = UsageRecord {
         ts,
-        src: if meta.source.is_empty() { "agent".to_string() } else { meta.source.to_string() },
+        src: if meta.source.is_empty() {
+            "agent".to_string()
+        } else {
+            meta.source.to_string()
+        },
         provider: meta.provider.unwrap_or_default().to_string(),
         model: meta.model.unwrap_or_default().to_string(),
         prompt: usage.prompt_tokens,
@@ -224,7 +228,10 @@ fn record_usage_at(
         aux,
         cost: None,
     };
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
     writeln!(file, "{}", serde_json::to_string(&record)?)?;
     Ok(())
 }
@@ -343,7 +350,10 @@ impl UsageRange {
 
 fn local_day_start(ts: i64) -> Option<chrono::DateTime<Local>> {
     let time = Local.timestamp_opt(ts, 0).single()?;
-    time.date_naive().and_hms_opt(0, 0, 0)?.and_local_timezone(Local).single()
+    time.date_naive()
+        .and_hms_opt(0, 0, 0)?
+        .and_local_timezone(Local)
+        .single()
 }
 
 /// 计价器:按 (provider, model) 给出单价;None = 无价格数据。
@@ -352,12 +362,20 @@ pub type PriceFn<'a> = &'a dyn Fn(&str, &str) -> Option<crate::models_cache::Api
 pub fn usage_stats(path: &Path, range: UsageRange, price: PriceFn<'_>) -> Result<UsageStats> {
     let records = load_records(path)?;
     // 单价按 (provider, model) 记忆化:每条记录都查一次目录锁太浪费。
-    let mut price_cache = std::collections::HashMap::<(String, String), Option<crate::models_cache::ApiCost>>::new();
+    let mut price_cache =
+        std::collections::HashMap::<(String, String), Option<crate::models_cache::ApiCost>>::new();
     let mut record_cost = |record: &UsageRecord| -> Option<f64> {
         price_cache
             .entry((record.provider.clone(), record.model.clone()))
             .or_insert_with(|| price(&record.provider, &record.model))
-            .map(|c| c.estimate(record.prompt, record.completion, record.cache_read, record.cache_write))
+            .map(|c| {
+                c.estimate(
+                    record.prompt,
+                    record.completion,
+                    record.cache_read,
+                    record.cache_write,
+                )
+            })
     };
     let now = chrono::Utc::now().timestamp();
     // 范围窗口按本地自然日对齐:今天=本地零点起;7d/30d=含今天往前 n 天。
@@ -374,7 +392,8 @@ pub fn usage_stats(path: &Path, range: UsageRange, price: PriceFn<'_>) -> Result
     let mut totals = UsageAggregate::default();
     let mut prev_totals = UsageAggregate::default();
     let mut daily = BTreeMap::<String, DailyUsage>::new();
-    let mut sources = BTreeMap::<String, (UsageAggregate, BTreeMap<(String, String), UsageAggregate>)>::new();
+    let mut sources =
+        BTreeMap::<String, (UsageAggregate, BTreeMap<(String, String), UsageAggregate>)>::new();
     let daily_floor = today_start - 363 * 86_400;
     let mut first_ts: Option<i64> = None;
 
@@ -384,7 +403,11 @@ pub fn usage_stats(path: &Path, range: UsageRange, price: PriceFn<'_>) -> Result
         let in_range = start.map_or(true, |s| record.ts >= s);
         if in_range {
             totals.absorb(record, cost);
-            let src = if record.src.is_empty() { "agent" } else { record.src.as_str() };
+            let src = if record.src.is_empty() {
+                "agent"
+            } else {
+                record.src.as_str()
+            };
             let (agg, models) = sources.entry(src.to_string()).or_default();
             agg.absorb(record, cost);
             models
@@ -449,10 +472,18 @@ pub fn usage_stats(path: &Path, range: UsageRange, price: PriceFn<'_>) -> Result
         .map(|(src, (aggregate, models))| {
             let mut models: Vec<ModelUsage> = models
                 .into_iter()
-                .map(|((provider, model), aggregate)| ModelUsage { provider, model, aggregate })
+                .map(|((provider, model), aggregate)| ModelUsage {
+                    provider,
+                    model,
+                    aggregate,
+                })
                 .collect();
             models.sort_by(|a, b| b.aggregate.total.cmp(&a.aggregate.total));
-            SourceUsage { src, aggregate, models }
+            SourceUsage {
+                src,
+                aggregate,
+                models,
+            }
         })
         .collect::<Vec<_>>();
     // 智能体排最前,平台按名称序。
@@ -484,7 +515,11 @@ pub fn usage_details(
     let mut records = load_records(path)?;
     if let Some(src) = src.filter(|value| !value.is_empty()) {
         records.retain(|record| {
-            let record_src = if record.src.is_empty() { "agent" } else { record.src.as_str() };
+            let record_src = if record.src.is_empty() {
+                "agent"
+            } else {
+                record.src.as_str()
+            };
             record_src == src
         });
     }
@@ -493,12 +528,20 @@ pub fn usage_details(
     }
     records.sort_by_key(|record| std::cmp::Reverse(record.ts));
     records.truncate(limit);
-    let mut price_cache = std::collections::HashMap::<(String, String), Option<crate::models_cache::ApiCost>>::new();
+    let mut price_cache =
+        std::collections::HashMap::<(String, String), Option<crate::models_cache::ApiCost>>::new();
     for record in &mut records {
         record.cost = price_cache
             .entry((record.provider.clone(), record.model.clone()))
             .or_insert_with(|| price(&record.provider, &record.model))
-            .map(|c| c.estimate(record.prompt, record.completion, record.cache_read, record.cache_write));
+            .map(|c| {
+                c.estimate(
+                    record.prompt,
+                    record.completion,
+                    record.cache_read,
+                    record.cache_write,
+                )
+            });
     }
     Ok(records)
 }
@@ -522,14 +565,22 @@ mod tests {
         record_usage(
             &path,
             &usage,
-            UsageMeta { source: "agent", provider: Some("priced"), model: Some("m") },
+            UsageMeta {
+                source: "agent",
+                provider: Some("priced"),
+                model: Some("m"),
+            },
             false,
         )
         .unwrap();
         record_usage(
             &path,
             &usage,
-            UsageMeta { source: "agent", provider: Some("unknown"), model: Some("m") },
+            UsageMeta {
+                source: "agent",
+                provider: Some("unknown"),
+                model: Some("m"),
+            },
             false,
         )
         .unwrap();
@@ -545,7 +596,11 @@ mod tests {
         assert_eq!(stats.totals.requests, 2);
         assert_eq!(stats.totals.costed_requests, 1);
         // 未命中 100 万×1 + 命中 100 万×0.1 + 输出 100 万×2 = 3.1
-        assert!((stats.totals.cost - 3.1).abs() < 1e-9, "{}", stats.totals.cost);
+        assert!(
+            (stats.totals.cost - 3.1).abs() < 1e-9,
+            "{}",
+            stats.totals.cost
+        );
         let day_cost: f64 = stats.daily.iter().map(|d| d.cost).sum();
         assert!((day_cost - 3.1).abs() < 1e-9);
         let details = usage_details(&path, 10, None, None, &price).unwrap();
@@ -648,12 +703,29 @@ mod tests {
             cache_read_tokens: cache,
             ..Usage::default()
         };
-        let meta = |source, model| UsageMeta { source, provider: Some("prov"), model: Some(model) };
+        let meta = |source, model| UsageMeta {
+            source,
+            provider: Some("prov"),
+            model: Some(model),
+        };
 
         record_usage_at(&path, &usage(100, 20, 60), meta("agent", "m-a"), false, now).unwrap();
-        record_usage_at(&path, &usage(50, 10, 0), meta("qq", "m-b"), false, now - 3_600).unwrap();
-        record_usage_at(&path, &usage(30, 5, 10), meta("qq", "m-b"), true, now - 40 * 86_400)
-            .unwrap();
+        record_usage_at(
+            &path,
+            &usage(50, 10, 0),
+            meta("qq", "m-b"),
+            false,
+            now - 3_600,
+        )
+        .unwrap();
+        record_usage_at(
+            &path,
+            &usage(30, 5, 10),
+            meta("qq", "m-b"),
+            true,
+            now - 40 * 86_400,
+        )
+        .unwrap();
 
         let all = usage_stats(&path, UsageRange::All, &|_, _| None).unwrap();
         assert_eq!(all.totals.requests, 3);
@@ -720,5 +792,127 @@ mod tests {
         assert_eq!(snapshot.total_tokens, 10);
         assert_eq!(snapshot.conversation_tokens, 0);
         assert!(snapshot.last_conversation_usage.is_none());
+    }
+}
+
+#[cfg(test)]
+mod history_scaling_probe {
+    use super::*;
+
+    /// 造一份 `n` 条的历史，形状照抄真实文件（151 字节/条）。
+    pub(super) fn write_history_for_probe(path: &Path, records: usize) -> std::io::Result<()> {
+        write_history(path, records)
+    }
+
+    fn write_history(path: &Path, records: usize) -> std::io::Result<()> {
+        let mut body = String::with_capacity(records * 160);
+        let base = Local::now().timestamp() - records as i64 * 30;
+        for index in 0..records {
+            let ts = base + index as i64 * 30;
+            body.push_str(&format!(
+                r#"{{"ts":{ts},"src":"agent","provider":"opencodego","model":"deepseek-v4-flash","prompt":7638,"completion":2842,"total":10480,"cache_read":7552,"aux":true}}"#
+            ));
+            body.push('\n');
+        }
+        std::fs::write(path, body)
+    }
+
+    /// 量尺：`cargo test --lib history_scaling_probe -- --ignored --nocapture`
+    ///
+    /// `usage-history.jsonl` 只增不轮转，而每次查询都 `read_to_string` 整读整
+    /// 解析。本机实测 14,511 条 / 2.2 MB 是 **5.7 天**攒出来的（约 387 KB/天），
+    /// 所以下面这几档分别对应 5.7 天 / 1 个月 / 半年 / 1 年。
+    #[test]
+    #[ignore]
+    fn usage_stats_scales_with_history_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("usage-history.jsonl");
+        println!(
+            "\n  {:<16}{:>10}{:>10}{:>12}",
+            "条数", "文件", "耗时", "折合时长"
+        );
+        for (records, span) in [
+            (14_511usize, "5.7 天（当前）"),
+            (76_000, "1 个月"),
+            (460_000, "半年"),
+            (930_000, "1 年"),
+        ] {
+            write_history(&path, records).unwrap();
+            let bytes = std::fs::metadata(&path).unwrap().len();
+            let started = std::time::Instant::now();
+            let stats = usage_stats(&path, crate::state::UsageRange::parse("1d"), &|_, _| None);
+            let elapsed = started.elapsed();
+            assert!(stats.is_ok());
+            println!(
+                "  {records:<16}{:>8.1}MB{:>9.1}ms{:>14}",
+                bytes as f64 / 1048576.0,
+                elapsed.as_secs_f64() * 1000.0,
+                span
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod runtime_freeze_probe {
+    use super::history_scaling_probe::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// 量尺：`cargo test --lib runtime_freeze_probe -- --ignored --nocapture`
+    ///
+    /// 要证明的不是「统计变快了」（活儿一样多），而是**统计期间别的异步任务还
+    /// 转不转**。
+    ///
+    /// 关键坑（C17 那次差点栽在这上面）：被测的活儿必须用 `tokio::spawn` 丢到
+    /// worker 上。写成 `runtime.block_on(...)` 的话它跑在**调用线程**，而 ticker
+    /// 在 worker 上，两边根本不抢同一个线程，量出来两种写法一样快，结论正好
+    /// 反过来。
+    #[test]
+    #[ignore]
+    fn stats_query_does_not_stall_other_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("usage-history.jsonl");
+        write_history_for_probe(&path, 76_000).unwrap();
+
+        println!("\n  单 worker 运行时上，统计跑着的时候 ticker 还能跳几次");
+        for (label, blocking) in [
+            ("同步调用（改前）", false),
+            ("spawn_blocking（改后）", true),
+        ] {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .unwrap();
+            let ticks = Arc::new(AtomicUsize::new(0));
+            let counter = ticks.clone();
+            let path = path.clone();
+            runtime.block_on(async move {
+                let ticker = tokio::spawn(async move {
+                    for _ in 0..200 {
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    }
+                });
+                let work = tokio::spawn(async move {
+                    let range = crate::state::UsageRange::parse("1d");
+                    if blocking {
+                        tokio::task::spawn_blocking(move || {
+                            super::usage_stats(&path, range, &|_, _| None)
+                        })
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    } else {
+                        super::usage_stats(&path, range, &|_, _| None).unwrap();
+                    }
+                });
+                work.await.unwrap();
+                let during = ticks.load(Ordering::Relaxed);
+                ticker.abort();
+                println!("  {label:<26}{during:>4} 次");
+            });
+        }
     }
 }

@@ -1,156 +1,122 @@
 ---
 name: linux-game-compatibility
-description: 调查某款游戏在 Linux 下的兼容性（Proton/反作弊/多人联机/性能），产出红绿灯结论与可执行的游玩步骤。Use when the user asks whether a game runs on Linux, Steam Deck, Proton compatibility, or anti-cheat support.
+description: 调查某款游戏在 Linux 下的兼容性（Proton/反作弊/多人联机/性能），产出红绿灯结论与可执行的游玩步骤。Use when the user asks whether a game runs on Linux, Steam Deck, Proton, Wine, Lutris, Heroic, or anti-cheat support.
 compatibility: Miyu built-in research workflow
 ---
 
-# 使用方式
+# Linux 游戏兼容性调查
 
-按本技能的完整流程亲自执行调查（你就是调查者，不要再派发子代理）。原流程第 1 步的"宿主预采集"由你用工具完成：
+## 采集
 
-- `protondb_query`：直接用游戏名查询 ProtonDB（评级、报告数、近期趋势、玩家报告细节）。
-- `query_caniplayonlinux`：查询 Can I Play on Linux 汇总。
-- 需要 Steam AppID、AreWeAntiCheatYet 反作弊状态或上述来源不足时，用 `web_search` / `web_fetch` 补查。
-- 中文游戏名先转换为通用英文名再查询（例如"赛博朋克2077"→ Cyberpunk 2077，"原神"→ Genshin Impact）。
+先调用 `game_compat`，游戏名或 Steam AppID 都行。它会汇总三个来源并返回 Markdown：
 
-完成信号采集后，继续执行下方原有流程的第 2-4 步与全部判断规则。最终只输出调查报告（按"输出格式"章节）。
+- `protondb`——评级、近期趋势、历史最佳、报告总数，以及带日期的玩家评论
+  （Proton 版本、启动参数、故障类型、原文）
+- `areweanticheatyet`——反作弊状态与厂商，附状态变更日期和近期事件
+- `caniplayonlinux`——一句话结论快照，附验证日期
 
-你是Linux 游戏兼容性调查子代理。
+评论条数用 `max_reports` 调（默认 8）。只想要结论时填 0；玩家报告分歧大、需要
+判断具体故障时可调多。
 
-你的任务是调查用户询问的游戏能否在 Linux 上运行、怎么玩、是否有反作弊阻断、需要什么 Proton 版本或启动方式，并输出一份可以直接交给主智能体回复用户的最终调查报告。
+**只在下列情况追加 `web_search` / `web_fetch`：**
 
-## 核心流程
+- 三个来源互相冲突，需要第三方佐证
+- 用户明确问性能、Mod、启动器、多人联机等工具没覆盖的细节
+- 工具返回了误配警告，或该游戏根本不在 Steam
+- 有迹象表明近期发生重大变更，工具数据可能过期
 
-你必须按以下流程工作：
+优先官方页面、PCGamingWiki、GamingOnLinux、Steam 社区、玩家社区。
+不要为补全细节反复搜索；查不到就明说不确定，不要编造。
 
-1. 首先进行 Linux 游戏兼容性基础信号采集，查询：
-   - Steam / AppID / 游戏名匹配情况
-   - ProtonDB 概览
-   - Can I Play on Linux
-   - AreWeAntiCheatYet
-2. 根据基础信号做第一轮判断后进行如下操作：
-   - 如果 ProtonDB 有该游戏记录，调用 `protondb_query` 工具获取最新的玩家评论和评级详情。评论通常包含：
-     - 能不能启动
-     - 用什么 Proton / GE-Proton
-     - 是否需要启动参数
-     - 性能表现
-     - 崩溃、黑屏、启动器、音频、视频、手柄等问题
-     - Steam Deck 体验
-   - 如果 ProtonDB 没有该游戏，或者 ProtonDB 信息明显不足，使用网络搜索、知识库等其他信息搜集工具补查。
-3. 在以下情况必须进行额外网络搜索：
-   - 三个兼容性来源缺失或冲突；
-   - 反作弊状态不明确；
-   - 用户明确问性能、崩溃、Mod、启动器、Steam Deck、多人/联机；
-   - ProtonDB 没有该游戏；
-   - 近期有重大更新，旧信息可能过期。
-4. 搜索必须克制：
-   - 优先官方页面、ProtonDB、AreWeAntiCheatYet、Can I Play on Linux、PCGamingWiki、GOL、Steam 社区、玩家社区。
-   - 不要为了补全所有细节反复搜索。
-   - 查不到就明确说不确定，不要编造。
+## 读工具返回值
+
+几个容易读错的地方：
+
+- **`native_linux`**：出现这个标记说明有原生 Linux 版，直接就能跑，不需要
+  讨论 Proton。这是最强的绿灯信号。
+- **`— no result`**：该来源没有这个游戏的记录，不是抓取失败（失败会显示
+  `— error` 并附原因）。任何一个来源 `no result` 都不构成否定结论。
+- **`areweanticheatyet — no result`** 尤其要小心：只说明 AWACY 没收录，
+  **不等于该游戏没有反作弊**。AWACY 只记录带反作弊的游戏，纯单机通常不在库里，
+  但冷门条目也可能只是漏收。不能把"没查到"说成"没有反作弊"——要判断有无反作弊，
+  得看另两个来源的正文或另行搜索。
+- **`trending` 与 `best`**：只在不同于当前评级时才出现，一出现就是重要信号。
+  `silver · trending bronze · best platinum` 意味着这游戏正在变坏，多半是反作弊
+  或引擎更新导致的，要结合 AWACY 的变更日期一起读。
+- **`⚠ search ... may not be the same game`**：Steam 搜索没找对游戏，通常因为
+  它不在 Steam 上。此时 protondb 那节的数据不可信，但另两节仍按你问的名字查，
+  可以采信。
+- **各节的错误行**：某个来源失败只代表这个来源获取数据失败，不能因此断言不可玩。
+- **日期**：`caniplayonlinux` 的 `verified` 是快照日期，protondb 评论各带日期。
+  两者结论不同时，时效性高的更可信。
 
 ## 判断规则
 
-最终必须给出红绿灯结论：
+最终必须给出红绿灯结论：🟢 可玩 / 🟡 不一定能玩 / 🔴 不可玩。
 
-- 🟢 可玩
-- 🟡 不一定能玩
-- 🔴 不可玩
+按优先级：
 
-以下是可以参考的判断规则：
+1. 有原生 Linux 版 → 🟢。
+2. AWACY `Denied` 或 `Broken`，且游戏以多人为主 → 🔴。
+3. AWACY `Denied` 或 `Broken`，但游戏有可玩的单机内容 → 拆开说：单机与多人分别
+   给结论，不要笼统下判断。
+4. AWACY `Supported` 或 `Running`，且 ProtonDB 为 Platinum / Gold → 🟢。
+   注意 `Running` 只表示社区层面目前能跑，不是官方承诺，报告里要写清。
+5. ProtonDB `Borked` → 🔴；`Bronze` → 🟡 且说明主要故障。
+6. ProtonDB `Silver` → 🟡，需要结合评论说明代价（要不要换 GE-Proton、加启动
+   参数、性能损失多少）。
+7. 报告总数很少（个位数）时评级不可靠，倾向 🟡 并说明样本量。
+8. `trending` 明显低于当前评级 → 至少降到 🟡，并指出正在变坏。
+9. 来源冲突、反作弊状态不明、近期变化多、玩家报告分裂 → 🟡。
+10. 某个来源缺失 → 不构成任何否定结论。
 
-1. ProtonDB Gold / Platinum 且没有反作弊阻断，通常可以倾向 🟢。
-2. Can I Play on Linux 标记 Works，且 ProtonDB/玩家报告一致，通常可以倾向 🟢。
-3. AreWeAntiCheatYet 标记 Running，说明反作弊目前社区层面可运行，但不等于承诺 Linux 支持。
-4. AreWeAntiCheatYet 标记 Broken / Denied，且通常应为 🔴。
-5. 来源冲突、反作弊状态不明、近期变化多、玩家报告分裂时，用 🟡表示不确定。
-6. 单机可玩但多人不可玩，必须拆开说，不要笼统说“可玩”。
-7. Steam Deck Playable 不等于桌面 Linux 完全没问题。
-8. Can I Play on Linux 的 recommended Proton 是该来源记录的历史验证版本，不要说成“当前最新推荐 Proton”。
-9. 如果用户问“怎么玩”，必须给出实际可执行路线，而不是只回答能不能玩。
+其它必须守住的分寸：
 
-## 必须区分的维度
-
-调查时尽量区分：
-
-- Steam 版 / 非 Steam 版
-- 桌面 Linux / Steam Deck
-- 单机 / 多人 / 在线
-- 反作弊是否阻断
-- Proton/Wine 版本
-- 启动器问题
-- 性能表现
-- 崩溃、黑屏、音频、视频、手柄、Mod 等常见问题
-- 官方支持、社区经验、玩家临时绕过方案之间的区别
-
-## 禁止事项
-
-- 不要编造来源。
-- 不要编造 Proton 版本。
-- 不要编造 FPS。
-- 不要编造官方声明。
-- 不要编造封号案例。
-- 不要把社区经验说成官方保证。
-- 不要把“目前能玩”说成“永远稳定可玩”。
-- 不要把“Steam Deck Playable”说成“Valve Verified”。
-- 不要因为某个来源缺失就直接断言不可玩。
+- Steam Deck 的评级不等于桌面 Linux 没问题，也不等于 Valve Verified。
+- 社区经验不是官方保证；"目前能玩"不是"永远稳定可玩"。
+- 非 Steam 版本（Epic、国服客户端、官方启动器）与 Steam 版可能完全不同，
+  要分开说。
+- 用户问"怎么玩"时，必须给可执行路线，不能只回答能不能玩。
 
 ## 输出格式
 
-最终只输出调查报告，不输出内部思考，不输出工具调用过程，不输出“以下是最终报告”这类元话语，不要在开头加分割线。
+只输出报告本身。不要输出内部思考、工具调用过程，不要写"以下是报告"这类
+元话语，不要在开头加分隔线。
 
-报告必须包含以下章节：
+按以下结构，用中文：
 
+```
 ## 调查结果
 
-第一行必须是红绿灯结论，例如：
+<第一行是红绿灯结论，例如「🟢 黑神话悟空 可玩」或
+ 「🟡 Apex Legends 单机可玩 / 多人被反作弊阻断」>
 
-🟢 Wuthering Waves 可玩
-
-或：
-
-🟡 Apex Legends 不一定能玩
-
-然后用 1-3 句话说明总体判断。
+<1-3 句话说明总体判断>
 
 ## 依据
 
-列出关键证据。可以使用项目符号或表格。
-
-每条证据要说明：
-- 来源
-- 关键信息
-- 支撑了什么判断
-- 如果能确认时间或时效性，也要写出来
-
-如果来源冲突，必须单独说明冲突点和你的取舍。
+<关键证据。每条写明：来源、关键信息、支撑了什么判断、时效性。
+ 来源冲突时单独说明冲突点和你的取舍。>
 
 ## 怎么玩
 
-必须给出可执行路线。
-
-根据实际情况可能包含：
-
-- Steam 安装方式
-- Proton/Wine 版本选择
-- 是否需要启动参数
-- 是否需要第三方启动器
-- 是否需要 Flatpak / AUR / Heroic / Lutris
-- 第一次启动要注意什么
+<可执行路线。按实际情况取舍：Steam 安装方式、Proton/GE-Proton 版本选择、
+ 启动参数、是否需要 Heroic / Lutris / Flatpak、第一次启动的注意事项。
+ 原生 Linux 版直接说明装了就能跑。>
 
 ## 注意事项
 
-必须说明风险：
+<只写这个游戏真正适用的风险，不要凑数。无反作弊的单机游戏就不要写反作弊
+ 更新风险。可能适用的有：反作弊策略随时可变、官方未承诺 Linux 支持、
+ 账号/ToS 风险、Steam Deck 与桌面 Linux 的差异、非 Steam 版本差异、
+ 性能不确定性、数据时效性。>
+```
 
-- 反作弊更新风险
-- 官方未承诺 Linux 支持
-- 账号/ToS 风险
-- Steam Deck 与桌面 Linux 差异
-- 非 Steam 版本差异
-- 性能不确定性
-- 来源过期风险
+只有拿到明确的 FPS、硬件、画质或对比数据时，才额外添加 `## 性能表现`。没有
+数据就不要写这个章节，更不要编造帧数。
 
-只有在有明确证据时，才额外添加：
+## 禁止事项
 
-## 性能表现
-
-不要编造 FPS。没有 FPS、硬件、画质、Steam Deck 或 Windows 对比数据时，不要写这个章节。
+不要编造来源、Proton 版本、FPS、官方声明或封号案例。不要把社区经验说成官方
+保证。不要把 Steam Deck 的评级说成 Valve Verified。不要因为某个来源查不到就
+断言不可玩。不要把 AWACY 未收录说成没有反作弊。

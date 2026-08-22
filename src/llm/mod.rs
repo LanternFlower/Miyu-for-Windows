@@ -4,7 +4,7 @@ pub mod request_log;
 pub(crate) mod provider_capabilities;
 
 pub(crate) use openai_compatible::{
-    thinking_variant_options_for_model, ThinkingVariantPreferences,
+    forget_claude_code_session, thinking_variant_options_for_model, ThinkingVariantPreferences,
 };
 pub use openai_compatible::{OpenAiCompatibleClient, ThinkingVariantOptions};
 
@@ -65,6 +65,19 @@ pub struct ToolCall {
     #[serde(rename = "type")]
     pub kind: String,
     pub function: ToolCallFunction,
+}
+
+/// 工具调用参数在发上线之前必须是合法 JSON **对象**。
+///
+/// 非法就换成 `{}`：那次调用本来就废了（工具侧会报自己的解析错误），把半截
+/// JSON 发出去只会让整条请求被上游拒掉。要求"对象"而不只是"合法 JSON"——
+/// `5`、`"x"`、`[1,2]` 也是合法 JSON，但两家 wire 格式都要求对象。
+pub(crate) fn wire_safe_tool_arguments(arguments: &str) -> String {
+    let trimmed = arguments.trim();
+    if serde_json::from_str::<serde_json::Value>(trimmed).is_ok_and(|value| value.is_object()) {
+        return trimmed.to_string();
+    }
+    "{}".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +149,24 @@ impl ChatMessage {
 
     pub fn assistant(content: impl Into<String>, tool_calls: Option<Vec<ToolCall>>) -> Self {
         let text = content.into();
+        // 参数在进消息的这一刻就必须是合法 JSON 对象。模型偶尔把 native
+        // tool_call 只写了个头就截断(实测 mimo-v2.5 的
+        // `{"action": "mute", "duration_seconds": `),那一串一旦随消息发出去,
+        // OpenAI→Anthropic 的代理解析不了就整条 HTTP 500,而且它会被化石化
+        // 进历史,之后每轮回放都炸——会话从此永久不可用。
+        //
+        // 收口放在构造函数里而不是各个调用点:08-17 按调用点补了两轮,
+        // 主循环补完漏了子代理,历史回放补完漏了回合内的活体路径。这里是
+        // tool_calls 进入消息的唯一入口,补一次就全覆盖。
+        let tool_calls = tool_calls.map(|calls| {
+            calls
+                .into_iter()
+                .map(|mut call| {
+                    call.function.arguments = wire_safe_tool_arguments(&call.function.arguments);
+                    call
+                })
+                .collect::<Vec<_>>()
+        });
         let has_tool_calls = tool_calls.as_ref().map(|c| !c.is_empty()).unwrap_or(false);
         let content = if text.trim().is_empty() && has_tool_calls {
             // Keep an explicit empty string so the `content` key stays present on
@@ -358,6 +389,11 @@ pub enum ChatStreamKind {
     ReasoningPartStart,
     ReasoningPartEnd,
     ToolCall,
+    /// 中转(claude-code)侧闭环执行的工具调用開始:text 是
+    /// `{id,name,input}` JSON,回合层翻成标准 tool.started 卡片。
+    RemoteToolStarted,
+    /// 同上的收口:text 是 `{id,name,ok,output}` JSON → tool.finished。
+    RemoteToolFinished,
 }
 
 #[derive(Debug, Clone)]
@@ -409,9 +445,72 @@ pub fn is_context_overflow_error(error: &anyhow::Error) -> bool {
 /// previous_response_id),而上游没有服务端会话状态,就找不到
 /// function_call_output 对应的 function_call。窄匹配上游原文,
 /// 命中即触发"清续传+全量重发+持久记 false"自愈(任务#16)。
+///
+/// 三种措辞(issue #32:只认第一种时,newapi 网关转发的 OpenAI 官方变体
+/// "…for function call output with call_id …"漏网,同一请求重试三次后
+/// 直接报错,自愈从未触发):
+/// - "No tool call found for tool output"(部分网关)
+/// - "No tool call found for function call output"(OpenAI 官方措辞)
+/// - 自家探测 bail("OpenAI Responses continuation is not supported"):
+///   能力探测已知不支持却还带着续传,同样该走清续传全量重发。
 pub fn is_responses_continuation_unsupported_error(error: &anyhow::Error) -> bool {
     let text = format!("{error:#}");
     text.contains("No tool call found for tool output")
+        || text.contains("No tool call found for function call output")
+        || text.contains("OpenAI Responses continuation is not supported")
+}
+
+#[cfg(test)]
+mod tool_argument_tests {
+    use super::{ChatMessage, ToolCall, ToolCallFunction};
+
+    fn call(arguments: &str) -> ToolCall {
+        ToolCall {
+            id: "c1".to_string(),
+            kind: "function".to_string(),
+            function: ToolCallFunction {
+                name: "qq_group_manage".to_string(),
+                arguments: arguments.to_string(),
+            },
+        }
+    }
+
+    /// 半截 JSON 不能随消息发上线。实测 mimo-v2.5 会把一次 native tool_call
+    /// 只写个头就截断,那一串发出去上游直接 500,而且会被化石化进历史,之后
+    /// 每轮回放都炸。收口在构造函数里,主循环/子代理/历史回放/中断重建全覆盖。
+    #[test]
+    fn assistant_messages_never_carry_unparseable_tool_arguments() {
+        for broken in [
+            r#"{"action": "mute", "duration_seconds": "#,
+            "",
+            "   ",
+            "not json",
+            "{",
+            // 合法 JSON 但不是对象:两家 wire 格式都要求对象。
+            "5",
+            r#""text""#,
+            "null",
+            "[1,2]",
+        ] {
+            let message = ChatMessage::assistant("", Some(vec![call(broken)]));
+            let calls = message.tool_calls.unwrap();
+            assert_eq!(calls[0].function.arguments, "{}", "{broken:?}");
+        }
+    }
+
+    /// 合法参数原样通过(只去首尾空白),别把好调用改坏。
+    #[test]
+    fn valid_tool_arguments_pass_through_untouched() {
+        for good in [r#"{"a":1}"#, "{}", r#"{"nested":{"b":[1,2]}}"#] {
+            let message = ChatMessage::assistant("", Some(vec![call(good)]));
+            assert_eq!(message.tool_calls.unwrap()[0].function.arguments, good);
+        }
+        let message = ChatMessage::assistant("", Some(vec![call("  {\"a\":1}  ")]));
+        assert_eq!(
+            message.tool_calls.unwrap()[0].function.arguments,
+            r#"{"a":1}"#
+        );
+    }
 }
 
 #[cfg(test)]
@@ -447,5 +546,28 @@ mod overflow_classifier_tests {
     fn unrelated_errors_do_not_match() {
         assert!(!is_context_overflow_message("connection reset by peer"));
         assert!(!is_context_overflow_message("invalid api key"));
+    }
+}
+
+#[cfg(test)]
+mod continuation_signature_tests {
+    /// issue #32:三种措辞都要命中——只认网关变体时 OpenAI 官方措辞
+    /// ("…for function call output with call_id …")漏网,自愈从未触发。
+    #[test]
+    fn continuation_unsupported_matches_all_known_wordings() {
+        let hit = |text: &str| {
+            super::is_responses_continuation_unsupported_error(&anyhow::anyhow!(
+                "{}",
+                text
+            ))
+        };
+        assert!(hit("status_code=400, No tool call found for tool output with id x"));
+        assert!(hit(
+            "status_code=400, No tool call found for function call output with call_id call_AhcSn"
+        ));
+        assert!(hit(
+            "no LLM provider/model endpoint succeeded: - newapi / gpt: OpenAI Responses continuation is not supported by this provider"
+        ));
+        assert!(!hit("upstream returned HTTP 400: bad request"));
     }
 }

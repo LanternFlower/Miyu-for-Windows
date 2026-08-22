@@ -9,15 +9,33 @@ const ARCH_NEWS_FEED_URL: &str = "https://archlinux.org/feeds/news/";
 const ARCH_NEWS_CACHE_FILE: &str = "arch_news_last_seen.json";
 
 pub fn register(registry: &mut ToolRegistry, paths: &MiyuPaths) {
-    registry.register(ToolSpec::new("aur_search_packages", "Search AUR packages via official RPC.", json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"},"search_by":{"type":"string"}},"required":["query"],"additionalProperties":false}), |args| async move { aur_search(args).await }));
-    registry.register(ToolSpec::new("aur_get_package_info", "Get AUR package information via official RPC.", json!({"type":"object","properties":{"package_name":{"type":"string"}},"required":["package_name"],"additionalProperties":false}), |args| async move { aur_info(args).await }));
-    registry.register(ToolSpec::new("archlinux_official_package_query", "查询 Arch Linux 官方软件包数据库，支持搜索和精确包详情。", json!({"type":"object","properties":{"package_name":{"type":"string","description":"包名。"},"repo":{"type":"string","description":"详情模式的仓库，例如 core 或 extra。"},"arch":{"type":"string","description":"详情模式架构，默认 x86_64。"},"mode":{"type":"string","enum":["auto","search","detail"],"description":"auto 在提供 repo 时查详情，否则搜索。"}},"required":["package_name"],"additionalProperties":false}), |args| async move { official_package_query(args).await }));
+    // 三件 AUR 查询工具合并成 `aur`(08-17):search/info/status 都走官方 RPC,
+    // 拆开只是让 tools 数组多背两份外壳。
     registry.register(ToolSpec::new(
-        "aur_check_status",
-        "Check Arch Linux / AUR service status with detailed incident, degradation, and downtime info.",
-        super::empty_parameters(),
-        |_| async move { arch_status().await },
+        "aur",
+        "AUR 官方 RPC 查询。action=search 搜包，action=info 取包详情，action=status 查 AUR/Arch 服务状态（含故障、降级和停机信息）。",
+        json!({
+            "type": "object",
+            "properties": {
+                "action": { "type": "string", "enum": ["search", "info", "status"], "description": "search 搜包，info 详情，status 服务状态。" },
+                "query": { "type": "string", "description": "action=search 必填：搜索词。" },
+                "package_name": { "type": "string", "description": "action=info 必填：包名。" },
+                "limit": { "type": "integer", "description": "仅 search：最多结果数。" },
+                "search_by": { "type": "string", "description": "仅 search：搜索字段。" }
+            },
+            "required": ["action"],
+            "additionalProperties": false
+        }),
+        |args| async move {
+            match args.get("action").and_then(Value::as_str).unwrap_or_default() {
+                "search" => aur_search(args).await,
+                "info" => aur_info(args).await,
+                "status" => arch_status().await,
+                other => anyhow::bail!("unknown action: {other}; expected search, info or status"),
+            }
+        },
     ));
+    registry.register(ToolSpec::new("archlinux_official_package_query", "查询 Arch Linux 官方软件包数据库，支持搜索和精确包详情。", json!({"type":"object","properties":{"package_name":{"type":"string","description":"包名。"},"repo":{"type":"string","description":"详情模式的仓库，例如 core 或 extra。"},"arch":{"type":"string","description":"详情模式架构，默认 x86_64。"},"mode":{"type":"string","enum":["auto","search","detail"],"description":"auto 在提供 repo 时查详情，否则搜索。"}},"required":["package_name"],"additionalProperties":false}), |args| async move { official_package_query(args).await }));
     registry.register(ToolSpec::new("archwiki_query", "Search or read ArchWiki pages.", json!({"type":"object","properties":{"query":{"type":"string"},"title":{"type":"string"},"mode":{"type":"string","enum":["auto","search","page"]}},"additionalProperties":false}), |args| async move { archwiki(args).await }));
 
     let state_dir = paths.state_dir.clone();

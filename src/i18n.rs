@@ -132,25 +132,21 @@ pub fn text_for(locale: Locale, en: &'static str, zh: &'static str) -> &'static 
     }
 }
 
-pub fn agent_locale() -> Locale {
-    Locale::detect()
-}
-
-pub fn agent_is_zh() -> bool {
-    agent_locale() == Locale::Zh
-}
-
-pub fn agent_text(en: &'static str, zh: &'static str) -> &'static str {
-    if agent_is_zh() {
-        zh
-    } else {
-        en
-    }
-}
+// 模型可见面恒为英文，与系统 locale 无关：英文思维链质量更高、更贴近工具
+// 调用的训练分布，token 也不更贵。曾经的 `agent_text(en, zh)` 双语开关已
+// 整体移除——模型面文案直接写英文字面量，不留死掉的中文参数；UI 文案
+// （`text`/`localize`）不受影响，仍跟随 locale。
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// UI 面按 locale 切换；模型面没有开关可测——双语形态已整体移除。
+    #[test]
+    fn ui_text_follows_locale() {
+        assert_eq!(text_for(Locale::Zh, "english", "中文"), "中文");
+        assert_eq!(text_for(Locale::En, "english", "中文"), "english");
+    }
 
     #[test]
     fn detects_chinese_locale_values() {

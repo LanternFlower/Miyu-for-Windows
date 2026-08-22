@@ -1,0 +1,357 @@
+//! 上下文溢出的处置。
+//!
+//! 三个层次，代价递增：`prune_stale_history` 丢掉过期的工具输出，
+//! `spill_tool_output` 把大块输出转存到磁盘只留引用，`handle_overflow` 做真正
+//! 的压缩（让模型总结掉旧回合）。
+//!
+//! `maybe_cold_resume_prune` 处理的是冷启动：进程重启后接着旧会话跑，历史可能
+//! 早就超了窗口，得在发第一个请求之前先清理。
+
+use crate::agent::*;
+
+impl Agent {
+    /// 用量历史的来源标签:平台回合记平台 id(如 "qq"),其余一律 "agent"。
+    /// dsh 式工具输出外溢(spill):模型侧内联超过 context.tool_output_spill_bytes
+    /// 的纯文本结果全文存进会话级文件,内联替换为头尾预览+定位提示。read_file
+    /// 不外溢(避免 读→溢→再读 循环);存盘失败保留原文,绝不把成功调用变错误。
+    /// 只约束进模型的消息,程序侧(报告提取/load_tools 解析等)继续用完整值。
+    pub(in crate::agent) fn spill_tool_output(
+        &self,
+        turn_id: &str,
+        call_id: &str,
+        tool_name: &str,
+        output: &str,
+    ) -> Option<String> {
+        let cap = self.config.context.tool_output_spill_bytes;
+        if cap == 0 || tool_name == "read_file" || output.len() <= cap {
+            return None;
+        }
+        fn safe_segment(raw: &str) -> String {
+            raw.chars()
+                .map(|ch| {
+                    if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                        ch
+                    } else {
+                        '_'
+                    }
+                })
+                .take(48)
+                .collect()
+        }
+        let dir = self
+            .paths
+            .state_dir
+            .join("spill")
+            .join(safe_segment(&self.state.session_id()));
+        if std::fs::create_dir_all(&dir).is_err() {
+            return None;
+        }
+        let file = dir.join(format!(
+            "{}-{}-{}.txt",
+            safe_segment(turn_id),
+            safe_segment(call_id),
+            safe_segment(tool_name)
+        ));
+        let replacement = spill_replacement(output, cap, &file.display().to_string())?;
+        if let Err(error) = std::fs::write(&file, output) {
+            tracing::warn!(%error, path = %file.display(), "tool output spill failed; keeping inline");
+            return None;
+        }
+        tracing::info!(
+            tool = tool_name,
+            bytes = output.len(),
+            path = %file.display(),
+            "oversized tool output spilled"
+        );
+        Some(replacement)
+    }
+
+    /// Cold-resume prune: after idling past the provider cache TTL the next
+    /// request is a full-price cold start anyway, so a history rewrite right
+    /// now is free cache-wise and only shrinks that first request. Uses a
+    /// minimal harvest gate for the same reason.
+    pub(in crate::agent) fn maybe_cold_resume_prune(&self) -> Result<()> {
+        if !self.config.context.prune_stale_tool_reports {
+            return Ok(());
+        }
+        let minutes = self.config.context.cold_prune_after_minutes;
+        if minutes == 0 {
+            return Ok(());
+        }
+        let Some(last) = self.state.session_last_request_at()? else {
+            return Ok(());
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if now.saturating_sub(last) < (minutes as i64).saturating_mul(60) {
+            return Ok(());
+        }
+        let stats = self.state.prune_stale_tool_reports(2, 1024)?;
+        if stats.turns > 0 {
+            tracing::info!(
+                turns = stats.turns,
+                saved_chars = stats.saved_chars,
+                idle_minutes = now.saturating_sub(last) / 60,
+                "context_rewrite reason=cold_resume_prune"
+            );
+        }
+        Ok(())
+    }
+
+    /// Mechanical prune behind the harvest gate: rewriting history is a
+    /// prefix-cache reset, so the batch must save at least ~window/64 tokens
+    /// (~window/16 chars) to pay for it. Protects the newest 2 turns.
+    pub(in crate::agent) fn prune_stale_history(
+        &self,
+        context_window: usize,
+    ) -> Result<crate::state::PruneStats> {
+        let min_saved_chars = (context_window / 16).max(8192);
+        let stats = self.state.prune_stale_tool_reports(2, min_saved_chars)?;
+        if stats.turns > 0 {
+            tracing::info!(
+                turns = stats.turns,
+                saved_chars = stats.saved_chars,
+                "context_rewrite reason=prune"
+            );
+        }
+        Ok(stats)
+    }
+
+    /// Derives the verbatim tail budget for compaction. Fixed token count by
+    /// design (the trigger scales with the window, the tail does not — that
+    /// geometry is what stops the re-compaction loop); chat sessions default
+    /// smaller because casual history has less verbatim value.
+    pub(in crate::agent) fn compact_tail_budget(&self, context_window: usize) -> usize {
+        self.config
+            .context
+            .compact_tail_tokens
+            .unwrap_or(16384.min(context_window / 4))
+    }
+
+    pub(in crate::agent) async fn handle_overflow<F>(
+        &self,
+        context_tokens: u64,
+        on_event: &mut F,
+    ) -> Result<Option<compact::CompactResult>>
+    where
+        F: FnMut(AgentEvent) -> Result<()>,
+    {
+        use std::sync::atomic::Ordering;
+        let context_window = self.context_window();
+        let check = overflow::OverflowCheck::new(context_window, self.trim_at_ratio, None);
+        let context_tokens = usize::try_from(context_tokens).unwrap_or(usize::MAX);
+        if !check.is_enabled() {
+            return Ok(None);
+        }
+        if !check.check_tokens(context_tokens) {
+            // Breathing room below the trigger is what a healthy compaction
+            // buys; clear the stuck latch and the run counters here, before
+            // any other branch can return, so a compaction that settles the
+            // context anywhere under the trigger fully re-arms
+            // auto-compaction (a stale count would latch the next one off).
+            self.consecutive_compacts.store(0, Ordering::Relaxed);
+            self.rapid_compacts.store(0, Ordering::Relaxed);
+            self.compact_stuck.store(false, Ordering::Relaxed);
+            // Below-trigger watermarks: each tier does only the cheapest
+            // thing that helps. snip prunes stale tool reports mechanically
+            // (no LLM call); soft just says the context is growing, once.
+            if let Some(window) = context_window {
+                let snip_threshold =
+                    (window as f32 * self.config.context.compact_snip_ratio).max(1.0) as usize;
+                let soft_threshold =
+                    (window as f32 * self.config.context.compact_soft_ratio).max(1.0) as usize;
+                if context_tokens >= snip_threshold {
+                    if self.config.context.prune_stale_tool_reports {
+                        let stats = self.prune_stale_history(window)?;
+                        if stats.turns > 0 {
+                            on_event(AgentEvent::Notice {
+                                text: format!(
+                                    "{} {} · ~{} chars",
+                                    crate::i18n::text(
+                                        "Folded stale tool records from turns:",
+                                        "已机械折叠旧轮次的工具记录："
+                                    ),
+                                    stats.turns,
+                                    stats.saved_chars,
+                                ),
+                            })?;
+                        }
+                    }
+                } else if context_tokens >= soft_threshold
+                    && !self.soft_notice_sent.swap(true, Ordering::Relaxed)
+                {
+                    on_event(AgentEvent::Notice {
+                        text: crate::i18n::text(
+                            "Context is getting large; older tool records will fold first, then the history will be compacted automatically.",
+                            "上下文渐大；将先机械折叠旧工具记录，随后才会自动压缩历史。",
+                        )
+                        .to_string(),
+                    })?;
+                }
+            }
+            return Ok(None);
+        }
+        if self.compact_stuck.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let compact_result = match self.on_overflow.as_str() {
+            "compact" => {
+                let visible_count = self.state.load_visible_turns()?.len();
+                if visible_count == 0 {
+                    return Ok(None);
+                }
+                let window = context_window.unwrap();
+                let force_threshold =
+                    (window as f32 * self.config.context.compact_force_ratio).max(1.0) as usize;
+                let force = context_tokens >= force_threshold;
+                // Prune first: it is free, and when it alone lands the
+                // context back under the trigger the paid summary call (and
+                // its cache reset) is skipped entirely.
+                if self.config.context.prune_stale_tool_reports {
+                    let stats = self.prune_stale_history(window)?;
+                    if stats.turns > 0 && !force {
+                        let post_tokens =
+                            usize::try_from(self.effective_context_tokens()?).unwrap_or(usize::MAX);
+                        if !check.check_tokens(post_tokens) {
+                            on_event(AgentEvent::Notice {
+                                text: crate::i18n::text(
+                                    "Folded stale tool records; context is back under the compaction threshold.",
+                                    "已机械折叠旧工具记录；上下文已回落到压缩阈值之下。",
+                                )
+                                .to_string(),
+                            })?;
+                            return Ok(None);
+                        }
+                    }
+                }
+                on_event(AgentEvent::CompactStart)?;
+                let compactor = compact::Compactor::new(
+                    self.client.clone(),
+                    self.state.clone(),
+                    window,
+                    check.reserved_tokens,
+                    self.compact_tail_budget(window),
+                    self.preset_dialogs.len(),
+                );
+                let mut on_chunk =
+                    |chunk: ChatStreamChunk| on_event(AgentEvent::CompactChunk(chunk));
+                let fork_builder = |fold_ids: &[String]| -> Result<compact::CompactForkParts> {
+                    Ok((
+                        self.compact_fork_prefix(fold_ids)?,
+                        self.live_tool_definitions()?,
+                    ))
+                };
+                let fork_builder: Option<compact::CompactForkBuilder<'_>> = self
+                    .config
+                    .context
+                    .compact_cache_reuse
+                    .then_some(&fork_builder);
+                let result = match compactor
+                    .perform_compact(force, true, fork_builder, &mut on_chunk)
+                    .await
+                {
+                    Ok(result) => {
+                        on_event(AgentEvent::CompactEnd)?;
+                        result
+                    }
+                    Err(e) => {
+                        on_event(AgentEvent::CompactEnd)?;
+                        return Err(e);
+                    }
+                };
+                if let Some(result) = result.as_ref() {
+                    on_event(AgentEvent::Notice {
+                        text: format!(
+                            "{} {} → {} {}",
+                            crate::i18n::text("Compacted: folded turns", "压缩完成：折叠轮次"),
+                            result.folded_turns,
+                            crate::i18n::text("kept verbatim", "逐字保留最近轮次"),
+                            result.kept_turns,
+                        ),
+                    })?;
+                }
+                if result.is_some() {
+                    // Post-compaction check: still over the trigger means the
+                    // verbatim floor plus system prompt alone exceed it.
+                    // Twice in a row would re-fire every turn (cratering the
+                    // prefix cache each time), so latch auto-compaction off
+                    // and say why, once.
+                    let post_tokens =
+                        usize::try_from(self.effective_context_tokens()?).unwrap_or(usize::MAX);
+                    if check.check_tokens(post_tokens) {
+                        let runs = self.consecutive_compacts.fetch_add(1, Ordering::Relaxed) + 1;
+                        if runs >= 2 && !self.compact_stuck.swap(true, Ordering::Relaxed) {
+                            on_event(AgentEvent::Notice {
+                                text: crate::i18n::text(
+                                    "Automatic context compaction paused: the context window is too small for compaction to help (the system prompt plus the verbatim tail already exceed the trigger). Raise context window or reduce tool output; compaction resumes once the context drops.",
+                                    "自动上下文压缩已暂停：上下文窗口太小，压缩无法奏效（system prompt 加逐字尾巴已超过触发线）。请调大上下文窗口或减小工具输出；上下文回落后自动恢复。",
+                                )
+                                .to_string(),
+                            })?;
+                        }
+                    } else {
+                        self.consecutive_compacts.store(0, Ordering::Relaxed);
+                    }
+                    // Thrashing check: a healthy compaction buys many turns
+                    // of breathing room. Refilling within ~3 turns, three
+                    // times in a row, means a single oversized item refills
+                    // the window and each compaction only craters the cache.
+                    let max_seq = self
+                        .state
+                        .load_visible_turns()?
+                        .last()
+                        .map(|turn| turn.seq)
+                        .unwrap_or(-1);
+                    let previous = self.last_compact_max_seq.swap(max_seq, Ordering::Relaxed);
+                    // Each turn advances seq by 1 and the compaction summary
+                    // itself takes one, so "within 3 turns" is a delta <= 4.
+                    if previous >= 0 && max_seq.saturating_sub(previous) <= 4 {
+                        let rapid = self.rapid_compacts.fetch_add(1, Ordering::Relaxed) + 1;
+                        if rapid >= 3 && !self.compact_stuck.swap(true, Ordering::Relaxed) {
+                            on_event(AgentEvent::Notice {
+                                text: crate::i18n::text(
+                                    "Automatic context compaction paused: the context refills within a few turns of each compaction. A single message or tool output is likely too large for the window — read in smaller chunks, or /clear to start fresh.",
+                                    "自动上下文压缩已暂停：每次压缩后几轮内上下文就再次填满。可能有单条消息或工具输出对窗口而言过大——请分块读取，或使用 /clear 重新开始。",
+                                )
+                                .to_string(),
+                            })?;
+                        }
+                    } else {
+                        self.rapid_compacts.store(0, Ordering::Relaxed);
+                    }
+                } else {
+                    // cut=0(可见历史全部落在保尾预算内)却仍越过触发线:
+                    // 没有任何东西可折,再触发也只会空转。与"压后仍超"
+                    // 走同一失败闩,否则每轮都白跑一次压缩流程。
+                    let post_tokens =
+                        usize::try_from(self.effective_context_tokens()?).unwrap_or(usize::MAX);
+                    if check.check_tokens(post_tokens) {
+                        let runs = self.consecutive_compacts.fetch_add(1, Ordering::Relaxed) + 1;
+                        if runs >= 2 && !self.compact_stuck.swap(true, Ordering::Relaxed) {
+                            on_event(AgentEvent::Notice {
+                                text: crate::i18n::text(
+                                    "Automatic context compaction paused: the context window is too small for compaction to help (the system prompt plus the verbatim tail already exceed the trigger). Raise context window or reduce tool output; compaction resumes once the context drops.",
+                                    "自动上下文压缩已暂停：上下文窗口太小，压缩无法奏效（system prompt 加逐字尾巴已超过触发线）。请调大上下文窗口或减小工具输出；上下文回落后自动恢复。",
+                                )
+                                .to_string(),
+                            })?;
+                        }
+                    } else {
+                        self.consecutive_compacts.store(0, Ordering::Relaxed);
+                    }
+                }
+                result
+            }
+            "pop" => {
+                on_event(AgentEvent::PopStart)?;
+                self.trim_visible_context()?;
+                on_event(AgentEvent::PopEnd)?;
+                None
+            }
+            _ => None,
+        };
+        Ok(compact_result)
+    }
+}

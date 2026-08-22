@@ -1,0 +1,41 @@
+{
+  "name": "divine",
+  "display_name": "占卜",
+  "description": "Random divination: method zhouyi casts an I Ching (Zhouyi) hexagram, tarot draws tarot cards, fortune gives a luck reading, dice rolls dice. The tool only produces the random result; the interpretation is up to you.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "method": {
+        "type": "string",
+        "enum": [
+          "zhouyi",
+          "tarot",
+          "fortune",
+          "dice"
+        ],
+        "description": "Divination method."
+      },
+      "count": {
+        "type": "integer",
+        "description": "dice only: number of dice, default 1, max 100."
+      },
+      "sides": {
+        "type": "integer",
+        "description": "dice only: sides per die, default 6, max 1000."
+      },
+      "modifier": {
+        "type": "integer",
+        "description": "dice only: optional modifier added to the total."
+      }
+    },
+    "required": [
+      "method"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false,
+  "load_policy": "group",
+  "groups": [
+    "divination"
+  ]
+}

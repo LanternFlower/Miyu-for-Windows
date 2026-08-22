@@ -1,5 +1,4 @@
 use super::{ToolProgress, ToolRegistry, ToolSpec};
-use crate::i18n::agent_text as t;
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -23,7 +22,7 @@ pub fn managed_manifest(paths: &MiyuPaths, session_id: &str) -> Result<String> {
     let session_dir = root.join(session_id);
     let mut entries = Vec::new();
     let Ok(read_dir) = std::fs::read_dir(&session_dir) else {
-        return Ok("（暂无托管 Artifact）".to_string());
+        return Ok("(no managed artifacts yet)".to_string());
     };
     for entry in read_dir.flatten() {
         let metadata = match entry.metadata() {
@@ -38,9 +37,9 @@ pub fn managed_manifest(paths: &MiyuPaths, session_id: &str) -> Result<String> {
     }
     entries.sort_by(|left, right| left.0.cmp(&right.0));
     if entries.is_empty() {
-        return Ok("（暂无托管 Artifact）".to_string());
+        return Ok("(no managed artifacts yet)".to_string());
     }
-    let mut output = String::from("当前会话的托管 Artifact 文件：");
+    let mut output = String::from("Managed artifact files in this session:");
     for (name, size) in entries.into_iter().take(100) {
         output.push_str(&format!("\n- {name} ({size} bytes)"));
     }
@@ -50,20 +49,17 @@ pub fn managed_manifest(paths: &MiyuPaths, session_id: &str) -> Result<String> {
 fn register_present(registry: &mut ToolRegistry) {
     registry.register(ToolSpec::new_with_progress(
         "present_artifact",
-        t(
-            "Publish a completed file to the WebUI preview workspace. Use this only for files the user should inspect as a deliverable, not routine source edits.",
-            "将已完成的文件发布到 WebUI 预览工作区。仅用于需要用户查看的交付物，不要用于普通源码编辑。",
-        ),
+        "Publish a completed file to the WebUI preview workspace. Use this only for files the user should inspect as a deliverable, not routine source edits.",
         json!({
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": t("File path to publish.", "要发布的文件路径。")
+                    "description": "File path to publish."
                 },
                 "title": {
                     "type": "string",
-                    "description": t("Optional display title.", "可选的显示标题。")
+                    "description": "Optional display title."
                 }
             },
             "required": ["path"],
@@ -77,24 +73,21 @@ fn register_create(registry: &mut ToolRegistry, root: PathBuf, session_id: &str)
     let session_id = session_id.to_string();
     registry.register(ToolSpec::new_with_progress(
         "create_artifact",
-        t(
-            "Create or update a completed deliverable in Miyu's managed Artifact workspace and display it in the WebUI. Use this for reports, documents, standalone code, HTML, JSON, CSV, and other files the user should inspect. Do not use it for routine project source edits.",
-            "在 Miyu 托管的 Artifact 工作区创建或更新已完成的交付物，并展示到 WebUI。适用于报告、文档、独立代码、HTML、JSON、CSV 等需要用户查看的文件；不要用于普通项目源码修改。",
-        ),
+        "Create or update a completed deliverable in Miyu's managed Artifact workspace and display it in the WebUI. Use this for reports, documents, standalone code, HTML, JSON, CSV, and other files the user should inspect. Do not use it for routine project source edits.",
         json!({
             "type": "object",
             "properties": {
                 "filename": {
                     "type": "string",
-                    "description": t("File name including an appropriate extension. Directory components are not allowed.", "包含正确扩展名的文件名，不允许包含目录。")
+                    "description": "File name including an appropriate extension. Directory components are not allowed."
                 },
                 "content": {
                     "type": "string",
-                    "description": t("Complete file content.", "完整文件内容。")
+                    "description": "Complete file content."
                 },
                 "title": {
                     "type": "string",
-                    "description": t("Optional display title.", "可选的显示标题。")
+                    "description": "Optional display title."
                 }
             },
             "required": ["filename", "content"],
@@ -112,16 +105,13 @@ fn register_read(registry: &mut ToolRegistry, root: PathBuf, session_id: &str) {
     let read_session = session_id.to_string();
     registry.register(ToolSpec::new(
         "read_artifact",
-        t(
-            "Read an existing file from the current WebUI Artifact workspace. Use the filename from the Artifact list; do not search the filesystem with glob.",
-            "读取当前 WebUI Artifact 工作区中的已有文件。使用 Artifact 清单中的文件名，不要用 glob 搜索文件系统。",
-        ),
+        "Read an existing file from the current WebUI Artifact workspace. Use the filename from the Artifact list; do not search the filesystem with glob.",
         json!({
             "type": "object",
             "properties": {
-                "filename": {"type": "string", "description": t("Managed Artifact file name.", "托管 Artifact 文件名。")},
-                "offset": {"type": "integer", "description": t("1-based line offset.", "从 1 开始的行偏移。")},
-                "limit": {"type": "integer", "description": t("Maximum lines to read.", "最多读取行数。")}
+                "filename": {"type": "string", "description": "Managed Artifact file name."},
+                "offset": {"type": "integer", "description": "1-based line offset."},
+                "limit": {"type": "integer", "description": "Maximum lines to read."}
             },
             "required": ["filename"],
             "additionalProperties": false
@@ -299,7 +289,7 @@ fn ensure_private_dir(path: &Path) -> Result<()> {
 
 fn expand_path(value: &str) -> PathBuf {
     if let Some(rest) = value.strip_prefix("~/") {
-        if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+        if let Some(home) = crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
             return home.join(rest);
         }
     }

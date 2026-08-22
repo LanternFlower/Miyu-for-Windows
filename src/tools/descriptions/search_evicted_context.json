@@ -1,17 +1,17 @@
 {
   "name": "search_evicted_context",
   "display_name": "搜索旧上下文",
-  "description": "搜索因上下文长度限制而被弹出到缓存的对话轮次内容。上下文明显缺少早前讨论时使用。",
+  "description": "Search conversation turns that were evicted to cache due to context length limits. Use when the context is clearly missing earlier discussion.",
   "parameters": {
     "type": "object",
     "properties": {
       "query": {
         "type": "string",
-        "description": "搜索关键词或问题。"
+        "description": "Search keywords or a question."
       },
       "max_results": {
         "type": "integer",
-        "description": "可选结果数量限制。"
+        "description": "Optional limit on the number of results."
       }
     },
     "required": [
@@ -19,7 +19,7 @@
     ]
   },
   "permission": "readonly",
-  "always_loaded": true,
+  "always_loaded": false,
   "load_policy": "summary",
   "groups": [
     "memory"

@@ -1,0 +1,52 @@
+{
+  "name": "manage_skill",
+  "display_name": "管理技能",
+  "description": "Author skills: action=create/update opens a draft, publish releases it, delete removes it, list_drafts lists drafts.\nOnly edit the returned draft (with apply_patch), then publish validates and atomically releases it. Creating a draft never overwrites an existing skill; publishing an update draft fails if the live skill changed in the meantime. Drafts unmodified for 30 days are cleaned up before list_drafts. Scripts inside a skill remain resources and are not registered as tools.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "create",
+          "update",
+          "delete",
+          "publish",
+          "list_drafts"
+        ],
+        "description": "Authoring step to perform."
+      },
+      "name": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+        "description": "Skill name, required for create/update/delete."
+      },
+      "description": {
+        "type": "string",
+        "description": "action=create: what the skill does and when it should be used."
+      },
+      "scope": {
+        "type": "string",
+        "enum": [
+          "global",
+          "persona"
+        ],
+        "description": "global is available to all personas; persona only to the current persona. Required for update/delete; create defaults to global.",
+        "default": "global"
+      },
+      "draft_id": {
+        "type": "string",
+        "description": "action=publish: draft ID returned by create or update."
+      }
+    },
+    "required": [
+      "action"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false,
+  "load_policy": "group",
+  "groups": [
+    "skills"
+  ]
+}

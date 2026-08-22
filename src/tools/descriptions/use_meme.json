@@ -1,0 +1,62 @@
+{
+  "name": "use_meme",
+  "display_name": "表情包",
+  "description": "Send memes. action=search finds candidates by scenario, mood, tags, or visual content; action=show sends one and renders it in the terminal (GIFs default to a static preview). Unless the user gave a specific id, search before sending.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "search",
+          "show"
+        ],
+        "description": "search finds candidates, show sends."
+      },
+      "query": {
+        "type": "string",
+        "description": "search: scenario, mood, visual content, or intent."
+      },
+      "tags": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "search: preferred tags."
+      },
+      "limit": {
+        "type": "integer",
+        "description": "search: candidate cap; defaults to the configured value, max 3."
+      },
+      "id": {
+        "type": "string",
+        "description": "show: full sha256 id or a unique short id."
+      },
+      "library": {
+        "type": "string",
+        "description": "Optional meme library override."
+      },
+      "size": {
+        "type": "string",
+        "description": "show: chafa size, e.g. 40x15."
+      },
+      "width": {
+        "type": "integer",
+        "description": "show: output width in cells."
+      },
+      "height": {
+        "type": "integer",
+        "description": "show: output height in cells."
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "additionalProperties": false
+  },
+  "always_loaded": true,
+  "load_policy": "summary",
+  "groups": [
+    "memes"
+  ]
+}

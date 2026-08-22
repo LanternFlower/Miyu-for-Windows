@@ -1,5 +1,4 @@
 use super::{ToolRegistry, ToolSpec};
-use crate::i18n::agent_text as t;
 use crate::paths::MiyuPaths;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -23,6 +22,29 @@ pub type TodoList = Arc<Mutex<Vec<Todo>>>;
 
 fn todos_path(paths: &MiyuPaths, session: &str) -> PathBuf {
     paths.state_dir.join("todos").join(format!("{session}.json"))
+}
+
+/// 某个会话当前的待办清单。
+///
+/// WebUI 的常驻面板要在刷新之后还能显示当前状态，而工具事件只在工具跑的
+/// 那一刻发生一次。读取收口在这里，调用方不自己拼 `todos/{session}.json`
+/// ——路径和损坏容错的规则只该有一份。
+pub(crate) fn session_todos(paths: &MiyuPaths, session: &str) -> Vec<Todo> {
+    load_todos(paths, session)
+}
+
+/// 清掉某个会话的待办。
+///
+/// 待办按会话存在库外面（`todos/{session}.json`），所以「重置对话」那条路上
+/// 一串清理动作全走 `StateStore`，唯独漏了它——对话重来了，上一轮的待办还挂
+/// 在侧边面板上，模型下一次读 todo 也还是旧的。
+pub(crate) fn clear_session_todos(paths: &MiyuPaths, session: &str) -> Result<()> {
+    match std::fs::remove_file(todos_path(paths, session)) {
+        Ok(()) => Ok(()),
+        // 没建过清单是常态，不是错误。
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn load_todos(paths: &MiyuPaths, session: &str) -> Vec<Todo> {
@@ -76,91 +98,65 @@ fn run_scoped(
     Ok(output)
 }
 
+/// todowrite + todoupdate 合并(08-17):同一份清单的整表替换与增量修改。
+/// 给了 updates 就走增量,给了 todos 就整表替换。
 pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
-    let update_paths = paths.clone();
     registry.register(ToolSpec::new(
         "todowrite",
-        t(
-            "Create or replace the full structured task list for the current coding session. Use this when initializing or rebuilding the whole list. For changing one existing item, use todoupdate instead.",
-            "创建或替换当前编码会话的完整结构化任务列表。用于初始化或重建整个列表；如果只是修改单个已有任务，请使用 todoupdate。",
-        ),
+        "Maintain the structured task list for the current session. Pass todos to create or replace the whole list; pass updates to apply small atomic changes (add, update, remove, clear) without resending everything. Exactly one of the two.",
         json!({
             "type": "object",
             "properties": {
                 "todos": {
                     "type": "array",
-                    "description": t("The full todo list. This replaces the entire list.", "完整任务列表。此操作会替换整个列表。"),
+                    "description": "The full todo list. This replaces the entire list.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "content": {
-                                "type": "string",
-                                "description": t("Brief description of the task.", "任务简述。")
-                            },
+                            "content": { "type": "string", "description": "Brief description of the task." },
                             "status": {
                                 "type": "string",
                                 "enum": ["pending", "in_progress", "completed", "cancelled"],
-                                "description": t("Current status of the task.", "任务当前状态。")
+                                "description": "Current status of the task."
                             },
                             "priority": {
                                 "type": "string",
                                 "enum": ["high", "medium", "low"],
-                                "description": t("Priority level of the task.", "任务优先级。")
+                                "description": "Priority level of the task."
                             }
                         },
                         "required": ["content", "status", "priority"]
                     }
-                }
-            },
-            "required": ["todos"],
-            "additionalProperties": false
-        }),
-        move |args| {
-            let paths = paths.clone();
-            async move { run_scoped(&paths, args, todo_write) }
-        },
-    ).writes());
-    registry.register(ToolSpec::new(
-        "todoupdate",
-        t(
-            "Atomically update the existing todo list. Use this for small changes: add, update, remove, or clear items without resending the full list.",
-            "原子更新现有任务列表。用于小范围变更：新增、修改、删除或清空任务，不需要重传完整列表。",
-        ),
-        json!({
-            "type": "object",
-            "properties": {
+                },
                 "updates": {
                     "type": "array",
-                    "description": t("Sequential todo mutations to apply atomically.", "按顺序原子应用的任务变更。"),
+                    "description": "Sequential todo mutations to apply atomically.",
                     "items": {
                         "type": "object",
                         "properties": {
                             "action": {
                                 "type": "string",
                                 "enum": ["add", "update", "remove", "clear"],
-                                "description": t("Mutation type.", "变更类型。")
+                                "description": "Mutation type."
                             },
                             "index": {
                                 "type": "integer",
-                                "description": t("1-based target item index. For add, inserts at this position; omitted means append.", "目标任务序号，1 起始。新增时表示插入位置；省略则追加。")
+                                "description": "1-based target item index. For add, inserts at this position; omitted means append."
                             },
                             "match_content": {
                                 "type": "string",
-                                "description": t("Exact content used to find the target when index is omitted.", "省略 index 时，用于定位目标任务的完整内容。")
+                                "description": "Exact content used to find the target when index is omitted."
                             },
-                            "content": {
-                                "type": "string",
-                                "description": t("New task content for add or update.", "新增或修改后的任务内容。")
-                            },
+                            "content": { "type": "string", "description": "New task content for add or update." },
                             "status": {
                                 "type": "string",
                                 "enum": ["pending", "in_progress", "completed", "cancelled"],
-                                "description": t("Updated task status.", "更新后的任务状态。")
+                                "description": "Updated task status."
                             },
                             "priority": {
                                 "type": "string",
                                 "enum": ["high", "medium", "low"],
-                                "description": t("Updated task priority.", "更新后的任务优先级。")
+                                "description": "Updated task priority."
                             }
                         },
                         "required": ["action"],
@@ -168,12 +164,17 @@ pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
                     }
                 }
             },
-            "required": ["updates"],
             "additionalProperties": false
         }),
         move |args| {
-            let paths = update_paths.clone();
-            async move { run_scoped(&paths, args, todo_update) }
+            let paths = paths.clone();
+            async move {
+                if args.get("updates").is_some() {
+                    run_scoped(&paths, args, todo_update)
+                } else {
+                    run_scoped(&paths, args, todo_write)
+                }
+            }
         },
     ).writes());
 }

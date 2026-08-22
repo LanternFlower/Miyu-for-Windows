@@ -108,7 +108,10 @@ where
 }
 
 pub fn current_platform_sender() -> Option<String> {
-    PLATFORM_SENDER.try_with(|sender| sender.clone()).ok().flatten()
+    PLATFORM_SENDER
+        .try_with(|sender| sender.clone())
+        .ok()
+        .flatten()
 }
 
 /// 本回合的发起来源(dsh goal 权限模型的 Miyu 化:不扫会话事件,发起方
@@ -120,6 +123,16 @@ pub enum TurnOrigin {
     Human,
     /// 后台任务完成唤醒的合成轮。
     JobWake,
+    /// 目标驱动器自动开的续轮。
+    ///
+    /// 带着认领时的 (goal_id, revision, round)。工具层据此判定「本轮恰好是
+    /// 当前目标的那一轮」——只有这种轮才允许模型自己报完成/受阻;别的自动轮
+    /// (比如任务唤醒)不行,拿着旧轮号的更不行。
+    GoalRound {
+        goal_id: String,
+        revision: i64,
+        round: i64,
+    },
 }
 
 tokio::task_local! {
@@ -157,4 +170,158 @@ where
 
 pub fn current_bridge_depth() -> u32 {
     BRIDGE_DEPTH.try_with(|depth| *depth).unwrap_or(0)
+}
+
+/// 平台回合的生图配额。计数器挂在 turn future 的 task-local 上而不是共享
+/// 注册表里:注册表在配置缓存中跨 turn 复用,放那里会让会话之间互相污染。
+pub struct ImageGenLimit {
+    per_request: usize,
+    remaining: std::sync::atomic::AtomicUsize,
+}
+
+impl ImageGenLimit {
+    pub fn new(per_request: usize) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            per_request,
+            remaining: std::sync::atomic::AtomicUsize::new(per_request),
+        })
+    }
+
+    fn try_acquire(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        loop {
+            let remaining = self.remaining.load(Ordering::Acquire);
+            let Some(next) = remaining.checked_sub(1) else {
+                return false;
+            };
+            if self
+                .remaining
+                .compare_exchange(remaining, next, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return true;
+            }
+        }
+    }
+
+    fn refund(&self) {
+        use std::sync::atomic::Ordering;
+        loop {
+            let remaining = self.remaining.load(Ordering::Acquire);
+            let next = (remaining + 1).min(self.per_request);
+            if self
+                .remaining
+                .compare_exchange(remaining, next, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return;
+            }
+        }
+    }
+
+    fn reset(&self) {
+        self.remaining
+            .store(self.per_request, std::sync::atomic::Ordering::Release);
+    }
+}
+
+tokio::task_local! {
+    /// `None` 或未设置 = 本地会话(REPL/WebUI/测试),不限流。
+    static IMAGE_GEN_LIMIT: Option<std::sync::Arc<ImageGenLimit>>;
+}
+
+pub async fn with_image_gen_limit<F: Future>(
+    limit: Option<std::sync::Arc<ImageGenLimit>>,
+    future: F,
+) -> F::Output {
+    IMAGE_GEN_LIMIT.scope(limit, future).await
+}
+
+/// 申请一次生图配额。true = 放行。平台回合按 task-local 计数,其余无限。
+pub fn try_allow_image() -> bool {
+    IMAGE_GEN_LIMIT
+        .try_with(|limit| {
+            limit
+                .as_ref()
+                .map(|limit| limit.try_acquire())
+                .unwrap_or(true)
+        })
+        .unwrap_or(true)
+}
+
+/// 生图请求失败时退还配额,让同一请求内的重试仍然可行;成功的生成不退。
+pub fn refund_image_gen_allowance() {
+    let _ = IMAGE_GEN_LIMIT.try_with(|limit| {
+        if let Some(limit) = limit {
+            limit.refund();
+        }
+    });
+}
+
+/// 排队 follow-up 被消费 = 用户更新了请求,配额重置。非平台回合是 no-op。
+pub fn reset_image_gen_limit() {
+    let _ = IMAGE_GEN_LIMIT.try_with(|limit| {
+        if let Some(limit) = limit {
+            limit.reset();
+        }
+    });
+}
+
+#[cfg(test)]
+mod image_limit_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn platform_limit_allows_one_then_blocks() {
+        with_image_gen_limit(Some(ImageGenLimit::new(1)), async {
+            assert!(try_allow_image());
+            assert!(!try_allow_image());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn queued_prompt_reset_restores_allowance() {
+        with_image_gen_limit(Some(ImageGenLimit::new(1)), async {
+            assert!(try_allow_image());
+            assert!(!try_allow_image());
+            reset_image_gen_limit();
+            assert!(try_allow_image());
+            assert!(!try_allow_image());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn failed_generation_refund_keeps_retry_possible() {
+        with_image_gen_limit(Some(ImageGenLimit::new(1)), async {
+            assert!(try_allow_image());
+            refund_image_gen_allowance();
+            assert!(try_allow_image());
+            // 退还不会超过配额上限。
+            refund_image_gen_allowance();
+            refund_image_gen_allowance();
+            assert!(try_allow_image());
+            assert!(!try_allow_image());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn local_turns_without_task_local_are_unlimited() {
+        assert!(try_allow_image());
+        assert!(try_allow_image());
+        reset_image_gen_limit();
+        refund_image_gen_allowance();
+        assert!(try_allow_image());
+    }
+
+    #[tokio::test]
+    async fn exempt_platform_turn_with_none_is_unlimited() {
+        with_image_gen_limit(None, async {
+            assert!(try_allow_image());
+            assert!(try_allow_image());
+        })
+        .await;
+    }
 }

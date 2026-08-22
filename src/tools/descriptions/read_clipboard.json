@@ -1,7 +1,7 @@
 {
   "name": "read_clipboard",
   "display_name": "读取剪贴板",
-  "description": "读取当前 Linux 剪贴板。",
+  "description": "Read the current Linux clipboard.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -17,7 +17,7 @@
     }
   },
   "permission": "readonly",
-  "always_loaded": true,
+  "always_loaded": false,
   "load_policy": "summary",
   "groups": [
     "systeminfo"

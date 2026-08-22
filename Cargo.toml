@@ -1,12 +1,16 @@
 [package]
 name = "miyu"
-version = "0.4.3"
+version = "0.4.5"
 edition = "2021"
 rust-version = "1.89"
 license = "MIT"
 repository = "https://github.com/SHORiN-KiWATA/Miyu"
 description = "Command-line AI assistant"
 autobins = false
+
+[lib]
+name = "miyu"
+path = "src/lib.rs"
 
 [[bin]]
 name = "miyu"
@@ -40,7 +44,7 @@ if-addrs = "0.13"
 libc = "0.2"
 md5 = "0.7"
 pulldown-cmark = { version = "0.13.4", default-features = false }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls", "stream"] }
 rand = "0.8"
 rpassword = "7.4"
 rodio = { version = "0.19", default-features = false, features = ["mp3", "wav"] }
@@ -51,7 +55,6 @@ serde_json = "1.0"
 sha1 = "0.10"
 sha2 = "0.10"
 sha3 = "0.10"
-syntect = { version = "5.2", default-features = false, features = ["default-syntaxes", "regex-onig"] }
 termimad = "0.34"
 tempfile = "3.15"
 tar = "0.4"
@@ -94,3 +97,6 @@ tiktoken-rs = "0.12"
 [profile.release]
 lto = "thin"
 strip = "symbols"
+# 单编译单元：跨单元内联与去重充分化，.text 实测显著缩小（见
+# docs/plan/low-footprint.md 第 3 轮）。代价只是 release 编译更慢。
+codegen-units = 1

@@ -1,795 +1,323 @@
-use super::{html_conversion, http_response, ToolRegistry, ToolSpec};
-use anyhow::{bail, Result};
-use serde_json::{json, Value};
-use std::cmp::Ordering;
-use std::time::Duration;
+//! caniplayonlinux.com 的兼容性结论快照。
+//!
+//! 定位游戏走两步：先按 slug 直接拼详情页 URL（实测 145 条真值样本命中 96%，
+//! 约 60 ms），404 再退到站点 sitemap 做模糊匹配（一次请求拿全部 2600+ 条目，
+//! 约 145 ms）。
+//!
+//! 这里**不**扫目录。此前的实现因为站点没有搜索接口（`?q=` 被忽略，照样返回
+//! 全部 108 页），只能整本目录抓下来本地筛：108 个请求换一个游戏的信息，实测
+//! 1.8 秒。sitemap 覆盖 2646 条，比目录页宣称的 2586 还多，且带 `lastmod`。
+
+use super::http_response;
+use crate::paths::MiyuPaths;
+use anyhow::Result;
+use std::time::{Duration, SystemTime};
 
 const BASE_URL: &str = "https://caniplayonlinux.com";
-const TOOL_NAME: &str = "query_caniplayonlinux";
-const TOOL_DISPLAY_NAME: &str = "查询是否能在Linux上玩";
-const PAGE_SIZE: usize = 24;
-const MAX_LIMIT: usize = 10;
+const SITEMAP_URL: &str = "https://caniplayonlinux.com/sitemap-0.xml";
+const SITEMAP_CACHE: &str = "caniplayonlinux-sitemap.xml";
+const CACHE_TTL: Duration = Duration::from_secs(24 * 3600);
 
-const TOOL_DESC: &str = "查询 caniplayonlinux.com 的实时 Linux 游戏兼容性信息。适用于用户询问某个游戏是否能在 Linux 上玩、是否可通过 Proton 运行、是否 Steam Deck Verified、推荐 Proton 版本、是否有已知 Linux 问题或修复方法的场景。该工具只读抓取网页并返回结构化结果，包括标题、来源链接、兼容性结论、Proton 推荐、Steam Deck 状态、摘要、备注、已知问题、修复建议和验证时间等可用字段。返回内容来自第三方站点实时解析；不要编造缺失字段，未返回的信息应视为未知。允许子代理调用。";
-
-#[derive(Clone, Debug)]
-struct GameEntry {
-    title: String,
-    url: String,
+#[derive(Debug, Clone)]
+pub(super) struct CipolEntry {
+    /// meta description。信息密度远高于正文分节抽取——一句话里通常同时给出
+    /// ProtonDB 评级、报告数、有无反作弊、推荐 Proton 和验证时间。
+    pub summary: Option<String>,
+    /// 绝对日期（`YYYY-MM-DD`）。页面同时提供相对时间（"1 month ago"），
+    /// 但那个一旦缓存就失真，也没法和 AWACY 的日期比对。
+    pub last_verified: Option<String>,
+    pub url: String,
 }
 
-#[derive(Clone, Debug)]
-struct ScoredGame {
-    entry: GameEntry,
-    score: i64,
-    reason: String,
-}
-
-pub fn register(registry: &mut ToolRegistry) {
-    registry.register(create_toolspec());
-}
-
-pub fn create_toolspec() -> ToolSpec {
-    ToolSpec::new(
-        TOOL_NAME,
-        TOOL_DESC,
-        json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "要查询的游戏名称或部分标题。"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "最多返回的匹配结果数，默认 5，最大 10。"
-                }
-            },
-            "required": ["query"],
-            "additionalProperties": false
-        }),
-        |args| async move { query_caniplayonlinux(args).await },
-    )
-    .with_display_name(TOOL_DISPLAY_NAME)
-}
-
-async fn query_caniplayonlinux(args: Value) -> Result<String> {
-    let query = args
-        .get("query")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    if query.is_empty() {
-        bail!("missing required argument: query");
-    }
-    let limit = args
-        .get("limit")
-        .and_then(Value::as_u64)
-        .unwrap_or(5)
-        .clamp(1, MAX_LIMIT as u64) as usize;
-
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(25))
-        .user_agent("miyu-caniplayonlinux-query/0.1")
-        .build()?;
-
-    let first_html = fetch_text(&client, &format!("{BASE_URL}/games/")).await?;
-    let total_games = extract_total_games(&first_html).unwrap_or(PAGE_SIZE);
-    let pages = total_games.div_ceil(PAGE_SIZE).max(1);
-    let mut all_games = extract_games_from_list_page(&first_html);
-    let mut warnings = Vec::new();
-
-    for page in 2..=pages {
-        let url = format!("{BASE_URL}/games/{page}/");
-        match fetch_text(&client, &url).await {
-            Ok(html) => all_games.extend(extract_games_from_list_page(&html)),
-            Err(err) => warnings.push(json!({
-                "kind": "page_fetch_failed",
-                "url": url,
-                "error": err.to_string(),
-            })),
+/// caniplayonlinux 的 slug 规则：撇号和 & 直接删除，不转成连字符。
+///
+/// `Baldur's Gate 3` → `baldurs-gate-3`（而非 `baldur-s-gate-3`）。实测 145 条
+/// 真值样本：朴素实现命中 80%，本实现 96%。
+fn slugify(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut pending_dash = false;
+    for ch in value.chars() {
+        if matches!(ch, '\'' | '\u{2019}' | '&' | '\u{FF06}') {
+            continue;
         }
-    }
-
-    let mut matches = unique_by_url(all_games)
-        .into_iter()
-        .filter_map(|entry| score_game(entry, query))
-        .collect::<Vec<_>>();
-    matches.sort_by(|a, b| {
-        b.score
-            .cmp(&a.score)
-            .then_with(|| a.entry.title.cmp(&b.entry.title))
-    });
-    matches.truncate(limit);
-
-    let mut results = Vec::new();
-    for game in matches {
-        match fetch_detail(&client, &game).await {
-            Ok(result) => results.push(result),
-            Err(err) => {
-                warnings.push(json!({
-                    "kind": "detail_fetch_failed",
-                    "title": game.entry.title,
-                    "url": game.entry.url,
-                    "error": err.to_string(),
-                }));
-                results.push(json!({
-                    "title": game.entry.title,
-                    "url": game.entry.url,
-                    "match": {"score": game.score, "reason": game.reason},
-                    "metadata": {
-                        "sourceUrl": game.entry.url,
-                        "dataFreshness": "live_fetch",
-                        "confidence": "low",
-                        "missingFields": ["detail_page"]
-                    }
-                }));
+        if ch.is_ascii_alphanumeric() {
+            if pending_dash && !out.is_empty() {
+                out.push('-');
             }
+            pending_dash = false;
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            pending_dash = true;
         }
     }
-
-    Ok(serde_json::to_string_pretty(&json!({
-        "query": query,
-        "source": {
-            "name": "Can I Play on Linux?",
-            "site": "caniplayonlinux.com",
-            "mode": "live_fetch_no_database"
-        },
-        "results": results,
-        "warnings": warnings,
-    }))?)
+    out
 }
 
-async fn fetch_detail(client: &reqwest::Client, game: &ScoredGame) -> Result<Value> {
-    let html = fetch_text(client, &game.entry.url).await?;
-    let title = extract_title(&html).unwrap_or_else(|| game.entry.title.clone());
-    let summary = extract_meta_description(&html);
-    let verdict = extract_html_verdict(&html);
-    let text = html_conversion::to_text_async(html, 120).await?;
-    let summary = summary.or_else(|| first_nonempty_line_after(&text, &title));
-    let verdict = verdict.or_else(|| extract_text_verdict(&text));
-    let recommended_proton = value_after_label(&text, "Recommended Proton")
-        .or_else(|| value_after_label(&text, "Proton"));
-    let steam_deck_status = extract_steam_deck_status(&text);
-    let known_issues = section_excerpt(&text, "Known issues", "Fixes", 1600);
-    let fixes = section_excerpt(&text, "Fixes", "Verdict", 1600)
-        .or_else(|| section_excerpt(&text, "Fixes", "Details", 1600));
-    let last_verified = value_after_label(&text, "Last verified");
-    let developer = value_after_label(&text, "Developer");
-    let publisher = value_after_label(&text, "Publisher");
-    let (year, genres) = extract_year_and_genres(&text);
-    let protondb = extract_protondb(&text);
-    let notes = extract_notes(summary.as_deref(), &text);
-    let missing_fields = missing_fields(&[
-        ("compatibility.verdict", verdict.as_deref()),
-        (
-            "compatibility.recommendedProton",
-            recommended_proton.as_deref(),
-        ),
-        (
-            "compatibility.steamDeck.status",
-            steam_deck_status.as_deref(),
-        ),
-        ("metadata.lastVerified", last_verified.as_deref()),
-        ("game.developer", developer.as_deref()),
-        ("game.publisher", publisher.as_deref()),
-    ]);
-    let native_linux = summary
-        .as_deref()
-        .map(mentions_native_linux)
-        .unwrap_or_else(|| mentions_native_linux(&text));
-    let requires_proton = !native_linux
-        && (recommended_proton.is_some()
-            || text.to_ascii_lowercase().contains("via proton")
-            || text.to_ascii_lowercase().contains("protondb"));
-
-    Ok(json!({
-        "title": title,
-        "url": game.entry.url,
-        "match": {
-            "score": game.score,
-            "reason": game.reason,
-        },
-        "compatibility": {
-            "verdict": verdict,
-            "verdictLabel": verdict_label(verdict.as_deref(), requires_proton, native_linux),
-            "playable": playable(verdict.as_deref()),
-            "nativeLinux": native_linux,
-            "requiresProton": requires_proton,
-            "recommendedProton": recommended_proton,
-            "steamDeck": {
-                "status": steam_deck_status,
-                "verified": steam_deck_status.as_deref().map(|status| status.contains("Verified")),
-            },
-            "antiCheat": extract_anticheat(&text),
-        },
-        "protondb": protondb,
-        "game": {
-            "year": year,
-            "genres": genres,
-            "developer": developer,
-            "publisher": publisher,
-        },
-        "summary": summary,
-        "notes": notes,
-        "knownIssues": known_issues.map(|item| vec![item]).unwrap_or_default(),
-        "fixes": fixes.map(|item| vec![item]).unwrap_or_default(),
-        "metadata": {
-            "lastVerified": last_verified,
-            "sourceUrl": game.entry.url,
-            "dataFreshness": "live_fetch",
-            "confidence": confidence(verdict.as_deref(), missing_fields.len()),
-            "missingFields": missing_fields,
-        }
-    }))
-}
-
-async fn fetch_text(client: &reqwest::Client, url: &str) -> Result<String> {
-    let response = client.get(url).send().await?.error_for_status()?;
+async fn fetch_text(url: &str) -> Result<String> {
+    let response = http_response::shared_client()
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()?;
     http_response::read_text(response, http_response::MAX_HTML_RESPONSE_BYTES).await
 }
 
-fn extract_games_from_list_page(html: &str) -> Vec<GameEntry> {
-    let mut games = extract_games_from_json_ld(html);
-    if !games.is_empty() {
-        return games;
-    }
-
-    let mut cursor = 0;
-    while let Some(relative) = html[cursor..].find("<a") {
-        let start = cursor + relative;
-        let Some(tag_end_rel) = html[start..].find('>') else {
-            break;
-        };
-        let tag_end = start + tag_end_rel + 1;
-        let tag = &html[start..tag_end];
-        let Some(path) = attr_value(tag, "href") else {
-            cursor = tag_end;
-            continue;
-        };
-        if !is_game_detail_path(&path) {
-            cursor = tag_end;
-            continue;
-        }
-        let Some(close_rel) = html[tag_end..].find("</a>") else {
-            break;
-        };
-        let close = tag_end + close_rel;
-        let inner = &html[tag_end..close];
-        let title = extract_heading(inner).unwrap_or_else(|| strip_tags(inner));
-        if !title.is_empty() {
-            games.push(GameEntry {
-                title,
-                url: absolute_url(&path),
-            });
-        }
-        cursor = close + "</a>".len();
-    }
-    games
-}
-
-fn extract_games_from_json_ld(html: &str) -> Vec<GameEntry> {
-    let mut games = Vec::new();
-    let mut cursor = 0;
-    let marker = "application/ld+json";
-    while let Some(marker_rel) = html[cursor..].find(marker) {
-        let marker_pos = cursor + marker_rel;
-        let Some(open_rel) = html[marker_pos..].find('>') else {
-            break;
-        };
-        let json_start = marker_pos + open_rel + 1;
-        let Some(close_rel) = html[json_start..].find("</script>") else {
-            break;
-        };
-        let json_end = json_start + close_rel;
-        if let Ok(value) = serde_json::from_str::<Value>(&html[json_start..json_end]) {
-            if value["@type"].as_str() == Some("ItemList") {
-                if let Some(items) = value["itemListElement"].as_array() {
-                    for item in items {
-                        let title = item["name"].as_str().unwrap_or_default().trim();
-                        let url = item["url"].as_str().unwrap_or_default().trim();
-                        if !title.is_empty() && !url.is_empty() {
-                            games.push(GameEntry {
-                                title: decode_entities(title),
-                                url: url.to_string(),
-                            });
-                        }
-                    }
-                }
+async fn sitemap(paths: &MiyuPaths) -> Result<String> {
+    let cache_path = paths.cache_dir.join(SITEMAP_CACHE);
+    let fresh = tokio::fs::metadata(&cache_path)
+        .await
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .is_some_and(|age| age < CACHE_TTL);
+    if fresh {
+        if let Ok(text) = tokio::fs::read_to_string(&cache_path).await {
+            if !text.is_empty() {
+                return Ok(text);
             }
         }
-        cursor = json_end + "</script>".len();
     }
-    games
+
+    let text = fetch_text(SITEMAP_URL).await?;
+    if let Some(parent) = cache_path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    let _ = tokio::fs::write(&cache_path, &text).await;
+    Ok(text)
 }
 
-fn extract_total_games(html: &str) -> Option<usize> {
-    if let Some(pos) = html.find("\"numberOfItems\":") {
-        let rest = &html[pos + "\"numberOfItems\":".len()..];
-        let digits = rest
-            .chars()
-            .skip_while(|ch| ch.is_whitespace())
-            .take_while(|ch| ch.is_ascii_digit())
-            .collect::<String>();
-        if let Ok(value) = digits.parse() {
-            return Some(value);
-        }
-    }
-    let needle = " games in the database";
-    let pos = html.find(needle)?;
-    let prefix = &html[..pos];
-    let digits = prefix
-        .chars()
-        .rev()
-        .take_while(|ch| ch.is_ascii_digit() || *ch == ',')
-        .collect::<String>()
-        .chars()
-        .rev()
-        .filter(|ch| *ch != ',')
-        .collect::<String>();
-    digits.parse().ok()
-}
-
-fn score_game(entry: GameEntry, query: &str) -> Option<ScoredGame> {
-    let title = entry.title.to_ascii_lowercase();
-    let query = query.trim().to_ascii_lowercase();
-    let tokens = query.split_whitespace().collect::<Vec<_>>();
-    let (score, reason) = match title.cmp(&query) {
-        Ordering::Equal => (1000, "exact title match"),
-        _ if title.starts_with(&query) => {
-            (800 - entry.title.len() as i64, "title starts with query")
-        }
-        _ if title.contains(&query) => (
-            600 - title.find(&query).unwrap_or_default() as i64,
-            "title contains query",
-        ),
-        _ if tokens.len() > 1 && tokens.iter().all(|token| title.contains(token)) => (
-            500 - (title.len() as i64 - query.len() as i64).abs(),
-            "title contains all query terms",
-        ),
-        _ if tokens.len() == 1 && tokens.iter().any(|token| title.contains(token)) => (
-            100 - (title.len() as i64 - query.len() as i64).abs(),
-            "title contains query term",
-        ),
-        _ => return None,
-    };
-    Some(ScoredGame {
-        entry,
-        score,
-        reason: reason.to_string(),
-    })
-}
-
-fn unique_by_url(games: Vec<GameEntry>) -> Vec<GameEntry> {
-    let mut seen = std::collections::HashSet::new();
-    let mut unique = Vec::new();
-    for game in games {
-        if seen.insert(game.url.clone()) {
-            unique.push(game);
-        }
-    }
-    unique
-}
-
-fn attr_value(tag: &str, attr: &str) -> Option<String> {
-    for quote in ['\"', '\''] {
-        let marker = format!("{attr}={quote}");
-        if let Some(pos) = tag.find(&marker) {
-            let start = pos + marker.len();
-            let end = tag[start..].find(quote)?;
-            return Some(tag[start..start + end].to_string());
-        }
-    }
-    None
-}
-
-fn is_game_detail_path(path: &str) -> bool {
-    if !path.starts_with("/games/") {
-        return false;
-    }
-    if path.trim_matches('/').split('/').count() != 2 {
-        return false;
-    }
-    let slug = path.trim_matches('/').trim_start_matches("games/");
-    !matches!(
-        slug,
-        "native"
-            | "works"
-            | "partial"
-            | "broken"
-            | "steam-deck-verified"
-            | "action"
-            | "rpg"
-            | "strategy"
-            | "simulation"
-            | "indie"
-            | "puzzle"
-            | "adventure"
-            | "fps"
-            | "racing"
-            | "sports"
-            | "survival"
-    ) && !slug.chars().all(|ch| ch.is_ascii_digit())
-}
-
-fn absolute_url(path: &str) -> String {
-    if path.starts_with("http://") || path.starts_with("https://") {
-        path.to_string()
-    } else {
-        format!("{BASE_URL}{path}")
-    }
-}
-
-fn extract_heading(html: &str) -> Option<String> {
-    for tag in ["h1", "h2", "h3"] {
-        let start_marker = format!("<{tag}");
-        let Some(start) = html.find(&start_marker) else {
+/// 从 sitemap 里挑最接近的游戏页 URL。
+fn best_sitemap_match(sitemap: &str, slug: &str) -> Option<String> {
+    let mut best: Option<(usize, String)> = None;
+    for chunk in sitemap.split("<loc>").skip(1) {
+        let Some(url) = chunk.split("</loc>").next() else {
             continue;
         };
-        let Some(open_end_rel) = html[start..].find('>') else {
+        let Some(candidate) = url.trim().strip_prefix(&format!("{BASE_URL}/games/")) else {
             continue;
         };
-        let content_start = start + open_end_rel + 1;
-        let close_marker = format!("</{tag}>");
-        let Some(close_rel) = html[content_start..].find(&close_marker) else {
+        let candidate = candidate.trim_end_matches('/');
+        // 目录分页（/games/3/）和空 slug 都不是游戏页。
+        if candidate.is_empty() || candidate.chars().all(|c| c.is_ascii_digit()) {
             continue;
-        };
-        let content = strip_tags(&html[content_start..content_start + close_rel]);
-        if !content.is_empty() {
-            return Some(content);
+        }
+        let score = similarity(slug, candidate);
+        if score >= 75 && best.as_ref().is_none_or(|(best, _)| score > *best) {
+            best = Some((score, url.trim().to_string()));
         }
     }
-    None
+    best.map(|(_, url)| url)
 }
 
-fn extract_title(html: &str) -> Option<String> {
-    extract_heading(html).or_else(|| {
-        let start = html.find("<title>")? + "<title>".len();
-        let end = html[start..].find("</title>")?;
-        Some(
-            strip_tags(&html[start..start + end])
-                .split('|')
-                .next()
-                .unwrap_or_default()
-                .trim()
-                .to_string(),
-        )
-    })
-}
-
-fn extract_meta_description(html: &str) -> Option<String> {
-    let marker = "name=\"description\"";
-    let pos = html
-        .find(marker)
-        .or_else(|| html.find("name='description'"))?;
-    let tag_end = html[pos..].find('>')?;
-    attr_value(&html[pos..pos + tag_end], "content").map(|value| decode_entities(&value))
-}
-
-fn extract_html_verdict(html: &str) -> Option<String> {
-    let classes = [
-        ("badge-native", "Native"),
-        ("badge-works", "Works"),
-        ("badge-partial", "Partial"),
-        ("badge-broken", "Broken"),
-        ("badge-unknown", "Unknown"),
-    ];
-    for (class, verdict) in classes {
-        if html.contains(class) {
-            return Some(verdict.to_string());
-        }
+/// 粗糙的相似度（0-100）：以较长串为分母的公共字符前缀/包含度。
+/// 只用来在 slug 直连失败后兜底，不需要精确。
+fn similarity(a: &str, b: &str) -> usize {
+    if a == b {
+        return 100;
     }
-    None
+    let (long, short) = if a.len() >= b.len() { (a, b) } else { (b, a) };
+    if short.is_empty() {
+        return 0;
+    }
+    if long.starts_with(short) || long.contains(short) {
+        return 70 + 30 * short.len() / long.len();
+    }
+    let common = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
+    100 * common / long.len()
 }
 
-fn extract_text_verdict(text: &str) -> Option<String> {
-    ["Native", "Works", "Partial", "Broken", "Unknown"]
-        .into_iter()
-        .find(|verdict| text.lines().any(|line| line.trim() == *verdict))
-        .map(str::to_string)
-}
-
-fn extract_steam_deck_status(text: &str) -> Option<String> {
-    for status in [
-        "Steam Deck Verified",
-        "Steam Deck Playable",
-        "Steam Deck Unsupported",
-        "Community standing",
+fn meta_description(html: &str) -> Option<String> {
+    for marker in [
+        "<meta name=\"description\" content=\"",
+        "<meta property=\"og:description\" content=\"",
     ] {
-        if text.contains(status) {
-            return Some(status.to_string());
-        }
-    }
-    value_after_label(text, "Steam Deck")
-}
-
-fn extract_year_and_genres(text: &str) -> (Option<u64>, Vec<String>) {
-    for line in text.lines().map(str::trim) {
-        if line.contains('·') {
-            let parts = line.split('·').map(str::trim).collect::<Vec<_>>();
-            if let Some(year) = parts.first().and_then(|part| part.parse::<u64>().ok()) {
-                let genres = parts
-                    .iter()
-                    .skip(1)
-                    .filter(|part| !part.is_empty())
-                    .map(|part| (*part).to_string())
-                    .collect::<Vec<_>>();
-                if !genres.is_empty() {
-                    return (Some(year), genres);
+        if let Some(pos) = html.find(marker) {
+            let rest = &html[pos + marker.len()..];
+            if let Some(end) = rest.find('"') {
+                let value = decode_entities(rest[..end].trim());
+                if !value.is_empty() {
+                    return Some(value);
                 }
             }
         }
     }
-    (None, Vec::new())
+    None
 }
 
-fn extract_protondb(text: &str) -> Value {
-    let lower = text.to_ascii_lowercase();
-    let tier = ["platinum", "gold", "silver", "bronze", "borked"]
-        .into_iter()
-        .find(|tier| lower.contains(tier));
-    let reports = extract_reports_count(text);
-    json!({
-        "tier": tier.map(capitalize),
-        "reports": reports,
-        "summary": tier.map(|tier| format!("{} ProtonDB signal detected in page text.", capitalize(tier))),
-    })
-}
-
-fn extract_reports_count(text: &str) -> Option<u64> {
-    let lower = text.to_ascii_lowercase();
-    let pos = lower.find(" reports")?;
-    let prefix = &lower[..pos];
-    let digits = prefix
-        .chars()
-        .rev()
-        .skip_while(|ch| ch.is_whitespace())
-        .take_while(|ch| ch.is_ascii_digit() || *ch == ',')
-        .collect::<String>()
-        .chars()
-        .rev()
-        .filter(|ch| *ch != ',')
-        .collect::<String>();
-    digits.parse().ok()
-}
-
-fn extract_anticheat(text: &str) -> Value {
-    let lower = text.to_ascii_lowercase();
-    let name = if lower.contains("easyanticheat") || lower.contains("easy anti-cheat") {
-        Some("EasyAntiCheat")
-    } else if lower.contains("battleye") || lower.contains("battl-eye") {
-        Some("BattlEye")
-    } else {
-        None
-    };
-    let supported = if lower.contains("linux/proton mode active")
-        || lower.contains("proton-compatible mode")
-        || lower.contains("online multiplayer works")
-        || lower.contains("co-op multiplayer works")
-    {
-        Some(true)
-    } else if lower.contains("anti-cheat") && (lower.contains("broken") || lower.contains("denied"))
-    {
-        Some(false)
-    } else {
-        None
-    };
-    json!({
-        "present": name.is_some(),
-        "name": name,
-        "linuxProtonSupported": supported,
-        "summary": anticheat_summary(name, supported),
-    })
-}
-
-fn anticheat_summary(name: Option<&str>, supported: Option<bool>) -> Option<String> {
-    match (name, supported) {
-        (Some(name), Some(true)) => Some(format!(
-            "{name} appears to support Linux/Proton for this game based on the parsed page text."
-        )),
-        (Some(name), Some(false)) => Some(format!(
-            "{name} appears to block or break Linux/Proton play based on the parsed page text."
-        )),
-        (Some(name), None) => Some(format!(
-            "{name} is mentioned, but support status was not clear from the parsed page text."
-        )),
-        _ => None,
-    }
-}
-
-fn extract_notes(summary: Option<&str>, text: &str) -> Vec<String> {
-    let mut notes = Vec::new();
-    if let Some(summary) = summary {
-        for sentence in summary.split(['.', '。']).map(str::trim) {
-            if !sentence.is_empty()
-                && (sentence.contains("Steam Deck")
-                    || sentence.contains("No setup")
-                    || sentence.contains("launch")
-                    || sentence.contains("anti-cheat")
-                    || sentence.contains("multiplayer"))
-            {
-                notes.push(sentence.to_string());
+/// 标签转行分隔符。行结构必须保住——`value_after_label` 靠换行界定字段末尾，
+/// 若把 `\n` 一并压成空格，整个文档会变成一行，所有按标签抽取都会失效。
+fn to_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() / 2);
+    let mut in_tag = false;
+    let mut skip_until: Option<&str> = None;
+    let lower = html.to_ascii_lowercase();
+    let mut index = 0;
+    while index < html.len() {
+        if let Some(close) = skip_until {
+            match lower[index..].find(close) {
+                Some(rel) => {
+                    index += rel + close.len();
+                    skip_until = None;
+                }
+                None => break,
             }
-        }
-    }
-    if text.contains("No setup required") {
-        notes.push("No setup required.".to_string());
-    }
-    notes.sort();
-    notes.dedup();
-    notes
-}
-
-fn first_nonempty_line_after(text: &str, title: &str) -> Option<String> {
-    let mut seen_title = false;
-    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        if !seen_title {
-            seen_title = line == title;
             continue;
         }
-        if line.len() > 30 {
-            return Some(line.chars().take(500).collect());
-        }
-    }
-    None
-}
-
-fn value_after_label(text: &str, label: &str) -> Option<String> {
-    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
-    while let Some(line) = lines.next() {
-        if let Some((key, value)) = line.split_once('│') {
-            if key.trim() == label {
-                return Some(value.trim().chars().take(180).collect());
+        for (open, close) in [
+            ("<script", "</script>"),
+            ("<style", "</style>"),
+            ("<svg", "</svg>"),
+        ] {
+            if lower[index..].starts_with(open) {
+                skip_until = Some(close);
+                break;
             }
         }
-        if line == label {
-            return lines.next().map(|value| value.chars().take(180).collect());
+        if skip_until.is_some() {
+            continue;
         }
-    }
-    None
-}
-
-fn section_excerpt(text: &str, start: &str, end: &str, max_chars: usize) -> Option<String> {
-    if let Some(section) = markdown_section(text, start, end) {
-        return Some(excerpt(&section, max_chars));
-    }
-    let after = text.split(start).nth(1)?;
-    let section = after.split(end).next().unwrap_or(after);
-    let value = excerpt(section, max_chars);
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
-}
-
-fn markdown_section(text: &str, title_prefix: &str, end_prefix: &str) -> Option<String> {
-    let mut lines = text.lines();
-    let start_level = lines.find_map(|line| {
-        let line = line.trim_start();
-        let level = line.bytes().take_while(|byte| *byte == b'#').count();
-        (level > 0 && line[level..].trim().starts_with(title_prefix)).then_some(level)
-    })?;
-    let mut section = Vec::new();
-    for line in lines {
-        let trimmed = line.trim_start();
-        let level = trimmed.bytes().take_while(|byte| *byte == b'#').count();
-        if level > 0 && level <= start_level {
-            break;
-        }
-        if trimmed
-            .trim_matches('*')
-            .trim_start()
-            .starts_with(end_prefix)
-        {
-            break;
-        }
-        section.push(line);
-    }
-    let section = section.join("\n");
-    (!section.trim().is_empty()).then_some(section)
-}
-
-fn excerpt(text: &str, max_chars: usize) -> String {
-    text.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(max_chars)
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
-fn strip_tags(value: &str) -> String {
-    let mut out = String::new();
-    let mut in_tag = false;
-    for ch in value.chars() {
+        let ch = html[index..].chars().next().unwrap_or('\0');
         match ch {
-            '<' => in_tag = true,
-            '>' => {
-                in_tag = false;
-                out.push(' ');
+            '<' => {
+                in_tag = true;
+                out.push('\n');
             }
-            _ if !in_tag => out.push(ch),
-            _ => {}
+            '>' => in_tag = false,
+            _ if in_tag => {}
+            '\n' | '\r' | '\t' => out.push('\n'),
+            _ => out.push(ch),
+        }
+        index += ch.len_utf8();
+    }
+    // 折叠空白，但保留换行。
+    let mut collapsed = String::with_capacity(out.len());
+    let mut last_newline = true;
+    let mut last_space = false;
+    for ch in out.chars() {
+        match ch {
+            '\n' => {
+                if !last_newline {
+                    collapsed.push('\n');
+                }
+                last_newline = true;
+                last_space = false;
+            }
+            ' ' => {
+                if !last_space && !last_newline {
+                    collapsed.push(' ');
+                }
+                last_space = true;
+            }
+            _ => {
+                collapsed.push(ch);
+                last_newline = false;
+                last_space = false;
+            }
         }
     }
-    decode_entities(&out.split_whitespace().collect::<Vec<_>>().join(" "))
+    decode_entities(collapsed.trim())
+}
+
+/// 取标签后面那一行的值。同一标签可能出现多次（相对时间一次、绝对日期一次），
+/// `want_year` 时优先返回带四位年份的那个。
+fn value_after_label(text: &str, label: &str, want_year: bool) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let needle = label.to_ascii_lowercase();
+    let mut fallback = None;
+    let mut cursor = 0;
+    while let Some(rel) = lower[cursor..].find(&needle) {
+        let start = cursor + rel + needle.len();
+        cursor = start;
+        let line = text[start..]
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && *line != ":")
+            .map(|line| line.trim_start_matches(':').trim().to_string());
+        let Some(line) = line.filter(|line| !line.is_empty() && line.len() <= 40) else {
+            continue;
+        };
+        if !want_year {
+            return Some(line);
+        }
+        if has_year(&line) {
+            return Some(line);
+        }
+        fallback.get_or_insert(line);
+    }
+    fallback
+}
+
+fn has_year(value: &str) -> bool {
+    value
+        .as_bytes()
+        .windows(4)
+        .any(|w| w.iter().all(u8::is_ascii_digit) && matches!(&w[..2], b"19" | b"20"))
+}
+
+/// `May 26, 2026` → `2026-05-26`。认不出就原样返回。
+fn to_iso_date(value: &str) -> String {
+    const MONTHS: [&str; 12] = [
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+    ];
+    let lower = value.to_ascii_lowercase();
+    let mut parts = lower.split([' ', ',']).filter(|part| !part.is_empty());
+    let month = parts.next().and_then(|m| {
+        MONTHS
+            .iter()
+            .position(|candidate| m.starts_with(candidate))
+            .map(|index| index + 1)
+    });
+    let day: Option<u32> = parts.next().and_then(|d| d.parse().ok());
+    let year: Option<u32> = parts.next().and_then(|y| y.parse().ok());
+    match (year, month, day) {
+        (Some(y), Some(m), Some(d)) if (1970..=2999).contains(&y) && d <= 31 => {
+            format!("{y:04}-{m:02}-{d:02}")
+        }
+        _ => value.to_string(),
+    }
 }
 
 fn decode_entities(value: &str) -> String {
-    // `&amp;` 必须最后解:排第一会把字面 `&amp;lt;` 双重解码成 `<`。
     value
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
+        .replace("&amp;", "&")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
-        .replace("&amp;", "&")
-        .trim()
-        .to_string()
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&#x27;", "'")
+        .replace("&nbsp;", " ")
 }
 
-fn missing_fields(fields: &[(&str, Option<&str>)]) -> Vec<String> {
-    fields
-        .iter()
-        .filter_map(|(name, value)| {
-            if value
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .is_some()
-            {
-                None
-            } else {
-                Some((*name).to_string())
-            }
-        })
-        .collect()
-}
-
-fn mentions_native_linux(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    lower.contains("native linux")
-        || lower.contains("native build")
-        || lower.contains("runs natively")
-}
-
-fn playable(verdict: Option<&str>) -> Option<bool> {
-    match verdict {
-        Some("Native") | Some("Works") => Some(true),
-        Some("Broken") => Some(false),
-        Some("Partial") | Some("Unknown") => None,
-        _ => None,
+/// `Ok(None)` = 站点没收录这个游戏，与"抓取失败"是两回事：前者渲染成
+/// `no result`，后者要把错误原样暴露出来。
+pub(super) async fn lookup(paths: &MiyuPaths, name: &str) -> Result<Option<CipolEntry>> {
+    let slug = slugify(name);
+    // 纯非拉丁名（如中文原名）slugify 后为空，拼出的 `/games//` 会命中目录首页
+    // 并返回 200 —— 静默产出一份通用简介。必须挡在这里。
+    if slug.is_empty() {
+        return Ok(None);
     }
-}
 
-fn verdict_label(
-    verdict: Option<&str>,
-    requires_proton: bool,
-    native_linux: bool,
-) -> Option<String> {
-    match verdict {
-        Some("Native") if native_linux => Some("Native Linux".to_string()),
-        Some("Works") if requires_proton => Some("Works via Proton".to_string()),
-        Some(value) => Some(value.to_string()),
-        None => None,
-    }
-}
+    let direct = format!("{BASE_URL}/games/{slug}/");
+    let (url, html) = match fetch_text(&direct).await {
+        Ok(html) => (direct, html),
+        Err(_) => {
+            let sitemap = sitemap(paths).await?;
+            let Some(url) = best_sitemap_match(&sitemap, &slug) else {
+                return Ok(None);
+            };
+            let html = fetch_text(&url).await?;
+            (url, html)
+        }
+    };
 
-fn confidence(verdict: Option<&str>, missing_count: usize) -> &'static str {
-    match (verdict, missing_count) {
-        (Some("Native" | "Works" | "Partial" | "Broken"), 0..=2) => "high",
-        (Some(_), _) => "medium",
-        _ => "low",
-    }
-}
-
-fn capitalize(value: &str) -> String {
-    let mut chars = value.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
+    let text = to_text(&html);
+    let last_verified = value_after_label(&text, "Last verified", true).map(|v| to_iso_date(&v));
+    Ok(Some(CipolEntry {
+        summary: meta_description(&html),
+        last_verified,
+        url,
+    }))
 }
 
 #[cfg(test)]
@@ -797,73 +325,64 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scores_exact_match_highest() {
-        let exact = score_game(
-            GameEntry {
-                title: "Elden Ring".to_string(),
-                url: "https://example.test/elden".to_string(),
-            },
-            "elden ring",
-        )
-        .unwrap();
-        let partial = score_game(
-            GameEntry {
-                title: "ELDEN RING NIGHTREIGN".to_string(),
-                url: "https://example.test/nightreign".to_string(),
-            },
-            "elden ring",
-        )
-        .unwrap();
-        assert!(exact.score > partial.score);
-    }
-
-    #[test]
-    fn parses_json_ld_games() {
-        let html = r#"<script type="application/ld+json">{"@type":"ItemList","numberOfItems":1,"itemListElement":[{"name":"Cyberpunk 2077","url":"https://caniplayonlinux.com/games/cyberpunk-2077/"}]}</script>"#;
-        let games = extract_games_from_list_page(html);
-        assert_eq!(games.len(), 1);
-        assert_eq!(games[0].title, "Cyberpunk 2077");
-    }
-
-    #[test]
-    fn parses_html_card_title() {
-        let html = r#"<a href="/games/cyberpunk-2077/"><div><h3>Cyberpunk 2077</h3><p>Works</p></div></a>"#;
-        let games = extract_games_from_list_page(html);
-        assert_eq!(games.len(), 1);
-        assert_eq!(games[0].title, "Cyberpunk 2077");
-    }
-
-    #[test]
-    fn rejects_navigation_links() {
-        assert!(!is_game_detail_path("/games/works/"));
-        assert!(!is_game_detail_path("/games/2/"));
-        assert!(is_game_detail_path("/games/elden-ring/"));
-    }
-
-    #[test]
-    fn extracts_label_value() {
-        let text = "Recommended Proton\n9.0-3\nLast verified\nMay 8, 2026";
+    fn slugify_drops_apostrophes_instead_of_hyphenating() {
+        assert_eq!(slugify("Baldur's Gate 3"), "baldurs-gate-3");
+        assert_eq!(slugify("Black Myth: Wukong"), "black-myth-wukong");
         assert_eq!(
-            value_after_label(text, "Recommended Proton"),
-            Some("9.0-3".to_string())
+            slugify("Alan Wake's American Nightmare"),
+            "alan-wakes-american-nightmare"
         );
+        assert_eq!(slugify("Apex Legends™"), "apex-legends");
+    }
+
+    #[test]
+    fn slugify_returns_empty_for_non_latin_names() {
+        // 空 slug 必须被调用方拦住，否则会命中目录首页。
+        assert_eq!(slugify("黑神话悟空"), "");
+    }
+
+    #[test]
+    fn sitemap_match_skips_pagination_pages() {
+        let sitemap = "\
+<loc>https://caniplayonlinux.com/games/3/</loc>\
+<loc>https://caniplayonlinux.com/games/elden-ring/</loc>";
         assert_eq!(
-            value_after_label("Recommended Proton│9.0-3", "Recommended Proton"),
-            Some("9.0-3".to_string())
+            best_sitemap_match(sitemap, "elden-ring").as_deref(),
+            Some("https://caniplayonlinux.com/games/elden-ring/")
+        );
+        assert_eq!(best_sitemap_match(sitemap, "totally-unrelated-xyz"), None);
+    }
+
+    #[test]
+    fn meta_description_is_decoded() {
+        let html = r#"<meta name="description" content="Works &amp; runs fine">"#;
+        assert_eq!(meta_description(html).as_deref(), Some("Works & runs fine"));
+    }
+
+    #[test]
+    fn text_conversion_keeps_line_structure() {
+        // 行结构塌掉的话 value_after_label 会全线失效。
+        let text = to_text("<div>Last verified</div><span>May 26, 2026</span>");
+        assert!(text.contains('\n'), "expected newlines, got {text:?}");
+        assert_eq!(
+            value_after_label(&text, "Last verified", true).as_deref(),
+            Some("May 26, 2026")
         );
     }
 
     #[test]
-    fn sections_ignore_navigation_links() {
-        let text = "3. [Known issues][1]\n4. [Fixes & workarounds][2]\n\n## Known issues\nReal issue\n\n## Fixes & workarounds\nReal fix\n\n**Verdict: Works**\nUnrelated prose";
+    fn label_lookup_prefers_absolute_date_over_relative() {
+        let text = "Last verified\n1 month ago\nLast verified\nMay 26, 2026";
+        assert_eq!(
+            value_after_label(text, "Last verified", true).as_deref(),
+            Some("May 26, 2026")
+        );
+    }
 
-        assert_eq!(
-            section_excerpt(text, "Known issues", "Fixes", 100),
-            Some("Real issue".to_string())
-        );
-        assert_eq!(
-            section_excerpt(text, "Fixes", "Verdict", 100),
-            Some("Real fix".to_string())
-        );
+    #[test]
+    fn iso_date_conversion() {
+        assert_eq!(to_iso_date("May 26, 2026"), "2026-05-26");
+        assert_eq!(to_iso_date("Oct 3, 2024"), "2024-10-03");
+        assert_eq!(to_iso_date("1 month ago"), "1 month ago");
     }
 }

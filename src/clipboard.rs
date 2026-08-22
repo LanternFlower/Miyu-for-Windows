@@ -296,7 +296,7 @@ pub fn parse_clipboard_path(text: &str) -> Option<ClipboardPath> {
     let path_str = if raw.starts_with('/') {
         raw.to_string()
     } else if let Some(rest) = raw.strip_prefix("~/") {
-        if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {
+        if let Some(home) = crate::platform_dirs::PlatformDirs::new().map(|d| d.home_dir().to_path_buf()) {
             home.join(rest).display().to_string()
         } else {
             return None;

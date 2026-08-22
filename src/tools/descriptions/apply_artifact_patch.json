@@ -1,13 +1,13 @@
 {
   "name": "apply_artifact_patch",
   "display_name": "修改预览文件",
-  "description": "使用 Patch 修改当前 WebUI 会话中的托管 Artifact，并自动更新同一个预览资源。修改已有文件前先用 read_artifact 读取内容；补丁路径只能使用 Artifact 清单中的普通文件名。支持 Add File、Update File 与 Delete File；不支持目录或路径移动。",
+  "description": "Modify the hosted Artifact of the current WebUI session with a patch; the same preview resource is updated automatically. Read existing files with read_artifact before modifying them; patch paths may only be plain filenames from the Artifact manifest. Supports Add File, Update File, and Delete File; directories and path moves are not supported.",
   "parameters": {
     "type": "object",
     "properties": {
       "patchText": {
         "type": "string",
-        "description": "完整补丁文本，使用 *** Begin Patch / *** End Patch 包裹。文件头中的路径必须是普通 Artifact 文件名，例如 *** Update File: report.md。"
+        "description": "Full patch text, wrapped in *** Begin Patch / *** End Patch. Paths in file headers must be plain Artifact filenames, e.g. *** Update File: report.md."
       }
     },
     "required": [

@@ -1,25 +1,25 @@
 {
   "name": "grep",
   "display_name": "搜索内容",
-  "description": "在目录或单个文件中用 ripgrep 搜索内容。",
+  "description": "Search content in a directory or a single file using ripgrep.",
   "parameters": {
     "type": "object",
     "properties": {
       "path": {
         "type": "string",
-        "description": "要搜索的目录或文件，默认工作区；查用户文件用 ~ 或 /home，受保护的全局搜索可用 /。"
+        "description": "Directory or file to search, defaults to the workspace; use ~ or /home for user files, or / for a protected global search."
       },
       "pattern": {
         "type": "string",
-        "description": "正则模式。"
+        "description": "Regex pattern."
       },
       "include": {
         "type": "string",
-        "description": "可选大小写不敏感文件 glob 过滤。"
+        "description": "Optional case-insensitive file glob filter."
       },
       "max_results": {
         "type": "integer",
-        "description": "最多匹配数。"
+        "description": "Maximum number of matches."
       }
     },
     "required": [

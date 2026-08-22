@@ -448,12 +448,25 @@ textarea:disabled {
   gap: 3px;
 }
 
+/* 侧栏拖拽排序:拖动中的行半透明,落点用主题色细线指示 */
+.session-item.is-dragging {
+  opacity: 0.45;
+}
+
+.session-item.drop-before {
+  box-shadow: inset 0 2px 0 0 var(--accent);
+}
+
+.session-item.drop-after {
+  box-shadow: inset 0 -2px 0 0 var(--accent);
+}
+
 .session-item {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   width: 100%;
-  min-height: 48px;
+  min-height: 30px;
   align-items: stretch;
   border-radius: 8px;
   background: transparent;
@@ -487,27 +500,31 @@ textarea:disabled {
 
 .session-item-main {
   display: grid;
-  grid-template-columns: 17px minmax(0, 1fr);
+  grid-template-columns: 11px minmax(0, 1fr);
   min-width: 0;
   align-items: center;
-  padding: 5px 7px 5px 11px;
+  padding: 2px 7px 2px 11px;
   border-radius: 8px;
   background: transparent;
   color: inherit;
   cursor: pointer;
-  gap: 8px;
+  gap: 7px;
   text-align: left;
+}
+
+/* 行首那一格:有状态就画,没有就空着。格子常驻,文字左缘才不会跟着动。 */
+.session-lead {
+  display: grid;
+  width: 11px;
+  height: 11px;
+  place-items: center;
 }
 
 .session-item-main.is-renaming {
   cursor: default;
 }
 
-.session-item-main > .icon-slot {
-  width: 15px;
-  height: 15px;
-  color: var(--accent);
-}
+
 
 .session-copy {
   display: grid;
@@ -534,26 +551,55 @@ textarea:disabled {
   line-height: 15px;
 }
 
-.session-run-dot {
+/* 运行中:转圈。动效表达「正在发生」——静态点和「有未读」看不出区别。 */
+/* 盲文点阵转圈,和 REPL 里工具运行时那个同款(`wait_spinner.rs` 的
+   BRAILLE_FRAMES)。同一件事在两个界面用同一个形状;圆环那种到处都是,
+   这个一眼就认得出是 Miyu 在干活。
+
+   换帧交给 JS(`startBrailleTicker`)。CSS 那两种做法都不可靠:动画
+   `content` 只有 Chrome 认;十帧竖排靠 `steps()` 平移则要求行高和字形
+   度量严丝合缝,盲文点阵一旦落到 fallback 字体就错位。 */
+.session-run-spinner {
+  display: grid;
+  width: 11px;
+  height: 14px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--gold);
+  font-family: var(--font-mono);
+  /* 盲文点阵的字面比同号数字小一圈——点只占字身中间那一块,四周留白很多。
+     要和旁边的未读圆点看着一样大,字号得往上顶。 */
+  font-size: 17px;
+  line-height: 1;
+}
+
+/* 未读:实心圆 + 呼吸。生命周期是「回合结束 → 用户切进来」,不是「已完成」。
+   颜色用强调色:亮色主题(linen 的米色底)上金色和背景太接近,看不出来;
+   matugen 取色主题同理,强调色是整套 token 里对比度最有保障的那个。只有
+   graphite(默认暗色)保留亮金——深底上金点醒目,且和运行中的转圈同色系。
+   呼吸动画复用 `status-pulse`,靠 currentcolor 自动取色。 */
+.session-unread-dot {
   display: inline-block;
-  width: 7px;
-  height: 7px;
+  flex: 0 0 auto;
+  /* 外框与 spinner 同宽,两者互换时整行不抖;真正的点靠 radial-gradient 居中 */
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
-  background: var(--online);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--online) 18%, transparent);
-  animation: session-run-pulse 1.6s ease-in-out infinite;
+  color: var(--accent);
+  background: radial-gradient(circle, currentcolor 0 3.5px, transparent 3.5px);
+  animation: status-pulse 2.4s ease-in-out infinite;
 }
 
-@keyframes session-run-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
+body[data-theme="graphite"] .session-unread-dot {
+  color: var(--gold);
+}
 
-  50% {
-    opacity: 0.45;
+@media (prefers-reduced-motion: reduce) {
+  .session-run-spinner {
+    animation-duration: 2.4s;
   }
 }
+
 
 .session-copy strong,
 .session-copy small,
@@ -595,11 +641,13 @@ textarea:disabled {
 
 .session-trailing {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  justify-content: center;
+  /* 横排:指示器与菜单按钮并排,各自垂直居中。竖排时指示器被顶到按钮上方,
+     看着就是偏上的。 */
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-end;
   padding: 5px 6px 5px 0;
-  gap: 2px;
+  gap: 4px;
 }
 
 .session-time {
@@ -731,8 +779,13 @@ textarea:disabled {
 .sidebar-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   margin-top: 11px;
+  gap: 2px;
+}
+
+.sidebar-actions > .sidebar-action:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .sidebar-action {
@@ -768,99 +821,47 @@ textarea:disabled {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   background: var(--app-bg);
   container-type: inline-size;
 }
 
-.main-stage > .topbar {
-  grid-column: 1 / -1;
-  grid-row: 1;
-}
-
-.topbar {
-  position: relative;
+/* 顶栏没了,侧栏控制浮在正文左上角。正文有自己的左右留白,这两个按钮压在
+   留白上,不占版面高度。 */
+.stage-float {
+  position: absolute;
   z-index: 15;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  min-width: 0;
-  min-height: 58px;
-  align-items: center;
-  padding: 0 16px;
-  background: var(--topbar-bg);
-}
-
-.topbar-leading,
-.topbar-actions {
+  top: 10px;
+  left: 12px;
   display: flex;
-  min-width: 0;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
 }
 
-.topbar-actions {
-  justify-content: flex-end;
+.stage-float:not(:has(button:not([hidden]))) {
+  display: none;
 }
 
-.conversation-heading {
-  display: grid;
-  min-width: 0;
-  gap: 2px;
-}
-
-.conversation-heading strong,
-.conversation-heading span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.conversation-heading strong {
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.conversation-heading span {
-  color: var(--text-soft);
-  font-size: var(--fs-micro);
-}
-
-.mode-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  height: 26px;
-  padding: 0 10px;
-  border-radius: 8px;
-  background: var(--accent-soft);
-  color: var(--md-sys-color-on-primary-container);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
-  user-select: none;
-}
-
-.mode-badge[data-mode="dev"] {
-  background: color-mix(in srgb, var(--md-sys-color-tertiary) 18%, transparent);
-  color: var(--md-sys-color-tertiary);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-tertiary) 30%, transparent);
-}
-
-.mode-badge .mode-label {
-  font-size: 10.5px;
-  font-weight: 600;
-  line-height: 1;
-  white-space: nowrap;
-}
-
+/* 模式图标在这里出现一次,不在每一行会话前面重复。 */
 .session-group-header {
-  margin: 10px 4px 2px;
+  display: flex;
+  align-items: center;
+  margin: 12px 4px 3px;
+  padding-left: 7px;
   color: var(--text-faint);
   font-size: 11px;
   font-weight: 600;
+  gap: 6px;
   letter-spacing: 0.04em;
   user-select: none;
+}
+
+.session-group-header .icon-slot {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
 }
 
 .mode-chooser-overlay {
@@ -930,9 +931,6 @@ textarea:disabled {
   font-size: 11px;
 }
 
-  100% { opacity: 1; transform: translateY(0) scale(1); }
-}
-
 .model-menu-wrap {
   position: relative;
 }
@@ -941,21 +939,27 @@ textarea:disabled {
 .model-button {
   display: inline-flex;
   min-width: 0;
-  height: 31px;
+  height: 28px;
   align-items: center;
   padding: 0 11px;
   border: 0;
   border-radius: 8px;
-  background: var(--gold-soft);
-  color: var(--md-sys-color-on-secondary-container);
+  background: var(--surface-2);
+  color: var(--text-soft);
   cursor: pointer;
   gap: 7px;
-  transition: filter 180ms ease;
+  transition: background 180ms ease, color 180ms ease;
 }
 
 .model-button:hover:not(:disabled),
 .model-button[aria-expanded="true"] {
-  filter: brightness(1.04);
+  background: var(--surface-3, var(--surface-2));
+  color: var(--text);
+}
+
+/* 菜单开着的时候箭头翻过来——不翻的话按钮看不出自己是开是关。 */
+.model-button[aria-expanded="true"] > .icon-slot {
+  transform: rotate(180deg);
 }
 
 .model-button:disabled {
@@ -968,6 +972,7 @@ textarea:disabled {
   height: 12px;
   flex-basis: 12px;
   opacity: 0.7;
+  transition: transform 160ms ease;
 }
 
 .model-label {
@@ -979,7 +984,8 @@ textarea:disabled {
   font-weight: 600;
 }
 
-/* 模型标识:7px 金点(语义圆形) */
+/* 设置页摘要那颗小圆点。模型菜单和输入框那个按钮上的都去掉了——颜色不
+   表达任何信息,纯噪点;这里留着是因为摘要行没有别的图形锚点。 */
 .model-mark {
   display: inline-grid;
   width: 7px;
@@ -994,15 +1000,15 @@ textarea:disabled {
   font-style: normal;
 }
 
+/* 模型按钮从顶栏搬到了输入框那排,菜单往上开(往下开会掉出视口)。
+   left/bottom/max-height 由 positionModelMenu() 写在 style 上:菜单挂在
+   composer-dock 上而不是按钮旁边,纯 CSS 算不出按钮的位置。 */
 .model-menu {
   position: absolute;
-  top: calc(100% + 7px);
-  right: 0;
   z-index: 40;
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   width: min(286px, calc(calc(100vw / var(--ui-scale)) - 24px));
-  max-height: min(420px, 61.8182vh);
   overflow: hidden;
   border: 0;
   border-radius: 8px;
@@ -1020,7 +1026,7 @@ textarea:disabled {
 
 .model-menu-item {
   display: grid;
-  grid-template-columns: 14px minmax(0, 1fr) 16px;
+  grid-template-columns: minmax(0, 1fr) 16px;
   min-height: 46px;
   width: 100%;
   align-items: center;
@@ -1031,10 +1037,6 @@ textarea:disabled {
   cursor: pointer;
   gap: 8px;
   text-align: left;
-}
-
-.model-menu-item .model-mark {
-  justify-self: center;
 }
 
 .model-menu-item:hover:not(:disabled),
@@ -1146,7 +1148,7 @@ textarea:disabled {
 .conversation-stage {
   position: relative;
   display: grid;
-  grid-row: 2;
+  grid-row: 1;
   grid-column: 1;
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
@@ -1221,6 +1223,114 @@ textarea:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 目标状态行：贴在输入框上方，跟着阶段变样。目标是会话级的长期状态，
+   放在对话流里会被后面几十轮顶到看不见的地方。 */
+.goal-bar {
+  display: flex;
+  align-items: center;
+  margin-bottom: 6px;
+  padding: 7px 9px 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  gap: 9px;
+  background: var(--surface-1);
+}
+
+.goal-bar[hidden] {
+  display: none;
+}
+
+.goal-bar-mark {
+  display: grid;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  place-items: center;
+  color: var(--text-faint);
+}
+
+.goal-bar[data-phase="active"] .goal-bar-mark {
+  color: var(--gold);
+}
+
+.goal-bar[data-phase="blocked"] .goal-bar-mark {
+  color: var(--danger, #e5484d);
+}
+
+/* 一行装下：目标占满剩余宽度，状态贴在它后面。 */
+.goal-bar-objective {
+  overflow: hidden;
+  min-width: 0;
+  flex: 1 1 auto;
+  border-radius: 4px;
+  cursor: text;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.goal-bar-objective:hover {
+  background: var(--surface-2);
+  box-shadow: 0 0 0 3px var(--surface-2);
+}
+
+.goal-bar-meta {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.goal-bar[data-phase="blocked"] .goal-bar-meta {
+  color: var(--danger, #e5484d);
+}
+
+.goal-bar-edit {
+  min-width: 0;
+  flex: 1 1 auto;
+  padding: 2px 5px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.goal-bar-edit:focus {
+  outline: none;
+}
+
+.goal-bar-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
+.goal-bar-button {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.goal-bar-button:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.goal-bar-button .icon-slot {
+  width: 13px;
+  height: 13px;
 }
 
 .jobs-strip {
@@ -2185,54 +2295,326 @@ textarea:disabled {
   color: var(--accent);
 }
 
-.conversation-media-caption {
-  display: flex;
-  min-width: 0;
-  min-height: 28px;
-  align-items: center;
-  justify-content: space-between;
-  color: var(--text-faint);
-  font-size: 11px;
-  gap: 10px;
+/* 图片是入口:点开灯箱。原先那三个按钮铺在图下面一行,现在跟着浮层走。 */
+.conversation-media-visual.is-zoomable {
+  cursor: zoom-in;
 }
 
-.conversation-media-caption > span:first-child {
-  min-width: 0;
+.conversation-media-visual.is-zoomable::after {
+  position: absolute;
+  border-radius: inherit;
+  content: "";
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+  background: rgb(0 0 0 / 18%);
+}
+
+.conversation-media-visual.is-zoomable:hover::after {
+  opacity: 1;
+}
+
+.conversation-media-visual.is-zoomable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.lightbox {
+  position: fixed;
+  z-index: 90;
+  display: grid;
+  align-items: center;
+  justify-items: center;
+  padding: clamp(16px, 4vw, 48px);
+  inset: 0;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.lightbox.is-open {
+  opacity: 1;
+}
+
+.lightbox-scrim {
+  position: absolute;
+  border: 0;
+  cursor: zoom-out;
+  inset: 0;
+  background: rgb(0 0 0 / 68%);
+  backdrop-filter: blur(3px);
+}
+
+.lightbox-frame {
+  position: relative;
+  display: grid;
+  max-width: 100%;
+  max-height: 100%;
+  justify-items: center;
+  gap: 10px;
+  transform: scale(0.97);
+  transition: transform 140ms ease;
+}
+
+.lightbox.is-open .lightbox-frame {
+  transform: scale(1);
+}
+
+.lightbox-image {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100dvh - clamp(96px, 12vw, 160px));
+  border-radius: 8px;
+  object-fit: contain;
+  box-shadow: 0 18px 48px rgb(0 0 0 / 45%);
+}
+
+.lightbox-bar {
+  display: flex;
+  max-width: 100%;
+  align-items: center;
+  padding: 5px 6px 5px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  gap: 4px;
+  background: var(--surface-1);
+  box-shadow: var(--artifact-shadow);
+}
+
+.lightbox-caption {
   overflow: hidden;
+  max-width: min(46vw, 420px);
+  margin-right: 6px;
+  color: var(--text-soft);
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.conversation-media-caption.is-actions-only {
-  justify-content: flex-end;
+.lightbox-caption:empty {
+  display: none;
 }
 
-.conversation-media-actions {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 3px;
-}
-
-.conversation-media-actions button,
-.conversation-media-actions a {
+.lightbox-action {
   display: grid;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   place-items: center;
-  border-radius: 4px;
+  border-radius: 999px;
   color: var(--text-faint);
 }
 
-.conversation-media-actions button:hover,
-.conversation-media-actions a:hover {
+.lightbox-action:hover {
   background: var(--surface-2);
   color: var(--text);
 }
 
-.conversation-media-actions .icon-slot {
-  width: 14px;
-  height: 14px;
+.lightbox-action .icon-slot {
+  width: 15px;
+  height: 15px;
+}
+
+body.has-lightbox {
+  overflow: hidden;
+}
+
+/* 常驻任务面板。
+   正文固定 980px 居中,宽屏两侧本来就空着一大片。默认不显示——窄屏它会盖住
+   正文;`.main-stage` 是 container,按它的实际宽度而不是窗口宽度判断,这样
+   预览工作区展开、侧栏收起都能自动跟上。 */
+.stage-todos {
+  position: absolute;
+  z-index: 6;
+  /* 贴着正文左缘往左排,而不是贴侧栏——正文固定 980px 居中,`right` 从
+     stage 中线量出去正好落在正文左边,面板跟着正文走而不是跟着窗口走。 */
+  top: 46px;
+  right: calc(50% + 490px + 24px);
+  display: none;
+  width: 250px;
+  max-height: calc(100% - 210px);
+  overflow-y: auto;
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
+}
+
+@container (min-width: 1360px) {
+  .stage-todos:not([hidden]) {
+    display: block;
+  }
+}
+
+/* 侧边这份去框：它悬在留白里,描边和底色反而显得突兀,也和正文抢注意力。
+   气泡里那份仍是卡片——那个嵌在一段对话中间,需要边界把自己划出来。 */
+.stage-todos .todo-panel {
+  margin-top: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.stage-todos .todo-panel-head strong {
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.stage-todos .todo-progress {
+  margin-bottom: 14px;
+  background: color-mix(in srgb, var(--line) 60%, transparent);
+}
+
+/* 左侧一条竖线把这几行归拢成一组,代替原来的方框。 */
+.stage-todos .todo-list {
+  padding-left: 13px;
+  border-left: 1px solid var(--line);
+  gap: 9px;
+}
+
+.stage-todos .todo-text {
+  font-size: 12px;
+}
+
+/* 任务列表:AI 列的待办是给人看的产出,所以挂在工具签外面,收起态也可见。
+   状态一律靠左边那个标记表达,不写字——每行挂个「待办」是纯噪点。 */
+.todo-panel {
+  margin-top: 5px;
+  padding: 12px 14px 13px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-1);
+}
+
+.todo-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  gap: 8px;
+}
+
+.todo-panel-head strong {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.todo-panel-head small {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.todo-progress {
+  overflow: hidden;
+  height: 3px;
+  margin-bottom: 11px;
+  border-radius: 999px;
+  background: var(--surface-3);
+}
+
+.todo-progress > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--text-soft) 55%, transparent);
+  transition: width 240ms ease;
+}
+
+.todo-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  gap: 7px;
+  list-style: none;
+}
+
+.todo-item {
+  display: grid;
+  grid-template-columns: 13px minmax(0, 1fr) auto;
+  align-items: start;
+  font-size: 12.5px;
+  gap: 9px;
+  line-height: 1.45;
+}
+
+.todo-mark {
+  position: relative;
+  width: 11px;
+  height: 11px;
+  margin-top: 3px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 50%;
+}
+
+.todo-text {
+  min-width: 0;
+  color: var(--text-soft);
+  overflow-wrap: anywhere;
+}
+
+/* 右侧状态字。跟着所在行的那档灰走,不自己上色——一张表里已完成的往往最多,
+   给它一块彩色就成了主角,而它恰恰最不需要注意。 */
+.todo-status {
+  align-self: center;
+  color: var(--text-faint);
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
+.todo-item.is-in_progress .todo-status {
+  color: var(--text-soft);
+}
+
+/* 整张表不上色。三种状态靠标记的形状分:空心圈、实心圆、圈里一个对勾;
+   轻重靠文字的明暗分。加颜色只会让「已完成」这种最不需要注意的行反而最亮。 */
+.todo-item.is-in_progress .todo-mark {
+  border-color: var(--text-soft);
+  background: var(--text-soft);
+}
+
+/* 三档灰阶:待办 --text-soft、进行中 --text、已完成 --text-faint+划掉。
+   进行中只靠「最深的那一档灰」站出来,不再加粗到 600——那和实心黑点是同一个
+   毛病,一行里两处都在使劲。 */
+.todo-item.is-in_progress .todo-text {
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* 已完成:空心圈里一个淡对勾。实心色块太抢——一张表里完成的往往最多,
+   全都点亮就成了主角,而它们恰恰是最不需要注意的。 */
+.todo-item.is-completed .todo-mark {
+  border-color: color-mix(in srgb, var(--line-strong) 70%, transparent);
+  background: transparent;
+}
+
+.todo-item.is-completed .todo-mark::after {
+  position: absolute;
+  top: 0.5px;
+  left: 2.5px;
+  width: 3px;
+  height: 6px;
+  border: solid var(--text-faint);
+  border-width: 0 1.5px 1.5px 0;
+  content: "";
+  transform: rotate(42deg);
+}
+
+.todo-item.is-completed .todo-text {
+  color: var(--text-faint);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--text-faint) 55%, transparent);
+}
+
+.todo-item.is-cancelled .todo-mark {
+  border-style: dashed;
+}
+
+.todo-item.is-cancelled .todo-text {
+  color: var(--text-faint);
+  text-decoration: line-through;
+  opacity: 0.7;
 }
 
 /* 工具签:气泡内小签。身份用字形色(⚙/$ 金),底色只表状态——
@@ -3169,6 +3551,20 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   padding: 4px 2px;
 }
 
+/* 输入框那排的运行指示器。原来它在气泡左下角，且只在「第一个块到达前」出现
+   ——推理和工具阶段反而没有，而那两段恰恰最需要「它还在动」。现在整个回合
+   期间都在，位置固定，不随气泡内容跳来跳去。 */
+.typing-indicator.is-composer {
+  padding: 0 2px;
+  gap: 4px;
+  align-self: center;
+}
+
+.typing-indicator.is-composer i {
+  width: 5px;
+  height: 5px;
+}
+
 .typing-indicator.is-streaming i {
   width: 5px;
   height: 5px;
@@ -3195,7 +3591,7 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   --artifact-highlight: color-mix(in srgb, var(--artifact-bg) 84%, var(--md-sys-color-surface-container-highest) 16%);
   --artifact-highlight-hover: color-mix(in srgb, var(--artifact-highlight) 84%, white 16%);
   position: absolute;
-  top: 66px;
+  top: 10px;
   right: 10px;
   bottom: 10px;
   z-index: 12;
@@ -3389,6 +3785,17 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   box-shadow: var(--artifact-shadow);
 }
 
+.artifact-resource-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.artifact-resource-row > button:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .artifact-resource-menu button {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr) auto 14px;
@@ -3435,6 +3842,36 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
 
 .artifact-resource-menu .icon-slot:last-child {
   color: var(--accent);
+}
+
+/* 删除按钮要压过上面那批 `.artifact-resource-menu button` 的网格布局，
+   所以写在后面并带上菜单前缀。上面那条 `.icon-slot:last-child` 是给「当前
+   项」的对勾用的，叉正好也是最后一个 icon-slot，会被染成强调色。 */
+.artifact-resource-menu .artifact-resource-remove {
+  display: flex;
+  flex: 0 0 auto;
+  width: 26px;
+  min-height: 26px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 5px;
+  color: var(--text-faint);
+  opacity: 0;
+}
+
+.artifact-resource-row:hover .artifact-resource-remove,
+.artifact-resource-menu .artifact-resource-remove:focus-visible {
+  opacity: 1;
+}
+
+.artifact-resource-menu .artifact-resource-remove:hover {
+  color: var(--danger, #e5484d);
+  background: var(--artifact-highlight-hover);
+}
+
+.artifact-resource-menu .artifact-resource-remove .icon-slot:last-child {
+  color: inherit;
 }
 
 .artifact-actions {
@@ -3648,7 +4085,7 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   right: auto;
   bottom: auto;
   grid-column: 2;
-  grid-row: 2;
+  grid-row: 1;
   width: var(--artifact-width);
   margin: 8px 10px 10px 16px;
   box-shadow: var(--artifact-shadow);
@@ -3663,6 +4100,12 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
 }
 
 @media (max-width: 836px) {
+  .stage-float {
+    top: max(8px, env(safe-area-inset-top));
+    left: 8px;
+    gap: 4px;
+  }
+
   :root {
     --ui-scale: 1;
   }
@@ -4306,291 +4749,116 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   gap: 9px;
 }
 
-.thinking-variant-button {
-  display: inline-flex;
-  width: 38px;
-  height: 26px;
-  flex: 0 0 38px;
+/* 思考档位并进了模型菜单：每行模型右边一个小片,点开就地铺开档位选项。
+   原先它是独立按钮 + 独立浮层,和模型按钮并排占两个位置,而两者常常要一起
+   调(换了模型往往就要换档位)。 */
+.model-menu-row {
+  position: relative;
+  display: flex;
   align-items: center;
-  justify-content: center;
-  border-radius: 8px;
+  padding-right: 9px;
+  border-radius: 6px;
+  gap: 3px;
+}
+
+/* 高亮由行来画,行内那个按钮不再自己上色——否则背景在按钮右缘就断了,
+   档位小片被甩在高亮之外,一行看着是两块。 */
+.model-menu-row > .model-menu-item {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+}
+
+.model-menu-row:hover,
+.model-menu-row:has(> .model-menu-item.selected) {
   background: var(--surface-2);
+}
+
+.model-menu-row:hover > .model-menu-item,
+.model-menu-row > .model-menu-item.selected {
+  color: var(--text);
+}
+
+/* 行内的档位控件。行已经有整块底色了,静息态只要比它高一档就看得出来;
+   点上去/展开时才转成强调色。 */
+.model-level-chip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  height: 24px;
+  padding: 0 6px 0 9px;
+  border: 0;
+  border-radius: 5px;
+  background: var(--surface-3);
   color: var(--text-soft);
   cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
   gap: 2px;
-  transition: background 160ms ease, color 160ms ease, transform 160ms ease;
+  white-space: nowrap;
 }
 
-.thinking-variant-button:hover:not(:disabled),
-.thinking-variant-button[aria-expanded="true"] {
-  background: color-mix(in srgb, var(--accent) 13%, var(--surface-2));
-  color: var(--accent);
+.model-level-chip:hover,
+.model-level-chip[aria-expanded="true"] {
+  background: var(--accent);
+  color: var(--md-sys-color-on-primary);
 }
 
-.thinking-variant-button.has-override {
-  color: var(--accent);
+.model-level-chip .icon-slot {
+  width: 11px;
+  height: 11px;
+  opacity: 0.7;
+  transition: transform 160ms ease;
 }
 
-.thinking-variant-button:active:not(:disabled) {
-  transform: scale(0.95);
-}
-
-.thinking-variant-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.42;
-}
-
-.thinking-variant-button .brain-icon {
-  width: 14px;
-  height: 14px;
-  flex-basis: 14px;
-}
-
-.thinking-variant-button .thinking-chevron {
-  width: 9px;
-  height: 9px;
-  flex-basis: 9px;
-  transition: transform 180ms ease;
-}
-
-.thinking-variant-button[aria-expanded="true"] .thinking-chevron {
+.model-level-chip[aria-expanded="true"] .icon-slot {
   transform: rotate(180deg);
 }
 
-.thinking-variant-popover {
-  position: fixed;
-  z-index: 70;
-  width: max-content;
-  min-width: 286px;
-  max-width: min(374px, calc(100vw - 20px));
-  height: 247px;
-  max-height: calc(100dvh - 20px);
-  overflow: hidden;
+.model-level-menu {
+  position: absolute;
+  z-index: 41;
+  display: grid;
+  min-width: 132px;
+  padding: 4px;
   border: 1px solid var(--line-strong);
-  border-radius: 8px;
+  border-radius: 7px;
+  gap: 1px;
   background: var(--surface-1);
-  color: var(--text);
   box-shadow: var(--float-shadow);
-  transform-origin: bottom left;
-  animation: thinking-popover-in 150ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-.thinking-variant-popover[hidden] {
+.model-level-menu[hidden] {
   display: none;
 }
 
-.thinking-variant-layout {
-  display: grid;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  grid-template-columns: minmax(112px, max-content) minmax(158px, max-content);
-}
-
-/* 单模型时模型栏被隐藏，布局收成一列档位。 */
-.thinking-variant-layout.single-model {
-  grid-template-columns: minmax(158px, max-content);
-}
-
-.thinking-model-pane,
-.thinking-level-pane {
-  min-width: 0;
-  min-height: 0;
-}
-
-.thinking-model-pane {
-  overflow: hidden;
-  border-right: 1px solid var(--line);
-  background: color-mix(in srgb, var(--surface-2) 70%, var(--surface-1));
-}
-
-.thinking-model-list {
-  display: grid;
-  align-content: start;
-  height: 100%;
-  padding: 6px 5px;
-  gap: 2px;
-  overflow-y: auto;
-  scrollbar-color: var(--line-strong) transparent;
-  scrollbar-width: thin;
-}
-
-.thinking-model-option {
-  display: grid;
-  position: relative;
-  width: 100%;
-  min-width: 0;
-  height: 31px;
+.model-level-option {
+  display: flex;
+  min-height: 28px;
   align-items: center;
-  padding: 0 7px 0 9px;
-  grid-template-columns: minmax(0, 1fr) auto;
-  border-radius: 6px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
   background: transparent;
   color: var(--text-soft);
   cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
   text-align: left;
-  gap: 6px;
 }
 
-.thinking-model-option::before {
-  position: absolute;
-  top: 6px;
-  bottom: 6px;
-  left: 0;
-  width: 2px;
-  border-radius: 2px;
-  background: transparent;
-  content: "";
-}
-
-.thinking-model-option:hover {
+.model-level-option:hover {
   background: var(--surface-2);
   color: var(--text);
 }
 
-.thinking-model-option[aria-selected="true"] {
-  background: color-mix(in srgb, var(--accent-soft) 54%, transparent);
-  color: var(--text);
-}
-
-.thinking-model-option[aria-selected="true"]::before {
+.model-level-option.selected {
   background: var(--accent);
-}
-
-.thinking-model-option-name,
-.thinking-model-option-level {
-  overflow: hidden;
-  min-width: 0;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.thinking-model-option-name {
-  font-size: 10.5px;
+  color: var(--md-sys-color-on-primary);
   font-weight: 600;
 }
 
-.thinking-model-option-level {
-  max-width: 36px;
-  color: var(--text-faint);
-  font-size: 9px;
-  font-weight: 600;
-}
-
-.thinking-model-option[aria-selected="true"] .thinking-model-option-level {
-  color: var(--accent);
-}
-
-.thinking-level-pane {
-  display: grid;
-  overflow: hidden;
-  max-width: 255px;
-  grid-template-rows: auto minmax(0, 1fr);
-  background: var(--surface-1);
-}
-
-.thinking-model-detail {
-  display: grid;
-  min-width: 0;
-  padding: 12px 13px 8px;
-  gap: 2px;
-}
-
-.thinking-model-detail strong,
-.thinking-model-detail small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.thinking-model-detail strong {
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.thinking-model-detail small {
-  color: var(--text-faint);
-  font-size: 9.5px;
-}
-
-.thinking-level-list {
-  display: grid;
-  align-content: start;
-  min-height: 0;
-  padding: 3px 7px 7px;
-  overflow-y: auto;
-  gap: 3px;
-  scrollbar-color: var(--line-strong) transparent;
-  scrollbar-width: thin;
-}
-
-.thinking-level-option {
-  display: flex;
-  width: 100%;
-  min-width: 148px;
-  min-height: 30px;
-  align-items: center;
-  padding: 0 8px;
-  border-radius: 6px;
-  background: transparent;
-  color: color-mix(in srgb, var(--text) 74%, var(--text-soft));
-  cursor: pointer;
-  text-align: left;
-  gap: 8px;
-}
-
-.thinking-level-option:hover {
-  background: var(--surface-2);
-  color: var(--text);
-}
-
-.thinking-level-option[aria-checked="true"] {
-  background: color-mix(in srgb, var(--accent-soft) 48%, transparent);
-  color: var(--text);
-}
-
-.thinking-level-name {
-  overflow: hidden;
-  min-width: 0;
-  font-size: 10.5px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.thinking-level-check {
-  display: grid;
-  width: 12px;
-  height: 12px;
-  flex: 0 0 12px;
-  place-items: center;
-  border: 1px solid var(--line-strong);
-  border-radius: 50%;
-}
-
-.thinking-level-option[aria-checked="true"] .thinking-level-check {
-  border-color: var(--accent);
-}
-
-.thinking-level-option[aria-checked="true"] .thinking-level-check::after {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  content: "";
-}
-
-.thinking-variant-empty {
-  padding: 20px 13px;
-  color: var(--text-faint);
-  font-size: 10.5px;
-  line-height: 1.5;
-}
-
-@keyframes thinking-popover-in {
-  from { opacity: 0; transform: translateY(4px) scale(0.98); }
-  to { opacity: 1; transform: none; }
-}
 
 .composer-submit {
   min-width: 0;
@@ -4795,55 +5063,17 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   display: block;
 }
 
-.drawer-scrim {
-  z-index: 49;
+/* 设置进了控制台,原来那个从右侧滑出的抽屉和它的遮罩都没了。
+   `.settings-layout` / `.settings-nav` / `.settings-content` 本来就没绑在
+   抽屉上,搬进控制台面板后原样生效。 */
+.con-panel {
+  min-height: 0;
 }
 
-.settings-drawer {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 50;
+.con-panel[data-console-panel="settings"] {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  width: min(1040px, calc(98vw / var(--ui-scale)));
-  border-left: 0;
-  background: var(--app-bg);
-  box-shadow: var(--float-shadow);
-  transform: translateX(102%);
-  transition: transform 260ms cubic-bezier(0.2, 0, 0, 1);
-}
-
-.settings-drawer.open {
-  transform: translateX(0);
-}
-
-.settings-drawer > header {
-  display: flex;
-  min-height: 66px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 20px;
-}
-
-.settings-drawer > header > div {
-  display: grid;
-  gap: 1px;
-}
-
-.settings-drawer > header small {
-  color: var(--gold);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.24em;
-}
-
-.settings-drawer > header strong {
-  font-family: var(--serif);
-  font-size: 20px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
+  height: 100%;
+  grid-template-rows: minmax(0, 1fr) auto;
 }
 
 .settings-content {
@@ -5897,6 +6127,69 @@ textarea.config-input {
   gap: 8px;
 }
 
+/* /pop 的轮次多选列表:沿用 reset-dialog 的壳,中段是可滚动清单。 */
+.pop-dialog {
+  width: min(560px, calc(calc(100vw / var(--ui-scale)) - 32px));
+}
+
+.pop-dialog header {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.pop-dialog-list {
+  max-height: min(48vh, 420px);
+  overflow-y: auto;
+  border-top: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pop-dialog-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: var(--fs-meta);
+}
+
+.pop-dialog-row:hover {
+  background: var(--surface-2);
+}
+
+.pop-dialog-row .pop-row-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.pop-dialog-row .pop-row-meta {
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.pop-dialog-all {
+  margin-right: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-soft);
+  font-size: var(--fs-meta);
+  cursor: pointer;
+}
+
+.pop-dialog-empty {
+  padding: 18px;
+  text-align: center;
+  color: var(--text-soft);
+  font-size: var(--fs-meta);
+}
+
 .noscript-state {
   position: fixed;
   inset: 0;
@@ -5923,18 +6216,10 @@ textarea.config-input {
     --sidebar-width: 224px;
   }
 
-  .topbar {
-    grid-template-columns: minmax(0, 1fr) auto;
-    padding: 0 10px;
-  }
-
   .model-label {
     max-width: 96px;
   }
 
-  .settings-drawer {
-    width: min(900px, calc(98vw / var(--ui-scale)));
-  }
 }
 
 @media (max-width: 836px) {
@@ -5975,6 +6260,12 @@ textarea.config-input {
     display: inline-grid;
   }
 
+  /* 窄屏上侧栏是抽屉,只有「关掉」一个语义。「收起」是宽屏那套(收成一条窄
+     轨),两个一起出现就是两个长得不一样的关闭按钮。 */
+  .sidebar-collapse-button {
+    display: none;
+  }
+
   .sidebar-close,
   .mobile-menu-button {
     width: 36px;
@@ -5985,32 +6276,6 @@ textarea.config-input {
   .main-stage {
     width: 100%;
     height: var(--app-height, calc(100dvh / var(--ui-scale)));
-  }
-
-  .topbar {
-    grid-template-areas: "leading actions";
-    grid-template-columns: minmax(0, 1fr) auto;
-    min-height: 58px;
-    align-content: center;
-    padding: max(7px, env(safe-area-inset-top)) 8px 7px;
-  }
-
-  .topbar-leading {
-    grid-area: leading;
-    gap: 5px;
-  }
-
-  .topbar-actions {
-    grid-area: actions;
-    gap: 4px;
-  }
-
-  .conversation-heading strong {
-    font-size: 13px;
-  }
-
-  .conversation-heading span {
-    font-size: 10px;
   }
 
   .model-button {
@@ -6024,11 +6289,8 @@ textarea.config-input {
   }
 
   .model-menu {
-    position: fixed;
-    top: calc(62px + env(safe-area-inset-top));
-    right: 8px;
     width: min(286px, calc(calc(100vw / var(--ui-scale)) - 16px));
-    max-height: min(430px, calc(calc(100dvh / var(--ui-scale)) - 82px));
+    max-height: min(430px, calc(calc(100dvh / var(--ui-scale)) - 140px));
   }
 
   .timeline {
@@ -6152,11 +6414,6 @@ textarea.config-input {
     margin-top: 17px;
   }
 
-  .settings-drawer {
-    width: min(720px, calc(100vw / var(--ui-scale)));
-    padding-top: env(safe-area-inset-top);
-  }
-
   .settings-layout {
     grid-template-columns: 1fr;
   }
@@ -6208,20 +6465,10 @@ textarea.config-input {
 }
 
 @media (max-width: 473px) {
-  .topbar .icon-button {
+  .stage-float .icon-button {
     width: 32px;
     height: 32px;
     flex-basis: 32px;
-  }
-
-  .topbar .mobile-menu-button {
-    width: 35px;
-    height: 35px;
-    flex-basis: 35px;
-  }
-
-  .conversation-heading strong {
-    max-width: 150px;
   }
 
   .tool-title strong,
@@ -6249,8 +6496,9 @@ textarea.config-input {
     max-width: 100px;
   }
 
-  .thinking-variant-popover {
-    max-width: calc(100vw - 18px);
+  /* 窄屏上进度条挤在一排控件中间,细得看不出刻度,数字本身已经说明问题。 */
+  .composer-context .context-track {
+    display: none;
   }
 
   .composer-context {
@@ -6561,3 +6809,667 @@ body[data-theme="linen"] .u-type-pill.t-aux { color: var(--md-sys-color-on-secon
 .video-shell.webfs .vfs-btn { top: 16px; right: 16px; opacity: 1; }
 .video-caption { margin-top: 7px; font-size: var(--fs-micro); color: var(--text-soft);
   max-width: min(100%, 480px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 斜杠命令的补全菜单。挂在 .composer-dock（position: relative）上，从输入框
+   上方弹出——往下弹会被输入框自己盖住。 */
+.commandMenu {
+  position: absolute;
+  /* 贴着输入框会看不出这是两个东西；留一段间距，并收窄到内容宽度， */
+  /* 免得一条两行的菜单横贯整个对话区，比输入框还显眼。 */
+  bottom: calc(100% - 2px);
+  left: max(18px, calc((100% - 940px) / 2));
+  z-index: 40;
+  width: min(520px, calc(100% - 2 * max(18px, calc((100% - 940px) / 2))));
+  max-height: min(320px, 50vh);
+  margin-bottom: 10px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--border-1, rgba(128, 128, 128, 0.22));
+  border-radius: 10px;
+  background: var(--surface-1);
+  box-shadow: var(--float-shadow);
+}
+
+.commandMenuItem {
+  display: flex;
+  gap: 14px;
+  align-items: baseline;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.commandMenuItem:hover,
+.commandMenuItem.isActive {
+  background: var(--surface-2);
+}
+
+.commandMenuName {
+  flex: 0 0 auto;
+  font-family: var(--mono-font, monospace);
+}
+
+.commandMenuHelp {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted, inherit);
+  font-size: 0.86em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 命令回执：复用系统事件那条居中小条（后台任务完成同款）。差别只有一点——
+   系统事件是一行短标签，可以 nowrap + 省略号；命令回执常常是一句要读完的
+   解释，截断了等于没说，所以允许换行。 */
+/* 命令还在跑：文字变淡 + 呼吸，和跑完的结果区分开。 */
+.system-event.is-command-result.is-pending > span {
+  opacity: 0.62;
+  animation: command-pending-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes command-pending-pulse {
+  0%,
+  100% {
+    opacity: 0.62;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.system-event.is-command-result > span {
+  max-width: min(560px, 80%);
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  line-height: 1.5;
+  padding: 6px 12px;
+  text-align: center;
+}
+
+.system-event.is-command-result.is-error > span {
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface-2));
+  color: var(--danger);
+}
+
+/* ── 文件分享面板(shared.js) ── */
+
+.shared-files-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: color-mix(in srgb, var(--md-sys-color-surface) 45%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.shared-files-panel {
+  width: min(680px, 100%);
+  max-height: min(72vh, 640px);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-1);
+  color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--text-faint) 40%, transparent);
+  border-radius: 16px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.shared-files-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--text-faint) 35%, transparent);
+}
+
+.shared-files-hint {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.shared-files-refresh,
+.shared-files-close {
+  border: none;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 8px;
+}
+
+.shared-files-refresh:hover,
+.shared-files-close:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/* 批量操作工具条:与行内胶囊按钮同族,禁用态压暗提示不可点 */
+.shared-files-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--text-faint) 22%, transparent);
+}
+
+.shared-files-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid color-mix(in srgb, var(--text-faint) 45%, transparent);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.shared-files-tool svg {
+  width: 13px;
+  height: 13px;
+}
+
+.shared-files-tool:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+
+.shared-files-tool:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.shared-files-tool.is-danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+.shared-files-check {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.shared-files-list {
+  overflow-y: auto;
+  padding: 10px 14px 16px;
+}
+
+.shared-files-empty {
+  margin: 18px 6px;
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.shared-files-row {
+  padding: 10px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--text-faint) 22%, transparent);
+}
+
+.shared-files-row:last-child {
+  border-bottom: none;
+}
+
+.shared-files-row-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.shared-files-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-soft);
+}
+
+.shared-files-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.shared-files-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.shared-files-meta {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.shared-files-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.shared-files-action {
+  border: 1px solid color-mix(in srgb, var(--text-faint) 45%, transparent);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.shared-files-action:hover {
+  background: var(--surface-3);
+}
+
+.shared-files-action.is-danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+.shared-files-preview {
+  margin-top: 10px;
+}
+
+.shared-files-preview img {
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  display: block;
+}
+
+/* hidden 属性必须赢过 display:flex,否则面板关不上 */
+.shared-files-overlay[hidden] {
+  display: none;
+}
+
+/* ── 气泡内分享附件卡片(音频/视频/文件是一个视觉家族:8px 圆角 + --line 边框 + 悬停染 accent) ── */
+
+.shared-attachment {
+  margin-top: 8px;
+  max-width: 420px;
+}
+
+.shared-attachment-preview img {
+  max-width: 100%;
+  max-height: 300px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  display: block;
+  margin-bottom: 6px;
+}
+
+/* 视频容器:黑底收边,原生控件保留 */
+.media-video-shell {
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  overflow: hidden;
+  background: var(--md-sys-color-surface-container-lowest);
+  margin-bottom: 6px;
+  transition: border-color 0.15s ease;
+}
+
+.media-video-shell:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+}
+
+.media-video-shell video {
+  display: block;
+  width: 100%;
+  max-height: 300px;
+  background: #000;
+}
+
+.shared-files-preview .media-video-shell video {
+  max-height: 320px;
+}
+
+.shared-attachment-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-1);
+  color: var(--text);
+  text-decoration: none;
+  min-width: 0;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.shared-attachment-row:hover {
+  background: var(--surface-2);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+}
+
+.shared-attachment-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
+  color: var(--accent);
+}
+
+.shared-attachment-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.shared-attachment-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.shared-attachment-meta {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.shared-attachment-download {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-soft);
+  transition: color 0.15s ease;
+}
+
+.shared-attachment-download svg {
+  width: 15px;
+  height: 15px;
+}
+
+.shared-attachment-row:hover .shared-attachment-download {
+  color: var(--accent);
+}
+
+/* ── 自定义音频播放器 ── */
+
+.media-audio-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-1);
+  transition: border-color 0.15s ease;
+}
+
+.media-audio-card:hover,
+.media-audio-card.is-playing {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+}
+
+.media-audio-card audio {
+  display: none;
+}
+
+.media-audio-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.media-audio-cover {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--accent-soft), color-mix(in srgb, var(--coral-soft) 55%, var(--accent-soft)));
+  color: var(--user-text);
+}
+
+.media-audio-cover svg {
+  width: 20px;
+  height: 20px;
+}
+
+.media-audio-card.is-playing .media-audio-cover {
+  color: color-mix(in srgb, var(--user-text) 80%, var(--accent-strong));
+}
+
+.media-audio-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.media-audio-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-audio-meta {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.media-audio-card.is-error .media-audio-meta {
+  color: var(--danger);
+}
+
+.media-audio-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.media-audio-play {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--inverse-text);
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.media-audio-play:hover {
+  background: var(--accent-strong);
+}
+
+.media-audio-play:active {
+  transform: scale(0.94);
+}
+
+.media-audio-play svg {
+  width: 15px;
+  height: 15px;
+}
+
+.media-audio-time {
+  flex: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-soft);
+  min-width: 32px;
+  text-align: center;
+}
+
+.media-audio-track {
+  flex: 1;
+  min-width: 48px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  touch-action: none;
+  border-radius: 999px;
+  /* 轨道底色:内嵌渐变画一条 5px 细线,省一层元素 */
+  background: linear-gradient(color-mix(in srgb, var(--text-faint) 45%, transparent) 0 0) center / 100% 5px no-repeat;
+}
+
+.media-audio-track-fill {
+  position: relative;
+  height: 5px;
+  width: 0%;
+  border-radius: 999px;
+  background: var(--accent);
+  min-width: 0;
+}
+
+.media-audio-track-fill::after {
+  content: "";
+  position: absolute;
+  right: -5px;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  transform: translateY(-50%) scale(0);
+  transition: transform 0.12s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.media-audio-track:hover .media-audio-track-fill::after,
+.media-audio-track.is-scrubbing .media-audio-track-fill::after,
+.media-audio-track:focus-visible .media-audio-track-fill::after {
+  transform: translateY(-50%) scale(1);
+}
+
+.media-audio-track:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 2px;
+}
+
+.media-audio-track.is-static {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.media-audio-icon-btn {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.media-audio-icon-btn:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.media-audio-icon-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* 音量条:accent 已播 + 淡轨道,WebKit/Firefox 各写一份 */
+.media-audio-volume {
+  flex: none;
+  width: 56px;
+  height: 16px;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.media-audio-volume::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-faint) 45%, transparent);
+}
+
+.media-audio-volume::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 10px;
+  height: 10px;
+  margin-top: -3px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.media-audio-volume::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-faint) 45%, transparent);
+}
+
+.media-audio-volume::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.media-audio-volume::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* 窄屏收起音量条,静音键仍在 */
+@media (max-width: 480px) {
+  .media-audio-volume {
+    display: none;
+  }
+}
+
+/* ── G2:不可见即暂停 ──
+   页面隐藏(切标签/最小化)时由 app.js 挂 miyu-paused。所有无限动画
+   (status-pulse/shimmer/typing-bounce/spin 等)暂停,恢复可见时原地续播,
+   视觉零变化。实测隐藏窗口不暂停时合成负载与可见时相同。 */
+body.miyu-paused *,
+body.miyu-paused *::before,
+body.miyu-paused *::after {
+  animation-play-state: paused !important;
+}

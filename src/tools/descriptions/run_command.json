@@ -1,25 +1,25 @@
 {
   "name": "run_command",
   "display_name": "运行命令",
-  "description": "运行 shell 命令或复杂 shell 脚本，用于测试、构建、检查和脚本化任务。长时命令（构建、dev server、批处理）用 background=true 后台运行并附一个短 title：立即返回短 job_id，用 job_status 查询进度和输出、job_stop 停止；命令完成后系统会自动通知你跟进。编辑文件优先使用 apply_patch；不要用 shell heredoc/cat/tee 写源代码文件，除非用户明确要求。脚本内可用 `miyu tool-call <name> --stdin` 以本会话身份调用结构化工具,--list 列出的就是本会话可调用的集合,--describe 查参数合同——bash 循环+管道即编排层,中间数据不经模型上下文。内层调用在 daemon 侧的会话工作区执行:不继承脚本的环境变量与当前目录,跨工具传数据走参数 JSON 或文件。",
+  "description": "Run a shell command or complex shell script for testing, building, checks, and scripted tasks. For long-running commands (builds, dev servers, batch jobs) use background=true to run detached and attach a short title: a short job_id is returned immediately; use job(action=status) to check progress and output, job(action=stop) to stop; when the command finishes the system will automatically notify you to follow up. Prefer apply_patch for editing files; do not write source code files via shell heredoc/cat/tee unless the user explicitly asks. Inside scripts you can call structured tools under this session's identity with `miyu tool-call <name> --stdin`; --list shows exactly the set callable in this session, and --describe shows a tool's parameter contract — bash loops plus pipes are the orchestration layer, and intermediate data does not pass through the model context. Inner calls execute in the daemon-side session workspace: they do not inherit the script's environment variables or current directory; pass data across tools via parameter JSON or files.",
   "parameters": {
     "type": "object",
     "properties": {
       "command": {
         "type": "string",
-        "description": "要运行的 shell 命令或脚本。可以包含多行复杂命令；文件编辑优先使用 apply_patch。"
+        "description": "The shell command or script to run. May contain complex multi-line commands; prefer apply_patch for file edits."
       },
       "timeout_seconds": {
         "type": "integer",
-        "description": "可选超时时间，单位秒。background=true 时忽略。"
+        "description": "Optional timeout in seconds. Ignored when background=true."
       },
       "background": {
         "type": "boolean",
-        "description": "后台分离运行并立即返回短 job_id。适用于预计超过约 30 秒的命令。"
+        "description": "Run detached in the background and return a short job_id immediately. Suitable for commands expected to take longer than about 30 seconds."
       },
       "title": {
         "type": "string",
-        "description": "后台命令的短标题（不超过 16 字），用于界面状态行显示，例如“release 构建”。background=true 时建议提供。"
+        "description": "Short title for the background command (at most 16 characters), shown in the UI status line, e.g. “release build”. Recommended when background=true."
       }
     },
     "required": [

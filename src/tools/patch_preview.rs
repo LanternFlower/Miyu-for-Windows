@@ -44,7 +44,7 @@ pub(crate) fn display_path(path: &Path) -> String {
     if let Ok(stripped) = absolute.strip_prefix(super::workspace::effective_workdir()) {
         return stripped.display().to_string();
     }
-    if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {
+    if let Some(home) = crate::platform_dirs::PlatformDirs::new().map(|d| d.home_dir().to_path_buf()) {
         if let Ok(stripped) = absolute.strip_prefix(home) {
             return format!("~/{}", stripped.display());
         }

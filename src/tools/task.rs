@@ -1,107 +1,44 @@
 use super::subagent_runner::{ProgressMode, SubagentProgress, SubagentRunner, SubagentStats};
 use super::{ToolRegistry, ToolSpec};
 use crate::config::{AppConfig, ModelTier};
-use crate::i18n::agent_text as t;
 use crate::llm::OpenAiCompatibleClient;
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 
-const EXPLORE_SYSTEM_PROMPT: &str = include_str!("../prompts/subagent-explore.md");
-const GENERAL_SYSTEM_PROMPT: &str = include_str!("../prompts/subagent-general.md");
+const SUBAGENT_SYSTEM_PROMPT: &str = include_str!("../prompts/subagent-general.md");
 
-const EXPLORE_ALLOWED: &[&str] = &[
-    "read_file",
-    "glob",
-    "grep",
-    "check_os_info",
-    "read_clipboard",
-    "web_fetch",
-    "web_search",
-];
-
-const GENERAL_EXCLUDED: &[&str] = &[
+/// 子代理不再分类(08-17):任务由主体布置,工具就沿用主体的目录。
+/// 原来的 explore 是一份硬白名单(read_file/glob/grep/check_os_info/
+/// read_clipboard/web_fetch/web_search),而 dev 目录根本不注册前五个——
+/// dev 下的 explore 只剩 web 两件套,描述却还在承诺 7 个工具。分类本身
+/// 就是这类漂移的来源,连同 275 字符的 subagent_type 参数一起退场。
+///
+/// 递归防护保留:这份排除表继续把 task/deep_research、技能创作、闹钟和
+/// 娱乐类工具挡在子代理之外。
+pub(in crate::tools) const SUBAGENT_EXCLUDED: &[&str] = &[
     "task",
     "task_agent",
     "deep_research",
+    "claude_code",
     "load_skill",
-    "create_skill",
-    "update_skill",
-    "delete_skill",
-    "publish_skill",
-    "list_skill_drafts",
-    "set_alarm",
-    "list_alarms",
-    "cancel_alarm",
-    "search_meme",
-    "show_meme",
-    "add_meme",
-    "update_meme",
-    "delete_meme",
+    "manage_skill",
+    "alarm",
+    "use_meme",
+    "manage_meme",
     "generate_image",
     "print_image",
     "search_web_images",
-    "xuanxue_pick",
-    "xuanxue_divine",
-    "draw_zhouyi_hexagram",
-    "draw_tarot_card",
-    "draw_fortune_lot",
-    "roll_dice",
+    "divine",
 ];
 
-const EXPLORE_TOOL_TIMEOUT: u64 = 60;
-const GENERAL_TOOL_TIMEOUT: u64 = 120;
+const SUBAGENT_TOOL_TIMEOUT: u64 = 120;
 
 #[derive(Clone)]
 struct TaskContext {
     config: AppConfig,
     paths: MiyuPaths,
     tools: ToolRegistry,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum SubagentType {
-    Explore,
-    General,
-}
-
-impl SubagentType {
-    fn from_str(s: &str) -> Self {
-        match s {
-            "explore" => Self::Explore,
-            _ => Self::General,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Explore => "explore",
-            Self::General => "general",
-        }
-    }
-
-    fn system_prompt(self) -> &'static str {
-        match self {
-            Self::Explore => EXPLORE_SYSTEM_PROMPT,
-            Self::General => GENERAL_SYSTEM_PROMPT,
-        }
-    }
-
-    fn tool_timeout(self) -> u64 {
-        match self {
-            Self::Explore => EXPLORE_TOOL_TIMEOUT,
-            Self::General => GENERAL_TOOL_TIMEOUT,
-        }
-    }
-
-    /// Default model tier when the caller doesn't pick one: exploration is
-    /// read-only search (cheap), general work gets the balanced tier.
-    fn default_tier(self) -> ModelTier {
-        match self {
-            Self::Explore => ModelTier::Cheap,
-            Self::General => ModelTier::Balanced,
-        }
-    }
 }
 
 pub fn register(
@@ -118,46 +55,34 @@ pub fn register(
     };
     registry.register(ToolSpec::new_with_progress(
         "task",
-        t(
-            "Launch a subagent to handle a complex task independently. The subagent has its own system prompt, tool set, and LLM loop, and returns its final text to the main agent.",
-            "启动子代理独立处理复杂任务。子代理有独立的系统提示、工具集和 LLM 循环，完成后返回最终文本给主 agent。",
-        ),
+        "Launch a subagent to handle a complex task independently. The subagent has its own system prompt, tool set, and LLM loop, and returns its final text to the main agent.",
         json!({
             "type": "object",
             "properties": {
                 "description": {
                     "type": "string",
-                    "description": t("Short task description for progress display.", "简短任务描述，用于进度展示。")
+                    "description": "Short task description for progress display."
                 },
                 "prompt": {
                     "type": "string",
-                    "description": t("Detailed task prompt. Must include full context, goals, and output requirements since the subagent has no access to the main agent's conversation history.", "详细任务提示。必须包含完整的上下文、目标和输出要求，因为子代理无法访问主 agent 的对话历史。")
-                },
-                "subagent_type": {
-                    "type": "string",
-                    "enum": ["explore", "general"],
-                    // explore 是一份硬白名单(见 EXPLORE_ALLOWED),不是「所有只读工具」。
-                    // 说成「只读搜索」会让模型以为 get_weather 这类只读工具也在里面,
-                    // 于是拿 explore 去干需要专用工具的活,再自己用 web_fetch 硬凑。
-                    "description": t("Subagent type. explore has exactly these 7 tools: read_file, glob, grep, web_search, web_fetch, check_os_info, read_clipboard — good for reading code and looking things up, nothing else is available. Anything needing another tool (weather, knowledge base, image generation, running commands) must use general, which inherits your full tool set. Defaults to general.", "子代理类型。explore 只有这 7 个工具：read_file、glob、grep、web_search、web_fetch、check_os_info、read_clipboard——适合读代码、查资料，别的一律没有。需要其它任何工具（天气、知识库、生图、运行命令等）就必须用 general，它继承你当前的全部工具。默认 general。"),
-                    "default": "general"
+                    "description": "Detailed task prompt. Must include full context, goals, and output requirements since the subagent has no access to the main agent's conversation history."
                 },
                 "max_steps": {
                     "type": "integer",
-                    "description": t("Optional tool-call budget. Unlimited by default: the subagent ends when the task is done. Set a number only when you want a hard cap.", "可选的工具调用步数预算。默认不限，子代理完成任务即自然结束；仅在需要硬性约束时设置。")
+                    "description": "Optional tool-call budget. Unlimited by default: the subagent ends when the task is done. Set a number only when you want a hard cap."
                 },
                 "background": {
                     "type": "boolean",
-                    "description": t("Run the subagent detached in the background: returns a job_id immediately; check with job_status (its log holds live progress) and you are woken automatically on completion. Use for long research/tasks that should not block the conversation.", "后台分离运行子代理：立即返回 job_id，用 job_status 查询（日志即实时进度），完成后自动唤起你跟进。适合不应阻塞对话的长任务。")
+                    "description": "Run the subagent detached in the background: returns a job_id immediately; check with job(action=status) (its log holds live progress) and you are woken automatically on completion. Use for long research/tasks that should not block the conversation."
                 },
                 "resume_id": {
                     "type": "string",
-                    "description": t("Optional. When a previous task failed with a resume_id in its error, pass it here to continue that subagent from its last completed tool round instead of starting over (process-local; lost on restart).", "可选。当上一次 task 因连接中断失败并在错误中给出 resume_id 时，携带它可让该子代理从最后一个已完成的工具轮继续，而不是从头开始（仅本进程有效，重启后失效）。")
+                    "description": "Optional. When a previous task failed with a resume_id in its error, pass it here to continue that subagent from its last completed tool round instead of starting over (process-local; lost on restart)."
                 },
                 "tier": {
                     "type": "string",
                     "enum": ["cheap", "balanced", "strong"],
-                    "description": t("Optional model tier, picked by task complexity: cheap for simple lookups/mechanical steps, balanced for typical multi-step work, strong for hard reasoning. Defaults: explore→cheap, general→balanced. Unconfigured tiers fall back to the main model.", "可选模型档位，按任务复杂度选择：cheap 适合简单查询/机械步骤，balanced 适合常规多步任务，strong 适合高难度推理。默认 explore→cheap、general→balanced。未配置的档位回退主模型。")
+                    "description": "Optional model tier, picked by task complexity: cheap for simple lookups/mechanical steps, balanced for typical multi-step work, strong for hard reasoning. Defaults to balanced; unconfigured tiers fall back to the main model."
                 }
             },
             "required": ["description", "prompt"],
@@ -197,7 +122,7 @@ fn tier_pool_status(config: &AppConfig) -> String {
     if cheap.is_empty() && balanced.is_empty() && strong.is_empty() {
         return String::new();
     }
-    let fallback = t("main pool", "主池");
+    let fallback = "main pool";
     let show = |pool: &str| -> String {
         if pool.is_empty() {
             fallback.to_string()
@@ -207,7 +132,7 @@ fn tier_pool_status(config: &AppConfig) -> String {
     };
     format!(
         "{}cheap=[{}]; balanced=[{}]; strong=[{}]",
-        t(" Current tier pools: ", " 当前档位池状态："),
+        " Current tier pools: ",
         show(&cheap),
         show(&balanced),
         show(&strong),
@@ -226,7 +151,6 @@ fn main_pool_choice(config: &AppConfig) -> Option<(String, String)> {
 struct TaskParams {
     description: String,
     prompt: String,
-    sa_type: SubagentType,
     resume_id: Option<String>,
     max_steps: usize,
     tier: ModelTier,
@@ -260,11 +184,6 @@ fn parse_task_params(args: &Value) -> Result<TaskParams> {
     if prompt.is_empty() {
         bail!("prompt is required");
     }
-    let sa_type = SubagentType::from_str(
-        args.get("subagent_type")
-            .and_then(Value::as_str)
-            .unwrap_or("general"),
-    );
     let resume_id = args
         .get("resume_id")
         .and_then(Value::as_str)
@@ -282,11 +201,10 @@ fn parse_task_params(args: &Value) -> Result<TaskParams> {
         .get("tier")
         .and_then(Value::as_str)
         .and_then(ModelTier::from_str)
-        .unwrap_or_else(|| sa_type.default_tier());
+        .unwrap_or(ModelTier::Balanced);
     Ok(TaskParams {
         description,
         prompt,
-        sa_type,
         resume_id,
         max_steps,
         tier,
@@ -419,12 +337,11 @@ async fn run_task_core(
     let TaskParams {
         description,
         prompt,
-        sa_type,
         resume_id,
         max_steps,
         tier,
     } = params;
-    let tool_timeout = sa_type.tool_timeout();
+    let tool_timeout = SUBAGENT_TOOL_TIMEOUT;
 
     let mode = ProgressMode::from_config(&context.config);
     let enabled = context.config.plugins.deep_research.show_progress;
@@ -471,19 +388,14 @@ async fn run_task_core(
         }
     };
     let client = client.for_subagent_output(mode == ProgressMode::Full);
-    let tools = match sa_type {
-        SubagentType::Explore => context.tools.clone_filtered(EXPLORE_ALLOWED),
-        SubagentType::General => context.tools.clone(),
-    };
+    // 工具沿用主体目录:子代理的任务是主体布置的,分类只会让"承诺的工具"
+    // 与"实际注册的工具"漂移(dev 下的旧 explore 就是这么坏掉的)。
+    let tools = context.tools.clone();
 
-    let runner = SubagentRunner::new(client, sa_type.system_prompt(), tools, sa_progress)
+    let runner = SubagentRunner::new(client, SUBAGENT_SYSTEM_PROMPT, tools, sa_progress)
         .max_steps(max_steps)
         .timeout_seconds(tool_timeout)
-        .excluded_tools(if sa_type == SubagentType::General {
-            GENERAL_EXCLUDED
-        } else {
-            &[]
-        });
+        .excluded_tools(SUBAGENT_EXCLUDED);
 
     // 子代理不设总时长上限:它自然结束于任务完成或步数预算;逐工具超时
     // (tool_timeout)仍然兜底单步挂死。
@@ -493,7 +405,6 @@ async fn run_task_core(
                 let output = serde_json::to_string_pretty(&json!({
                     "ok": false,
                     "kind": "task",
-                    "subagent_type": sa_type.label(),
                     "tier": tier.label(),
                     "tier_notice": tier_notice,
                     "description": description,
@@ -525,7 +436,6 @@ async fn run_task_core(
     let output = serde_json::to_string_pretty(&json!({
         "ok": true,
         "kind": "task",
-        "subagent_type": sa_type.label(),
         "tier": tier.label(),
         "tier_notice": tier_notice,
         "description": description,

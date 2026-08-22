@@ -1,6 +1,5 @@
 use super::{ToolRegistry, ToolSpec};
 use crate::clipboard::ClipboardContent;
-use crate::i18n::agent_text as t;
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -17,17 +16,14 @@ enum PreferredType {
 pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
     registry.register(ToolSpec::new(
         "read_clipboard",
-        t(
-            "Read the current Linux clipboard and automatically detect whether it contains text, an image, or a copied local file path. Supports wl-paste, xclip, or xsel.",
-            "读取当前 Linux 剪贴板，并自动判断其中是文本、图片还是复制的本地文件路径。支持 wl-paste、xclip 或 xsel。",
-        ),
+        "Read the current Linux clipboard and automatically detect whether it contains text, an image, or a copied local file path. Supports wl-paste, xclip, or xsel.",
         json!({
             "type": "object",
             "properties": {
                 "preferred_type": {
                     "type": "string",
                     "enum": ["auto", "text", "image"],
-                    "description": t("Legacy preference hint. The tool still auto-detects image/file-path content first to avoid reading binary clipboard data as text. Defaults to auto.", "兼容用的偏好提示。工具仍会优先自动识别图片和文件路径，避免把二进制剪贴板内容当文本读取。默认 auto。"),
+                    "description": "Legacy preference hint. The tool still auto-detects image/file-path content first to avoid reading binary clipboard data as text. Defaults to auto.",
                     "default": "auto"
                 }
             },
@@ -45,7 +41,7 @@ fn read_clipboard_tool(args: Value, paths: MiyuPaths) -> Result<String> {
         return Ok(serde_json::to_string_pretty(&json!({
             "ok": false,
             "kind": "clipboard",
-            "error": t("read_clipboard currently only supports Linux", "read_clipboard 当前仅支持 Linux"),
+            "error": "read_clipboard currently only supports Linux",
         }))?);
     }
 
@@ -54,10 +50,7 @@ fn read_clipboard_tool(args: Value, paths: MiyuPaths) -> Result<String> {
         return Ok(serde_json::to_string_pretty(&json!({
             "ok": false,
             "kind": "clipboard",
-            "error": t(
-                "No supported clipboard backend found. Install wl-clipboard, xclip, or xsel.",
-                "未检测到可用的剪贴板读取工具，请安装 wl-clipboard、xclip 或 xsel。"
-            ),
+            "error": "No supported clipboard backend found. Install wl-clipboard, xclip, or xsel.",
             "required_tools": required_tools(preferred),
         }))?);
     }

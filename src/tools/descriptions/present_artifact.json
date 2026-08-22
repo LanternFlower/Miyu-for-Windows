@@ -1,17 +1,17 @@
 {
   "name": "present_artifact",
   "display_name": "预览文件",
-  "description": "将已经存在的完整交付文件展示到 WebUI Artifact 工作区。适用于命令或其他工具生成的报告、PDF、图片和数据文件；新建文本交付物优先使用 create_artifact，普通项目源码修改不要调用。",
+  "description": "Present an existing, complete deliverable file in the WebUI Artifact workspace. Intended for reports, PDFs, images, and data files produced by commands or other tools; prefer create_artifact for new text deliverables, and do not call this for ordinary project source-code edits.",
   "parameters": {
     "type": "object",
     "properties": {
       "path": {
         "type": "string",
-        "description": "要发布的文件路径"
+        "description": "Path of the file to publish"
       },
       "title": {
         "type": "string",
-        "description": "可选显示标题"
+        "description": "Optional display title"
       }
     },
     "required": ["path"],

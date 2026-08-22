@@ -1,25 +1,25 @@
 {
   "name": "print_image",
   "display_name": "显示图片",
-  "description": "使用 chafa 在当前终端输出中直接打印/渲染本地图片。",
+  "description": "Print/render a local image directly in the current terminal output using chafa.",
   "parameters": {
     "type": "object",
     "properties": {
       "image": {
         "type": "string",
-        "description": "本地图片路径。"
+        "description": "Local image path."
       },
       "size": {
         "type": "string",
-        "description": "可选 chafa 尺寸，例如 80x40。用它或 width/height 避免输出过大。"
+        "description": "Optional chafa size, e.g. 80x40. Use this or width/height to keep the output from getting too large."
       },
       "width": {
         "type": "integer",
-        "description": "可选终端单元格输出宽度，例如 80。"
+        "description": "Optional output width in terminal cells, e.g. 80."
       },
       "height": {
         "type": "integer",
-        "description": "可选终端单元格输出高度，例如 40。"
+        "description": "Optional output height in terminal cells, e.g. 40."
       }
     },
     "required": [

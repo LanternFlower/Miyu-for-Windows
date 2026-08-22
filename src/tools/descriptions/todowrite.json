@@ -1,19 +1,19 @@
 {
   "name": "todowrite",
   "display_name": "任务列表",
-  "description": "创建或替换当前编码会话的完整结构化任务列表。用于初始化或重建整个列表；如果只是修改单个已有任务，请使用 todoupdate。",
+  "description": "Maintain the task list for the current session: pass todos to replace the whole list, or updates for incremental changes.\nExactly one of the two must be provided. updates supports add/update/remove/clear, and targets items by index (1-based) or match_content.",
   "parameters": {
     "type": "object",
     "properties": {
       "todos": {
         "type": "array",
-        "description": "完整任务列表。此操作会替换整个列表。",
+        "description": "The complete task list. This operation replaces the entire list.",
         "items": {
           "type": "object",
           "properties": {
             "content": {
               "type": "string",
-              "description": "任务简述。"
+              "description": "Short task description."
             },
             "status": {
               "type": "string",
@@ -39,11 +39,58 @@
             "priority"
           ]
         }
+      },
+      "updates": {
+        "type": "array",
+        "description": "Task changes applied atomically, in order.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "add",
+                "update",
+                "remove",
+                "clear"
+              ]
+            },
+            "index": {
+              "type": "integer",
+              "description": "Target task number, 1-based. For add, the insertion position; omit to append."
+            },
+            "match_content": {
+              "type": "string",
+              "description": "When index is omitted, the full content used to locate the target task."
+            },
+            "content": {
+              "type": "string",
+              "description": "The task content to add, or the content after modification."
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "in_progress",
+                "completed",
+                "cancelled"
+              ]
+            },
+            "priority": {
+              "type": "string",
+              "enum": [
+                "high",
+                "medium",
+                "low"
+              ]
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
       }
-    },
-    "required": [
-      "todos"
-    ]
+    }
   },
   "permission": "writes",
   "always_loaded": false,

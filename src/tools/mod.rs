@@ -3,9 +3,13 @@ mod api_quota;
 mod apply_patch;
 mod archlinux;
 mod artifact;
+mod share_file;
+pub use share_file::set_share_url_bases;
 mod ask_question;
+mod awacy_query;
 mod calculator;
 mod caniplayonlinux_query;
+mod claude_code;
 mod clipboard;
 mod deep_research;
 mod deepseek_status;
@@ -15,12 +19,12 @@ mod diagnostics;
 mod edit_replace;
 mod exchange_rate;
 mod fcitx_wiki;
+pub mod goal;
 mod hash_codec;
 mod html_conversion;
 mod http_response;
 mod image_generation;
 pub mod jobs;
-pub(crate) mod kitty_image;
 pub mod knowledge_base;
 mod load_tools;
 mod man;
@@ -38,8 +42,9 @@ mod skills;
 mod subagent_runner;
 mod task;
 mod todowrite;
-pub(crate) mod usage_query;
+pub(crate) use todowrite::{clear_session_todos, session_todos};
 pub mod tool_descriptions;
+pub(crate) mod usage_query;
 pub mod vision;
 mod weather;
 mod web;
@@ -48,6 +53,7 @@ pub mod workspace;
 mod write;
 mod xuanxue;
 
+use crate::agent::AgentMode;
 use crate::config::AppConfig;
 use crate::i18n::{is_zh, text as t};
 use crate::paths::MiyuPaths;
@@ -62,6 +68,43 @@ pub use registry::{
 pub(crate) use scripts::rescan_scripts;
 pub(crate) use skills::{apply_skill_refresh, prepare_skill_refresh};
 pub use skills::{register_authoring as register_skill_authoring, register_skills};
+
+/// 把「一串字符串」参数收成 Vec，容忍模型真会传的几种形状。
+///
+/// stub 加载模式下模型看到的只有一句摘要和宽松参数壳，没取契约就调用时很容
+/// 易把数组写成「数组的 JSON 字符串」——实测 mimo-v2.5 在 `reference_images`
+/// 上传的就是 `"[\"/path.png\"]"`。只认真数组会让这类调用**静默**失效：参数
+/// 明明传了，行为却像没传，排查时要靠返回体里的计数才能发现。
+///
+/// 收下：真数组、单个字符串、字符串里装的 JSON 数组。空白项一律丢弃。
+pub(crate) fn string_list(value: Option<&serde_json::Value>) -> Vec<String> {
+    use serde_json::Value;
+    let Some(value) = value else {
+        return Vec::new();
+    };
+    match value {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_string)
+            .collect(),
+        Value::String(text) => {
+            let text = text.trim();
+            if text.is_empty() {
+                return Vec::new();
+            }
+            if text.starts_with('[') {
+                if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                    return string_list(Some(&parsed));
+                }
+            }
+            vec![text.to_string()]
+        }
+        _ => Vec::new(),
+    }
+}
 
 pub fn register_ask_question(registry: &mut ToolRegistry) {
     ask_question::register(registry);
@@ -107,6 +150,15 @@ pub fn readable_tool_name(name: &str) -> String {
     if let Some(display_name) = builtin_readable_tool_name(name) {
         return display_name.to_string();
     }
+    // `use_meme:search` / `task:xxx` 这类带 action 后缀的事件名，按基名取友好名。
+    // 漏了这一步就一路落到最后的 `name.to_string()`，UI 上显示成裸的
+    // `use_meme:search`——同一个工具有没有后缀，显示名不该差这么远。
+    let base = crate::render::tool_event_base_name(name);
+    if base != name {
+        if let Some(display_name) = builtin_readable_tool_name(base) {
+            return display_name.to_string();
+        }
+    }
     if let Ok(guard) = SCRIPT_DISPLAY_NAMES.read() {
         if let Some(map) = guard.as_ref() {
             if let Some(dn) = map.get(name) {
@@ -148,17 +200,27 @@ pub fn preparing_phase(name: &str) -> Option<&'static str> {
         "trash_path" => t("Preparing delete", "准备删除"),
         // A subagent brief is long, and its own timed block only appears once
         // the arguments have all arrived.
-        "task" | "deep_research" => t("Preparing task", "准备任务"),
+        "task" | "deep_research" | "claude_code" => t("Preparing task", "准备任务"),
         "ask_question" => t("Preparing question", "准备问题"),
+        // 整张清单都在参数里,条目一多就是几百字节,和批量删是同一个窗口。
+        "todowrite" => t("Preparing list", "准备清单"),
         _ => return None,
     })
+}
+
+/// 同一条消息里第二个及以后的工具调用用的提示。
+///
+/// 单看每个工具都不够"慢"到值得提示，但 N 个调用的参数是接连流完的，
+/// 合起来的静默窗口和一次大 patch 一样长。此时具体是哪个工具已经不重要
+/// 了——重要的是让用户知道后面还有。
+pub fn batch_preparing_phase() -> &'static str {
+    t("Preparing tools", "准备工具")
 }
 
 fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
     Some(match name {
         "run_command" => t("Run command", "运行命令"),
-        "job_status" => t("Check background tasks", "查询后台任务"),
-        "job_stop" => t("Stop background task", "停止后台任务"),
+        "job" => t("Background jobs", "后台任务"),
         "apply_patch" => t("Edit files", "编辑文件"),
         "apply_artifact_patch" => t("Edit preview file", "修改预览文件"),
         "create_artifact" => t("Create preview file", "创建预览文件"),
@@ -166,6 +228,7 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "present_artifact" => t("Preview file", "预览文件"),
         "ask_question" => t("Ask user", "询问用户"),
         "task" => t("Subagent", "子代理"),
+        "claude_code" => t("Claude Code", "Claude Code"),
         "read_file" => t("Read file", "读取文件"),
         "write_file" => t("Write file", "写入文件"),
         "edit_file" => t("Edit file", "编辑文件"),
@@ -187,68 +250,48 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "analyze_image" | "vision_analyze" => t("Analyze image", "分析图片"),
         "print_image" => t("Display image", "显示图片"),
         "generate_image" => t("Generate image", "生成图片"),
-        "search_meme" => t("Search memes", "搜索表情包"),
-        "show_meme" => t("Send meme", "发送表情"),
-        "add_meme" => t("Add meme", "添加表情包"),
-        "update_meme" => t("Update meme", "更新表情包"),
-        "delete_meme" => t("Delete meme", "删除表情包"),
+        "use_meme" => t("Meme", "表情包"),
+        "manage_meme" => t("Manage memes", "管理表情包"),
         "deep_research" => t("Deep research", "深度研究"),
         "upload_knowledge_base_file" | "upload_text_to_knowledge_base" => {
             t("Import knowledge base", "导入知识库")
         }
         "read_knowledge_base_file" => t("Read knowledge base", "读取知识库"),
         "search_knowledge_base" => t("Search knowledge base", "搜索知识库"),
-        "search_knowledge_base_by_name" => t("Search knowledge base by name", "按名称搜索知识库"),
         "edit_knowledge_base_file" => t("Edit knowledge base", "编辑知识库"),
         "remove_knowledge_base_file" => t("Remove from knowledge base", "移除知识库"),
         "list_knowledge_base_files" => t("List knowledge base", "列出知识库"),
-        "set_alarm" => t("Set alarm", "设置闹钟"),
-        "list_alarms" => t("List alarms", "列出闹钟"),
-        "cancel_alarm" => t("Cancel alarm", "取消闹钟"),
+        "alarm" => t("Alarms", "闹钟"),
         "remember_fact" => t("Remember fact", "记录记忆"),
         "search_evicted_context" => t("Search old context", "搜索旧上下文"),
-        "recall_past_events" => t("Recall past events", "回忆往事"),
         "recall_memory" | "recall_memories" => t("Recall memories", "召回记忆"),
         "forget_memory" | "forget_memories" => t("Forget memories", "删除记忆"),
         "list_memory" | "list_memories" => t("List memories", "列出记忆"),
-        "aur_search_packages" => t("Search AUR", "搜索 AUR"),
-        "aur_get_package_info" => t("View AUR package", "查看 AUR 包"),
-        "aur_check_status" => t("Check AUR status", "查询 AUR 状态"),
+        "aur" => t("AUR query", "AUR 查询"),
         "archlinux_official_package_query" => t("Query Arch package", "查询 Arch 官方包"),
         "query_deepseek_status" => t("Check DeepSeek status", "查询 DeepSeek 状态"),
         "query_api_quota" => t("Query API quota", "查询大模型 API 额度"),
         "pacman_search" => t("Search packages", "搜索软件包"),
         "archwiki_query" => t("Query ArchWiki", "查询 ArchWiki"),
         "archlinux_news" => t("Arch news", "Arch 新闻"),
-        "online_man_search" | "man_search" => t("Search online manuals", "搜索在线手册"),
-        "online_man_get_page" | "man_read" => t("Read online manual", "读取在线手册"),
+        "online_man" => t("Online manual", "在线手册"),
         "moegirl_query" | "query_moegirl" => t("Query Moegirlpedia", "查询萌娘百科"),
         "calculate" | "calculator" | "scientific_calculator" => {
             t("Scientific calculation", "科学计算")
         }
-        "calculate_hash" => t("Calculate hash", "计算哈希"),
-        "decode_encoded_text" => t("Decode text", "解码文本"),
+        "codec" => t("Encode/decode", "编解码"),
         "exchange_rate" | "get_exchange_rate" => t("Exchange rates", "汇率查询"),
         "weather" | "get_weather" => t("Weather", "天气查询"),
-        "query_caniplayonlinux" => t("Check Linux compatibility", "查询是否能在Linux上玩"),
-        "protondb_query" => t("Query ProtonDB", "查询 ProtonDB"),
-        "xuanxue_pick" => t("Divination choice", "玄学选择"),
-        "xuanxue_divine" => t("Divination", "玄学占卜"),
-        "draw_zhouyi_hexagram" => t("Draw I Ching hexagram", "周易起卦"),
-        "draw_tarot_card" => t("Draw tarot card", "抽塔罗牌"),
-        "draw_fortune_lot" => t("Draw fortune", "吉凶占"),
-        "roll_dice" => t("Roll dice", "掷骰子"),
+        "game_compat" => t("Game compatibility", "游戏兼容性"),
+        "divine" => t("Divination", "占卜"),
         "load_skill" => t("Load skill", "加载技能"),
-        "create_skill" => t("Create skill draft", "创建技能草稿"),
-        "update_skill" => t("Update skill draft", "更新技能草稿"),
-        "delete_skill" => t("Delete skill", "删除技能"),
-        "publish_skill" => t("Publish skill", "发布技能"),
-        "list_skill_drafts" => t("Skill drafts", "技能草稿"),
+        "manage_skill" => t("Manage skills", "管理技能"),
         "load_tools" => t("Load", "加载"),
-        "register_script" => t("Register script", "注册脚本"),
-        "unregister_script" => t("Unregister script", "注销脚本"),
+        "manage_script" => t("Manage scripts", "管理脚本"),
         "todowrite" => t("Todo list", "任务列表"),
-        "todoupdate" => t("Update todos", "更新任务"),
+        "get_goal" => t("Goal", "读取目标"),
+        "create_goal" => t("Set goal", "创建目标"),
+        "update_goal" => t("Update goal", "更新目标"),
         "review_aur_package" => t("Review AUR package", "审查 AUR 包"),
         "install_aur_package" => t("Install AUR package", "安装 AUR 包"),
         "review_pkgbuild_directory" => t("Review PKGBUILD directory", "审查 PKGBUILD 目录"),
@@ -300,7 +343,10 @@ pub fn clear_aur_review_state(paths: &MiyuPaths) -> anyhow::Result<()> {
 pub(crate) fn aur_review_install_guard() -> ToolGuard {
     std::sync::Arc::new(|tool, _args, ctx| {
         (tool.name == "install_aur_package"
-            && ctx.used_tools.iter().any(|name| name == "review_aur_package"))
+            && ctx
+                .used_tools
+                .iter()
+                .any(|name| name == "review_aur_package"))
         .then(|| {
             "install_aur_package cannot run in the same turn as review_aur_package; \
              ask the user to confirm installation first"
@@ -321,11 +367,7 @@ pub(crate) fn command_deny_guard(patterns: Vec<String>) -> ToolGuard {
             .iter()
             .find(|pattern| !pattern.is_empty() && command.contains(pattern.as_str()))
             .map(|pattern| {
-                crate::i18n::agent_is_zh()
-                    .then(|| format!("命令包含被禁止的模式 `{pattern}`,已拒绝执行"))
-                    .unwrap_or_else(|| {
-                        format!("command contains the denied pattern `{pattern}` and was rejected")
-                    })
+                format!("command contains the denied pattern `{pattern}` and was rejected")
             })
     })
 }
@@ -341,19 +383,27 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     install_builtin_guards(&mut registry, config);
     default_tools::register(&mut registry, config.skills.allow_command_execution);
     jobs::register_management(&mut registry);
-    usage_query::register(&mut registry, paths.state_dir.join("usage-history.jsonl"), config.clone());
+    usage_query::register(
+        &mut registry,
+        paths.state_dir.join("usage-history.jsonl"),
+        config.clone(),
+    );
     // 编辑器只留 apply_patch(聚合增/改/删,diff 渲染载体);write_file/
     // edit_file/edit_string 与 dev 同步退场(验收四轮:normal 也去冗余)。
     apply_patch::register(&mut registry);
     todowrite::register(&mut registry, paths.clone());
+    goal::register(&mut registry, paths.clone());
     alarm::register(&mut registry, paths.clone());
     clipboard::register(&mut registry, paths.clone());
     web::register_fetch(&mut registry);
     fcitx_wiki::register(&mut registry);
     weather::register(&mut registry);
-    caniplayonlinux_query::register(&mut registry);
-    protondb_query::register(&mut registry);
-    exchange_rate::register(&mut registry, config.plugins.exchange_rate.clone());
+    protondb_query::register(&mut registry, paths.clone());
+    // 插件关就不注册:关掉的插件仍然常驻一份完整契约,是三个面都白背的
+    // 纯浪费(08-17 实测 get_exchange_rate 311 字符)。
+    if config.plugins.exchange_rate.enabled {
+        exchange_rate::register(&mut registry, config.plugins.exchange_rate.clone());
+    }
     xuanxue::register(&mut registry);
     if config.plugins.archlinux.enabled {
         archlinux::register(&mut registry, paths);
@@ -390,7 +440,7 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
         vision::register(&mut registry, config.clone(), paths.clone(), true);
     }
     if config.plugins.image_generation.enabled {
-        image_generation::register(&mut registry, config.clone());
+        image_generation::register(&mut registry, config.clone(), paths.clone());
     }
     if config.plugins.knowledge_base.enabled {
         knowledge_base::register(&mut registry, config.clone(), paths.clone());
@@ -403,6 +453,11 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     }
     if config.memory_config().enabled {
         memory::register(&mut registry, config.clone(), paths.clone());
+    }
+    // 只进本机 owner 底座;平台受限表不注册,turn 装配层对复用 normal 底座
+    // 的平台管理员会话再摘一次(§09)。
+    if config.claude_code_enabled() {
+        claude_code::register(&mut registry, config.plugins.claude_code.clone(), paths.clone());
     }
     let task_tools = registry.clone();
     task::register(&mut registry, config.clone(), paths.clone(), task_tools);
@@ -424,6 +479,15 @@ pub fn register_webui_artifact_tools(
     artifact::register_webui(registry, paths, session_id);
 }
 
+/// WebUI 文件分享工具。与 artifact 演示区解耦，单独注册。
+pub fn register_webui_share_tools(
+    registry: &mut ToolRegistry,
+    config: &AppConfig,
+    store: crate::state::StateStore,
+) {
+    share_file::register_webui(registry, config, store);
+}
+
 pub fn webui_artifact_manifest(paths: &MiyuPaths, session_id: &str) -> anyhow::Result<String> {
     artifact::managed_manifest(paths, session_id)
 }
@@ -432,22 +496,17 @@ pub(crate) fn rescope_platform_memory_tools(
     registry: &mut ToolRegistry,
     config: &AppConfig,
     paths: &MiyuPaths,
-    context: &crate::platforms::PlatformTurnContext,
+    context: &dyn crate::platform_types::PlatformToolContext,
     readonly: bool,
 ) {
     if !config.tools.enabled || !config.memory_config().enabled {
         return;
     }
-    for name in [
-        "remember_fact",
-        "search_evicted_context",
-        "recall_past_events",
-        "recall_memories",
-    ] {
+    for name in ["remember_fact", "search_evicted_context", "recall_memories"] {
         registry.unregister(name);
     }
     let principal = context.principal().stable_key();
-    let access = if context.is_admin {
+    let access = if context.is_admin() {
         crate::memory::MemoryAccess::Privileged
     } else {
         crate::memory::MemoryAccess::principal(principal.clone())
@@ -459,7 +518,7 @@ pub(crate) fn rescope_platform_memory_tools(
             paths.clone(),
             access,
             Some(principal),
-            context.sender_display_name.clone(),
+            context.sender_display_name(),
         );
     } else {
         memory::register_with_context(
@@ -468,7 +527,7 @@ pub(crate) fn rescope_platform_memory_tools(
             paths.clone(),
             access,
             Some(principal),
-            context.sender_display_name.clone(),
+            context.sender_display_name(),
         );
     }
 }
@@ -511,6 +570,7 @@ pub fn dev_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     jobs::register_management(&mut registry);
     apply_patch::register(&mut registry);
     todowrite::register(&mut registry, paths.clone());
+    goal::register(&mut registry, paths.clone());
     web::register_fetch(&mut registry);
     if config.plugins.web.enabled {
         web::register(&mut registry, config.plugins.web.clone());
@@ -524,6 +584,10 @@ pub fn dev_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
         // dev 独立记忆:同一套工具,库切到保留人格 "dev" 的命名空间,
         // 与默认人格的记忆互不可见(验收问题一:开发模式也要有记忆)。
         memory::register(&mut registry, config.dev_scoped(), paths.clone());
+    }
+    // dev 本来就只有 owner 面,照常随插件开关注册(§09)。
+    if config.claude_code_enabled() {
+        claude_code::register(&mut registry, config.plugins.claude_code.clone(), paths.clone());
     }
     let task_tools = registry.clone();
     task::register(&mut registry, config.clone(), paths.clone(), task_tools);
@@ -546,9 +610,12 @@ pub fn restricted_platform_registry(config: &AppConfig, paths: &MiyuPaths) -> To
     registry.set_default_timeout_secs(config.tools.default_timeout_secs);
     web::register_fetch(&mut registry);
     weather::register(&mut registry);
-    caniplayonlinux_query::register(&mut registry);
-    protondb_query::register(&mut registry);
-    exchange_rate::register(&mut registry, config.plugins.exchange_rate.clone());
+    protondb_query::register(&mut registry, paths.clone());
+    // 插件关就不注册:关掉的插件仍然常驻一份完整契约,是三个面都白背的
+    // 纯浪费(08-17 实测 get_exchange_rate 311 字符)。
+    if config.plugins.exchange_rate.enabled {
+        exchange_rate::register(&mut registry, config.plugins.exchange_rate.clone());
+    }
     xuanxue::register(&mut registry);
     moegirl::register(&mut registry);
     hash_codec::register(&mut registry);
@@ -561,7 +628,12 @@ pub fn restricted_platform_registry(config: &AppConfig, paths: &MiyuPaths) -> To
         memes::register_chat(&mut registry, config.clone(), paths.clone());
     }
     if config.plugins.image_generation.enabled {
-        image_generation::register(&mut registry, config.clone());
+        image_generation::register(&mut registry, config.clone(), paths.clone());
+        // 静态英文追加,所有平台会话字节一致,不影响本地注册表的描述。
+        registry.amend_description(
+            "generate_image",
+            " In messaging-platform conversations at most one image is generated per user request; the limit is enforced automatically.",
+        );
     }
     if config.skills.enabled {
         if let Err(error) = skills::register_skills(&mut registry, config, paths) {
@@ -574,9 +646,79 @@ pub fn restricted_platform_registry(config: &AppConfig, paths: &MiyuPaths) -> To
     registry
 }
 
+/// 按模式与配置组装工具注册表：REPL、daemon、WebUI、子代理都从这里拿。
+///
+/// 组装顺序有意义，不是随手排的：
+///
+/// 1. 先按模式选底座（`normal` 面向日常对话，`dev` 面向写代码），工具总开关
+///    关掉时给一个空注册表而不是提前返回——调用方拿到的永远是同一个类型。
+/// 2. 技能只在工具开着时注册；技能创作工具（`manage_skill`）只在 normal 模式
+///    出现，dev 模式下模型该写代码不该写技能。
+/// 3. `ask_question` 单独由调用方决定：daemon 与 WebUI 能弹面板，一次性
+///    `miyu ask` 不能，所以它是参数而不是模式的函数。
+/// 4. 最后登记脚本工具的显示名——这一步要在所有注册之后，否则新注册的脚本
+///    在渲染层会显示成原始工具名。
+///
+/// 这个函数原本长在 `cli.rs` 里，于是 `web` 和 `tools` 都得反过来
+/// `use crate::cli`，把两个底层模块钉死在最上层。它实际只依赖
+/// tools/config/paths/agent，与 CLI 毫无关系，所以下沉到这里——拆分要断的
+/// 两条边（`web→cli`、`tools→cli`）一次都断掉。
+pub(crate) fn build_tool_registry(
+    config: &AppConfig,
+    paths: &MiyuPaths,
+    mode: AgentMode,
+    interactive_questions: bool,
+) -> anyhow::Result<ToolRegistry> {
+    let mut registry = if config.tools.enabled {
+        match mode {
+            AgentMode::Normal => builtin_registry(config, paths),
+            AgentMode::Dev => dev_registry(config, paths),
+        }
+    } else {
+        ToolRegistry::new()
+    };
+    if config.tools.enabled && config.skills.enabled {
+        register_skills(&mut registry, config, paths)?;
+        if mode == AgentMode::Normal {
+            register_skill_authoring(&mut registry, config.clone(), paths.clone());
+        }
+    }
+    if config.tools.enabled && interactive_questions {
+        register_ask_question(&mut registry);
+    }
+    register_script_display_names(&registry);
+    Ok(registry)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 数组参数要容忍模型真会传的形状。线上实测:mimo-v2.5 把
+    /// `reference_images` 传成了 `"[\"/path.png\"]"`——一个被 JSON 编码成
+    /// 字符串的数组。只认真数组会让 job_ids / user_ids / tags / groups 这类
+    /// 参数一起静默失效,踢人工具取不到目标尤其危险。
+    #[test]
+    fn string_list_accepts_the_shapes_models_actually_send() {
+        use serde_json::json;
+        let one = vec!["a".to_string()];
+        assert_eq!(string_list(Some(&json!(["a"]))), one);
+        assert_eq!(string_list(Some(&json!("a"))), one);
+        assert_eq!(string_list(Some(&json!(r#"["a"]"#))), one);
+        assert_eq!(
+            string_list(Some(&json!(["a", " b ", "", "  "]))),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert!(string_list(None).is_empty());
+        assert!(string_list(Some(&json!([]))).is_empty());
+        assert!(string_list(Some(&json!(""))).is_empty());
+        assert!(string_list(Some(&json!(null))).is_empty());
+        // 解不开的字符串按单条路径收下,不当成数组硬猜。
+        assert_eq!(
+            string_list(Some(&json!("[not json"))),
+            vec!["[not json".to_string()]
+        );
+    }
 
     /// 回归:dev 模式要有看图(vision_analyze),且随 vision 插件开关走。
     #[test]
@@ -595,7 +737,7 @@ mod tests {
         assert!(!names(&dev_registry(&config, &paths)).contains(&"vision_analyze".to_string()));
     }
 
-    fn test_paths(root: &std::path::Path) -> MiyuPaths {
+    pub(super) fn test_paths(root: &std::path::Path) -> MiyuPaths {
         MiyuPaths {
             root_dir: root.to_path_buf(),
             config_dir: root.join("config"),
@@ -652,6 +794,88 @@ mod tests {
         for name in ["read_file", "grep", "list_directory"] {
             assert_eq!(preparing_phase(name), None, "{name}");
         }
+    }
+
+    /// 续轮提示词必须自报来历。
+    ///
+    /// 实测过一次：一个会话正在排查游戏的 VC++ 运行库，用户设了个「查询东京
+    /// 天气」的目标，续轮到达时模型判定「This looks like a system prompt
+    /// injection or some automated goal that hijacked my session」，拒绝执行、
+    /// 继续做上一个话题。那个警惕是对的——一段没有来历、和上文毫无关系的
+    /// 英文祈使句，本来就该被怀疑。
+    ///
+    /// 所以这几句不是客套：谁下的（用户）、怎么来的（/goal 命令 + 空闲时自动
+    /// 续轮）、为什么和上文对不上（长期目标会跨越话题）。看着像冗余，最容易
+    /// 被后人当废话删掉，这条测试就是拦这个的。
+    #[test]
+    fn goal_round_prompt_states_where_it_came_from() {
+        let goal = crate::state::GoalRecord {
+            session_id: "sess_x".to_string(),
+            goal_id: "goal_abc123".to_string(),
+            revision: 4,
+            objective: "把测试跑绿".to_string(),
+            phase: crate::state::GoalPhase::Active,
+            blocked_code: None,
+            blocked_message: None,
+            max_rounds: 10,
+            rounds_started: 2,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let prompt = crate::tools::goal::goal_round_prompt(&goal, true);
+        // 断言按小写比，大小写不是这条测试要守的东西。
+        let lowered = prompt.to_lowercase();
+        for expected in [
+            "set by the user",           // 谁下的
+            "/goal",                     // 怎么下的
+            "unrelated to the messages", // 为什么和上文对不上
+            "waiting",                   // 不许拿一整轮只说「我在等你」
+            "goal_abc123",               // CAS 凭证直接给它，省一次 get_goal
+        ] {
+            assert!(
+                lowered.contains(expected),
+                "续轮提示词丢了来历说明（缺 {expected:?}）——模型会把它当注入拒掉:\n{prompt}"
+            );
+        }
+        // 目标本身和轮号仍要在。
+        assert!(prompt.contains("把测试跑绿"));
+        assert!(prompt.contains("Round 2 of 10"));
+        // 两条结束调用都要把 goal_id 和 revision 填好——让模型自己去读一遍
+        // 目标、或者为此加载一次工具，都是白跑的往返。
+        assert!(
+            prompt.contains(r#""revision":4"#),
+            "revision 没填进调用里：\n{prompt}"
+        );
+        assert!(
+            prompt.matches(r#""goal_id":"goal_abc123""#).count() == 2,
+            "complete 和 blocked 两条都要填好：\n{prompt}"
+        );
+        assert!(
+            prompt.contains("do not read the goal or load tools first"),
+            "要明说别为它加载工具，否则模型会先失败一次再去加载：\n{prompt}"
+        );
+
+        // 第二轮起发短版，但短版必须**自包含**：一行来历 + 目标全文 + 两条
+        // 填好的调用。早先短版只说「same objective and rules as above」，赌
+        // 完整版还躺在上下文里——压缩会把这个赌注折掉，目标被人改过它又指向
+        // 旧文案，为此还得维护一套「下轮重发完整版」的脏标记。
+        let short = crate::tools::goal::goal_round_prompt(&goal, false);
+        assert!(short.contains("Round 2 of 10"));
+        assert!(
+            short.contains("set by the user") && short.contains("把测试跑绿"),
+            "短版丢了来历或目标全文——压缩/编辑之后它就指向空气：\n{short}"
+        );
+        assert!(
+            short.contains(r#""revision":4"#) && short.matches("update_goal").count() == 2,
+            "短版仍要带两条填好的调用——revision 每轮可能变，不该让模型去回忆：\n{short}"
+        );
+        // 仍要比完整版短：短版逐轮追加，长散文只该在第一轮出现一次。
+        assert!(
+            short.len() < prompt.len(),
+            "短版没短下来（{} vs {}）：\n{short}",
+            short.len(),
+            prompt.len()
+        );
     }
 
     #[test]
@@ -713,9 +937,9 @@ mod tests {
             assert!(!names.iter().any(|name| name == forbidden), "{forbidden}");
         }
         for name in names {
-            // generate_image is the deliberate Writes exception: it only
-            // saves its own API output under the plugin's output directory.
-            if name == "generate_image" {
+            // 两个明示的 Writes 例外：都只写自己插件的目录，碰不到主机文件。
+            // generate_image 写图片输出目录；manage_meme 写人格的表情库。
+            if name == "generate_image" || name == "manage_meme" {
                 continue;
             }
             assert_eq!(
@@ -736,7 +960,7 @@ mod tests {
             .any(|definition| definition.function.name == "load_tools"));
         assert!(!visible
             .iter()
-            .any(|definition| definition.function.name == "draw_zhouyi_hexagram"));
+            .any(|definition| definition.function.name == "divine"));
     }
 
     #[test]
@@ -744,27 +968,13 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let paths = test_paths(temp.path());
         let config = AppConfig::default();
-        let normal = crate::cli::build_tool_registry(
-            &config,
-            &paths,
-            crate::agent::AgentMode::Normal,
-            false,
-        )
-        .unwrap();
+        let normal =
+            build_tool_registry(&config, &paths, crate::agent::AgentMode::Normal, false).unwrap();
         let dev =
-            crate::cli::build_tool_registry(&config, &paths, crate::agent::AgentMode::Dev, false)
-                .unwrap();
+            build_tool_registry(&config, &paths, crate::agent::AgentMode::Dev, false).unwrap();
 
-        for name in [
-            "create_skill",
-            "update_skill",
-            "delete_skill",
-            "publish_skill",
-            "list_skill_drafts",
-        ] {
-            assert!(normal.contains(name), "{name}");
-            assert!(!dev.contains(name), "{name}");
-        }
+        assert!(normal.contains("manage_skill"));
+        assert!(!dev.contains("manage_skill"));
         assert!(normal.contains("load_skill"));
         assert!(dev.contains("load_skill"));
     }
@@ -812,9 +1022,7 @@ mod tests {
             .unwrap();
         let value: serde_json::Value = serde_json::from_str(&output).unwrap();
         let loaded = value["loaded_tools"].as_array().unwrap();
-        assert!(loaded.iter().any(|name| name == "draw_zhouyi_hexagram"));
-        assert!(loaded.iter().any(|name| name == "draw_tarot_card"));
-        assert!(loaded.iter().any(|name| name == "draw_fortune_lot"));
+        assert!(loaded.iter().any(|name| name == "divine"));
     }
 }
 

@@ -1,21 +1,21 @@
 {
   "name": "glob",
   "display_name": "查找文件",
-  "description": "在目录下按大小写不敏感 glob 模式查找文件。",
+  "description": "Find files under a directory by a case-insensitive glob pattern.",
   "parameters": {
     "type": "object",
     "properties": {
       "path": {
         "type": "string",
-        "description": "搜索目录，默认工作区；查用户文件用 ~ 或 /home，受保护的全局搜索可用 /。"
+        "description": "Directory to search, defaults to the workspace; use ~ or /home for user files, or / for a protected global search."
       },
       "pattern": {
         "type": "string",
-        "description": "大小写不敏感 Glob 模式，例如 *ai*测试*。"
+        "description": "Case-insensitive glob pattern, e.g. *ai*测试*."
       },
       "max_results": {
         "type": "integer",
-        "description": "最多结果数。"
+        "description": "Maximum number of results."
       }
     },
     "required": [

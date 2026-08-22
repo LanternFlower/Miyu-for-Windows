@@ -1,5 +1,4 @@
 use super::{ToolProgress, ToolRegistry, ToolSpec};
-use crate::i18n::agent_text as t;
 use crate::tools::patch_preview::write_with_patch_preview;
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -8,20 +7,17 @@ use std::path::PathBuf;
 pub fn register(registry: &mut ToolRegistry) {
     registry.register(ToolSpec::new_with_progress(
         "write_file",
-        t(
-            "Write content to a file, creating it if it does not exist or overwriting if it does. Supports absolute, workspace-relative, and ~/ paths.",
-            "写入文件内容。文件不存在时创建，存在时覆盖。支持绝对路径、工作区相对路径和 ~/ 路径。",
-        ),
+        "Write content to a file, creating it if it does not exist or overwriting if it does. Supports absolute, workspace-relative, and ~/ paths.",
         json!({
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": t("File path. Supports absolute, workspace-relative, and ~/ paths.", "文件路径。支持绝对路径、工作区相对路径和 ~/ 路径。")
+                    "description": "File path. Supports absolute, workspace-relative, and ~/ paths."
                 },
                 "content": {
                     "type": "string",
-                    "description": t("Full file content to write.", "要写入的完整文件内容。")
+                    "description": "Full file content to write."
                 }
             },
             "required": ["path", "content"],
@@ -79,7 +75,7 @@ fn path_arg(args: &Value, key: &str) -> Result<PathBuf> {
 fn expand_path(value: &str) -> PathBuf {
     let value = value.trim();
     if let Some(rest) = value.strip_prefix("~/") {
-        if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+        if let Some(home) = crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
             return home.join(rest);
         }
     }

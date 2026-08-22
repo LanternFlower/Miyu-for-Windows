@@ -1,6 +1,5 @@
 use super::{ToolRegistry, ToolSpec};
 use crate::config::AppConfig;
-use crate::i18n::agent_text as t;
 use crate::memory::{MemoryAccess, MemoryStore};
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
@@ -38,12 +37,12 @@ pub(crate) fn register_with_context(
     );
     registry.register(ToolSpec::new(
         "remember_fact",
-        t("Save a durable memory fact or useful knowledge point for future association. Use only for reusable facts, preferences, methods, or stable discoveries.", "保存长期记忆事实或有用知识点，供之后联想使用。仅用于可复用事实、偏好、方法或稳定发现。"),
+        "Save a durable memory fact or useful knowledge point for future association. Use only for reusable facts, preferences, methods, or stable discoveries.",
         json!({
             "type": "object",
             "properties": {
-                "content": { "type": "string", "description": t("The concise fact or knowledge point to remember.", "要记住的简洁事实或知识点。") },
-                "source": { "type": "string", "description": t("Optional source label.", "可选来源标签。") }
+                "content": { "type": "string", "description": "The concise fact or knowledge point to remember." },
+                "source": { "type": "string", "description": "Optional source label." }
             },
             "required": ["content"],
             "additionalProperties": false
@@ -104,14 +103,14 @@ pub(crate) fn register_readonly_with_context(
     if config.memory_config().evicted_context_enabled {
         registry.register(ToolSpec::new(
             "search_evicted_context",
-            t("Search conversation turns that were moved out of the active context window. Use this when the current context appears to be missing earlier discussion.", "搜索已经移出当前上下文窗口的对话轮次。当当前上下文明显缺少早前讨论时使用。"),
+            "Search conversation turns that were moved out of the active context window. Use this when the current context appears to be missing earlier discussion.",
             json!({
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": t("Search keywords or question.", "搜索关键词或问题。") },
-                    "max_results": { "type": "integer", "description": t("Optional result limit.", "可选结果数量限制。") },
-                    "start_time": { "type": "string", "description": t("Optional lower bound: RFC 3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM[:SS].", "可选起始时间：RFC 3339、YYYY-MM-DD 或 YYYY-MM-DD HH:MM[:SS]。") },
-                    "end_time": { "type": "string", "description": t("Optional upper bound, same formats; a bare date covers that whole day.", "可选结束时间，格式同上；仅日期时包含当天。") }
+                    "query": { "type": "string", "description": "Search keywords or question." },
+                    "max_results": { "type": "integer", "description": "Optional result limit." },
+                    "start_time": { "type": "string", "description": "Optional lower bound: RFC 3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM[:SS]." },
+                    "end_time": { "type": "string", "description": "Optional upper bound, same formats; a bare date covers that whole day." }
                 },
                 "required": ["query"],
                 "additionalProperties": false
@@ -143,55 +142,20 @@ pub(crate) fn register_readonly_with_context(
             },
         ));
     }
-    registry.register(ToolSpec::new(
-        "recall_past_events",
-        t("Search the assistant's diary-like memory of things that happened in previous conversations.", "搜索助手对过往对话事件的日记式记忆。"),
-        json!({
-            "type": "object",
-            "properties": {
-                "query": { "type": "string", "description": t("Search keywords or question.", "搜索关键词或问题。") },
-                "max_results": { "type": "integer", "description": t("Optional result limit.", "可选结果数量限制。") }
-            },
-            "required": ["query"],
-            "additionalProperties": false
-        }),
-        {
-            let config = config.clone();
-            let paths = paths.clone();
-            let access = access.clone();
-            let writer_principal = writer_principal.clone();
-            let writer_display_name = writer_display_name.clone();
-            move |args| {
-                let config = config.clone();
-                let paths = paths.clone();
-                let access = access.clone();
-                let writer_principal = writer_principal.clone();
-                let writer_display_name = writer_display_name.clone();
-                async move {
-                    recall_past_events(
-                        args,
-                        config,
-                        paths,
-                        access,
-                        writer_principal,
-                        writer_display_name,
-                    )
-                    .await
-                }
-            }
-        },
-    ));
+    // recall_past_events 被 recall_memories 严格包含(前者只搜日记,后者搜
+    // 知识点+日记),合并成一件 `recall_memories` 加 scope 参数(08-17)。
     registry.register(ToolSpec::new(
         "recall_memories",
-        t("Search remembered facts and past events, including forgotten memories when requested. This read-only tool does not change memory state.", "搜索已记住的事实和过往事件；需要时也可包含已遗忘记忆。此只读工具不会改变记忆状态。"),
+        "Search remembered facts and past events, including forgotten memories when requested. scope=episode narrows the search to the diary-like record of things that happened in previous conversations. This read-only tool does not change memory state.",
         json!({
             "type": "object",
             "properties": {
-                "query": { "type": "string", "description": t("Search keywords or question.", "搜索关键词或问题。") },
-                "max_results": { "type": "integer", "description": t("Optional result limit.", "可选结果数量限制。") },
-                "include_forgotten": { "type": "boolean", "description": t("Whether to include forgotten memories.", "是否包含已遗忘记忆。") }
+                "query": { "type": "string", "description": "Search keywords or question. Omit only when passing id." },
+                "id": { "type": "integer", "description": "Fetch one memory in full by its id, as printed in a truncated associative-memory entry." },
+                "scope": { "type": "string", "enum": ["all", "episode"], "description": "all searches facts and events (default); episode searches only past events." },
+                "max_results": { "type": "integer", "description": "Optional result limit." },
+                "include_forgotten": { "type": "boolean", "description": "Whether to include forgotten memories." }
             },
-            "required": ["query"],
             "additionalProperties": false
         }),
         {
@@ -207,15 +171,29 @@ pub(crate) fn register_readonly_with_context(
                 let writer_principal = writer_principal.clone();
                 let writer_display_name = writer_display_name.clone();
                 async move {
-                    recall_memories(
-                        args,
-                        config,
-                        paths,
-                        access,
-                        writer_principal,
-                        writer_display_name,
-                    )
-                    .await
+                    if args.get("scope").and_then(Value::as_str) == Some("episode")
+                        && args.get("id").is_none()
+                    {
+                        recall_past_events(
+                            args,
+                            config,
+                            paths,
+                            access,
+                            writer_principal,
+                            writer_display_name,
+                        )
+                        .await
+                    } else {
+                        recall_memories(
+                            args,
+                            config,
+                            paths,
+                            access,
+                            writer_principal,
+                            writer_display_name,
+                        )
+                        .await
+                    }
                 }
             }
         },
@@ -333,7 +311,7 @@ async fn remember_fact(
         "id": id,
         "source": source.trim(),
         "content": content.trim(),
-        "message": t("Memory saved. The saved content is included here so the current conversation can refer to it accurately.", "记忆已保存。这里包含已保存内容，方便当前对话准确引用。")
+        "message": "Memory saved. The saved content is included here so the current conversation can refer to it accurately."
     })
     .to_string())
 }
@@ -346,6 +324,16 @@ async fn recall_memories(
     writer_principal: Option<String>,
     writer_display_name: String,
 ) -> Result<String> {
+    // id 直取:联想块里被截断的日记条目带着 `recall_memories id=<id>`,
+    // 这是那条提示的落点。给了 id 就不需要 query。
+    if let Some(id) = args.get("id").and_then(Value::as_i64) {
+        let store = MemoryStore::new(&config, &paths).with_request_context(
+            access,
+            writer_principal,
+            writer_display_name,
+        );
+        return Ok(store.recall_by_id_readonly(id)?.to_string());
+    }
     let query = required_str(&args, "query")?;
     let limit = optional_limit(&args);
     let include_forgotten = args
@@ -369,7 +357,7 @@ fn required_str<'a>(args: &'a Value, name: &str) -> Result<&'a str> {
         .unwrap_or_default()
         .trim();
     if value.is_empty() {
-        bail!("{}: {name}", t("required argument missing", "缺少必需参数"));
+        bail!("{}: {name}", "required argument missing");
     }
     Ok(value)
 }
@@ -431,12 +419,10 @@ mod tests {
         }
     }
 
+    /// 断言的是"注册了",不是"常驻在 tools 数组里"——search_evicted_context
+    /// 08-17 起按需加载(冷门工具降级),仍然必须注册。
     fn tool_names(registry: &ToolRegistry) -> BTreeSet<String> {
-        registry
-            .lazy_definitions(&BTreeSet::new())
-            .into_iter()
-            .map(|definition| definition.function.name)
-            .collect()
+        registry.tool_names().into_iter().collect()
     }
 
     #[test]

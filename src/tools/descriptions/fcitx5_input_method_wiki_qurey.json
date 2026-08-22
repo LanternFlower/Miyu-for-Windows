@@ -1,7 +1,7 @@
 {
   "name": "fcitx5_input_method_wiki_qurey",
   "display_name": "查询 Fcitx5 Wiki",
-  "description": "查询 Fcitx5 官方 Wiki。",
+  "description": "Query the official Fcitx5 wiki.",
   "parameters": {
     "type": "object",
     "properties": {

@@ -1,13 +1,13 @@
 {
   "name": "check_os_info",
   "display_name": "查看系统信息",
-  "description": "查看只读基础系统信息。",
+  "description": "View read-only basic system information.",
   "parameters": {
     "type": "object",
     "properties": {}
   },
   "permission": "readonly",
-  "always_loaded": true,
+  "always_loaded": false,
   "load_policy": "group",
   "groups": [
     "diagnostics"

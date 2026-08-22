@@ -7,7 +7,7 @@
     "properties": {
       "name": {
         "type": "string",
-        "description": "可用技能列表中的技能名称。"
+        "description": "Skill name from the available-skills list."
       }
     },
     "required": [
@@ -15,7 +15,7 @@
     ]
   },
   "permission": "readonly",
-  "always_loaded": false,
+  "always_loaded": true,
   "load_policy": "summary",
   "groups": [
     "skills"

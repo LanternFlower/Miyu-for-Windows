@@ -1,0 +1,26 @@
+{
+  "name": "manage_script",
+  "display_name": "管理脚本",
+  "description": "Manage user scripts as tools: action=register registers/updates, action=unregister removes.\nFor register, the script must already exist in the scripts directory; the call updates index.json, sets the executable bit, and the script becomes usable immediately in subsequent tool turns. unregister can optionally delete the file as well (only within the scripts directory).",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": { "type": "string", "enum": ["register", "unregister"], "description": "register registers/updates, unregister removes." },
+      "id": { "type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$", "description": "Unique tool identifier (ASCII, starts with a letter); this is the function name the AI calls." },
+      "display_name": { "type": "string", "description": "Human-readable display name; may contain Chinese." },
+      "description": { "type": "string", "description": "Optional description override. When omitted, it is read from the Description:/描述： line in the script header." },
+      "path": { "type": "string", "description": "register only: script file name or path within the scripts directory." },
+      "parameters": { "type": "object", "description": "JSON schema for the tool's parameters. When omitted, a generic schema with stdin is used." },
+      "timeout_seconds": { "type": "integer", "description": "Optional timeout in seconds, max 300." },
+      "always_loaded": { "type": "boolean", "description": "Optional load-policy override." },
+      "load_policy": { "type": "string", "enum": ["summary", "group", "hidden"], "description": "Hybrid catalog policy." },
+      "groups": { "type": "array", "items": { "type": "string" }, "description": "Optional Hybrid catalog groups." },
+      "delete_file": { "type": "boolean", "description": "unregister only: also delete the script file." }
+    },
+    "required": ["action", "id"]
+  },
+  "permission": "writes",
+  "always_loaded": false,
+  "load_policy": "group",
+  "groups": ["scripting"]
+}

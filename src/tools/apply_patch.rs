@@ -1,5 +1,5 @@
 use super::{ToolProgress, ToolRegistry, ToolSpec};
-use crate::i18n::{agent_text, text as t};
+use crate::i18n::text as t;
 use crate::tools::patch_preview::write_with_patch_preview;
 use anyhow::{bail, Result};
 use serde_json::{json, Map, Value};
@@ -9,10 +9,7 @@ use std::path::{Component, Path, PathBuf};
 pub fn register(registry: &mut ToolRegistry) {
     registry.register(ToolSpec::new_with_progress(
         "apply_patch",
-        agent_text(
-            "Apply a batch patch to files. Prefer this for complex edits and multiple changes in the same file.",
-            "批量应用文件补丁。复杂编辑和同一文件多处修改优先使用。",
-        ),
+        "Apply a batch patch to files. Prefer this for complex edits and multiple changes in the same file.",
         json!({
             "type": "object",
             "properties": {
@@ -39,10 +36,7 @@ pub fn register_artifact(registry: &mut ToolRegistry, root: PathBuf, session_id:
     let session_id = session_id.to_string();
     registry.register(ToolSpec::new_with_progress(
         "apply_artifact_patch",
-        agent_text(
-            "Apply a patch to files in the current managed Artifact workspace. Paths must be plain Artifact file names. Supports Add File, Update File, and Delete File.",
-            "对当前托管 Artifact 工作区中的文件应用补丁。路径必须是 Artifact 文件名。支持 Add File、Update File 与 Delete File。",
-        ),
+        "Apply a patch to files in the current managed Artifact workspace. Paths must be plain Artifact file names. Supports Add File, Update File, and Delete File.",
         json!({
             "type": "object",
             "properties": {
@@ -721,7 +715,7 @@ fn path_arg(value: &str) -> Result<PathBuf> {
         bail!("path is required")
     }
     if let Some(rest) = value.strip_prefix("~/") {
-        if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+        if let Some(home) = crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
             return Ok(home.join(rest));
         }
     }

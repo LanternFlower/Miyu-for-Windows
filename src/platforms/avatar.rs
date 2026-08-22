@@ -6,6 +6,8 @@
 //! only variable parts are digits, which leaves no injection or exfiltration
 //! surface.
 
+// 判定逻辑下沉到 platform_types（纯字符串判定），这里引回来供本模块使用。
+use crate::platform_types::{is_numeric_id, is_trusted_avatar_url};
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
@@ -91,40 +93,6 @@ pub(crate) fn group_avatar_url(group_id: &str, size: u32) -> Option<String> {
         return None;
     }
     Some(format!("https://p.qlogo.cn/gh/{group_id}/{group_id}/{size}"))
-}
-
-/// Whether `url` is exactly one of the avatar URL shapes produced above.
-/// Used by the scoped vision gate to admit avatar lookups while still
-/// rejecting every other remote URL.
-pub(crate) fn is_trusted_avatar_url(url: &str) -> bool {
-    is_user_avatar_url(url) || is_group_avatar_url(url)
-}
-
-fn is_user_avatar_url(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("https://q.qlogo.cn/headimg_dl?dst_uin=") else {
-        return false;
-    };
-    let Some((uin, spec)) = rest.split_once("&spec=") else {
-        return false;
-    };
-    is_numeric_id(uin) && is_numeric_id(spec)
-}
-
-fn is_group_avatar_url(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("https://p.qlogo.cn/gh/") else {
-        return false;
-    };
-    let mut parts = rest.split('/');
-    let (Some(first), Some(second), Some(size), None) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
-        return false;
-    };
-    first == second && is_numeric_id(first) && is_numeric_id(size)
-}
-
-fn is_numeric_id(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 20 && value.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 #[cfg(test)]

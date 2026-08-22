@@ -13,10 +13,10 @@ Create focused, reusable Agent Skills that follow the Agent Skills specification
 1. Ask what the skill should do, when it should trigger, and what it must not do when any of those points are unclear.
 2. Prefer instruction-only skills. Add scripts only when deterministic code or an external program is genuinely required.
 3. Load the development and skill authoring tools before editing.
-4. Use `create_skill` for a new skill or `update_skill` for an existing skill. Use the returned absolute `skill_file` and `skill_dir`; never guess a Miyu home path.
+4. Use `manage_skill` with `action=create` for a new skill or `action=update` for an existing one. Use the returned absolute `skill_file` and `skill_dir`; never guess a Miyu home path.
 5. Use `apply_patch` to edit `SKILL.md` and add optional `scripts/`, `references/`, or `assets/` files below the returned draft directory.
 6. Keep `SKILL.md` concise. Put detailed reference material in supporting files and reference those files with paths relative to the skill root.
-7. Call `publish_skill` with the returned draft ID. Publishing performs structural validation and atomically installs the package.
+7. Call `manage_skill` with `action=publish` and the returned draft ID. Publishing performs structural validation and atomically installs the package.
 8. Load the published skill with `load_skill` to verify the final instructions and resource manifest.
 
 ## Frontmatter
@@ -28,6 +28,6 @@ Optional standard fields are `license`, `compatibility`, `metadata`, and `allowe
 ## Editing Rules
 
 - Do not write directly into the live skills directory.
-- Do not overwrite an existing skill through `create_skill`; use `update_skill`.
+- Do not overwrite an existing skill through `action=create`; use `action=update`.
 - Skill scripts remain resources. Do not claim that publishing automatically registers them as tools.
 - Do not add files or abstractions that the workflow does not need.

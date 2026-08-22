@@ -1,13 +1,17 @@
 {
   "name": "query_api_quota",
   "display_name": "查询大模型 API 额度",
-  "description": "Query and summarize the configured DeepSeek or OpenRouter API quota.",
+  "description": "Query the configured DeepSeek or OpenRouter API quota.",
   "parameters": {
     "type": "object",
     "properties": {
       "provider": {
         "type": "string",
-        "enum": ["all", "deepseek", "openrouter"],
+        "enum": [
+          "all",
+          "deepseek",
+          "openrouter"
+        ],
         "description": "Provider to query. Defaults to all configured providers."
       },
       "account": {
@@ -20,5 +24,7 @@
   "permission": "readonly",
   "always_loaded": false,
   "load_policy": "summary",
-  "groups": ["utility"]
+  "groups": [
+    "utility"
+  ]
 }

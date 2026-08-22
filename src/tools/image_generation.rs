@@ -1,38 +1,89 @@
+use super::vision::ReferenceResolver;
 use super::{vision, ToolRegistry, ToolSpec};
 use crate::config::{AppConfig, ImageGenerationPluginConfig};
+use crate::paths::MiyuPaths;
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use chrono::Local;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
-pub fn register(registry: &mut ToolRegistry, config: AppConfig) {
-    registry.register(ToolSpec::new_with_progress(
-        "generate_image",
-        "Generate an image from a text prompt using the configured OpenAI or RightCode image API. Emits an image event and returns a local path. Messaging platforms deliver emitted images automatically, so do not pass the same image to send_message_to_user. Do not call print_image unless the user explicitly asks to display it. In the final assistant response, include the returned path so the user can reuse it.",
-        json!({
-            "type": "object",
-            "properties": {
-                "prompt": { "type": "string", "description": "Image generation prompt." },
-                "aspect_ratio": { "type": "string", "enum": ["自动", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"], "description": "Optional aspect ratio override." },
-                "resolution": { "type": "string", "enum": ["1K", "2K", "4K"], "description": "Optional resolution hint for RightCode." }
+const DESCRIPTION: &str = "Generate an image from a text prompt using the configured OpenAI or RightCode image API. Pass reference_images to work from existing pictures (image-to-image); each entry takes the same kind of reference vision_analyze accepts — a local image path, an http(s) image URL, or a context_image_N id from the chat history. Emits an image event and returns a local path; the host displays emitted images automatically. Do not call print_image unless the user explicitly asks to display it.";
+
+// 平台面的契约:图不自动投递,生成后由模型用 send_message_to_user 发出。
+const PLATFORM_DESCRIPTION: &str = "Generate an image from a text prompt using the configured OpenAI or RightCode image API. Pass reference_images to work from existing pictures (image-to-image); each entry takes the same kind of reference vision_analyze accepts — a local image path, an http(s) image URL, or a context_image_N id from the chat history. Returns the local path of the generated image; it is not delivered automatically — after generating, send it to the user with send_message_to_user, passing images=[{\"path\": ..., \"alt\": ...}].";
+
+fn parameters() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "prompt": { "type": "string", "description": "Image generation prompt." },
+            "reference_images": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Optional reference images for image-to-image. Same references vision_analyze takes: local image paths, http(s) image URLs, or context_image_N ids."
             },
-            "required": ["prompt"],
-            "additionalProperties": false
-        }),
-        move |args, progress| {
-            let config = config.clone();
-            async move { generate_image(args, config, progress).await }
+            "aspect_ratio": { "type": "string", "enum": ["自动", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"], "description": "Optional aspect ratio override." },
+            "resolution": { "type": "string", "enum": ["1K", "2K", "4K"], "description": "Optional resolution hint for RightCode." }
         },
-    ).writes());
+        "required": ["prompt"],
+        "additionalProperties": false
+    })
+}
+
+pub fn register(registry: &mut ToolRegistry, config: AppConfig, paths: MiyuPaths) {
+    let resolver = ReferenceResolver::unscoped(config.clone(), paths);
+    register_with_resolver(registry, config, resolver, false);
+}
+
+/// 作用域注册:参考图沿用 `vision_analyze` 的白名单作用域,由 vision 侧在
+/// 每回合构造好同一份 state 后调进来。`platform` 为真=消息平台回合:图不再
+/// 自动投递,由模型显式 send_message_to_user 发送(08-20 用户裁定——自动投
+/// 递静默失灵过,显式发送链路对模型透明可自救)。
+pub(crate) fn register_scoped(
+    registry: &mut ToolRegistry,
+    config: AppConfig,
+    resolver: ReferenceResolver,
+    platform: bool,
+) {
+    register_with_resolver(registry, config, resolver, platform);
+}
+
+fn register_with_resolver(
+    registry: &mut ToolRegistry,
+    config: AppConfig,
+    resolver: ReferenceResolver,
+    platform: bool,
+) {
+    let resolver = Arc::new(resolver);
+    registry.register(
+        ToolSpec::new_with_progress(
+            "generate_image",
+            if platform {
+                PLATFORM_DESCRIPTION
+            } else {
+                DESCRIPTION
+            },
+            parameters(),
+            move |args, progress| {
+                let config = config.clone();
+                let resolver = resolver.clone();
+                async move { generate_image(args, config, resolver, progress, platform).await }
+            },
+        )
+        .writes(),
+    );
 }
 
 async fn generate_image(
     args: Value,
     config: AppConfig,
+    resolver: Arc<ReferenceResolver>,
     progress: crate::tools::ToolProgress,
+    platform: bool,
 ) -> Result<String> {
     let plugin = &config.plugins.image_generation;
     if !plugin.enabled {
@@ -56,10 +107,33 @@ async fn generate_image(
         .and_then(Value::as_str)
         .unwrap_or(&plugin.default_resolution)
         .trim();
-    let bytes = request_image(plugin, prompt, aspect_ratio, resolution).await?;
+    // 平台回合的配额由代码承担,不写进 prompt 求模型自觉;本地会话无 task-local,天然放行。
+    if !crate::tools::workspace::try_allow_image() {
+        bail!("image generation limit reached: only one image per user request in messaging-platform conversations. Wait for the next user message before generating another.")
+    }
+    let mut references = Vec::new();
+    if let Some(value) = args.get("reference_images") {
+        let wanted = reference_list(value)?;
+        for item in &wanted {
+            references.push(resolver.resolve(item).await?);
+        }
+    }
+    let bytes = match request_image(plugin, prompt, aspect_ratio, resolution, &references).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            // 失败退还配额:同一请求内允许重试,只有成功的生成才占额度。
+            crate::tools::workspace::refund_image_gen_allowance();
+            return Err(error);
+        }
+    };
     let path = save_image(plugin, prompt, &bytes)?;
-    progress.report_image(path.clone(), prompt.to_string());
-    let should_render_terminal = plugin.auto_print
+    // 平台回合不发图片事件:自动投递撤销,模型按 PLATFORM_INSTRUCTION 用
+    // send_message_to_user 显式发送(生成目录的图有附件门槛豁免)。
+    if !platform {
+        progress.report_image(path.clone(), prompt.to_string());
+    }
+    let should_render_terminal = !platform
+        && plugin.auto_print
         && config.plugins.print_image.enabled
         && progress.prepare_for_external_output().await;
     let print_error = if should_render_terminal {
@@ -83,22 +157,98 @@ async fn generate_image(
         "status": "ok",
         "path": path_text,
         "bytes": bytes.len(),
+        "reference_images": references.len(),
         "printed": printed,
         "print_error": print_error,
-        "assistant_instruction": if printed { PRINTED_INSTRUCTION } else { EMITTED_INSTRUCTION }
+        "assistant_instruction": if platform {
+            PLATFORM_INSTRUCTION
+        } else if printed {
+            PRINTED_INSTRUCTION
+        } else {
+            EMITTED_INSTRUCTION
+        }
     })
     .to_string())
 }
 
 const PRINTED_INSTRUCTION: &str = "The generated image has already been emitted to the host and printed in the terminal. Do not call send_message_to_user or print_image for the same image unless the user explicitly asks to resend or redisplay it. Do not put the local file path in your reply.";
 
-const EMITTED_INSTRUCTION: &str = "The generated image was saved to disk and emitted as an image event. Messaging platforms deliver emitted images automatically, so do not call send_message_to_user for the same image unless the user explicitly asks to resend it. Do not call print_image unless the user explicitly asks to display it. Do not put the local file path in your reply.";
+const EMITTED_INSTRUCTION: &str = "The generated image was saved to disk and emitted as an image event; the host displays emitted images automatically. Do not call print_image unless the user explicitly asks to display it. Do not put the local file path in your reply.";
+
+// 平台回合的图不自动投递(08-20 裁定):模型显式发送,链路对它透明,失败
+// 时它能看见错误并重试——自动投递静默失灵过三连。
+const PLATFORM_INSTRUCTION: &str = "The image was saved to disk at the returned path. It is not delivered automatically: send it to the user exactly once with send_message_to_user, images=[{\"path\": <the returned path>, \"alt\": <short description>}]. If a send_message_to_user result in this conversation already shows this image delivered, the send is complete — never send the same image twice. Do not put the local file path in your reply text.";
+
+/// 把 `reference_images` 收成一串引用。
+///
+/// 在 stub 加载模式下模型看到的只有一句摘要和宽松参数壳，没取契约就调用时
+/// 很容易把数组写成"数组的 JSON 字符串"——实测 mimo-v2.5 传的就是
+/// `"[\"/home/shorin/Pictures/3.png\"]"`。此前这里只认真数组，其余一律
+/// `as_array()` 拿到 None 后**静默**退回纯文生图：用户连传了三次才从返回体
+/// 的 `reference_images: 0` 看出没生效。
+///
+/// 现在把常见的几种写法都收下（真数组、单个字符串、字符串里装的 JSON 数组），
+/// 收不出任何一条时明确报错——传了参考图却当文生图跑，比直接失败更难查。
+fn reference_list(value: &Value) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    // 空数组/空串是"明确不给",不报错;给了内容却一条都取不出才报错。
+    let had_content = match value {
+        Value::Null => false,
+        Value::Array(items) => {
+            for item in items {
+                if !matches!(item, Value::String(_)) {
+                    bail!("reference_images entries must be strings, got {item}");
+                }
+            }
+            out = super::string_list(Some(value));
+            !items.is_empty()
+        }
+        Value::String(text) => {
+            let text = text.trim();
+            if text.is_empty() {
+                return Ok(out);
+            }
+            if text.starts_with('[') && serde_json::from_str::<Value>(text).is_err() {
+                bail!("reference_images is not valid JSON: {text}");
+            }
+            out = super::string_list(Some(value));
+            true
+        }
+        other => bail!("reference_images must be a string or an array of strings, got {other}"),
+    };
+    if had_content && out.is_empty() {
+        bail!("reference_images was given but contained no usable image reference")
+    }
+    Ok(out)
+}
+
+/// 参考图的两条传法。两条都不支持时静默忽略参考图,退回纯文生图——多传了
+/// 一个参数不该让整次调用失败(与 AstrBot 生图插件同款取舍)。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ReferenceMode {
+    /// RightCode 兼容接口:/v1/images/generations 的 JSON 里带 image:[base64…]。
+    GenerationsJson,
+    /// OpenAI GPT Image:/v1/images/edits 走 multipart,字段名 image[]。
+    EditsMultipart,
+    Unsupported,
+}
+
+fn reference_mode(plugin: &ImageGenerationPluginConfig) -> ReferenceMode {
+    if plugin.provider_type == "rightcode" {
+        ReferenceMode::GenerationsJson
+    } else if looks_gpt_image_model(&plugin.model) {
+        ReferenceMode::EditsMultipart
+    } else {
+        ReferenceMode::Unsupported
+    }
+}
 
 async fn request_image(
     plugin: &ImageGenerationPluginConfig,
     prompt: &str,
     aspect_ratio: &str,
     resolution: &str,
+    references: &[(Vec<u8>, String)],
 ) -> Result<Vec<u8>> {
     let api_key = plugin
         .api_keys
@@ -111,15 +261,58 @@ async fn request_image(
     if base.is_empty() {
         bail!("plugins.image_generation.base_url is empty")
     }
+    let mode = if references.is_empty() {
+        ReferenceMode::Unsupported
+    } else {
+        reference_mode(plugin)
+    };
+    if !references.is_empty() && mode == ReferenceMode::Unsupported {
+        tracing::warn!(
+            provider_type = %plugin.provider_type,
+            model = %plugin.model,
+            count = references.len(),
+            "image generation backend does not accept reference images; falling back to text-to-image"
+        );
+    }
     let client = Client::builder()
         .timeout(Duration::from_secs(plugin.timeout_seconds))
         .build()?;
-    let response = client
-        .post(format!("{base}/v1/images/generations"))
-        .bearer_auth(api_key)
-        .json(&payload(plugin, prompt, aspect_ratio, resolution))
-        .send()
-        .await?;
+    let request = match mode {
+        ReferenceMode::EditsMultipart => {
+            let mut form = reqwest::multipart::Form::new()
+                .text("model", plugin.model.clone())
+                .text("prompt", prompt.to_string())
+                .text("n", "1");
+            if let Some(size) = resolve_size(plugin, aspect_ratio, resolution) {
+                form = form.text("size", size);
+            }
+            for (index, (data, mime)) in references.iter().enumerate() {
+                let part = reqwest::multipart::Part::bytes(data.clone())
+                    .file_name(format!("reference-{}", index + 1))
+                    .mime_str(mime)
+                    .with_context(|| format!("invalid reference image mime: {mime}"))?;
+                form = form.part("image[]", part);
+            }
+            client
+                .post(format!("{base}/v1/images/edits"))
+                .bearer_auth(api_key)
+                .multipart(form)
+        }
+        ReferenceMode::GenerationsJson | ReferenceMode::Unsupported => {
+            let include = mode == ReferenceMode::GenerationsJson;
+            client
+                .post(format!("{base}/v1/images/generations"))
+                .bearer_auth(api_key)
+                .json(&payload(
+                    plugin,
+                    prompt,
+                    aspect_ratio,
+                    resolution,
+                    include.then_some(references).unwrap_or(&[]),
+                ))
+        }
+    };
+    let response = request.send().await?;
     let status = response.status();
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
@@ -129,11 +322,21 @@ async fn request_image(
     extract_image(&client, data).await
 }
 
+/// 下载「生成好的图」的字节上限。
+///
+/// 这条路是**跟着第三方返回的 URL 走**的：API 说图在哪就去哪拿，长度完全由
+/// 对面说了算。原先是 `bytes().await?.to_vec()`，一个字节的上限都没有。
+///
+/// 32 MiB 的依据：本工具能请求到的最大分辨率是 2048×2048（见 `resolution`
+/// 那张表），这个尺寸的 PNG 常见在 3-8 MB，32 MiB 是 4 倍以上余量。
+const MAX_GENERATED_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+
 fn payload(
     plugin: &ImageGenerationPluginConfig,
     prompt: &str,
     aspect_ratio: &str,
     resolution: &str,
+    references: &[(Vec<u8>, String)],
 ) -> Value {
     let rightcode = plugin.provider_type == "rightcode";
     let mut payload = json!({
@@ -148,7 +351,19 @@ fn payload(
         if !aspect_ratio.is_empty() && aspect_ratio != "自动" {
             payload["aspect_ratio"] = Value::String(aspect_ratio.to_string());
         }
-    } else if !looks_gpt_image_model(&plugin.model) {
+    }
+    if !references.is_empty() {
+        // RightCode 兼容接口收 base64 数组;带参考图时它回 url 而不是 b64。
+        payload["image"] = Value::Array(
+            references
+                .iter()
+                .map(|(data, _)| {
+                    Value::String(base64::engine::general_purpose::STANDARD.encode(data))
+                })
+                .collect(),
+        );
+        payload["response_format"] = Value::String("url".to_string());
+    } else if !rightcode && !looks_gpt_image_model(&plugin.model) {
         payload["response_format"] = Value::String("b64_json".to_string());
     }
     payload
@@ -171,7 +386,9 @@ async fn extract_image(client: &Client, response: Value) -> Result<Vec<u8>> {
         if !status.is_success() {
             bail!("failed to download generated image ({status})")
         }
-        return Ok(response.bytes().await?.to_vec());
+        return crate::tools::http_response::read_bytes(response, MAX_GENERATED_IMAGE_BYTES)
+            .await
+            .context("generated image is too large");
     }
     bail!("image response contains neither b64_json nor url")
 }
@@ -247,7 +464,7 @@ fn looks_gpt_image_model(model: &str) -> bool {
 
 fn expand_path(value: &str) -> PathBuf {
     if let Some(rest) = value.trim().strip_prefix("~/") {
-        if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+        if let Some(home) = crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
             return home.join(rest);
         }
     }
@@ -295,6 +512,87 @@ fn preview(value: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plugin(provider_type: &str, model: &str) -> ImageGenerationPluginConfig {
+        let mut plugin = ImageGenerationPluginConfig::default();
+        plugin.provider_type = provider_type.to_string();
+        plugin.model = model.to_string();
+        plugin
+    }
+
+    /// 模型在 stub 模式下没取契约就调用，会把数组写成各种形状。实测
+    /// mimo-v2.5 传的是 `"[\"/path.png\"]"`，此前被静默丢弃。
+    #[test]
+    fn reference_images_accepts_the_shapes_models_actually_send() {
+        let one = vec!["/home/shorin/Pictures/3.png".to_string()];
+        // 真数组。
+        assert_eq!(
+            reference_list(&json!(["/home/shorin/Pictures/3.png"])).unwrap(),
+            one
+        );
+        // 单个字符串。
+        assert_eq!(
+            reference_list(&json!("/home/shorin/Pictures/3.png")).unwrap(),
+            one
+        );
+        // 字符串里装着 JSON 数组——线上实际踩到的那种。
+        assert_eq!(
+            reference_list(&json!(r#"["/home/shorin/Pictures/3.png"]"#)).unwrap(),
+            one
+        );
+        assert_eq!(
+            reference_list(&json!(["/a.png", "/b.png"])).unwrap(),
+            vec!["/a.png".to_string(), "/b.png".to_string()]
+        );
+        // 没给就是没给,不报错。
+        assert!(reference_list(&Value::Null).unwrap().is_empty());
+        assert!(reference_list(&json!([])).unwrap().is_empty());
+        assert!(reference_list(&json!("")).unwrap().is_empty());
+
+        // 给了却一条都取不出 ⇒ 明确报错,不静默退回文生图。
+        assert!(reference_list(&json!(["", "  "])).is_err());
+        assert!(reference_list(&json!("[not json")).is_err());
+        assert!(reference_list(&json!([1, 2])).is_err());
+        assert!(reference_list(&json!(42)).is_err());
+    }
+
+    /// 参考图的两条线路各自认哪个后端;都不认时退回纯文生图而不是报错。
+    #[test]
+    fn reference_mode_follows_the_backend() {
+        assert_eq!(
+            reference_mode(&plugin("rightcode", "gpt-image-2")),
+            ReferenceMode::GenerationsJson
+        );
+        assert_eq!(
+            reference_mode(&plugin("openai", "gpt-image-1")),
+            ReferenceMode::EditsMultipart
+        );
+        assert_eq!(
+            reference_mode(&plugin("openai", "dall-e-3")),
+            ReferenceMode::Unsupported
+        );
+    }
+
+    /// 带参考图时 JSON 里要出现 base64 数组,并且改回 url 响应;
+    /// 不带参考图时载荷与从前逐字节一致(不能因为加了这个功能就掰缓存)。
+    #[test]
+    fn generations_payload_carries_reference_images_only_when_given() {
+        let plugin = plugin("rightcode", "gpt-image-2");
+        let bare = payload(&plugin, "a cat", "1:1", "1K", &[]);
+        assert!(bare.get("image").is_none());
+
+        let with_reference = payload(
+            &plugin,
+            "a cat",
+            "1:1",
+            "1K",
+            &[(vec![1, 2, 3], "image/png".to_string())],
+        );
+        let images = with_reference["image"].as_array().unwrap();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].as_str().unwrap(), "AQID");
+        assert_eq!(with_reference["response_format"], "url");
+    }
 
     #[test]
     fn the_reply_is_never_asked_to_quote_the_local_path() {

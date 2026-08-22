@@ -1,7 +1,7 @@
 {
   "name": "check_issue",
   "display_name": "检查问题",
-  "description": "Collect read-only diagnostic evidence for a concrete local issue. This tool gathers facts only; it does not diagnose, rank root causes, or recommend fixes.",
+  "description": "Collect read-only diagnostic evidence for a concrete local issue.\nThis tool gathers facts only; it does not diagnose, rank root causes, or recommend fixes.",
   "parameters": {
     "type": "object",
     "properties": {

@@ -1,13 +1,13 @@
 {
   "name": "read_artifact",
   "display_name": "读取预览文件",
-  "description": "读取当前 WebUI 会话托管 Artifact 工作区中的已有文件。使用 Artifact 清单中的文件名；不要使用 glob 搜索托管目录。",
+  "description": "Read an existing file from the hosted Artifact workspace of the current WebUI session. Use the filename from the Artifact manifest; do not glob-search the hosted directory.",
   "parameters": {
     "type": "object",
     "properties": {
-      "filename": {"type": "string", "description": "托管 Artifact 文件名。"},
-      "offset": {"type": "integer", "description": "从 1 开始的行偏移。"},
-      "limit": {"type": "integer", "description": "最多读取的行数。"}
+      "filename": {"type": "string", "description": "Hosted Artifact filename."},
+      "offset": {"type": "integer", "description": "1-based line offset."},
+      "limit": {"type": "integer", "description": "Maximum number of lines to read."}
     },
     "required": ["filename"],
     "additionalProperties": false

@@ -1,13 +1,13 @@
 {
   "name": "get_weather",
   "display_name": "天气查询",
-  "description": "气象数据查询。query_type 默认 forecast，支持 forecast 当前天气和预报、air_quality 空气质量、historical 历史天气、marine 海洋天气、climate 气候趋势、elevation 海拔。location 可传城市、地点、邮编或机场码；仅 forecast 支持空字符串自动定位并 fallback 到 wttr.in。",
+  "description": "Weather data query. query_type defaults to forecast; supports forecast (current weather and forecast), air_quality, historical, marine, climate, and elevation. location is required: pass a city, place name, postal code, or airport code. Do not guess; ask the user when the location is missing.",
   "parameters": {
     "type": "object",
     "properties": {
       "location": {
         "type": "string",
-        "description": "城市、地点、邮编或机场码；空字符串表示自动定位。"
+        "description": "Required city, place name, postal code, or airport code. Do not guess; ask the user when it is missing."
       },
       "query_type": {
         "type": "string",
@@ -19,28 +19,28 @@
           "climate",
           "elevation"
         ],
-        "description": "查询类型。forecast=当前天气和预报，air_quality=空气质量，historical=历史天气，marine=海洋天气，climate=气候趋势，elevation=海拔；默认 forecast。"
+        "description": "Query type. forecast=current weather and forecast, air_quality, historical, marine, climate=climate trends, elevation. Defaults to forecast."
       },
       "days": {
         "type": "integer",
-        "description": "返回预报天数，默认 3，最大 7。"
+        "description": "Number of forecast days, default 3, max 7."
       },
       "start_date": {
         "type": "string",
-        "description": "开始日期，格式 YYYY-MM-DD。用于 historical 和 climate。"
+        "description": "Start date, format YYYY-MM-DD. Used by historical and climate."
       },
       "end_date": {
         "type": "string",
-        "description": "结束日期，格式 YYYY-MM-DD。用于 historical 和 climate；省略时等于 start_date。"
+        "description": "End date, format YYYY-MM-DD. Used by historical and climate; defaults to start_date when omitted."
       },
       "country_code": {
         "type": "string",
-        "description": "可选 ISO-3166-1 alpha2 国家代码，用于消除重名地点歧义，例如 CN、JP、US。"
+        "description": "Optional ISO-3166-1 alpha2 country code to disambiguate identically named places, e.g. CN, JP, US."
       }
     }
   },
   "permission": "readonly",
-  "always_loaded": true,
+  "always_loaded": false,
   "load_policy": "summary",
   "groups": [
     "web"

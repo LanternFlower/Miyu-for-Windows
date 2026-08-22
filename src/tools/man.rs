@@ -5,21 +5,36 @@ use serde_json::{json, Value};
 const ARCH_BASE: &str = "https://man.archlinux.org";
 const MAN7_BASE: &str = "https://man7.org/linux/man-pages";
 
+/// 搜索与取页合并成一件 `online_man`(08-17):同一份手册的两步操作,
+/// 拆成两个工具只是让 tools 数组多背一份外壳。
 pub fn register(registry: &mut ToolRegistry) {
     registry.register(ToolSpec::new(
-        "online_man_search",
-        "Search online Linux man pages using Arch manual pages.",
-        json!({"type":"object","properties":{"query":{"type":"string"},"section":{"type":"string"},"language":{"type":"string"},"limit":{"type":"integer"}},"required":["query"],"additionalProperties":false}),
-        |args| async move { search(args).await },
-    ));
-    registry.register(ToolSpec::new(
-        "online_man_get_page",
-        "Fetch an online Linux man page from Arch man pages or man7.org.",
-        json!({"type":"object","properties":{"name":{"type":"string"},"section":{"type":"string"},"source":{"type":"string","enum":["auto","arch","man7"]},"language":{"type":"string"},"max_chars":{"type":"integer","description":"Maximum returned characters. Use at least 8000 for normal reading; omit unless user asks for a short excerpt."}},"required":["name"],"additionalProperties":false}),
-        |args| async move { get_page(args).await },
+        "online_man",
+        "在线 Linux 手册。action=search 在 Arch manual pages 搜索；action=read 抓取具体手册页（Arch man pages 或 man7.org）。",
+        json!({
+            "type": "object",
+            "properties": {
+                "action": { "type": "string", "enum": ["search", "read"], "description": "search 搜索，read 取页。" },
+                "query": { "type": "string", "description": "action=search 必填：搜索词。" },
+                "name": { "type": "string", "description": "action=read 必填：手册页名称。" },
+                "section": { "type": "string", "description": "可选手册章节号。" },
+                "language": { "type": "string", "description": "可选语言，默认 en。" },
+                "limit": { "type": "integer", "description": "仅 search：最多结果数，默认 10。" },
+                "source": { "type": "string", "enum": ["auto", "arch", "man7"], "description": "仅 read：来源站点，默认 auto。" },
+                "max_chars": { "type": "integer", "description": "仅 read：最多返回字符数。正常阅读至少给 8000；只要摘录时才调小。" }
+            },
+            "required": ["action"],
+            "additionalProperties": false
+        }),
+        |args| async move {
+            match args.get("action").and_then(Value::as_str).unwrap_or_default() {
+                "search" => search(args).await,
+                "read" => get_page(args).await,
+                other => anyhow::bail!("unknown action: {other}; expected search or read"),
+            }
+        },
     ));
 }
-
 async fn search(args: Value) -> Result<String> {
     let query = required(&args, "query")?;
     let section = args

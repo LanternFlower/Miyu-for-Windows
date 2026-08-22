@@ -1,5 +1,4 @@
 use super::{ToolProgress, ToolRegistry, ToolSpec};
-use crate::i18n::agent_text as t;
 use crate::tools::patch_preview::write_with_patch_preview;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -8,28 +7,25 @@ use std::path::PathBuf;
 pub fn register(registry: &mut ToolRegistry) {
     registry.register(ToolSpec::new_with_progress(
         "edit_string",
-        t(
-            "Edit a file by replacing an exact string match. Fails if oldString is not found or found multiple times (unless replaceAll). Must differ from newString.",
-            "通过精确字符串匹配替换编辑文件。oldString 未找到或找到多个匹配时报错（除非使用 replaceAll）。oldString 必须与 newString 不同。",
-        ),
+        "Edit a file by replacing an exact string match. Fails if oldString is not found or found multiple times (unless replaceAll). Must differ from newString.",
         json!({
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": t("File path. Supports absolute, workspace-relative, and ~/ paths.", "文件路径。支持绝对路径、工作区相对路径和 ~/ 路径。")
+                    "description": "File path. Supports absolute, workspace-relative, and ~/ paths."
                 },
                 "old_string": {
                     "type": "string",
-                    "description": t("Exact text to replace. Must match exactly including whitespace and indentation.", "要替换的精确文本。必须完全匹配包括空白和缩进。")
+                    "description": "Exact text to replace. Must match exactly including whitespace and indentation."
                 },
                 "new_string": {
                     "type": "string",
-                    "description": t("Replacement text. Must differ from old_string.", "替换文本。必须与 old_string 不同。")
+                    "description": "Replacement text. Must differ from old_string."
                 },
                 "replace_all": {
                     "type": "boolean",
-                    "description": t("Replace all occurrences of old_string (default false).", "替换所有匹配项（默认 false）。"),
+                    "description": "Replace all occurrences of old_string (default false).",
                     "default": false
                 }
             },
@@ -123,7 +119,7 @@ fn path_arg(args: &Value, key: &str) -> Result<PathBuf> {
 fn expand_path(value: &str) -> PathBuf {
     let value = value.trim();
     if let Some(rest) = value.strip_prefix("~/") {
-        if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+        if let Some(home) = crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
             return home.join(rest);
         }
     }

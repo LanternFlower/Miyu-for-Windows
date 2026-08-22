@@ -9,12 +9,11 @@ const DEEPSEEK_STATUS_URL: &str = "https://status.deepseek.com/";
 pub fn register(registry: &mut ToolRegistry) {
     registry.register(ToolSpec::new(
         "query_deepseek_status",
-        "Query DeepSeek service status from the official status page.",
+        "查询 DeepSeek 服务状态：API 能不能用、网页对话能不能用。只有出问题时才会附上受影响的组件和进行中的故障。",
         json!({
             "type": "object",
             "properties": {
-                "include_incidents": { "type": "boolean", "description": "Whether to include recent incidents, default true." },
-                "max_incidents": { "type": "integer", "description": "Maximum recent incidents to return, 1-20, default 5." }
+                "detail": { "type": "boolean", "description": "返回状态页的全部组件与近期故障历史。默认 false，只回结论。" }
             },
             "additionalProperties": false
         }),
@@ -23,21 +22,13 @@ pub fn register(registry: &mut ToolRegistry) {
 }
 
 async fn query_deepseek_status(args: Value) -> Result<String> {
-    let include_incidents = args
-        .get("include_incidents")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    let max_incidents = args
-        .get("max_incidents")
-        .and_then(Value::as_u64)
-        .unwrap_or(5)
-        .clamp(1, 20) as usize;
+    let detail = args.get("detail").and_then(Value::as_bool).unwrap_or(false);
     let html = fetch_status_html().await?;
     let raw = parse_status_page(&html)?;
     Ok(serde_json::to_string_pretty(&build_response(
         &raw,
-        include_incidents,
-        max_incidents,
+        detail,
+        5,
     ))?)
 }
 
@@ -150,7 +141,7 @@ fn extract_keys(
     }
 }
 
-fn build_response(raw: &Value, include_incidents: bool, max_incidents: usize) -> Value {
+fn build_response(raw: &Value, detail: bool, max_incidents: usize) -> Value {
     let page_config = raw.get("initialPageConfig").unwrap_or(&Value::Null);
     let active_changes = raw
         .get("active_changes")
@@ -231,7 +222,7 @@ fn build_response(raw: &Value, include_incidents: bool, max_incidents: usize) ->
             ),
         )
     };
-    let recent_incidents = if include_incidents {
+    let recent_incidents = if detail {
         raw.get("initialCalendarData")
             .and_then(|value| value.get("changes"))
             .and_then(Value::as_array)
@@ -246,15 +237,55 @@ fn build_response(raw: &Value, include_incidents: bool, max_incidents: usize) ->
     } else {
         Vec::new()
     };
-    json!({
+    // 默认只回结论:API 能不能用、网页对话能不能用、整体如何。
+    //
+    // 状态页有 9 个组件、每个都带 id/description/30 天可用率,再加一段故障
+    // 历史,一次调用 4000+ 字符——而调用它的人想知道的只有"能不能用"。出问
+    // 题时才把受影响的组件和进行中的故障附上,那时候细节才真的有用。
+    // detail=true 仍然给全量。
+    let component_status = |needle: &str| -> String {
+        components
+            .iter()
+            .find(|component| {
+                component
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.contains(needle))
+            })
+            .and_then(|component| component.get("status").and_then(Value::as_str))
+            .unwrap_or("unknown")
+            .to_string()
+    };
+    let mut response = json!({
         "success": true,
         "queried_at": now_cn_iso(),
+        "api": component_status("api.deepseek.com"),
+        "chat": component_status("chat.deepseek.com"),
         "overall_status": overall_status,
-        "status_readable": status_readable,
-        "active_incidents_count": active_count,
-        "components": components,
-        "recent_incidents": recent_incidents,
-    })
+    });
+    if active_count > 0 {
+        response["status_readable"] = Value::String(status_readable);
+        response["active_incidents_count"] = json!(active_count);
+        response["degraded"] = Value::Array(
+            components
+                .iter()
+                .filter(|component| {
+                    component.get("status").and_then(Value::as_str) != Some("operational")
+                })
+                .map(|component| {
+                    json!({
+                        "name": component.get("name").cloned().unwrap_or(Value::Null),
+                        "status": component.get("status").cloned().unwrap_or(Value::Null),
+                    })
+                })
+                .collect(),
+        );
+    }
+    if detail {
+        response["components"] = Value::Array(components);
+        response["recent_incidents"] = Value::Array(recent_incidents);
+    }
+    response
 }
 
 fn format_incident(change: &Value) -> Value {

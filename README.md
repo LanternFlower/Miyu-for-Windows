@@ -50,8 +50,6 @@ miyu config
 
 ![](./pics/qq私聊.png)
 
-![](./pics/qq群聊管理.png)
-
 
 ## 如何安装？
 

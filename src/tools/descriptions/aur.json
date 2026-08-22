@@ -1,0 +1,20 @@
+{
+  "name": "aur",
+  "display_name": "AUR 查询",
+  "description": "Official AUR RPC queries: action=search to search packages, info for package details, status for service status.\nstatus reports outages, degradations, and downtime for Arch/AUR.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": { "type": "string", "enum": ["search", "info", "status"], "description": "search to search packages, info for details, status for service status." },
+      "query": { "type": "string", "description": "Required for action=search: search term." },
+      "package_name": { "type": "string", "description": "Required for action=info: package name." },
+      "limit": { "type": "integer", "description": "search only: maximum number of results." },
+      "search_by": { "type": "string", "description": "search only: field to search by." }
+    },
+    "required": ["action"]
+  },
+  "permission": "readonly",
+  "always_loaded": false,
+  "load_policy": "group",
+  "groups": ["arch"]
+}
