@@ -676,10 +676,7 @@ pub fn terminate_process_tree(pid: u32, force: bool) {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let mut command = std::process::Command::new("taskkill");
+        let mut command = crate::process_command::hidden_std_command("taskkill");
         command.arg("/T").arg("/PID").arg(pid.to_string());
         if force {
             command.arg("/F");
@@ -687,8 +684,7 @@ pub fn terminate_process_tree(pid: u32, force: bool) {
         command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW);
+            .stderr(std::process::Stdio::null());
         let _ = command.status();
     }
 }
@@ -708,17 +704,13 @@ pub fn terminate_process(pid: u32, force: bool) {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let _ = force;
-        let mut command = std::process::Command::new("taskkill");
+        let mut command = crate::process_command::hidden_std_command("taskkill");
         command.arg("/PID").arg(pid.to_string()).arg("/F");
         command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW);
+            .stderr(std::process::Stdio::null());
         let _ = command.status();
     }
 }

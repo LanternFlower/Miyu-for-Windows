@@ -7,7 +7,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 const SHORIN_WIKI_REMOTE: &str = "https://github.com/SHORiN-KiWATA/Shorin-ArchLinux-Guide.git";
 const UPDATE_CHECK_INTERVAL_SECS: i64 = 24 * 60 * 60;
@@ -395,7 +395,7 @@ async fn remote_head_bounded(remote: &str, budget: std::time::Duration) -> Resul
     // 命令（diagnostics、package_advisor、rg）都是这个写法。
     let output = tokio::time::timeout(
         budget,
-        tokio::process::Command::new(git)
+        crate::process_command::hidden_tokio_command(git)
             .args(["ls-remote", remote, "HEAD"])
             .stderr(Stdio::null())
             .kill_on_drop(true)
@@ -415,7 +415,7 @@ async fn remote_head_bounded(remote: &str, budget: std::time::Duration) -> Resul
 }
 
 fn git_command() -> Result<String> {
-    let status = Command::new("git")
+    let status = crate::process_command::hidden_std_command("git")
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -433,7 +433,7 @@ fn git_command() -> Result<String> {
 }
 
 fn run_git(git: &str, cwd: &Path, args: &[&str]) -> Result<()> {
-    let status = Command::new(git)
+    let status = crate::process_command::hidden_std_command(git)
         .current_dir(cwd)
         .args(args)
         .stdout(Stdio::null())
@@ -446,7 +446,10 @@ fn run_git(git: &str, cwd: &Path, args: &[&str]) -> Result<()> {
 }
 
 fn git_output(git: &str, cwd: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new(git).current_dir(cwd).args(args).output()?;
+    let output = crate::process_command::hidden_std_command(git)
+        .current_dir(cwd)
+        .args(args)
+        .output()?;
     if !output.status.success() {
         bail!("git command failed: git {}", args.join(" "));
     }

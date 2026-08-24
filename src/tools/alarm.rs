@@ -6,7 +6,6 @@ use chrono::Local;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tokio::process::Command;
 
 /// 三件闹钟工具合并成一件 `alarm`(08-17):set/list/cancel 是同一个对象的
 /// 三种操作,拆开只是让 tools 数组多背两份外壳。
@@ -70,7 +69,7 @@ async fn set_alarm(args: Value, paths: MiyuPaths) -> Result<String> {
         std::process::id()
     );
     let exe = crate::paths::miyu_executable()?;
-    let mut command = Command::new(exe);
+    let mut command = crate::process_command::hidden_tokio_command(exe);
     command
         .arg("__alarm-worker")
         .arg("--id")

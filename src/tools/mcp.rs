@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::time::{Duration, Instant};
 
 const JSONRPC_VERSION: &str = "2.0";
@@ -215,7 +215,7 @@ impl McpSession {
         if server.command.trim().is_empty() {
             bail!("MCP server {} has no command", server.id);
         }
-        let mut command = Command::new(&server.command);
+        let mut command = crate::process_command::hidden_std_command(&server.command);
         command.args(&server.args);
         for (key, value) in &server.env {
             command.env(key, value);

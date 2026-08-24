@@ -9,7 +9,6 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
 
 use super::super::default_tools::CommandProcessGroup;
 use crate::config::ClaudeCodePluginConfig;
@@ -85,7 +84,7 @@ pub(super) async fn run(
         bail!("working directory does not exist: {}", cwd.display());
     }
 
-    let mut command = Command::new(binary);
+    let mut command = crate::process_command::hidden_tokio_command(binary);
     command
         .arg("-p")
         .arg("--output-format")

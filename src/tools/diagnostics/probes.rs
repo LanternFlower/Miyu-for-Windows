@@ -253,7 +253,7 @@ pub(in crate::tools::diagnostics) async fn launch_probe_target(
         return (Vec::new(), None);
     }
     let before = process_ids(config, target).await;
-    let spawn = Command::new(target)
+    let spawn = crate::process_command::hidden_tokio_command(target)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -395,7 +395,7 @@ pub(in crate::tools::diagnostics) async fn package_probe_for_command(
 ) -> Option<String> {
     let owner = timeout(
         Duration::from_secs(5),
-        Command::new("pacman")
+        crate::process_command::hidden_tokio_command("pacman")
             .args(["-Qo", command_path])
             .stdin(Stdio::null())
             .kill_on_drop(true)
@@ -412,7 +412,7 @@ pub(in crate::tools::diagnostics) async fn package_probe_for_command(
     }
     let output = timeout(
         Duration::from_secs(10),
-        Command::new("pacman")
+        crate::process_command::hidden_tokio_command("pacman")
             .args(["-Ql", &package])
             .stdin(Stdio::null())
             .kill_on_drop(true)
@@ -523,7 +523,7 @@ pub(in crate::tools::diagnostics) async fn run_command(
     }
     let result = timeout(
         Duration::from_secs(timeout_seconds.min(config.command_timeout_seconds).max(1)),
-        Command::new(command)
+        crate::process_command::hidden_tokio_command(command)
             .args(args)
             .stdin(Stdio::null())
             .kill_on_drop(true)

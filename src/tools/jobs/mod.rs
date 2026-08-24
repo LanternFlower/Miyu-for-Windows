@@ -20,7 +20,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::process::Command;
 
 const STOP_GRACE: Duration = Duration::from_secs(5);
 const STATUS_POLL: Duration = Duration::from_millis(250);
@@ -327,7 +326,7 @@ pub async fn spawn_background(
         .with_context(|| format!("failed to create job log {}", log_path.display()))?;
     let workspace = super::workspace::effective_workdir();
     let (shell, shell_flag) = crate::sys::shell_command();
-    let mut process = Command::new(shell);
+    let mut process = crate::process_command::hidden_tokio_command(shell);
     process
         .arg(shell_flag)
         .arg(command)

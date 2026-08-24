@@ -73,7 +73,7 @@ pub(super) async fn run_claude_turn<F>(
 where
     F: FnMut(ChatStreamChunk) -> Result<()>,
 {
-    let mut command = tokio::process::Command::new(&runtime.binary);
+    let mut command = crate::process_command::hidden_tokio_command(&runtime.binary);
     command
         .args(args)
         .current_dir(workdir)

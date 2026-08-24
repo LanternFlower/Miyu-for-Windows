@@ -5,7 +5,7 @@ use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -95,7 +95,7 @@ fn read_clipboard_image_of(mime: &str) -> Result<Option<ClipboardImage>> {
 }
 
 fn try_command(cmd: &str, args: &[&str], mime: &str) -> Result<Option<ClipboardImage>> {
-    let output = Command::new(cmd)
+    let output = crate::process_command::hidden_std_command(cmd)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -188,7 +188,7 @@ fn list_clipboard_targets() -> Result<Vec<String>> {
 }
 
 fn try_targets_command(cmd: &str, args: &[&str]) -> Result<Option<Vec<String>>> {
-    let output = Command::new(cmd)
+    let output = crate::process_command::hidden_std_command(cmd)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -243,7 +243,7 @@ pub fn write_clipboard_text(text: &str) -> Result<bool> {
 }
 
 fn try_write_text_command(cmd: &str, args: &[&str], text: &str) -> Result<bool> {
-    let mut child = match Command::new(cmd)
+    let mut child = match crate::process_command::hidden_std_command(cmd)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -261,7 +261,7 @@ fn try_write_text_command(cmd: &str, args: &[&str], text: &str) -> Result<bool> 
 }
 
 fn try_text_command(cmd: &str, args: &[&str]) -> Result<Option<String>> {
-    let output = Command::new(cmd)
+    let output = crate::process_command::hidden_std_command(cmd)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

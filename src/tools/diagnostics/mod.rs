@@ -11,7 +11,6 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
 pub fn register(registry: &mut ToolRegistry, config: AppConfig) {

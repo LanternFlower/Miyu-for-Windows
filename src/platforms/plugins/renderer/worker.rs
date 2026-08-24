@@ -65,7 +65,7 @@ impl WorkerProcess {
     pub(in crate::platforms::plugins::renderer) async fn spawn() -> Result<Self> {
         let executable = crate::paths::miyu_executable()?;
         let executable_for_error = executable.clone();
-        let mut command = tokio::process::Command::new(executable);
+        let mut command = crate::process_command::hidden_tokio_command(executable);
         command
             .arg(WORKER_ARG)
             .env(WORKER_ENV, "1")

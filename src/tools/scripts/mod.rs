@@ -12,7 +12,6 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tokio::process::Command;
 
 const SCRIPT_TIMEOUT_SECS: u64 = 120;
 const MAX_SCRIPT_OUTPUT_CHARS: usize = 20_000;
@@ -58,7 +57,7 @@ async fn run_script(
         serde_json::to_string(args).unwrap_or_default()
     };
 
-    let mut command = Command::new(&script_path);
+    let mut command = crate::process_command::hidden_tokio_command(&script_path);
     command.stdin(Stdio::piped());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());

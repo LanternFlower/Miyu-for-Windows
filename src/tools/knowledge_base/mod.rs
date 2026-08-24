@@ -22,7 +22,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::process::Command;
 
 pub fn register(registry: &mut ToolRegistry, config: AppConfig, paths: MiyuPaths) {
     register_readonly(registry, config.clone(), paths.clone());

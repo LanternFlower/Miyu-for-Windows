@@ -17,7 +17,6 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::io::AsyncReadExt;
-use tokio::process::Command;
 
 /// 进度消息前缀:带它的内容是「本次调用的最终摘要」,由渲染层原样按行展示,
 /// 而不是当成一闪而过的进度。回收站用它交代失败清单。
@@ -325,7 +324,7 @@ mod tests {
     use super::*;
 
     fn ripgrep_available() -> bool {
-        std::process::Command::new("rg")
+        crate::process_command::hidden_std_command("rg")
             .arg("--version")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())

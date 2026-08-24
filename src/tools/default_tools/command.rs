@@ -42,7 +42,7 @@ pub(in crate::tools) async fn execute_command(
     progress: ToolProgress,
 ) -> Result<String> {
     let (shell, shell_flag) = crate::sys::shell_command();
-    let mut command_process = Command::new(shell);
+    let mut command_process = crate::process_command::hidden_tokio_command(shell);
     command_process
         .arg(shell_flag)
         .arg(command)

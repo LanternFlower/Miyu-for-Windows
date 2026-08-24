@@ -6,7 +6,7 @@
 //! or a sandbox that blocks spawning must never turn a notification into a
 //! user-visible error.
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// Spawns the notification and returns immediately. The child is detached; we
 /// never wait on it, so a hung helper cannot stall a turn.
@@ -40,7 +40,7 @@ pub fn notify(title: &str, body: &str) {
 }
 
 fn spawn(program: &str, args: &[&str]) {
-    let _ = Command::new(program)
+    let _ = crate::process_command::hidden_std_command(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())

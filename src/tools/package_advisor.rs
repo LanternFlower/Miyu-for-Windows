@@ -6,7 +6,6 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
 const AUR_REVIEW_RULES: &str = include_str!("../prompts/aur-review.md");
@@ -151,7 +150,7 @@ async fn aur_helper() -> Option<String> {
     #[cfg(unix)]
     {
         for helper in ["paru", "yay"] {
-            if Command::new("sh")
+            if crate::process_command::hidden_tokio_command("sh")
                 .arg("-lc")
                 .arg(format!("command -v {helper}"))
                 .stdin(Stdio::null())
@@ -168,7 +167,7 @@ async fn aur_helper() -> Option<String> {
 }
 
 async fn fetch_with_helper(helper: &str, package: &str, root: &Path) -> Result<()> {
-    let output = Command::new(helper)
+    let output = crate::process_command::hidden_tokio_command(helper)
         .arg("--aur")
         .arg("--redownload")
         .arg("-G")
@@ -208,7 +207,7 @@ async fn fetch_with_curl_fallback(metadata: &Value, root: &Path) -> Result<()> {
 }
 
 async fn install_with_helper(helper: &str, package: &str) -> Result<Value> {
-    let output = Command::new(helper)
+    let output = crate::process_command::hidden_tokio_command(helper)
         .arg("-S")
         .arg("--noconfirm")
         .arg("--needed")
@@ -229,7 +228,7 @@ async fn install_with_makepkg_fallback(package: &str, paths: &MiyuPaths) -> Resu
     std::fs::create_dir_all(&root)?;
     fetch_with_curl_fallback(&metadata, &root).await?;
     let build_dir = find_pkgbuild_dir(&root)?;
-    let makepkg = Command::new("makepkg")
+    let makepkg = crate::process_command::hidden_tokio_command("makepkg")
         .arg("--noconfirm")
         .current_dir(&build_dir)
         .stdin(Stdio::null())
@@ -240,7 +239,7 @@ async fn install_with_makepkg_fallback(package: &str, paths: &MiyuPaths) -> Resu
         return Ok(command_result("makepkg", makepkg));
     }
     let package_file = find_built_package(&build_dir)?;
-    let pacman = Command::new("pacman")
+    let pacman = crate::process_command::hidden_tokio_command("pacman")
         .arg("-U")
         .arg("--noconfirm")
         .arg(&package_file)

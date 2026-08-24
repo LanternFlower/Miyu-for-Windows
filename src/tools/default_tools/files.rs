@@ -257,7 +257,7 @@ pub(in crate::tools) async fn glob_files(args: Value) -> Result<String> {
     let max_results = max_results(&args);
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(SEARCH_TIMEOUT_SECONDS),
-        Command::new("rg")
+        crate::process_command::hidden_tokio_command("rg")
             .arg("--no-config")
             .arg("--files")
             .arg("--no-messages")
@@ -288,7 +288,7 @@ pub(in crate::tools) async fn grep_text(args: Value) -> Result<String> {
     let search_root = prepare_search_path(&search_root)?;
     let pattern = required(&args, "pattern")?;
     let max_results = max_results(&args);
-    let mut command = Command::new("rg");
+    let mut command = crate::process_command::hidden_tokio_command("rg");
     command
         .arg("--no-config")
         .arg("--line-number")

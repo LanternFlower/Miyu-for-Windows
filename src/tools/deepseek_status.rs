@@ -2,7 +2,6 @@ use super::{ToolRegistry, ToolSpec};
 use anyhow::{bail, Result};
 use chrono::{FixedOffset, Utc};
 use serde_json::{json, Value};
-use tokio::process::Command;
 
 const DEEPSEEK_STATUS_URL: &str = "https://status.deepseek.com/";
 
@@ -45,7 +44,7 @@ async fn fetch_status_html() -> Result<String> {
 }
 
 async fn fetch_status_html_with_curl() -> Result<String> {
-    let output = Command::new("curl")
+    let output = crate::process_command::hidden_tokio_command("curl")
         .args(["-4", "-fsSL", "--max-time", "20", DEEPSEEK_STATUS_URL])
         .output()
         .await?;

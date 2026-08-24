@@ -287,7 +287,7 @@ impl KnowledgeBase {
             return Ok(());
         }
         let exe = crate::paths::miyu_executable()?;
-        Command::new(exe)
+        crate::process_command::hidden_tokio_command(exe)
             .args(["kb", "embed", "reindex", "--quiet"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
