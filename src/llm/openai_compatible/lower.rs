@@ -98,21 +98,6 @@ pub(in crate::llm::openai_compatible) fn chat_content_text(content: Option<crate
     }
 }
 
-pub(in crate::llm::openai_compatible) fn lower_responses_tools(tools: Vec<ToolDefinition>) -> Vec<Value> {
-    tools
-        .into_iter()
-        .map(|tool| {
-            json!({
-                "type": "function",
-                "name": tool.function.name,
-                "description": tool.function.description,
-                "parameters": openai_tool_input_schema(tool.function.parameters),
-                "strict": false,
-            })
-        })
-        .collect()
-}
-
 pub(in crate::llm::openai_compatible) fn lower_anthropic_system(messages: &[ChatMessage]) -> Option<String> {
     messages
         .iter()

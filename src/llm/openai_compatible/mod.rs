@@ -10,6 +10,7 @@ mod errors;
 mod lower;
 mod protocol;
 mod sse;
+mod tool_schema;
 mod wire;
 use claude_code::ClaudeCodeRuntime;
 pub(crate) use claude_code::forget_claude_code_session;
@@ -21,6 +22,7 @@ use protocol::*;
 pub use protocol::ThinkingVariantOptions;
 pub(crate) use protocol::{thinking_variant_options_for_model, ThinkingVariantPreferences};
 use sse::*;
+use tool_schema::*;
 use wire::*;
 
 use super::{

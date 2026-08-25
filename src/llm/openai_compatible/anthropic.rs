@@ -241,7 +241,8 @@ impl OpenAiCompatibleClient {
             instructions: None,
             previous_response_id: previous_response_id.map(str::to_string),
             stream: true,
-            tools: (!tools.is_empty()).then(|| lower_responses_tools(tools)),
+            tools: (!tools.is_empty())
+                .then(|| lower_responses_tools_for_provider(&self.provider, tools)),
             reasoning: self.responses_reasoning(),
             temperature: Some(self.provider.effective_temperature()),
             extra_body,

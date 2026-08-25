@@ -101,6 +101,7 @@ impl OpenAiCompatibleClient {
             self.chat_variant_extra_body(),
         );
         let messages = prepare_chat_messages_for_provider(&self.provider, messages);
+        let tools = lower_chat_tools_for_provider(&self.provider, tools);
         let request = ChatRequest {
             model: self.provider.default_model.clone(),
             messages,
@@ -445,6 +446,7 @@ impl OpenAiCompatibleClient {
             self.chat_variant_extra_body(),
         );
         let messages = prepare_chat_messages_for_provider(&self.provider, messages);
+        let tools = lower_chat_tools_for_provider(&self.provider, tools);
         let mut request = ChatRequest {
             model: self.provider.default_model.clone(),
             messages,

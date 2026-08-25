@@ -10,5 +10,6 @@ mod chat_stream;
 mod claude_code;
 mod failover;
 mod thinking;
+mod tool_schema;
 mod extra_body;
 mod endpoint_retry;
