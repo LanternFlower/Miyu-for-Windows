@@ -288,10 +288,16 @@ pub(in crate::web) async fn user_attachment(
     Query(view): Query<AttachmentViewQuery>,
     Path(attachment_id): Path<String>,
 ) -> std::result::Result<Response, ApiError> {
-    require_auth(&headers, &state)?;
     validate_attachment_id(&attachment_id)?;
-    let Some(attachment) = state
-        .state_store
+    // 成员的附件记录在他自己的会话库里,盯着管理员库查一律 404 → 预览裂图
+    // (09-12 用户报「普通用户没法上传附件」实为上传成功、预览取不到)。按调用者
+    // 身份取他自己的库。
+    let identity = require_identity(&headers, &state)?;
+    let store = state
+        .stores
+        .for_identity(&identity)
+        .map_err(ApiError::internal)?;
+    let Some(attachment) = store
         .load_user_attachment_by_id(&attachment_id)
         .map_err(ApiError::internal)?
     else {
@@ -347,7 +353,8 @@ pub(in crate::web) async fn delete_user_attachment(
         resolve_turn_session(&state, Some(identity.owner_key()), Some(query.session_id))
             .map_err(session_api_error)?;
     let deleted = state
-        .state_store
+        .stores
+        .for_session(&session_id)
         .pinned(&session_id)
         .delete_staged_user_attachment(&attachment_id)
         .map_err(ApiError::internal)?;

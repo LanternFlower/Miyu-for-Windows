@@ -1255,6 +1255,36 @@ body[data-theme="graphite"] .session-unread-dot {
   min-height: 0;
 }
 
+/* 切换会话时铺一层加载动画(09-12「先切后加载」):目标标签已高亮,大会话拉取
+   期间这里转圈,而不是像卡在旧会话上。 */
+.conversation-stage.is-switching::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+}
+.conversation-stage.is-switching::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 6;
+  width: 30px;
+  height: 30px;
+  margin: -15px 0 0 -15px;
+  border-radius: 50%;
+  border: 3px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-top-color: var(--accent);
+  animation: conv-switch-spin 0.7s linear infinite;
+}
+@keyframes conv-switch-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .conversation-stage.is-switching::before { animation: none; }
+}
+
 .inline-error {
   grid-row: 1;
   width: min(100% - 28px, 940px);
@@ -1391,7 +1421,7 @@ body[data-theme="graphite"] .session-unread-dot {
 .goal-bar-edit {
   min-width: 0;
   flex: 1 1 auto;
-  padding: 2px 5px;
+  padding: 4px 7px;
   border: 1px solid var(--accent);
   border-radius: var(--radius);
   background: var(--surface-2);
@@ -1399,6 +1429,12 @@ body[data-theme="graphite"] .session-unread-dot {
   font-family: inherit;
   font-size: 12px;
   font-weight: 600;
+  /* 多行文本框(09-12):自动撑高,不手动拉伸,换行随内容走 */
+  resize: none;
+  line-height: 1.45;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .goal-bar-edit:focus {
@@ -4566,9 +4602,17 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   height: auto;
   max-height: 100%;
   object-fit: contain;
-  transform: scale(var(--artifact-zoom, 1));
+  /* JS 用内联 transform 直接写 translate()+scale(),这里不再引用早已没人注入的
+     --artifact-zoom(09-12 用户/AI 指出是死定义)。默认写 none,免得内联生效前闪一下。 */
+  transform: none;
   transform-origin: center top;
+  /* 缩放(滚轮)平滑过渡(09-12 用户要「边缘加过渡」);拖拽平移时必须关掉,
+     否则每次 pointermove 都动画一遍 → 迟滞、图像追着指针错位(用户报)。 */
   transition: transform 160ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.artifact-image-stage.is-dragging > img {
+  transition: none;
 }
 
 .artifact-image-stage.is-zoomed {

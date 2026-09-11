@@ -91,7 +91,7 @@ pub fn register(
                 },
                 "resume_id": {
                     "type": "string",
-                    "description": "Optional. When a previous task failed with a resume_id in its error, pass it here to continue that subagent from its last completed tool round instead of starting over (process-local; lost on restart)."
+                    "description": "Optional. When a previous task failed with a resume_id in its error, pass it here to continue that subagent from its last completed tool round instead of starting over (checkpoints persist on disk and survive a daemon restart, kept 2h)."
                 },
                 "tier": {
                     "type": "string",

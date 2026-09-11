@@ -11,6 +11,8 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
     AppConfig::init_files(&paths)?;
     let config = AppConfig::load_or_default(&paths)?;
     tools::jobs::init(&paths);
+    // 子代理断点续传落盘目录(09-12):检查点写盘,daemon 重启后 resume_id 仍有效。
+    tools::subagent_runner::init_checkpoint_dir(&paths);
     let state_store = StateStore::new(&paths)?;
     state_store.init_files()?;
     let persona = config.active_persona_scope();

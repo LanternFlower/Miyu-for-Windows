@@ -427,16 +427,27 @@ pub(in crate::web) async fn queue_prompt(
         .map_err(session_api_error)?;
     let store = state.stores.for_session(&session_id).pinned(&session_id);
     let prepared = prepare_web_attachments(&store, &display_content, &attachment_ids)?;
-    // 前端把续轮挂成 live 之后,第二条起走这里;续轮要报 Owner,写死 External
-    // 会被 enqueue_turn_update 的 audience 校验挡成 409。
+    // 先按会话找当前在跑的那条轮排队(09-12 用户报「排队消息却提示要等」):前端
+    // 盯着的 run_id 可能刚跑完、被新一轮(比如目标续轮)顶替,精确匹配就 409 了。
+    // queue_into_running_session 按 session 定位当前活跃轮、并处理 audience/续轮,
+    // 命中就直接排进去,不再要求 run_id 分毫不差。
+    if let Some(receipt) = queue_into_running_session(
+        &state,
+        &session_id,
+        &prepared.content,
+        &display_content,
+        &attachment_ids,
+    )? {
+        let safe = SafeQueuedPrompt::from(receipt.prompt);
+        return Ok((StatusCode::ACCEPTED, Json(safe)).into_response());
+    }
+    // 会话此刻没有在跑的轮:精确 run_id 也不可能在,回 409 让前端改走 /api/turns
+    // 起一条新轮(前端 409 兜底),消息不丢。
     let audience = {
         let manager = state.manager.lock().unwrap();
         let run = manager
             .active_runs
             .get(&request.run_id)
-            // 409 而不是 404:run 刚跑完就是这条路,前端认 409 才会给出
-            // 「会话刚开始新的一轮」那句并重载视图(与 enqueue_turn_update
-            // 自己报这条错时的状态码一致)。
             .ok_or_else(|| ApiError::new(StatusCode::CONFLICT, "active run not found"))?;
         web_followup_audience(run)
     };

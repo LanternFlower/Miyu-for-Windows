@@ -13,11 +13,20 @@ use std::time::{Duration, Instant};
 /// Checkpoint of an interrupted subagent run: the full live message history
 /// (including every completed tool round) plus the consumed step budget, so a
 /// follow-up `task` call with `resume_id` continues instead of starting over.
-/// Process-local by design — a daemon restart clears them.
+/// 内存一份(快)+ 磁盘一份(跨 daemon 重启也能续,09-12 用户报「不落盘导致
+/// resume 不可靠」)。磁盘落 `<state>/subagent-checkpoints/<id>.json`。
 struct SubagentCheckpoint {
     messages: Vec<ChatMessage>,
     steps: usize,
     created: Instant,
+}
+
+/// 磁盘上的检查点(Instant 不可序列化,单独存一个 unix 秒的创建时间做 TTL)。
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DiskCheckpoint {
+    messages: Vec<ChatMessage>,
+    steps: usize,
+    created_unix: u64,
 }
 
 const CHECKPOINT_TTL: Duration = Duration::from_secs(2 * 60 * 60);
@@ -29,9 +38,49 @@ fn checkpoints() -> &'static Mutex<HashMap<String, SubagentCheckpoint>> {
     STORE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+static CHECKPOINT_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+/// daemon 启动时定一次落盘目录并清掉过期文件(server::run 调,紧挨 jobs::init)。
+pub fn init_checkpoint_dir(paths: &crate::paths::MiyuPaths) {
+    let dir = paths.state_dir.join("subagent-checkpoints");
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = CHECKPOINT_DIR.set(dir);
+    // 落盘目录定了再清过期文件(prune 读 CHECKPOINT_DIR)。
+    prune_disk_checkpoints();
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn checkpoint_path(id: &str) -> Option<std::path::PathBuf> {
+    CHECKPOINT_DIR.get().map(|dir| dir.join(format!("{id}.json")))
+}
+
 fn store_checkpoint(messages: Vec<ChatMessage>, steps: usize) -> String {
     static NEXT: AtomicU64 = AtomicU64::new(1);
-    let id = format!("subagent-ckpt-{}", NEXT.fetch_add(1, Ordering::Relaxed));
+    // id 带上 pid:重启后计数器归 1,不含 pid 会撞上盘里旧进程的 subagent-ckpt-1。
+    let id = format!(
+        "subagent-ckpt-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    );
+    // 先落盘(跨重启),再进内存(同进程快取)。
+    if let Some(path) = checkpoint_path(&id) {
+        let disk = DiskCheckpoint {
+            messages: messages.clone(),
+            steps,
+            created_unix: now_unix(),
+        };
+        if let Ok(bytes) = serde_json::to_vec(&disk) {
+            let _ = std::fs::write(&path, bytes);
+        }
+        // 落盘的容量/TTL 清理:超龄或超量都删最旧的。
+        prune_disk_checkpoints();
+    }
     let mut store = checkpoints().lock().unwrap();
     store.retain(|_, ckpt| ckpt.created.elapsed() < CHECKPOINT_TTL);
     if store.len() >= CHECKPOINT_CAP {
@@ -54,10 +103,56 @@ fn store_checkpoint(messages: Vec<ChatMessage>, steps: usize) -> String {
     id
 }
 
+fn prune_disk_checkpoints() {
+    let Some(dir) = CHECKPOINT_DIR.get() else {
+        return;
+    };
+    let now = now_unix();
+    let mut files: Vec<(u64, std::path::PathBuf)> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let created = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<DiskCheckpoint>(&bytes).ok())
+            .map(|ckpt| ckpt.created_unix)
+            .unwrap_or(0);
+        if now.saturating_sub(created) >= CHECKPOINT_TTL.as_secs() {
+            let _ = std::fs::remove_file(&path);
+            continue;
+        }
+        files.push((created, path));
+    }
+    if files.len() > CHECKPOINT_CAP {
+        files.sort_by_key(|(created, _)| *created);
+        for (_, path) in files.iter().take(files.len() - CHECKPOINT_CAP) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 fn take_checkpoint(id: &str) -> Option<(Vec<ChatMessage>, usize)> {
-    let mut store = checkpoints().lock().unwrap();
-    store.retain(|_, ckpt| ckpt.created.elapsed() < CHECKPOINT_TTL);
-    store.remove(id).map(|ckpt| (ckpt.messages, ckpt.steps))
+    {
+        let mut store = checkpoints().lock().unwrap();
+        store.retain(|_, ckpt| ckpt.created.elapsed() < CHECKPOINT_TTL);
+        if let Some(ckpt) = store.remove(id) {
+            if let Some(path) = checkpoint_path(id) {
+                let _ = std::fs::remove_file(path);
+            }
+            return Some((ckpt.messages, ckpt.steps));
+        }
+    }
+    // 内存没有(通常是 daemon 重启过):从盘里捞回来。
+    let path = checkpoint_path(id)?;
+    let bytes = std::fs::read(&path).ok()?;
+    let disk: DiskCheckpoint = serde_json::from_slice(&bytes).ok()?;
+    let _ = std::fs::remove_file(&path);
+    if now_unix().saturating_sub(disk.created_unix) >= CHECKPOINT_TTL.as_secs() {
+        return None;
+    }
+    Some((disk.messages, disk.steps))
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -412,7 +507,7 @@ impl SubagentRunner {
                     (messages, steps)
                 }
                 None => bail!(
-                    "resume_id '{id}' not found or expired (checkpoints are process-local and cleared on restart); re-issue the task without resume_id"
+                    "resume_id '{id}' not found or expired (checkpoints persist on disk for 2h; a much older one is gone); re-issue the task without resume_id"
                 ),
             },
             None => (
@@ -503,7 +598,7 @@ impl SubagentRunner {
         // this subagent instead of restarting it from scratch.
         let resume_id = store_checkpoint(messages.to_vec(), steps);
         bail!(
-            "subagent stream failed after {STREAM_ATTEMPTS} attempts: {err}; resume_id=\"{resume_id}\" — call the subagent tool again with this resume_id to continue from the last completed tool round (process-local; lost on restart)"
+            "subagent stream failed after {STREAM_ATTEMPTS} attempts: {err}; resume_id=\"{resume_id}\" — call the subagent tool again with this resume_id to continue from the last completed tool round (persisted on disk, survives a daemon restart, kept 2h)"
         );
     }
 

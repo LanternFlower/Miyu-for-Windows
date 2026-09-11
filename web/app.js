@@ -331,6 +331,7 @@
     loginSubmitLabel: document.getElementById("loginSubmitLabel"),
     retryBootstrapButton: document.getElementById("retryBootstrapButton"),
     timeline: document.getElementById("timeline"),
+    conversationStage: document.getElementById("conversationStage"),
     emptyState: document.getElementById("emptyState"),
     emptyVisual: document.getElementById("emptyVisual"),
     emptyBoardImage: document.getElementById("emptyBoardImage"),
@@ -412,6 +413,9 @@
     viewSessionId: null,
     viewRunningTurnId: null,
     viewLoading: false,
+    // 正在切往的会话:点击标签的瞬间就高亮它、并铺一层加载动画,等 turns 拉回来
+    // 再真正应用视图(09-12 用户报「先加载后切换、点大会话像卡住」)。
+    switchingToSessionId: "",
     viewLoadGeneration: 0,
     viewSyncTimer: null,
     runsBySession: new Map(),
@@ -2286,7 +2290,7 @@
 
   function buildSessionItem(session) {
     const id = String(session?.session_id || "");
-    const isView = Boolean(id) && id === state.viewSessionId;
+    const isView = Boolean(id) && (id === state.viewSessionId || id === state.switchingToSessionId);
     // 终端集成会话固定为 id "default",不再跟随可变的全局指针。
     const isDefault = id === "default";
     const item = document.createElement("div");
@@ -2626,6 +2630,15 @@
     if (state.unreadSessions.delete(sessionId)) renderSessionList();
     const generation = ++state.viewLoadGeneration;
     state.viewLoading = true;
+    // 先切后加载:用户点标签的一刻立刻高亮目标会话、收起侧栏、给对话区铺一层
+    // 加载动画,大会话拉取期间不再像卡在旧会话上(09-12 用户报)。真正的视图
+    // 由下面 applySessionView 拉回后应用。
+    if (userInitiated && sessionId !== state.viewSessionId) {
+      state.switchingToSessionId = sessionId;
+      renderSessionList();
+      closeSidebar();
+      elements.conversationStage?.classList.add("is-switching");
+    }
     try {
       const response = await apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}/turns`);
       const payload = await response.json();
@@ -2643,6 +2656,8 @@
     } finally {
       if (generation === state.viewLoadGeneration) {
         state.viewLoading = false;
+        state.switchingToSessionId = "";
+        elements.conversationStage?.classList.remove("is-switching");
         updateControlState();
       }
     }
@@ -3600,8 +3615,10 @@
 
   function revisionEligible(candidate = state.redoCandidate) {
     if (!candidate || !state.capabilities?.redo) return false;
+    // AI 输出中也允许改上一条 prompt(09-12 用户报):submitRedo 会先掐掉正在跑
+    // 的那轮再重发,所以这里不再拿 conversationRunning() 挡着。
     return !state.blocked && !state.viewLoading && !state.resyncing
-      && !conversationRunning() && !state.submitting && !state.revisionSubmitting
+      && !state.submitting && !state.revisionSubmitting
       && !state.adminBusy && !state.sessionBusy && !hasPendingQuestion()
       && state.queuedPrompts.length === 0;
   }
@@ -3688,6 +3705,18 @@
       editor.error.hidden = true;
     }
     updateControlState();
+    // AI 还在输出时改 prompt:先掐掉正在跑的那轮(redo 后端遇到 session_has_runs
+    // 会 409),等它收尾再重发。最多等 ~4s,到点就交给下面的 409 重试兜底。
+    if (conversationRunning()) {
+      for (const live of [...state.liveRuns.values()]) {
+        if (live && !live.ended) {
+          try { await cancelLiveRun(live); } catch { /* 尽力而为 */ }
+        }
+      }
+      for (let i = 0; i < 40 && conversationRunning(); i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
     try {
       const body = {
         expected_revision: candidate.revision,
@@ -5003,11 +5032,17 @@
 
   /// 就地改目标：点一下文字变输入框，回车提交，Esc 放弃。
   function beginGoalEdit(node, goal) {
-    const input = document.createElement("input");
-    input.type = "text";
+    // 多行文本框(09-12 用户报单行不好写不好看):自动撑高,回车提交、
+    // Shift+回车换行、Esc 放弃。
+    const input = document.createElement("textarea");
     input.className = "goal-bar-edit";
+    input.rows = 1;
     input.value = String(goal.objective || "");
     input.setAttribute("aria-label", "修改目标");
+    const autosize = () => {
+      input.style.height = "auto";
+      input.style.height = `${Math.min(input.scrollHeight, 220)}px`;
+    };
     // `finish` 会被回车和失焦各触发一次——提交时把输入框换掉，那一下又会
     // 触发 blur。没有这个闸就会连发两次 edit。
     let settled = false;
@@ -5020,7 +5055,7 @@
     };
     input.addEventListener("keydown", (event) => {
       event.stopPropagation();
-      if (event.key === "Enter") {
+      if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         finish(true);
       } else if (event.key === "Escape") {
@@ -5028,10 +5063,12 @@
         finish(false);
       }
     });
+    input.addEventListener("input", autosize);
     input.addEventListener("blur", () => finish(true));
     node.replaceWith(input);
     input.focus();
     input.select();
+    autosize();
   }
 
   async function runGoalAction(action) {
@@ -10002,7 +10039,30 @@
       // 409 = 后端认为这个会话已经在跑，而前端以为没有。原文案（「正在同步」
       // ＋「请重新发送」）把机器的调度问题说成用户该重来一遍，而且说了两遍。
       // 现在只留一条，说清楚发生了什么。
-      if (error.status === 409) {
+      // 排队请求 409 = 盯着的那条轮已经跑完/被顶替,会话此刻空闲。别再弹
+      // 「再发一次」让用户重来——直接改走 /api/turns 起一条新轮,消息不丢
+      // (/api/turns 会自动排队或新建,09-12 用户报「排队消息却提示要等」)。
+      if (queueing && error.status === 409) {
+        try {
+          const body = { content, attachment_ids: attachmentIds };
+          if (sessionId) body.session_id = sessionId;
+          const retry = await apiRequest("/api/turns", { method: "POST", body: JSON.stringify(body) });
+          const payload = await retry.json();
+          const qp = payload?.queued ? payload.prompt : null;
+          if (qp && !state.queuedPrompts.some((p) => String(p?.id) === String(qp?.id))) {
+            state.queuedPrompts.push(qp);
+          }
+          elements.composerInput.value = "";
+          committedComposerAttachments();
+          resizeComposer();
+          renderQueueTray();
+          if (sessionId) await loadSessionView(sessionId, { quiet: true });
+          else await loadBootstrap();
+          return;
+        } catch (retryError) {
+          showToast(retryError.message || "发送失败", "error");
+        }
+      } else if (error.status === 409) {
         showToast("这条没发出去：会话刚开始新的一轮，再发一次", "error");
       } else {
         showInlineError(error.message);

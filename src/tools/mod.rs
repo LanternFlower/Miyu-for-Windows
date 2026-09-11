@@ -31,7 +31,7 @@ mod registry;
 mod scripts;
 mod skills;
 mod subagent;
-mod subagent_runner;
+pub(crate) mod subagent_runner;
 mod todowrite;
 pub(crate) mod voice_chat;
 pub(crate) mod voice_speak;
