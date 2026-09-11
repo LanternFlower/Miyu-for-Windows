@@ -1688,6 +1688,35 @@ body[data-theme="graphite"] .session-unread-dot {
   max-height: 220px;
 }
 
+/* 09-12 二轮修 #2/#4/#5/#10:标题永远优先(至少放得下「开发中/子代理/命令」),
+   窥视只是次要、可缩、定宽 token 槽减少抖动;展开(is-open)只显标题不显窥视;
+   命令日志面板去掉左侧竖线。用 `.job-chip >` 直接子选择器压过前面几条同名规则。 */
+.job-chip > .job-chip-label {
+  flex: 0 1 auto;
+  min-width: 3.6em;
+}
+.job-chip > .job-chip-peek {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.job-chip.is-open > .job-chip-peek {
+  display: none;
+}
+.job-chip > .job-chip-token {
+  flex: none;
+  min-width: 3.4em;
+  text-align: right;
+  margin-left: 6px;
+}
+.job-chip > .job-chip-time {
+  margin-left: 6px;
+}
+/* 后台命令展开的日志面板不要那条左竖线(用户嫌丑,09-12)。 */
+.job-log-panel {
+  border-left: none;
+  padding-left: 0;
+}
+
 
 .message {
   width: 100%;
@@ -1780,8 +1809,9 @@ body[data-theme="graphite"] .session-unread-dot {
   border: 1px solid var(--line-strong);
   border-radius: var(--radius) var(--radius) var(--radius-sm) var(--radius);
   outline: none;
-  background: var(--user-bg);
-  color: var(--user-text);
+  /* 和当前用户气泡同底色(中性 surface-1),不再是那块强调色(09-12 #12)。 */
+  background: var(--surface-1);
+  color: var(--text);
   padding: 10px 16px;
   font: inherit;
   font-size: var(--fs-chat);
@@ -5178,16 +5208,17 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   width: 100%;
   min-width: 0;
   max-width: 100%;
-  min-height: 72px;
+  /* 输入框整体降一点(09-12 #11):min-height 72→48,行高 1.7→1.5。 */
+  min-height: 48px;
   max-height: 200px;
   resize: none;
-  padding: 13px 15px 5px;
+  padding: 10px 15px 6px;
   border: 0;
   outline: 0;
   background: transparent;
   color: var(--text);
   font-size: var(--fs-chat);
-  line-height: 1.7;
+  line-height: 1.5;
 }
 
 .composer textarea::placeholder {
@@ -10041,6 +10072,35 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   max-height: 220px;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+/* 子代理任务简介(展开区最上方,09-12 #6):标题 + 整段 prompt,不再让人读裸 JSON。 */
+.subagent-brief {
+  margin: 2px 0 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.subagent-brief-title {
+  font-weight: 600;
+  font-size: var(--fs-meta);
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.subagent-brief-prompt {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: var(--fs-meta);
+  line-height: 1.55;
+  color: var(--text-soft);
+}
+/* 前台子代理行在手机端太长(09-12 #8):收起时不显那条单行窥视,活动去展开区看;
+   token/读秒也让位,标题+状态就够窄。 */
+@media (max-width: 836px) {
+  .tool-card.is-task .tool-head > .tool-peek,
+  .tool-card.is-task .tool-head > .tool-task-token {
+    display: none;
+  }
 }
 /* 前台子代理行的 token 消耗 + 读秒(09-12 #6):等宽小字,贴在状态前面。 */
 .tool-card.is-task .tool-head > .tool-task-token,

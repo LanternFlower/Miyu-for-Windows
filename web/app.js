@@ -5956,6 +5956,24 @@
     }
   }, 1000);
 
+  // 子过程时间线增长时自动滚到底(09-12 #7:展开后 timeline 继续长不自动滚)。
+  // 滚的是最近的可滚容器(前台=.sub-blocks 本身,后台=外层 .job-stream-panel);
+  // 只有用户本来就贴着底才跟随,往上翻了就不抢。
+  function subAutoScroll(sink) {
+    const el = sink && sink.blocks;
+    if (!el) return;
+    let c = el;
+    while (c && c !== document.body) {
+      const style = window.getComputedStyle(c);
+      if (/(auto|scroll)/.test(style.overflowY) && c.scrollHeight > c.clientHeight + 1) break;
+      c = c.parentElement;
+    }
+    if (!c || c === document.body) c = el;
+    if (c.scrollHeight - c.scrollTop - c.clientHeight < 48) {
+      c.scrollTop = c.scrollHeight;
+    }
+  }
+
   function renderSubagentProgress(sink, message) {
     const ev = parseSubagentEvent(message);
     if (ev.kind === "stats") {
@@ -5986,6 +6004,7 @@
       setReasoningPeek(sink.think.peek, sink.thinkAccum);
       sink.peekLine = sink.thinkAccum;
       if (sink.taskPeek) setReasoningPeek(sink.taskPeek, sink.thinkAccum);
+      subAutoScroll(sink);
       return;
     }
     if (ev.kind === "call") {
@@ -6004,6 +6023,7 @@
       procLineAttach(sink.blocks, card, true);
       sink.peekLine = call.name + " " + (ev.ok ? "完成" : "出错");
       if (sink.taskPeek) setReasoningPeek(sink.taskPeek, sink.peekLine);
+      subAutoScroll(sink);
       return;
     }
     if (ev.kind === "plain" && ev.text) {
@@ -7218,20 +7238,36 @@
 
   function prettyArguments(value) {
     if (value == null) return "";
+    let obj = value;
     if (typeof value === "string") {
       const trimmed = value.trim();
       if (!trimmed) return "";
       try {
-        return JSON.stringify(JSON.parse(trimmed), null, 2);
+        obj = JSON.parse(trimmed);
       } catch (_) {
         return value;
       }
     }
-    try {
-      return JSON.stringify(value, null, 2);
-    } catch (_) {
-      return String(value);
+    if (obj == null) return "";
+    // 顶层对象 → 「键：值」逐行,不再是裹着大括号的裸 JSON(09-12 #6:工具展开
+    // 信息不该是裸 json)。嵌套值压成一行紧凑 JSON;非对象/数组回退 pretty JSON。
+    if (typeof obj !== "object" || Array.isArray(obj)) {
+      try {
+        return JSON.stringify(obj, null, 2);
+      } catch (_) {
+        return String(obj);
+      }
     }
+    const lines = [];
+    for (const [key, raw] of Object.entries(obj)) {
+      let rendered;
+      if (raw == null) rendered = "";
+      else if (typeof raw === "object") {
+        try { rendered = JSON.stringify(raw); } catch (_) { rendered = String(raw); }
+      } else rendered = String(raw);
+      lines.push(`${key}: ${rendered}`);
+    }
+    return lines.join("\n");
   }
 
   // 子代理事件名后端格式化成 `subagent:<描述>`(让并行子代理各有独立事件名,
@@ -7700,6 +7736,30 @@
       subBlocks = document.createElement("div");
       subBlocks.className = "sub-blocks assistant-blocks";
       body.insertBefore(subBlocks, body.firstChild);
+      // 子代理的任务简介放在展开区最上方,美化呈现,不再让人去读裸 JSON 参数
+      //(09-12 #6):标题=description,正文=prompt(整段保留换行)。裸参数那栏
+      // 对子代理收起来(信息都在简介里了)。
+      const taskArgs = parsedToolArguments(data?.arguments);
+      const briefTitle = String(taskArgs.description || "").trim();
+      const briefPrompt = String(taskArgs.prompt || "").trim();
+      if (briefTitle || briefPrompt) {
+        const brief = document.createElement("div");
+        brief.className = "subagent-brief";
+        if (briefTitle) {
+          const h = document.createElement("div");
+          h.className = "subagent-brief-title";
+          h.textContent = briefTitle;
+          brief.appendChild(h);
+        }
+        if (briefPrompt) {
+          const pp = document.createElement("div");
+          pp.className = "subagent-brief-prompt";
+          pp.textContent = briefPrompt;
+          brief.appendChild(pp);
+        }
+        body.insertBefore(brief, subBlocks);
+        argumentsDetail.wrapper.hidden = true;
+      }
       card.append(head, body);
       if (taskPeek) taskPeek.textContent = reasoningPeekText(subjectText || "正在启动子代理…");
     } else {
@@ -8856,6 +8916,26 @@
     if (missing && (state.jobsStripOpen || visible.length < 3)) renderJobsStrip();
   }, 1000);
   setTimeout(seedJobsStrip, 800);
+
+  // 回到前台补一刀(09-12 #9:手机切到别的程序再切回,后台期间任务完成了却不刷新;
+  // #3:刷新/断连回来状态行没了)。手机后台久了系统会掐断 SSE 且不自动重连,所以:
+  // 连接死了就按 lastEventId 重连、补拉后台任务;当前没有在跑的直播时静默补同步一次
+  // 会话,追回后台期间错过的完成事件(有直播在跑就不动,免得打断流式重挂)。
+  let lastVisibleResync = 0;
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden || state.blocked) return;
+    const src = state.eventSource;
+    if (!src || src.readyState === EventSource.CLOSED) {
+      connectEventSource(state.lastEventId || 0);
+    }
+    seedJobsStrip();
+    const now = Date.now();
+    if (now - lastVisibleResync < 1500) return;
+    lastVisibleResync = now;
+    if (!conversationRunning() && state.viewSessionId && !state.viewLoading) {
+      loadSessionView(state.viewSessionId, { quiet: true });
+    }
+  });
 
   function appendRunNotice(live, message, error = false) {
     ensureLiveArticle(live);

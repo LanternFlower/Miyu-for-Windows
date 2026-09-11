@@ -122,6 +122,35 @@ impl MiyuPaths {
         let cache_dir = root_dir.join("cache");
         let state_dir = root_dir.join("state");
 
+        // `miyu mcp-serve` 工具桥被成员的 Landlock 沙盒关着,读不到 daemon home
+        // 下的布局标记(read_home_layout_admin / try_migrate_resource_layout 里的
+        // open 会 EACCES),整段迁移逻辑会让 MiyuPaths::new() 直接 Err、mcp-serve
+        // 起不来 → claude 报 CONNECTION_CLOSED(09-12 逐层诊断坐实)。桥只经 IPC
+        // 代理到 daemon(工具执行、作用域都在 daemon 侧),压根不需要迁移/标记/
+        // skills 路径。这里给一条确定的新布局快路:零文件读取,socket 路径(runtime
+        // 目录,沙盒放行)照样能算出来。任何 mcp-serve 调用都走(默认 home 也可能被
+        // 沙盒关着;config_dir 就算和 daemon 的旧布局不一致也无所谓,桥不读它)。
+        if std::env::args().any(|arg| arg == "mcp-serve") {
+            let system_scripts_dir = std::env::var_os("MIYU_SYSTEM_SCRIPTS_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/usr/share/miyu/scripts"));
+            return Ok(Self {
+                config_file: config_dir.join("config.jsonc"),
+                skills_dir: config_dir.join("skills"),
+                scripts_dir: config_dir.join("scripts"),
+                pictures_dir: data_dir.join("pictures"),
+                fish_hook_file: base.config_dir().join("fish/conf.d/miyu.fish"),
+                bash_hook_file: config_dir.join("shell/bash-hook.sh"),
+                zsh_hook_file: config_dir.join("shell/zsh-hook.zsh"),
+                system_scripts_dir,
+                root_dir,
+                config_dir,
+                data_dir,
+                cache_dir,
+                state_dir,
+            });
+        }
+
         let legacy = LegacyLayout {
             config_dir: legacy_config_dir.clone(),
             data_dir: legacy_data_dir.clone(),
