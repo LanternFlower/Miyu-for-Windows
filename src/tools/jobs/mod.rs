@@ -83,7 +83,11 @@ impl JobState {
 #[derive(Clone)]
 pub enum JobKind {
     Command { pid: u32 },
-    Subagent { abort: tokio::task::AbortHandle },
+    Subagent {
+        abort: tokio::task::AbortHandle,
+        /// 开发模式子代理(dev=true):UI 的任务条据此把标签写成「开发中」。
+        dev: bool,
+    },
 }
 
 #[derive(Clone)]
@@ -144,6 +148,9 @@ pub struct JobOverview {
     /// "command" or "subagent" — UIs word their labels by this.
     #[serde(default)]
     pub kind: String,
+    /// 开发模式子代理标记;UI 据此把标签写成「开发中」。
+    #[serde(default)]
+    pub dev: bool,
     /// Owning turn session; UIs only strip-display jobs of their own session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -222,6 +229,7 @@ fn overview_of(job: &JobEntry) -> JobOverview {
         job_id: job.job_id.clone(),
         title: job.title.clone(),
         kind: job.kind_label().to_string(),
+        dev: matches!(job.kind, JobKind::Subagent { dev: true, .. }),
         session_id: job.session_id.as_deref().map(str::to_string),
         status: job.state.label(),
         running: !job.state.is_terminal(),
@@ -310,7 +318,7 @@ pub fn shutdown_all() {
                 signal_process_group(*pid, libc::SIGTERM);
                 pids.push(*pid);
             }
-            JobKind::Subagent { abort } => abort.abort(),
+            JobKind::Subagent { abort, .. } => abort.abort(),
         }
     }
     if !pids.is_empty() {
@@ -437,6 +445,7 @@ pub async fn spawn_background(
 pub async fn spawn_background_subagent<F>(
     title: Option<&str>,
     description: &str,
+    dev: bool,
     progress: &ToolProgress,
     build: impl FnOnce(String, PathBuf) -> F,
 ) -> Result<String>
@@ -478,6 +487,7 @@ where
         platform_sender: super::workspace::current_platform_sender(),
         kind: JobKind::Subagent {
             abort: handle.abort_handle(),
+            dev,
         },
         started_wall: SystemTime::now(),
         started: Instant::now(),
@@ -737,7 +747,7 @@ async fn stop_one(job_id: &str) -> Result<String> {
                 }
             });
         }
-        JobKind::Subagent { abort } => abort.abort(),
+        JobKind::Subagent { abort, .. } => abort.abort(),
     }
     Ok("stopped".to_string())
 }

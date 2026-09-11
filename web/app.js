@@ -7149,6 +7149,20 @@
     }
   }
 
+  // 子代理事件名后端格式化成 `subagent:<描述>`(让并行子代理各有独立事件名,
+  // 见 agent::reports::tool_event_name),所以判定/取图标要认这个前缀,不能只比
+  // 精确名——否则子代理工具行认不出来,窥视/子过程时间线整套都不触发(09-11
+  // 用户报「气泡还在、渲染不对」的真因,Playwright 实测揪出)。
+  function subagentToolBaseName(name) {
+    const n = String(name || "");
+    const at = n.search(/[:：]/);
+    return at >= 0 ? n.slice(0, at) : n;
+  }
+  function isSubagentTool(name) {
+    const base = subagentToolBaseName(name);
+    return base === "subagent" || base === "task";
+  }
+
   function parsedToolArguments(value) {
     if (value && typeof value === "object" && !Array.isArray(value)) return value;
     if (typeof value !== "string" || !value.trim()) return {};
@@ -7208,7 +7222,7 @@
     if (["webfetch", "web_fetch"].includes(toolName)) return compactLine(args.url);
     if (["web_search", "search_web", "search_web_images"].includes(toolName)) return compactLine(args.query || args.q);
     if (toolName === "generate_image") return compactLine(args.prompt);
-    if (toolName === "subagent" || toolName === "task") return compactLine(args.description || args.prompt);
+    if (isSubagentTool(toolName)) return compactLine(args.description || args.prompt);
     if (toolName === "load_skill") return compactLine(args.name);
     const preferred = ["query", "command", "path", "filePath", "url", "name", "id", "target"];
     for (const key of preferred) {
@@ -7277,7 +7291,7 @@
     card.className = state.toolExpanded ? "tool-card" : "tool-card collapsed";
     const name = String(call?.name || "");
     if (name === "run_command" || name === "Bash") card.classList.add("is-command");
-    if (name === "subagent" || name === "task") card.classList.add("is-task");
+    if (isSubagentTool(name)) card.classList.add("is-task");
     // 图标配色来自 is-success（金）/ is-failure（红）。两个都不加会退回默认色，
     // 看起来就是「颜色不对」。
     //
@@ -7307,7 +7321,7 @@
     const displayName = document.createElement("strong");
     displayName.textContent = String(call?.display_name || name || "工具");
     // 开发模式子代理显示「开发中」(与实时行同口径,09-11)。
-    if (["subagent", "task"].includes(String(name || "")) && parsedToolArguments(call?.arguments)?.dev === true) {
+    if (isSubagentTool(name) && parsedToolArguments(call?.arguments)?.dev === true) {
       displayName.textContent = "开发中";
     }
     // 名字被芯片截断时,悬浮还能看全(load_tools 一次点名几个工具就会超长)。
@@ -7435,7 +7449,7 @@
     if (["recall_memories", "recall_past_events", "remember_fact", "search_evicted_context"].includes(n)) return "brain";
     if (["create_goal", "get_goal", "update_goal"].includes(n)) return "target";
     if (n === "todowrite" || n === "todoupdate") return "list-todo";
-    if (n === "subagent" || n === "task" || n === "deep_research") return "bot";
+    if (isSubagentTool(n) || n === "deep_research") return "bot";
     if (n.includes("knowledge_base")) return "book-open";
     if (n === "ask_question") return "circle-help";
     if (n === "generate_image") return "paintbrush";
@@ -7504,7 +7518,7 @@
     const isCommand = ["run_command", "Bash"].includes(String(data?.name || ""));
     if (isCommand) card.classList.add("is-command");
     const isTask =
-      ["subagent", "task"].includes(String(data?.name || "")) ||
+      isSubagentTool(data?.name) ||
       /^(subagent|task)[:：]/i.test(String(data?.display_name || ""));
     if (isTask) card.classList.add("is-task");
     const subjectText = toolSubject(data?.name, data?.arguments);
@@ -8554,7 +8568,7 @@
       marker.textContent = "◌";
       const label = document.createElement("span");
       label.className = "job-chip-label";
-      const kindWord = job.kind === "subagent" ? "子代理" : "命令";
+      const kindWord = job.kind === "subagent" ? (job.dev ? "开发中" : "子代理") : "命令";
       label.textContent = `${kindWord} ${job.job_id} · ${job.title}`;
       label.title = label.textContent;
       const time = document.createElement("span");

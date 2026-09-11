@@ -157,6 +157,7 @@ async fn background_subagent_lifecycle() {
         &spawn_background_subagent(
             Some("子代理测试"),
             "描述文本",
+            false,
             &test_progress(),
             |_job_id, log_path| async move {
                 let _ = std::fs::write(&log_path, "工作中\n");

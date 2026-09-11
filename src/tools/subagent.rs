@@ -317,6 +317,7 @@ async fn spawn_background(
     crate::tools::jobs::spawn_background_subagent(
         None,
         &description,
+        params.dev,
         &progress,
         move |job_id, log_path| async move {
             let bridge = spawn_subagent_log_bridge(job_id.clone(), log_path.clone());
