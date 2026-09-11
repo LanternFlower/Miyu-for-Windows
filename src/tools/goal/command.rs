@@ -83,8 +83,15 @@ fn render_goal_human(title: &str, goal: &GoalRecord, session_id: &str) -> String
 /// 对话，模型该看到的是目标本身（它自己调 `goal` action=get）。返回 `Result` 是给
 /// web 层的：它要靠成败决定后续动作（比如 edit 成功后给正在跑的续轮排变更
 /// 通知），拒绝文案和成功回执混成一个字符串就判不了。
-pub fn try_execute_goal_command(paths: &MiyuPaths, session_id: &str, raw: &str) -> Result<String> {
-    let store = super::store(paths)?;
+/// 目标命令在**会话所属者的库**里执行:成员的会话在成员库,goals 表对
+/// sessions(session_id) 有外键,用管理员库建目标会因为那边没有这个会话而
+/// FOREIGN KEY constraint failed(09-11 用户实测 `/goal` 报此错)。调用方
+/// 负责传对库(web 用 stores.for_session)。
+pub fn try_execute_goal_command(
+    store: &crate::state::StateStore,
+    session_id: &str,
+    raw: &str,
+) -> Result<String> {
     let raw = raw.trim();
     let (verb, rest) = match raw.split_once(char::is_whitespace) {
         Some((verb, rest)) => (verb.trim(), rest.trim()),

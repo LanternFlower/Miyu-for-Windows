@@ -1525,22 +1525,27 @@ body[data-theme="graphite"] .session-unread-dot {
 .job-chip.is-expandable {
   cursor: pointer;
 }
-.job-chip.is-expandable .job-chip-label {
-  flex: 0 1 auto;
-}
-.job-chip-peek {
+.job-chip-label {
   flex: 1 1 auto;
 }
-.job-chip:not(.is-open) .job-chip-peek {
-  display: flex;
+.job-chip-chevron {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  opacity: 0.6;
+  transition: transform 140ms ease;
 }
-.job-chip.is-open .job-chip-peek {
-  display: none;
+.job-chip.is-open .job-chip-chevron {
+  transform: rotate(180deg);
 }
+/* 展开后的子过程流:限高可滚,不许顶满全屏(09-11 用户报)。 */
 .job-stream-panel {
   margin: 2px 0 8px 24px;
   padding-left: 10px;
   border-left: 2px solid var(--rule-soft, rgba(128, 128, 128, 0.25));
+  max-height: 42vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .job-chip-stop {
@@ -9895,50 +9900,13 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 .tool-card.is-task:not(.collapsed) .tool-head .tool-peek {
   display: none;
 }
-/* 展开后的子过程时间线:子代理自己的思考与工具流,按序摆开。 */
-.tool-card.is-task .sub-timeline {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+/* 展开后的子过程时间线容器:proc-line(和主对话过程区同款)挂在里面;限高可滚,
+   不许顶满全屏(09-11 用户报)。 */
+.tool-card.is-task .sub-blocks {
   margin-bottom: 8px;
-}
-.sub-row {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: var(--fs-meta);
-  line-height: 1.6;
-}
-.sub-row .sub-dot {
-  flex: none;
-  align-self: center;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-}
-.sub-tool.is-running .sub-dot {
-  background: color-mix(in srgb, var(--accent) 60%, transparent);
-  animation: subDotPulse 1.1s ease-in-out infinite;
-}
-.sub-tool.is-error .sub-dot {
-  background: var(--danger, #d9534f);
-}
-.sub-label {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--text-soft);
-  font-family: var(--font-mono);
-}
-.sub-reasoning-text {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--proc-think);
-  font-style: italic;
-}
-@keyframes subDotPulse {
-  0%, 100% { opacity: 0.35; }
-  50% { opacity: 1; }
+  max-height: 42vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 /* 放不下了:尾部对齐(文字从左边溢出被裁),再加一层左侧渐隐,新字从右边推进来 */
 .reasoning-peek.is-overflow {

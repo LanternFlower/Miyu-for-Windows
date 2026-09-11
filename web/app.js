@@ -5846,7 +5846,7 @@
       try {
         const payload = JSON.parse(text.slice(SUBAGENT_MARKERS.call.length));
         const args = typeof payload.args === "string" ? payload.args : JSON.stringify(payload.args ?? {});
-        return { kind: "call", name: String(payload.name || ""), subject: toolSubject(payload.name, args) };
+        return { kind: "call", name: String(payload.name || ""), args, subject: toolSubject(payload.name, args) };
       } catch {
         return { kind: "plain", text: text.slice(SUBAGENT_MARKERS.call.length).trim() };
       }
@@ -5854,7 +5854,8 @@
     if (text.startsWith(SUBAGENT_MARKERS.result)) {
       try {
         const payload = JSON.parse(text.slice(SUBAGENT_MARKERS.result.length));
-        return { kind: "result", name: String(payload.name || ""), ok: payload.ok !== false };
+        const args = typeof payload.args === "string" ? payload.args : JSON.stringify(payload.args ?? {});
+        return { kind: "result", name: String(payload.name || ""), args, ok: payload.ok !== false, output: String(payload.output ?? "") };
       } catch {
         return { kind: "plain", text: text.slice(SUBAGENT_MARKERS.result.length).trim() };
       }
@@ -5871,87 +5872,80 @@
     return ev.text || "";
   }
 
-  function makeSubToolRow(name, subject) {
-    const el = document.createElement("div");
-    el.className = "sub-row sub-tool is-running";
-    const dot = document.createElement("span");
-    dot.className = "sub-dot";
-    const label = document.createElement("span");
-    label.className = "sub-label";
-    label.textContent = subject ? `${name} · ${subject}` : name;
-    el.append(dot, label);
-    return {
-      el,
-      finish(ok) {
-        el.classList.remove("is-running");
-        el.classList.toggle("is-error", !ok);
-      }
-    };
+  // 子过程时间线:子代理自己的思考与工具流,复用主对话同一套渲染——proc-line
+  // 细线时间线 + createReasoningBlock(思考:累加、可展开、有窥视、动画)+
+  // createPersistedToolCard(完成的工具卡,与主流工具卡同构)。sink.blocks 承载
+  // proc-line;sink.think 是当前正累加的思考块。
+  function subEndReasoning(sink) {
+    if (sink.think) {
+      sink.think.title.textContent = "已思考";
+      sink.think.element.classList.remove("is-live");
+      sink.think = null;
+      sink.thinkAccum = "";
+    }
   }
 
-  // 展开后的子过程时间线:Full 档把子代理的思考与工具流按序摆开,和主智能体
-  // 的过程区同款。Summary 档没有结构化标记,只更新标题窥视,时间线留空。
-  function renderSubagentProgress(tool, message) {
+  function renderSubagentProgress(sink, message) {
     const ev = parseSubagentEvent(message);
     if (ev.kind === "stats") return;
+    if (!sink.blocks) return;
     if (ev.kind === "reasoning") {
-      // 思考是**逐 token 的增量**(子代理每个流块发一条),要累加,不能覆盖——
-      // 否则窥视和时间线里只剩最后一个 token 在疯狂刷(09-11 用户报)。
-      tool.subReasoningAccum = (tool.subReasoningAccum || "") + ev.text;
-      tool.peekLine = tool.subReasoningAccum;
-      if (tool.taskPeek) setReasoningPeek(tool.taskPeek, tool.subReasoningAccum);
-      if (tool.subTimeline) {
-        if (!tool.subReasoningRow) {
-          const row = document.createElement("div");
-          row.className = "sub-row sub-reasoning";
-          const span = document.createElement("span");
-          span.className = "sub-reasoning-text";
-          row.appendChild(span);
-          tool.subTimeline.appendChild(row);
-          tool.subReasoningRow = span;
-        }
-        tool.subReasoningRow.textContent = tool.subReasoningAccum;
+      // 思考逐 token 增量,累加到一个活的思考块(不能覆盖,否则只剩最后一个 token)。
+      if (!sink.think) {
+        sink.think = createReasoningBlock("", "正在思考", true);
+        sink.thinkAccum = "";
+        procLineAttach(sink.blocks, sink.think.element);
       }
+      sink.thinkAccum += ev.text;
+      sink.think.raw = sink.thinkAccum;
+      sink.think.body.textContent = sink.thinkAccum;
+      setReasoningPeek(sink.think.peek, sink.thinkAccum);
+      sink.peekLine = sink.thinkAccum;
+      if (sink.taskPeek) setReasoningPeek(sink.taskPeek, sink.thinkAccum);
       return;
     }
-    const line = subagentPeekLine(ev);
-    if (line) tool.peekLine = line;
-    if (tool.taskPeek && line) setReasoningPeek(tool.taskPeek, line);
-    if (!tool.subTimeline) return;
     if (ev.kind === "call") {
-      const row = makeSubToolRow(ev.name, ev.subject);
-      tool.subTimeline.appendChild(row.el);
-      tool.lastSubToolRow = row;
-      // 一轮工具开始 = 上一段思考收尾:清掉当前思考行与累加,下段思考另起一行。
-      tool.subReasoningRow = null;
-      tool.subReasoningAccum = "";
-    } else if (ev.kind === "result") {
-      if (tool.lastSubToolRow) {
-        tool.lastSubToolRow.finish(ev.ok);
-        tool.lastSubToolRow = null;
-      }
-    } else if (ev.kind === "plain" && ev.text) {
-      // Summary 档没有结构化标记,只有 `工具 #N：名字 · 主语 运行中/ok/err`。
-      // 按 #N 归键,运行中建/留行,ok/err 收尾——展开后同样能看到步骤序列。
+      subEndReasoning(sink);
+      // Full 档:call 先记着,result 到了再落一张完成卡(带 args + output)。
+      sink.pendingCall = { name: ev.name, args: ev.args, subject: ev.subject };
+      sink.peekLine = ev.subject ? ev.name + " · " + ev.subject : "调用 " + ev.name;
+      if (sink.taskPeek) setReasoningPeek(sink.taskPeek, sink.peekLine);
+      return;
+    }
+    if (ev.kind === "result") {
+      subEndReasoning(sink);
+      const call = sink.pendingCall || { name: ev.name, args: ev.args };
+      sink.pendingCall = null;
+      const card = createPersistedToolCard({ name: call.name, arguments: call.args != null ? call.args : ev.args, output: ev.output, ok: ev.ok });
+      procLineAttach(sink.blocks, card, true);
+      sink.peekLine = call.name + " " + (ev.ok ? "完成" : "出错");
+      if (sink.taskPeek) setReasoningPeek(sink.taskPeek, sink.peekLine);
+      return;
+    }
+    if (ev.kind === "plain" && ev.text) {
+      // Summary 档没有结构化标记(WebUI 回合强制 Full,一般走不到这):只有
+      // `工具 #N：名字 · 主语 运行中/ok/err`。运行中不落卡(没 args/output),
+      // ok/err 时落一张完成卡。
       const match = ev.text.match(/^(?:工具|tool)\s*#(\d+)[:：]?\s*(.*)$/i);
-      if (match) {
-        const key = match[1];
-        const rest = match[2].trim();
-        const running = /(?:运行中|running)$/i.test(rest);
-        const errored = /(?:\berr\b|错误|失败)$/i.test(rest);
-        const finished = !running && /(?:\bok\b|\berr\b|完成|失败|错误)$/i.test(rest);
-        const label = rest.replace(/\s*(?:运行中|running|ok|err)$/i, "").trim();
-        if (!tool.subSteps) tool.subSteps = new Map();
-        let row = tool.subSteps.get(key);
-        if (!row) {
-          row = makeSubToolRow(label, "");
-          tool.subTimeline.appendChild(row.el);
-          tool.subSteps.set(key, row);
-        } else {
-          const labelNode = row.el.querySelector(".sub-label");
-          if (labelNode) labelNode.textContent = label;
-        }
-        if (finished) row.finish(!errored);
+      if (!match) {
+        sink.peekLine = ev.text;
+        if (sink.taskPeek) setReasoningPeek(sink.taskPeek, ev.text);
+        return;
+      }
+      const rest = match[2].trim();
+      const running = /(?:运行中|running)$/i.test(rest);
+      const errored = /(?:\berr\b|错误|失败)$/i.test(rest);
+      const finished = !running && /(?:\bok\b|\berr\b|完成|失败|错误)$/i.test(rest);
+      const label = rest.replace(/\s*(?:运行中|running|ok|err)$/i, "").trim();
+      sink.peekLine = label || rest;
+      if (sink.taskPeek) setReasoningPeek(sink.taskPeek, sink.peekLine);
+      if (finished) {
+        subEndReasoning(sink);
+        const at = label.indexOf(" · ");
+        const nm = at >= 0 ? label.slice(0, at) : label;
+        const subj = at >= 0 ? label.slice(at + 3) : "";
+        const card = createPersistedToolCard({ name: nm, arguments: subj, output: "", ok: !errored });
+        procLineAttach(sink.blocks, card, true);
       }
     }
   }
@@ -5963,10 +5957,12 @@
     if (!sink) {
       const panel = document.createElement("div");
       panel.className = "job-stream-panel";
-      const subTimeline = document.createElement("div");
-      subTimeline.className = "sub-timeline";
-      panel.appendChild(subTimeline);
-      sink = { panel, subTimeline, subReasoningRow: null, lastSubToolRow: null, subSteps: null, peekLine: "" };
+      const blocks = document.createElement("div");
+      blocks.className = "sub-blocks assistant-blocks";
+      panel.appendChild(blocks);
+      // taskPeek: null —— 后台任务的标题不被行窥视替换(09-11 用户报),活动只在
+      // 展开面板里的子过程时间线呈现。
+      sink = { panel, blocks, taskPeek: null, think: null, thinkAccum: "", pendingCall: null, peekLine: "" };
       state.jobStreamSinks.set(jobId, sink);
     }
     return sink;
@@ -7589,11 +7585,12 @@
     // 子代理:收起看标题行的窥视,展开看下面的「子过程时间线」——子代理自己的
     // 思考与工具流,和主智能体的过程区同款渲染(09-11 用户要求)。不再用方块。
     let liveProgress = null;
-    let subTimeline = null;
+    let subBlocks = null;
     if (isTask) {
-      subTimeline = document.createElement("div");
-      subTimeline.className = "sub-timeline";
-      body.insertBefore(subTimeline, body.firstChild);
+      // 子过程时间线的承载容器:proc-line 挂进这里(和主对话过程区同构)。
+      subBlocks = document.createElement("div");
+      subBlocks.className = "sub-blocks assistant-blocks";
+      body.insertBefore(subBlocks, body.firstChild);
       card.append(head, body);
       if (taskPeek) taskPeek.textContent = reasoningPeekText(subjectText || "正在启动子代理…");
     } else {
@@ -7626,8 +7623,10 @@
       isTask,
       liveProgress,
       taskPeek,
-      subTimeline,
-      subRows: new Map(),
+      blocks: subBlocks,
+      think: null,
+      thinkAccum: "",
+      pendingCall: null,
       titleText: String(data?.display_name || data?.name || "工具"),
       subject: subjectText,
       startedAt: performance.now(),
@@ -8576,19 +8575,17 @@
           showToast(error.message || "停止失败", "error");
         }
       });
-      // 子代理任务:标题行里一条单行窥视显示当前子过程,点行展开子过程时间线
-      // (与前台子代理工具行同款);多个并行子代理各占一行、各自展开互不干扰。
+      // 子代理任务:标题(job_id · 描述)保持完整,不被行窥视替换(09-11 用户报)。
+      // 点这一行展开下方的子过程时间线(和主对话过程区同款渲染);多个并行子代理
+      // 各占一行、各自独立展开互不干扰。
       if (job.kind === "subagent") {
         const jid = String(job.job_id);
-        const peekSlot = document.createElement("span");
-        peekSlot.className = "reasoning-peek job-chip-peek";
-        const peekSpan = document.createElement("span");
-        peekSlot.appendChild(peekSpan);
-        row.append(marker, label, peekSlot, time, stop);
+        row.append(marker, label, time, stop);
         row.classList.add("is-expandable");
         const expanded = state.expandedJobs.has(jid);
         row.classList.toggle("is-open", expanded);
         row.setAttribute("aria-expanded", String(expanded));
+        row.appendChild(makeIconSlot("chevron-down", "job-chip-chevron"));
         row.addEventListener("click", (event) => {
           if (event.target.closest(".job-chip-stop")) return;
           if (state.expandedJobs.has(jid)) state.expandedJobs.delete(jid);
@@ -8598,11 +8595,7 @@
         const wrap = document.createElement("div");
         wrap.className = "job-chip-wrap";
         wrap.appendChild(row);
-        const sink = state.jobStreamSinks.get(jid);
         if (expanded) wrap.appendChild(jobStreamSink(jid).panel);
-        if (sink && sink.peekLine) {
-          window.requestAnimationFrame(() => setReasoningPeek(peekSpan, sink.peekLine));
-        }
         fragment.appendChild(wrap);
       } else {
         row.append(marker, label, time, stop);
@@ -9169,13 +9162,8 @@
       const message = String(data?.message || "");
       if (jobId && message) {
         // 后台子代理的实时进度:喂给该 job 的子过程流(与前台子代理工具行同款
-        // 解析),并把当前活动写到任务条那一行的窥视上。
-        const sink = jobStreamSink(jobId);
-        renderSubagentProgress(sink, message);
-        const peek = elements.jobsStrip?.querySelector(
-          `.job-chip[data-job-id="${CSS.escape(jobId)}"] .job-chip-peek > span`
-        );
-        if (peek && sink.peekLine) setReasoningPeek(peek, sink.peekLine);
+        // 解析后渲进该 job 的子过程时间线(展开时可见,持久累积)。
+        renderSubagentProgress(jobStreamSink(jobId), message);
       }
       return;
     }

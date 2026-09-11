@@ -122,7 +122,10 @@ pub(in crate::web) fn apply_goal_command(
     input: &str,
 ) -> String {
     let verb = input.split_whitespace().next().unwrap_or("");
-    let result = goal::try_execute_goal_command(&state.paths, session_id, input);
+    // 会话所属者的库(成员在成员库):goals 表外键指向 sessions,用错库会
+    // FOREIGN KEY constraint failed(09-11)。
+    let store = state.stores.for_session(session_id).pinned(session_id);
+    let result = goal::try_execute_goal_command(&store, session_id, input);
     let succeeded = result.is_ok();
     let text = match result {
         Ok(text) => text,
