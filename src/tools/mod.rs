@@ -488,7 +488,7 @@ pub fn compose_registry(
     // 编辑器只留 apply_patch(聚合增/改/删,diff 渲染载体)。
     apply_patch::register(&mut registry);
     todowrite::register(&mut registry, paths.clone());
-    goal::register(&mut registry, paths.clone());
+    goal::register(&mut registry, config.clone(), paths.clone());
     if plugin("alarm") {
         alarm::register(&mut registry, paths.clone());
     }

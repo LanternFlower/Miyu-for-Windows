@@ -226,6 +226,13 @@ impl StateStore {
         Self::new_at(paths, &home, home.join("artifacts"))
     }
 
+    /// 已知成员家目录时直接开他的会话库(工具侧只有 `config.member_home_dir()`
+    /// 拿到的路径、没有用户名时用)。库/artifact 落点与 `open_member` 同口径。
+    pub fn open_at_home(paths: &MiyuPaths, home: &Path) -> Result<Self> {
+        crate::paths::ensure_private_dir(home)?;
+        Self::new_at(paths, home, home.join("artifacts"))
+    }
+
     fn new_at(paths: &MiyuPaths, db_dir: &Path, artifacts_dir: PathBuf) -> Result<Self> {
         let state_dir = paths.state_dir.clone();
         let conv_db = Arc::new(ConversationDb::open_at(db_dir, &state_dir)?);

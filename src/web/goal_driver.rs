@@ -125,8 +125,23 @@ pub(in crate::web) fn apply_goal_command(
     // 会话所属者的库(成员在成员库):goals 表外键指向 sessions,用错库会
     // FOREIGN KEY constraint failed(09-11)。
     let store = state.stores.for_session(session_id).pinned(session_id);
+    // 排查「clear 之后 create 仍报已有目标」(09-12):记下解析到谁的库、命令
+    // 执行前库里那颗目标是什么状态。owner=""=管理员库。
+    let owner = state.stores.owner_of_session(session_id).unwrap_or_default();
+    let pre = store
+        .goal(session_id)
+        .ok()
+        .flatten()
+        .map(|g| format!("{}:{}", g.phase.as_str(), g.goal_id));
+    tracing::info!(%session_id, owner = %owner, %verb, pre_goal = ?pre, "goal command in");
     let result = goal::try_execute_goal_command(&store, session_id, input);
     let succeeded = result.is_ok();
+    let post = store
+        .goal(session_id)
+        .ok()
+        .flatten()
+        .map(|g| format!("{}:{}", g.phase.as_str(), g.goal_id));
+    tracing::info!(%session_id, owner = %owner, %verb, succeeded, post_goal = ?post, "goal command out");
     let text = match result {
         Ok(text) => text,
         Err(error) => format!("{error}"),
@@ -208,18 +223,19 @@ pub(in crate::web) async fn maybe_continue_goal(state: DaemonState, session_id: 
         }
     }
     // 闸 2：人在排队就让行。自动轮会消耗轮号，插在人前面既抢了额度也抢了顺序。
-    let store = state.state_store.pinned(&session_id);
+    // 成员的目标在他自己的会话库:用 for_session 取对库,否则读管理员库
+    // 时 session_record 恒 None、goal 也读不到,成员目标从不自动续轮(与
+    // /goal 命令、goal 工具同口径)。
+    let store = state.stores.for_session(&session_id).pinned(&session_id);
     match store.load_queued_prompts() {
         Ok(queued) if queued.is_empty() => {}
         _ => return,
     }
-    let Ok(Some(record)) = state.state_store.session_record(&session_id) else {
+    let Ok(Some(record)) = store.session_record(&session_id) else {
         return;
     };
     // 平台绑定会话 v1 不驱动（回复送达要合成平台轮，与这里的会话轮不同构）。
-    if let Ok(bindings) = state
-        .state_store
-        .platform_session_bindings(&record.persona, "onebot")
+    if let Ok(bindings) = store.platform_session_bindings(&record.persona, "onebot")
     {
         if bindings
             .iter()
@@ -230,7 +246,7 @@ pub(in crate::web) async fn maybe_continue_goal(state: DaemonState, session_id: 
         }
     }
     // 闸 3：目标可跑。
-    let Ok(Some(goal_record)) = state.state_store.goal(&session_id) else {
+    let Ok(Some(goal_record)) = store.goal(&session_id) else {
         return;
     };
     if goal_record.phase != crate::state::GoalPhase::Active || !goal::is_armed(&session_id) {
@@ -240,7 +256,7 @@ pub(in crate::web) async fn maybe_continue_goal(state: DaemonState, session_id: 
         // max_rounds == 0 = 不限(09-11 移除轮数限制),不再转 blocked。
         // 轮数耗尽转 blocked 而不是静默停下：人得知道它为什么不动了，
         // 以及该怎么继续（/goal edit 抬高上限）。
-        let _ = state.state_store.block_goal(
+        let _ = store.block_goal(
             &session_id,
             &goal_record.goal_id,
             goal_record.revision,
@@ -254,7 +270,7 @@ pub(in crate::web) async fn maybe_continue_goal(state: DaemonState, session_id: 
         return;
     }
     // 闸 4：双 CAS 认领。并发唤醒里只有一个能赢，输的那个安静退出。
-    let claimed = match state.state_store.begin_goal_round(
+    let claimed = match store.begin_goal_round(
         &session_id,
         &goal_record.goal_id,
         goal_record.revision,

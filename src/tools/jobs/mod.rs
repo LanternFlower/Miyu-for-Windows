@@ -255,6 +255,19 @@ pub fn overview() -> Vec<JobOverview> {
     rows.into_iter().map(overview_of).collect()
 }
 
+/// 后台任务日志的尾部(UI 展开后台命令那行看输出用,09-12)。命令没有
+/// job.progress 流,输出只落在日志文件里;点开时前端拉这个尾巴、运行中轮询。
+/// 返回 (文本, 是否还在运行)。
+pub fn job_log_tail(job_id: &str, max_bytes: usize) -> Option<(String, bool)> {
+    let job = job_snapshot(job_id)?;
+    let running = !job.state.is_terminal();
+    let bytes = std::fs::read(&job.log_path).unwrap_or_default();
+    let start = bytes.len().saturating_sub(max_bytes);
+    // 从 max_bytes 边界起可能切进多字节字符中间,from_utf8_lossy 兜底。
+    let text = String::from_utf8_lossy(&bytes[start..]).into_owned();
+    Some((text, running))
+}
+
 /// 完成且已报告的任务直接从注册表移除(验收 08-16 用户反馈:"做完了
 /// 也不删除,一直留着占用后台"——此前只打标记,条目终身堆积)。日志
 /// 文件留在磁盘,唤醒消息里带着 log_path,要翻旧账用 read。

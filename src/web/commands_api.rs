@@ -73,7 +73,8 @@ pub(in crate::web) async fn session_goal_http(
 ) -> std::result::Result<Json<Value>, ApiError> {
     require_auth(&headers, &state)?;
     require_local_web_session(&state, &headers, &session_id)?;
-    let goal = crate::tools::goal::session_goal_json(&state.paths, &session_id);
+    let store = state.stores.for_session(&session_id);
+    let goal = crate::tools::goal::session_goal_json(&store, &session_id);
     Ok(Json(goal))
 }
 

@@ -4,7 +4,6 @@
 //! 「armed 只在 daemon 内存里」这条，两个界面必须是同一份实现。
 
 use super::runtime::{is_armed, set_armed};
-use crate::paths::MiyuPaths;
 use crate::state::{GoalPhase, GoalRecord};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -19,10 +18,7 @@ const GOAL_USAGE: &str = concat!(
 ///
 /// 和喂给模型的 `goal_value` 分开：那份带 CAS 凭证（id/revision），界面不需要
 /// 也不该拿——它做操作走 `/goal` 命令，凭证在 daemon 侧解析。
-pub fn session_goal_json(paths: &MiyuPaths, session_id: &str) -> Value {
-    let Ok(store) = super::store(paths) else {
-        return json!({ "goal": null });
-    };
+pub fn session_goal_json(store: &crate::state::StateStore, session_id: &str) -> Value {
     match store.goal(session_id) {
         Ok(Some(goal)) => json!({
             "goal": {

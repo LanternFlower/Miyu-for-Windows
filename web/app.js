@@ -387,6 +387,7 @@
     jobsStripOpen: localStorage.getItem("miyu.web.jobsStripOpen") === "1",
     expandedJobs: new Set(),
     jobStreamSinks: new Map(),
+    commandLogs: new Map(),
     bootId: null,
     latestEventId: 0,
     lastEventId: 0,
@@ -5887,7 +5888,16 @@
 
   function renderSubagentProgress(sink, message) {
     const ev = parseSubagentEvent(message);
-    if (ev.kind === "stats") return;
+    if (ev.kind === "stats") {
+      // stats 文本形如「工具调用 3 次　消耗词元 ≈1.2k」/「tool calls: 3　token cost: 1.2k」,
+      // 每步更新一次。抠出 token 数(可能带 ≈ 前缀),喂给任务条那行的 token 显示(09-12 item 4)。
+      const m = ev.text.match(/(?:词元|cost)\s*[：:]?\s*(≈?\s*[\d.]+\s*[kKmMbB万]?)/);
+      if (m) {
+        sink.tokenText = m[1].replace(/\s+/g, "");
+        if (sink.taskToken) sink.taskToken.textContent = sink.tokenText;
+      }
+      return;
+    }
     if (!sink.blocks) return;
     if (ev.kind === "reasoning") {
       // 思考逐 token 增量,累加到一个活的思考块(不能覆盖,否则只剩最后一个 token)。
@@ -5960,9 +5970,10 @@
       const blocks = document.createElement("div");
       blocks.className = "sub-blocks assistant-blocks";
       panel.appendChild(blocks);
-      // taskPeek: null —— 后台任务的标题不被行窥视替换(09-11 用户报),活动只在
-      // 展开面板里的子过程时间线呈现。
-      sink = { panel, blocks, taskPeek: null, think: null, thinkAccum: "", pendingCall: null, peekLine: "" };
+      // taskPeek / taskToken 由 renderJobsStrip 每次重建时挂到当前那行的窥视/
+      // token 元素上(09-12 用户要回行窥视:跑到工具显示工具、跑到思考窥思考;
+      // token 每步更新)。标题本身仍保持完整、不被窥视替换。
+      sink = { panel, blocks, taskPeek: null, taskToken: null, tokenText: "", think: null, thinkAccum: "", pendingCall: null, peekLine: "" };
       state.jobStreamSinks.set(jobId, sink);
     }
     return sink;
@@ -8528,6 +8539,63 @@
     );
   }
 
+  // 盲文点阵转圈 spinner(09-12 用户指定):一个全局 ticker 刷所有 .job-braille
+  // 的字符,避免每行各自 CSS 动画在任务条重建时被打回起点。
+  const JOB_BRAILLE = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
+  let jobBrailleFrame = 0;
+
+  function makeJobSpinner() {
+    const s = document.createElement("span");
+    s.className = "job-chip-marker job-braille";
+    s.textContent = JOB_BRAILLE[jobBrailleFrame];
+    return s;
+  }
+
+  setInterval(() => {
+    if (document.hidden) return;
+    const nodes = elements.jobsStrip?.querySelectorAll(".job-braille");
+    if (!nodes || !nodes.length) return;
+    jobBrailleFrame = (jobBrailleFrame + 1) % JOB_BRAILLE.length;
+    const frame = JOB_BRAILLE[jobBrailleFrame];
+    nodes.forEach((node) => {
+      node.textContent = frame;
+    });
+  }, 110);
+
+  // 后台命令没有实时进度流,展开那行时拉日志尾巴看输出(09-12 用户报「命令无法
+  // 点击展开看输出」);运行中每 1.5s 轮询一次,退出即停。
+  function commandLogPanel(jobId) {
+    let entry = state.commandLogs.get(jobId);
+    if (!entry) {
+      const panel = document.createElement("div");
+      panel.className = "job-stream-panel job-log-panel";
+      const pre = document.createElement("pre");
+      pre.className = "job-log-pre";
+      pre.textContent = "…";
+      panel.appendChild(pre);
+      entry = { panel, pre, timer: null };
+      state.commandLogs.set(jobId, entry);
+    }
+    return entry;
+  }
+
+  async function refreshCommandLog(jobId) {
+    const entry = state.commandLogs.get(jobId);
+    if (!entry) return;
+    try {
+      const data = await apiRequest(`/api/jobs/${encodeURIComponent(jobId)}/log`);
+      const atBottom = entry.pre.scrollTop + entry.pre.clientHeight >= entry.pre.scrollHeight - 8;
+      entry.pre.textContent = data?.log || "(暂无输出)";
+      if (atBottom) entry.pre.scrollTop = entry.pre.scrollHeight;
+      if (!data?.running && entry.timer) {
+        clearInterval(entry.timer);
+        entry.timer = null;
+      }
+    } catch {
+      entry.pre.textContent = "(读取日志失败)";
+    }
+  }
+
   function renderJobsStrip() {
     const strip = elements.jobsStrip;
     if (!strip) return;
@@ -8541,16 +8609,16 @@
     const fragment = document.createDocumentFragment();
     const collapsible = jobs.length >= 3;
     if (collapsible) {
-      const toggle = document.createElement("button");
-      toggle.type = "button";
-      toggle.className = state.jobsStripOpen ? "jobs-strip-toggle is-open" : "jobs-strip-toggle";
+      // 合并行做成和单行一样的 job-chip 外观(09-12 用户报):braille spinner +
+      // 「后台任务 ×N」+ 展开箭头,不再是另一种带 ▸ 前缀的按钮。
+      const toggle = document.createElement("div");
+      toggle.className = state.jobsStripOpen ? "job-chip is-toggle is-open" : "job-chip is-toggle";
+      toggle.setAttribute("role", "button");
       toggle.setAttribute("aria-expanded", String(state.jobsStripOpen));
-      const toggleMarker = document.createElement("span");
-      toggleMarker.className = "job-chip-marker is-spinning";
-      toggleMarker.textContent = "\u25cc";
-      const toggleText = document.createElement("span");
-      toggleText.textContent = (state.jobsStripOpen ? "\u25be " : "\u25b8 ") + "\u540e\u53f0\u4efb\u52a1 \u00d7" + jobs.length;
-      toggle.replaceChildren(toggleMarker, toggleText);
+      const label = document.createElement("span");
+      label.className = "job-chip-label";
+      label.textContent = `后台任务 ×${jobs.length}`;
+      toggle.append(makeJobSpinner(), label, makeIconSlot("chevron-down", "job-chip-chevron"));
       toggle.addEventListener("click", () => {
         state.jobsStripOpen = !state.jobsStripOpen;
         localStorage.setItem("miyu.web.jobsStripOpen", state.jobsStripOpen ? "1" : "0");
@@ -8560,61 +8628,94 @@
     }
     const showRows = !collapsible || state.jobsStripOpen;
     for (const job of showRows ? jobs : []) {
+      const jid = String(job.job_id);
+      const isSubagent = job.kind === "subagent";
       const row = document.createElement("div");
-      row.className = "job-chip";
-      row.dataset.jobId = String(job.job_id);
-      const marker = document.createElement("span");
-      marker.className = "job-chip-marker is-spinning";
-      marker.textContent = "◌";
+      row.className = "job-chip is-expandable";
+      row.dataset.jobId = jid;
+
       const label = document.createElement("span");
       label.className = "job-chip-label";
-      const kindWord = job.kind === "subagent" ? (job.dev ? "开发中" : "子代理") : "命令";
+      const kindWord = isSubagent ? (job.dev ? "开发中" : "子代理") : "命令";
       label.textContent = `${kindWord} ${job.job_id} · ${job.title}`;
       label.title = label.textContent;
+
+      // 行窥视:跑到工具显示工具、跑到思考窥思考,单行滚动刷新(仅子代理有进度流,
+      // 命令没有进度流所以窥视留空)。标题保持完整、不被窥视替换。
+      const peekSlot = document.createElement("span");
+      peekSlot.className = "job-chip-peek reasoning-peek";
+      const peek = document.createElement("span");
+      peekSlot.appendChild(peek);
+
+      const token = document.createElement("span");
+      token.className = "job-chip-token";
+
       const time = document.createElement("span");
       time.className = "job-chip-time";
       const seconds = job.running
         ? Math.max(0, Math.round(job.runtime_seconds + (Date.now() - job.receivedAt) / 1000))
         : job.runtime_seconds;
       time.textContent = formatJobDuration(seconds);
+
       const stop = document.createElement("button");
       stop.type = "button";
       stop.className = "job-chip-stop";
       stop.textContent = "✕";
-      stop.title = "停止该后台命令";
-      stop.addEventListener("click", async () => {
+      stop.title = "停止该后台任务";
+      stop.addEventListener("click", async (event) => {
+        event.stopPropagation();
         try {
-          await apiRequest(`/api/jobs/${encodeURIComponent(job.job_id)}`, { method: "DELETE" });
+          await apiRequest(`/api/jobs/${encodeURIComponent(jid)}`, { method: "DELETE" });
         } catch (error) {
           showToast(error.message || "停止失败", "error");
         }
       });
-      // 子代理任务:标题(job_id · 描述)保持完整,不被行窥视替换(09-11 用户报)。
-      // 点这一行展开下方的子过程时间线(和主对话过程区同款渲染);多个并行子代理
-      // 各占一行、各自独立展开互不干扰。
-      if (job.kind === "subagent") {
-        const jid = String(job.job_id);
-        row.append(marker, label, time, stop);
-        row.classList.add("is-expandable");
-        const expanded = state.expandedJobs.has(jid);
-        row.classList.toggle("is-open", expanded);
-        row.setAttribute("aria-expanded", String(expanded));
-        row.appendChild(makeIconSlot("chevron-down", "job-chip-chevron"));
-        row.addEventListener("click", (event) => {
-          if (event.target.closest(".job-chip-stop")) return;
-          if (state.expandedJobs.has(jid)) state.expandedJobs.delete(jid);
-          else state.expandedJobs.add(jid);
-          renderJobsStrip();
-        });
-        const wrap = document.createElement("div");
-        wrap.className = "job-chip-wrap";
-        wrap.appendChild(row);
-        if (expanded) wrap.appendChild(jobStreamSink(jid).panel);
-        fragment.appendChild(wrap);
-      } else {
-        row.append(marker, label, time, stop);
-        fragment.appendChild(row);
+
+      // 布局:spinner 标题 窥视(撑开) 展开箭头 token 时间 ✕
+      //(09-12 用户:箭头悬在状态行之后、token 在时间左侧)。
+      const chevron = makeIconSlot("chevron-down", "job-chip-chevron");
+      row.append(makeJobSpinner(), label, peekSlot, chevron, token, time, stop);
+
+      if (isSubagent) {
+        const sink = jobStreamSink(jid);
+        sink.taskPeek = peek;
+        sink.taskToken = token;
+        if (sink.peekLine) setReasoningPeek(peek, sink.peekLine);
+        if (sink.tokenText) token.textContent = sink.tokenText;
       }
+
+      const expanded = state.expandedJobs.has(jid);
+      row.classList.toggle("is-open", expanded);
+      row.setAttribute("aria-expanded", String(expanded));
+      row.addEventListener("click", (event) => {
+        if (event.target.closest(".job-chip-stop")) return;
+        if (state.expandedJobs.has(jid)) state.expandedJobs.delete(jid);
+        else state.expandedJobs.add(jid);
+        renderJobsStrip();
+      });
+
+      const wrap = document.createElement("div");
+      wrap.className = "job-chip-wrap";
+      wrap.appendChild(row);
+      if (expanded) {
+        if (isSubagent) {
+          wrap.appendChild(jobStreamSink(jid).panel);
+        } else {
+          const entry = commandLogPanel(jid);
+          wrap.appendChild(entry.panel);
+          refreshCommandLog(jid);
+          if (job.running && !entry.timer) {
+            entry.timer = setInterval(() => refreshCommandLog(jid), 1500);
+          }
+        }
+      } else if (!isSubagent) {
+        const entry = state.commandLogs.get(jid);
+        if (entry?.timer) {
+          clearInterval(entry.timer);
+          entry.timer = null;
+        }
+      }
+      fragment.appendChild(wrap);
     }
     strip.replaceChildren(fragment);
     strip.hidden = false;

@@ -525,6 +525,21 @@ pub(in crate::web) async fn list_jobs_http(
     Ok(Json(json!({ "jobs": tools::jobs::overview() })).into_response())
 }
 
+pub(in crate::web) async fn job_log_http(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Path(job_id): Path<String>,
+) -> std::result::Result<Response, ApiError> {
+    require_auth(&headers, &state)?;
+    // 后台命令没有实时进度流,输出只在日志文件里;展开那行时拉尾巴看。
+    match tools::jobs::job_log_tail(&job_id, 64 * 1024) {
+        Some((text, running)) => {
+            Ok(Json(json!({ "job_id": job_id, "log": text, "running": running })).into_response())
+        }
+        None => Err(ApiError::new(StatusCode::NOT_FOUND, "job not found")),
+    }
+}
+
 pub(in crate::web) async fn stop_job_http(
     State(state): State<DaemonState>,
     headers: HeaderMap,

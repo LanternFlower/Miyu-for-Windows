@@ -542,6 +542,9 @@ impl SubagentRunner {
                 .chat_stream_with_retry(&messages, &definitions, steps)
                 .await?;
             stats.add_usage_or_estimate(result.usage.as_ref(), &[]);
+            // 每步更新一次统计:后台子代理任务条那行的 token 消耗据此逐步刷新
+            // (09-12 用户要「时间左侧的 token 每步更新」),不再只在收尾时报一次。
+            self.report_stats(stats);
 
             if result.tool_calls.is_empty() {
                 return Ok(result);

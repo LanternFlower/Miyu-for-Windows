@@ -43,8 +43,15 @@ pub const BLOCKED_AFTER_CONSECUTIVE_ROUNDS: i64 = 3;
 /// 顶一行只会把真正的输出挤散。REPL 和 WebUI 都拿这个常量识别它。
 pub const GOAL_ROUND_LABEL: &str = "goal-round";
 
-fn store(paths: &MiyuPaths) -> Result<StateStore> {
-    StateStore::new(paths)
+/// 成员的目标要落进他自己的会话库(`home/<用户>/conversation.db`),否则挂进
+/// 管理员库时外键 `goals.session_id → sessions.session_id` 对不上(成员会话不在
+/// 管理员的 sessions 表)→ create/edit 一律 `FOREIGN KEY constraint failed`。
+/// 与 kb_root_for / artifacts_root 同口径:member_home_dir() 是 Some 就开那家的库。
+fn store_for(config: &crate::config::AppConfig, paths: &MiyuPaths) -> Result<StateStore> {
+    match config.member_home_dir() {
+        Some(home) => StateStore::open_at_home(paths, &home),
+        None => StateStore::new(paths),
+    }
 }
 
 fn session_for_call() -> Result<String> {
@@ -114,7 +121,7 @@ fn require_human(origin: &TurnOrigin, verb: &str) -> Result<()> {
 /// 教模型怎么用另外一份。
 pub const GOAL_TOOL: &str = "goal";
 
-pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
+pub fn register(registry: &mut ToolRegistry, config: crate::config::AppConfig, paths: MiyuPaths) {
     registry.register(
         ToolSpec::new(
             GOAL_TOOL,
@@ -138,7 +145,8 @@ pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
             }),
             move |args: Value| {
                 let paths = paths.clone();
-                async move { run_goal_action(&paths, args).await }
+                let config = config.clone();
+                async move { run_goal_action(&config, &paths, args).await }
             },
         )
         .writes()
@@ -146,10 +154,14 @@ pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
     );
 }
 
-async fn run_goal_action(paths: &MiyuPaths, args: Value) -> Result<String> {
+async fn run_goal_action(
+    config: &crate::config::AppConfig,
+    paths: &MiyuPaths,
+    args: Value,
+) -> Result<String> {
     let session = session_for_call()?;
     let origin = workspace::current_turn_origin();
-    let store = store(paths)?;
+    let store = store_for(config, paths)?;
     // 省略 action 按读处理：get 是唯一无副作用的动作，猜错了也只是多读一次。
     let action = meaningful_text(args.get("action").and_then(Value::as_str)).unwrap_or("get");
     let objective = meaningful_text(args.get("objective").and_then(Value::as_str));
