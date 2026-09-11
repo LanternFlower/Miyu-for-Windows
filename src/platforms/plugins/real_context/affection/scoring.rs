@@ -97,7 +97,11 @@ pub(crate) fn reply_bias(settings: &RealContextPluginSettings, score: f64, user_
     }
 }
 
-pub(crate) fn gain_multiplier(settings: &RealContextPluginSettings, score: f64, user_id: &str) -> f64 {
+pub(crate) fn gain_multiplier(
+    settings: &RealContextPluginSettings,
+    score: f64,
+    user_id: &str,
+) -> f64 {
     let score = clamp_score(settings, score, user_id);
     let maximum = max_score_for_user(settings, user_id);
     let pivot = settings

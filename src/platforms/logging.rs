@@ -174,11 +174,38 @@ pub(crate) fn sanitize_platform_tool_label(value: &str) -> String {
     }
 }
 
+fn platform_tool_endpoint_line(data: &Value, locale: Locale) -> Option<String> {
+    let provider = data
+        .get("provider_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let model = data.get("model").and_then(Value::as_str).unwrap_or("");
+    if provider.is_empty() && model.is_empty() {
+        return None;
+    }
+    let label = if provider.is_empty() {
+        model.to_string()
+    } else if model.is_empty() {
+        provider.to_string()
+    } else {
+        format!("{provider} / {model}")
+    };
+    Some(if locale == Locale::Zh {
+        format!("模型：{label}")
+    } else {
+        format!("Model: {label}")
+    })
+}
+
 pub(crate) fn format_platform_tool_started_log(run_id: &str, data: &Value) -> String {
     format_platform_tool_started_log_for(run_id, data, crate::i18n::locale())
 }
 
-pub(crate) fn format_platform_tool_started_log_for(run_id: &str, data: &Value, locale: Locale) -> String {
+pub(crate) fn format_platform_tool_started_log_for(
+    run_id: &str,
+    data: &Value,
+    locale: Locale,
+) -> String {
     let tool_id = data
         .get("tool_id")
         .and_then(Value::as_str)
@@ -204,6 +231,7 @@ pub(crate) fn format_platform_tool_started_log_for(run_id: &str, data: &Value, l
         if display_name != tool_name {
             lines.push(format!("显示名称：{display_name}"));
         }
+        lines.extend(platform_tool_endpoint_line(data, locale));
         lines.push(format!("参数：\n{arguments}"));
         lines.join("\n")
     } else {
@@ -215,6 +243,7 @@ pub(crate) fn format_platform_tool_started_log_for(run_id: &str, data: &Value, l
         if display_name != tool_name {
             lines.push(format!("Display name: {display_name}"));
         }
+        lines.extend(platform_tool_endpoint_line(data, locale));
         lines.push(format!("Arguments:\n{arguments}"));
         lines.join("\n")
     }
@@ -224,7 +253,11 @@ pub(crate) fn format_platform_tool_finished_log(run_id: &str, data: &Value) -> S
     format_platform_tool_finished_log_for(run_id, data, crate::i18n::locale())
 }
 
-pub(crate) fn format_platform_tool_finished_log_for(run_id: &str, data: &Value, locale: Locale) -> String {
+pub(crate) fn format_platform_tool_finished_log_for(
+    run_id: &str,
+    data: &Value,
+    locale: Locale,
+) -> String {
     let tool_id = data
         .get("tool_id")
         .and_then(Value::as_str)
@@ -251,6 +284,7 @@ pub(crate) fn format_platform_tool_finished_log_for(run_id: &str, data: &Value, 
         if display_name != tool_name {
             lines.push(format!("显示名称：{display_name}"));
         }
+        lines.extend(platform_tool_endpoint_line(data, locale));
         lines.push(format!("状态：{}", if ok { "成功" } else { "失败" }));
         lines.push(format!("结果：\n{output}"));
         lines.join("\n")

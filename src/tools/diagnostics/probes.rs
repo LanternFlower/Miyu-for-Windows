@@ -16,7 +16,10 @@ pub(in crate::tools::diagnostics) struct ProbeOutput {
     pub(in crate::tools::diagnostics) timed_out: bool,
 }
 
-pub(in crate::tools::diagnostics) async fn linux_system_facts(config: &DiagnosticsPluginConfig, report: &mut EvidenceReport) {
+pub(in crate::tools::diagnostics) async fn linux_system_facts(
+    config: &DiagnosticsPluginConfig,
+    report: &mut EvidenceReport,
+) {
     for key in [
         "SHELL",
         "TERM",
@@ -49,7 +52,10 @@ pub(in crate::tools::diagnostics) async fn linux_system_facts(config: &Diagnosti
     }
 }
 
-pub(in crate::tools::diagnostics) async fn linux_basic_checks(config: &DiagnosticsPluginConfig, report: &mut EvidenceReport) {
+pub(in crate::tools::diagnostics) async fn linux_basic_checks(
+    config: &DiagnosticsPluginConfig,
+    report: &mut EvidenceReport,
+) {
     for command in ["systemctl", "journalctl", "loginctl", "ip", "df"] {
         command_exists_check(config, report, command).await;
     }
@@ -148,7 +154,10 @@ pub(in crate::tools::diagnostics) async fn linux_package_evidence(
     .await;
 }
 
-pub(in crate::tools::diagnostics) async fn linux_gpu_evidence(config: &DiagnosticsPluginConfig, report: &mut EvidenceReport) {
+pub(in crate::tools::diagnostics) async fn linux_gpu_evidence(
+    config: &DiagnosticsPluginConfig,
+    report: &mut EvidenceReport,
+) {
     command_exists_check(config, report, "lspci").await;
     if command_path(config, "lspci").await.is_some() {
         let output = run_command(config, "lspci", &["-nnk"], 4).await;
@@ -160,7 +169,10 @@ pub(in crate::tools::diagnostics) async fn linux_gpu_evidence(config: &Diagnosti
     command_exists_check(config, report, "nvidia-smi").await;
 }
 
-pub(in crate::tools::diagnostics) async fn linux_network_evidence(config: &DiagnosticsPluginConfig, report: &mut EvidenceReport) {
+pub(in crate::tools::diagnostics) async fn linux_network_evidence(
+    config: &DiagnosticsPluginConfig,
+    report: &mut EvidenceReport,
+) {
     for command in ["ip", "resolvectl", "ping"] {
         command_exists_check(config, report, command).await;
     }
@@ -178,7 +190,10 @@ pub(in crate::tools::diagnostics) async fn linux_network_evidence(config: &Diagn
     }
 }
 
-pub(in crate::tools::diagnostics) async fn linux_storage_evidence(config: &DiagnosticsPluginConfig, report: &mut EvidenceReport) {
+pub(in crate::tools::diagnostics) async fn linux_storage_evidence(
+    config: &DiagnosticsPluginConfig,
+    report: &mut EvidenceReport,
+) {
     command_exists_check(config, report, "df").await;
     if command_path(config, "df").await.is_some() {
         let output = run_command(config, "df", &["-hT"], 3).await;
@@ -280,7 +295,10 @@ pub(in crate::tools::diagnostics) async fn launch_probe_target(
     (pids, Some(child))
 }
 
-pub(in crate::tools::diagnostics) async fn process_ids(config: &DiagnosticsPluginConfig, name: &str) -> Vec<u32> {
+pub(in crate::tools::diagnostics) async fn process_ids(
+    config: &DiagnosticsPluginConfig,
+    name: &str,
+) -> Vec<u32> {
     let output = run_command(config, "pgrep", &["-af", name], 2).await;
     filtered_process_matches(&output.stdout, name)
         .iter()
@@ -288,7 +306,10 @@ pub(in crate::tools::diagnostics) async fn process_ids(config: &DiagnosticsPlugi
         .collect()
 }
 
-pub(in crate::tools::diagnostics) fn filtered_process_matches(output: &str, name: &str) -> Vec<String> {
+pub(in crate::tools::diagnostics) fn filtered_process_matches(
+    output: &str,
+    name: &str,
+) -> Vec<String> {
     let name_lower = name.to_ascii_lowercase();
     let mut matches = output
         .lines()
@@ -380,7 +401,11 @@ pub(in crate::tools::diagnostics) async fn app_probe_version(
     push_log_if_stdout(report, &format!("{command} --version"), &output);
 }
 
-pub(in crate::tools::diagnostics) async fn package_owner(config: &DiagnosticsPluginConfig, report: &mut EvidenceReport, path: &str) {
+pub(in crate::tools::diagnostics) async fn package_owner(
+    config: &DiagnosticsPluginConfig,
+    report: &mut EvidenceReport,
+    path: &str,
+) {
     if command_path(config, "pacman").await.is_none() {
         return;
     }
@@ -489,7 +514,10 @@ pub(in crate::tools::diagnostics) async fn recent_logs(
     push_log(report, "journalctl --user recent filtered", &text);
 }
 
-pub(in crate::tools::diagnostics) async fn command_path(config: &DiagnosticsPluginConfig, command: &str) -> Option<String> {
+pub(in crate::tools::diagnostics) async fn command_path(
+    config: &DiagnosticsPluginConfig,
+    command: &str,
+) -> Option<String> {
     if !safe_command_name(command) {
         return None;
     }
@@ -566,13 +594,21 @@ pub(in crate::tools::diagnostics) fn fact_env(report: &mut EvidenceReport, key: 
     }
 }
 
-pub(in crate::tools::diagnostics) fn push_log_if_stdout(report: &mut EvidenceReport, source: &str, output: &ProbeOutput) {
+pub(in crate::tools::diagnostics) fn push_log_if_stdout(
+    report: &mut EvidenceReport,
+    source: &str,
+    output: &ProbeOutput,
+) {
     if !output.stdout.trim().is_empty() {
         push_log(report, source, &output.stdout);
     }
 }
 
-pub(in crate::tools::diagnostics) fn push_log(report: &mut EvidenceReport, source: &str, message: &str) {
+pub(in crate::tools::diagnostics) fn push_log(
+    report: &mut EvidenceReport,
+    source: &str,
+    message: &str,
+) {
     if !message.trim().is_empty() {
         report.logs.push(LogExcerpt {
             source: source.to_string(),

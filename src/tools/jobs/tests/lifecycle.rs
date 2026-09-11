@@ -1,7 +1,7 @@
 //! 起停与状态查询。
 
-use crate::tools::jobs::*;
 use super::shared::*;
+use crate::tools::jobs::*;
 
 #[tokio::test]
 async fn background_job_lifecycle() {
@@ -10,16 +10,18 @@ async fn background_job_lifecycle() {
     let command = "echo hello; exit 3";
     #[cfg(windows)]
     let command = "echo hello & exit /b 3";
-    let spawned: Value =
-        serde_json::from_str(&spawn_background(command, Some("退出码测试"), &test_progress()).await.unwrap()).unwrap();
+    let spawned: Value = serde_json::from_str(
+        &spawn_background(command, Some("退出码测试"), &test_progress())
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let job_id = spawned["job_id"].as_str().unwrap().to_string();
     assert!(spawned["ok"].as_bool().unwrap());
 
     await_terminal(&job_id).await;
-    let status: Value = serde_json::from_str(
-        &job_status(json!({"job_id": job_id})).await.unwrap(),
-    )
-    .unwrap();
+    let status: Value =
+        serde_json::from_str(&job_status(json!({"job_id": job_id})).await.unwrap()).unwrap();
     assert_eq!(status["status"], "exited(3)");
     assert!(status["output"]["content"]
         .as_str()
@@ -88,8 +90,7 @@ async fn job_status_list_carries_recent_output_and_log_path() {
     let id = spawned["job_id"].as_str().unwrap().to_string();
     await_terminal(&id).await;
 
-    let status: Value =
-        serde_json::from_str(&job_status(json!({})).await.unwrap()).unwrap();
+    let status: Value = serde_json::from_str(&job_status(json!({})).await.unwrap()).unwrap();
     let row = status["jobs"]
         .as_array()
         .unwrap()
@@ -130,12 +131,8 @@ async fn job_status_reports_several_ids_at_once() {
         await_terminal(id).await;
     }
 
-    let status: Value = serde_json::from_str(
-        &job_status(json!({"job_ids": ids}))
-            .await
-            .unwrap(),
-    )
-    .unwrap();
+    let status: Value =
+        serde_json::from_str(&job_status(json!({"job_ids": ids})).await.unwrap()).unwrap();
     let rows = status["jobs"].as_array().unwrap();
     assert_eq!(rows.len(), 2);
     // Rows come back in the order the ids were asked for.
@@ -147,12 +144,8 @@ async fn job_status_reports_several_ids_at_once() {
     }
 
     // A single id keeps the flat shape callers already parse.
-    let single: Value = serde_json::from_str(
-        &job_status(json!({"job_id": ids[0]}))
-            .await
-            .unwrap(),
-    )
-    .unwrap();
+    let single: Value =
+        serde_json::from_str(&job_status(json!({"job_id": ids[0]})).await.unwrap()).unwrap();
     assert_eq!(single["job_id"], ids[0].as_str());
     assert!(single["jobs"].is_null());
     assert!(single["output"]["content"]
@@ -165,12 +158,15 @@ async fn job_status_reports_several_ids_at_once() {
 async fn background_subagent_lifecycle() {
     shared_init();
     let spawned: Value = serde_json::from_str(
-        &spawn_background_subagent(Some("子代理测试"), "描述文本", &test_progress(), |_job_id, log_path| {
-            async move {
+        &spawn_background_subagent(
+            Some("子代理测试"),
+            "描述文本",
+            &test_progress(),
+            |_job_id, log_path| async move {
                 let _ = std::fs::write(&log_path, "工作中\n");
                 JobState::Exited { code: Some(0) }
-            }
-        })
+            },
+        )
         .await
         .unwrap(),
     )
@@ -178,12 +174,8 @@ async fn background_subagent_lifecycle() {
     let job_id = spawned["job_id"].as_str().unwrap().to_string();
     assert_eq!(spawned["kind"], "background_subagent");
     await_terminal(&job_id).await;
-    let status: Value = serde_json::from_str(
-        &job_status(json!({"job_id": job_id}))
-            .await
-            .unwrap(),
-    )
-    .unwrap();
+    let status: Value =
+        serde_json::from_str(&job_status(json!({"job_id": job_id})).await.unwrap()).unwrap();
     assert_eq!(status["status"], "exited(0)");
     assert!(status["output"]["content"]
         .as_str()
@@ -194,8 +186,12 @@ async fn background_subagent_lifecycle() {
 #[tokio::test]
 async fn job_stop_terminates_a_running_job() {
     shared_init();
-    let spawned: Value =
-        serde_json::from_str(&spawn_background("sleep 300", None, &test_progress()).await.unwrap()).unwrap();
+    let spawned: Value = serde_json::from_str(
+        &spawn_background("sleep 300", None, &test_progress())
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let job_id = spawned["job_id"].as_str().unwrap().to_string();
     let stopped: Value =
         serde_json::from_str(&job_stop(json!({"job_id": job_id})).await.unwrap()).unwrap();

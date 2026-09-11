@@ -1,7 +1,7 @@
 {
   "name": "generate_image",
   "display_name": "生成图片",
-  "description": "Generate an image from a text prompt; pass reference_images as an array of image paths for image-to-image.\nUses the configured OpenAI or RightCode image API. Each reference_images entry takes the same kind of reference vision_analyze accepts; on messaging platforms a reference must be attached to the current turn, listed in the chat history as context_image_N, or a trusted avatar URL. Returns the local path of the generated image. Delivery differs by host: follow the assistant_instruction field in the tool result — on messaging platforms the image is not delivered automatically and must be sent with send_message_to_user; in local sessions the host displays it automatically.",
+  "description": "Generate an image from a text prompt; pass reference_images (array of image paths) for image-to-image. Uses the configured OpenAI image API. On messaging platforms a reference must be an image attached this turn, a context_image_N from chat history, or a trusted avatar URL. Returns the local path of the generated image. Delivery differs by host: follow the assistant_instruction field in the result. On messaging platforms images are not delivered automatically and must be sent with send_message_to_user; local sessions display them automatically.",
   "parameters": {
     "type": "object",
     "properties": {

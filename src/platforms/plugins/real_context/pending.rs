@@ -9,7 +9,9 @@
 use crate::platforms::plugins::real_context::*;
 
 impl RealContextPlugin {
-    pub(in crate::platforms::plugins::real_context) fn watermark_scope(context: &PlatformTurnContext) -> crate::state::PlatformPluginScopeKey {
+    pub(in crate::platforms::plugins::real_context) fn watermark_scope(
+        context: &PlatformTurnContext,
+    ) -> crate::state::PlatformPluginScopeKey {
         crate::state::PlatformPluginScopeKey {
             plugin_id: "real_context".to_string(),
             platform: context.conversation.platform.clone(),
@@ -22,7 +24,10 @@ impl RealContextPlugin {
     /// Highest ingress order already rendered into this conversation's replayed
     /// history. Best effort: losing it only costs one oversized turn, never
     /// correctness, because the block is additive either way.
-    pub(in crate::platforms::plugins::real_context) fn reply_watermark(&self, context: &PlatformTurnContext) -> Option<i64> {
+    pub(in crate::platforms::plugins::real_context) fn reply_watermark(
+        &self,
+        context: &PlatformTurnContext,
+    ) -> Option<i64> {
         context
             .state_store
             .plugin_get_json::<i64>(&Self::watermark_scope(context), REPLY_WATERMARK_KEY)
@@ -30,7 +35,11 @@ impl RealContextPlugin {
             .flatten()
     }
 
-    pub(in crate::platforms::plugins::real_context) fn store_reply_watermark(&self, context: &PlatformTurnContext, high: i64) {
+    pub(in crate::platforms::plugins::real_context) fn store_reply_watermark(
+        &self,
+        context: &PlatformTurnContext,
+        high: i64,
+    ) {
         if let Err(error) = context.state_store.plugin_put_json(
             &Self::watermark_scope(context),
             REPLY_WATERMARK_KEY,
@@ -185,7 +194,12 @@ impl RealContextPlugin {
         }
     }
 
-    pub(in crate::platforms::plugins::real_context) fn drop_pending(&self, session_key: &str, sender_id: &str, generation: u64) -> bool {
+    pub(in crate::platforms::plugins::real_context) fn drop_pending(
+        &self,
+        session_key: &str,
+        sender_id: &str,
+        generation: u64,
+    ) -> bool {
         let mut runtime = self.runtime.lock().unwrap();
         let Some(session) = runtime.sessions.get_mut(session_key) else {
             return false;
@@ -224,7 +238,12 @@ impl RealContextPlugin {
         }
     }
 
-    pub(in crate::platforms::plugins::real_context) fn is_current_pending(&self, session_key: &str, sender_id: &str, generation: u64) -> bool {
+    pub(in crate::platforms::plugins::real_context) fn is_current_pending(
+        &self,
+        session_key: &str,
+        sender_id: &str,
+        generation: u64,
+    ) -> bool {
         self.runtime
             .lock()
             .unwrap()
@@ -234,7 +253,11 @@ impl RealContextPlugin {
             .is_some_and(|pending| pending.generation == generation)
     }
 
-    pub(in crate::platforms::plugins::real_context) async fn clear_cancelled_pending(&self, context: &PlatformTurnContext, sender_id: &str) {
+    pub(in crate::platforms::plugins::real_context) async fn clear_cancelled_pending(
+        &self,
+        context: &PlatformTurnContext,
+        sender_id: &str,
+    ) {
         let session_key = runtime_session_key(context);
         let reactions = {
             let mut runtime = self.runtime.lock().unwrap();

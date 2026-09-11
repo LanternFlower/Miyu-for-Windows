@@ -9,69 +9,196 @@
 
 use crate::config::*;
 
-/// Subagent model tier pools. When the main agent spawns a subagent it
-/// picks a tier by task complexity (cheap/balanced/strong); requests then
-/// load-balance across that tier's pool exactly like the main text-model
-/// pool. Tiers are subagent-only — the main conversation and auxiliary
-/// work always use the user-selected main models. An unconfigured or
-/// unavailable pool falls back to the main model pool.
+/// Tiered model pools. Four capability tiers, each a load-balanced pool the
+/// same way the global text pool is. Consumers: the `task` tool (the main
+/// model picks a tier per task), the auxiliary roles under `roles`, and any
+/// platform slot that references a tier by name (see `ModelPoolRef`).
+///
+/// An unconfigured tier falls back to the global text pool — never to a
+/// neighbouring tier (user decision 2026-09-05).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct SubagentTiersConfig {
+pub struct ModelTiersConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lite: Vec<ActiveProviderModelConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cheap: Vec<ActiveProviderModelConfig>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub balanced: Vec<ActiveProviderModelConfig>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub strong: Vec<ActiveProviderModelConfig>,
+    /// Old name `balanced` stays readable; saving writes `standard`.
+    #[serde(default, alias = "balanced", skip_serializing_if = "Vec::is_empty")]
+    pub standard: Vec<ActiveProviderModelConfig>,
+    /// Old name `strong` stays readable; saving writes `flagship`.
+    #[serde(default, alias = "strong", skip_serializing_if = "Vec::is_empty")]
+    pub flagship: Vec<ActiveProviderModelConfig>,
+    /// Auxiliary request roles (see [`AuxRole`]) → tier name or `"global"`.
+    /// A missing key means the role's built-in default
+    /// ([`AuxRole::default_tier`]), so roles take effect the moment the
+    /// matching tier is configured; `"global"` pins a role to the global
+    /// text pool explicitly.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub roles: BTreeMap<String, String>,
 }
 
-impl SubagentTiersConfig {
+impl ModelTiersConfig {
     pub fn is_empty(&self) -> bool {
-        self.cheap.is_empty() && self.balanced.is_empty() && self.strong.is_empty()
+        ModelTier::ALL
+            .iter()
+            .all(|tier| self.pool(*tier).is_empty())
+            && self.roles.is_empty()
     }
 
     pub fn pool(&self, tier: ModelTier) -> &Vec<ActiveProviderModelConfig> {
         match tier {
+            ModelTier::Lite => &self.lite,
             ModelTier::Cheap => &self.cheap,
-            ModelTier::Balanced => &self.balanced,
-            ModelTier::Strong => &self.strong,
+            ModelTier::Standard => &self.standard,
+            ModelTier::Flagship => &self.flagship,
         }
     }
 
     pub fn pool_mut(&mut self, tier: ModelTier) -> &mut Vec<ActiveProviderModelConfig> {
         match tier {
+            ModelTier::Lite => &mut self.lite,
             ModelTier::Cheap => &mut self.cheap,
-            ModelTier::Balanced => &mut self.balanced,
-            ModelTier::Strong => &mut self.strong,
+            ModelTier::Standard => &mut self.standard,
+            ModelTier::Flagship => &mut self.flagship,
         }
+    }
+
+    /// The tier an auxiliary role routes through; `None` means the global
+    /// text pool. Absent key → the role's default; `"global"` → `None`.
+    /// Unknown values also resolve to `None` here — `validate_roles` rejects
+    /// them at load time so a typo never silently downgrades.
+    pub fn role_tier(&self, role: AuxRole) -> Option<ModelTier> {
+        match self.roles.get(role.key()) {
+            None => Some(role.default_tier()),
+            Some(value) => ModelTier::from_str(value),
+        }
+    }
+
+    /// Whether the role carries an explicit value (as opposed to its default).
+    pub fn role_is_explicit(&self, role: AuxRole) -> bool {
+        self.roles.contains_key(role.key())
+    }
+
+    /// Set a role to a tier (`Some`) or the global pool (`None`).
+    pub fn set_role(&mut self, role: AuxRole, tier: Option<ModelTier>) {
+        let value = tier.map_or(GLOBAL_POOL_LABEL, |tier| tier.label());
+        self.roles.insert(role.key().to_string(), value.to_string());
+    }
+
+    /// Drop the explicit value so the role returns to its default.
+    pub fn reset_role(&mut self, role: AuxRole) {
+        self.roles.remove(role.key());
+    }
+
+    /// Rejects unknown role keys and unknown tier names. The error names the
+    /// accepted values so a config typo is fixable without reading source.
+    pub(crate) fn validate_roles(&self) -> Result<()> {
+        for (role, tier) in &self.roles {
+            if AuxRole::from_key(role).is_none() {
+                bail!(
+                    "model_tiers.roles: unknown role '{role}'; accepted roles: {}",
+                    AuxRole::ALL
+                        .iter()
+                        .map(|role| role.key())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+            if ModelTier::from_str(tier).is_none() && tier.trim() != GLOBAL_POOL_LABEL {
+                bail!(
+                    "model_tiers.roles.{role}: unknown tier '{tier}'; accepted: lite, cheap, standard, flagship, global"
+                );
+            }
+        }
+        Ok(())
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelTier {
+    Lite,
     Cheap,
-    Balanced,
-    Strong,
+    Standard,
+    Flagship,
 }
 
 impl ModelTier {
-    pub const ALL: [Self; 3] = [Self::Cheap, Self::Balanced, Self::Strong];
+    pub const ALL: [Self; 4] = [Self::Lite, Self::Cheap, Self::Standard, Self::Flagship];
 
+    /// Accepts the current names plus the pre-09-05 `balanced` / `strong`.
     pub fn from_str(value: &str) -> Option<Self> {
         match value.trim() {
+            "lite" => Some(Self::Lite),
             "cheap" => Some(Self::Cheap),
-            "balanced" => Some(Self::Balanced),
-            "strong" => Some(Self::Strong),
+            "standard" | "balanced" => Some(Self::Standard),
+            "flagship" | "strong" => Some(Self::Flagship),
             _ => None,
         }
     }
 
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Lite => "lite",
             Self::Cheap => "cheap",
-            Self::Balanced => "balanced",
-            Self::Strong => "strong",
+            Self::Standard => "standard",
+            Self::Flagship => "flagship",
         }
+    }
+}
+
+/// Explicit "use the global text pool" value for `model_tiers.roles` and for
+/// platform pool references.
+pub const GLOBAL_POOL_LABEL: &str = "global";
+/// "Inherit from the parent slot" value for platform pool references.
+pub const INHERIT_POOL_LABEL: &str = "inherit";
+
+/// Auxiliary LLM requests routed through a tier via `model_tiers.roles`.
+/// Each is an independent cache/session state (AGENTS 1.7), so moving it off
+/// the global pool never touches the main conversation's prefix cache.
+/// Compaction is deliberately absent: its fork-style summary reuses the live
+/// conversation prefix and must stay on the model that owns that cache.
+/// Platform-side requests (QQ judge, affection, group-join approval) are not
+/// roles either — they are platform slots resolved through `ModelPoolRef`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuxRole {
+    /// WebUI session title refinement from the first user message.
+    SessionTitle,
+    /// Background diary → long-term memory distillation (memory organizer).
+    MemoryOrganizer,
+    /// The `deep_research` tool's researcher/reviewer loop.
+    DeepResearch,
+}
+
+impl AuxRole {
+    pub const ALL: [Self; 3] = [
+        Self::SessionTitle,
+        Self::MemoryOrganizer,
+        Self::DeepResearch,
+    ];
+
+    /// Config key under `model_tiers.roles`.
+    pub fn key(&self) -> &'static str {
+        match self {
+            Self::SessionTitle => "session_title",
+            Self::MemoryOrganizer => "memory_organizer",
+            Self::DeepResearch => "deep_research",
+        }
+    }
+
+    /// Built-in tier when the role has no explicit value. With no tiers
+    /// configured every default still resolves to the global pool, so a
+    /// fresh install behaves exactly as before.
+    pub fn default_tier(&self) -> ModelTier {
+        match self {
+            Self::SessionTitle | Self::MemoryOrganizer => ModelTier::Lite,
+            Self::DeepResearch => ModelTier::Standard,
+        }
+    }
+
+    pub fn from_key(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|role| role.key() == value.trim())
     }
 }
 
@@ -83,6 +210,51 @@ pub struct ActiveProviderModelConfig {
 
 /// Claude Code 特殊供应商的内部协议标识(不暴露成用户概念)。
 pub const CLAUDE_CODE_PROTOCOL: &str = "claude-code";
+/// Antigravity(agy CLI)特殊供应商的内部协议标识(不暴露成用户概念)。
+pub const ANTIGRAVITY_PROTOCOL: &str = "antigravity";
+/// Codex(OpenAI codex CLI)特殊供应商的内部协议标识。
+pub const CODEX_PROTOCOL: &str = "codex";
+
+/// CLI 中转线的工具作用域(off/dev/normal/all)在本模式下是否放行。
+/// 中转层与 agent 侧共用这一份判定,免得两边各写一套 match。
+pub fn relay_scope_allows(scope: &str, dev_mode: bool) -> bool {
+    match scope.trim().to_ascii_lowercase().as_str() {
+        "all" => true,
+        "dev" => dev_mode,
+        "normal" => !dev_mode,
+        _ => false,
+    }
+}
+/// Claude Code 预置模型:CLI 认的别名。
+pub const CLAUDE_CODE_PRESET_MODELS: &[&str] = &["fable", "opus", "sonnet", "haiku"];
+/// Codex 预置模型:`codex debug models` 的目录(09-03,codex 0.147)。
+pub const CODEX_PRESET_MODELS: &[&str] = &[
+    "gpt-5.6-terra",
+    "gpt-5.6-sol",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.2",
+];
+/// Antigravity 预置模型:`agy models` 的输出(09-03);本机 CLI 没有 /models
+/// 端点,列表就是这份别名。gemini 的思考档位编码在模型名后缀里。
+pub const ANTIGRAVITY_PRESET_MODELS: &[&str] = &[
+    "gemini-3.8-flash-high",
+    "gemini-3.8-flash-medium",
+    "gemini-3.8-flash-low",
+    "gemini-3.7-flash-high",
+    "gemini-3.7-flash-medium",
+    "gemini-3.7-flash-low",
+    "gemini-3.6-flash-high",
+    "gemini-3.6-flash-medium",
+    "gemini-3.6-flash-low",
+    "gemini-3.1-pro-high",
+    "gemini-3.1-pro-low",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking",
+    "gpt-oss-120b-medium",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
@@ -102,14 +274,33 @@ pub struct ProviderConfig {
     pub api_key: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<String>,
+    /// 用户手填的模型名。供应商的 `/models` 目录是动态拉取的,内测模型不在
+    /// 里面,手填的名字得有个自己的落脚点:只记在 `models` 里的话,一取消
+    /// 激活它就从配置里没了,模型菜单(列表其余部分全来自拉取结果)里也就
+    /// 跟着消失。有了这份清单,自定义模型跟拉取来的模型一样能激活能取消,
+    /// 删掉要显式删。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_models: Vec<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub model_context_window: HashMap<String, usize>,
     /// 按模型温度覆盖;缺项回退 `temperature`(供应商默认)。验收:模型
     /// 菜单里的温度曾误写供应商全局,牵连所有模型。
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub model_temperature: HashMap<String, f32>,
+    /// 按模型工具加载模式覆盖("full"/"stub");缺项回退全局
+    /// `tools.loading_mode`。约束解码型模型(如 bigmodel glm-5.3-flash)把
+    /// 参数生成硬限制在声明 schema 内,吃不下空壳 stub,给它们单独配 full。
+    /// 池级解析取最保守,见 `tools::effective_tools_loading_mode`(09-01)。
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub model_tools_loading_mode: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub model_modalities: HashMap<String, Vec<String>>,
+    /// 工具结果(role=tool)能否直接带图片/视频块。留空按协议推断:
+    /// openai-chat 端点默认能(智谱 09-03 实测),OpenAI 官方端点与本机 CLI
+    /// 中转不能(前者 400,后者只传文本),anthropic 协议的下沉层暂未接图。
+    /// 不能的走"工具结果之后再补一条带图的用户消息"。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result_media: Option<bool>,
     /// 手动模型价格,键为模型名;设了就覆盖 models.dev 目录价。
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub model_costs: HashMap<String, ModelCostConfig>,
@@ -213,29 +404,59 @@ pub fn resolve_provider_model_argument<'a>(
     }
 }
 
+/// Which backend produces vectors. `Auto` (the default, and what every config
+/// written before 2026-09 reads as) keeps a configured remote model and falls
+/// back to the bundled local model otherwise, so upgrading never silently
+/// swaps a user's remote bge-m3 for the local small model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum EmbeddingBackend {
+    #[default]
+    Auto,
+    Local,
+    Remote,
+}
+
 /// Which model turns text into vectors, and the settings that belong to that
 /// model rather than to any one feature — a similarity floor means different
-/// things on different models. Deliberately has no on/off switch: configuring a
-/// model only makes it available, and each feature decides whether to use it.
+/// things on different models. Semantic retrieval is an assist on top of
+/// keyword search everywhere it is used: `enabled: false`, a missing runtime
+/// or a dead endpoint all degrade to keyword-only, never to an error.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EmbeddingConfig {
+    /// Master switch for the semantic assist across knowledge base, memory
+    /// association, memes and evicted-context search.
+    pub enabled: bool,
+    pub backend: EmbeddingBackend,
+    /// Local model id (a directory under the model search chain) or a path to
+    /// a model directory. Only used by the local backend.
+    pub local_model: String,
     /// Id of an existing provider; the model is named separately, so a provider
     /// serving both chat and embedding models is still configured once.
+    /// Only used by the remote backend.
     pub provider_id: String,
     pub model: String,
     pub timeout_seconds: u64,
-    /// Cosine similarity below this is not a hit.
+    /// Cosine similarity below this is not a hit (remote backend; local models
+    /// carry their own floor in `manifest.json`).
     pub min_score: f32,
+    /// The local inference worker exits after this much idle time so an idle
+    /// daemon holds no model in memory.
+    pub idle_unload_seconds: u64,
 }
 
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
+            backend: EmbeddingBackend::Auto,
+            local_model: DEFAULT_LOCAL_EMBEDDING_MODEL.to_string(),
             provider_id: String::new(),
             model: String::new(),
             timeout_seconds: 60,
             min_score: 0.35,
+            idle_unload_seconds: 600,
         }
     }
 }
@@ -243,15 +464,39 @@ impl Default for EmbeddingConfig {
 /// Marks a model as producing vectors rather than chat.
 pub const EMBEDDING_MODALITY: &str = "embedding";
 
+/// The model shipped under `assets/models/`.
+pub const DEFAULT_LOCAL_EMBEDDING_MODEL: &str = "bge-small-zh-v1.5-int8";
+
 impl EmbeddingConfig {
     pub(crate) fn is_default(&self) -> bool {
         *self == Self::default()
     }
 
-    /// A model is configured; whether any feature uses it is that feature's
-    /// business.
-    pub fn is_configured(&self) -> bool {
+    /// A remote provider/model pair is named. Says nothing about reachability.
+    pub fn remote_is_configured(&self) -> bool {
         !self.provider_id.trim().is_empty() && !self.model.trim().is_empty()
+    }
+
+    /// `Auto` resolved: remote when a remote model is named, local otherwise.
+    pub fn resolved_backend(&self) -> EmbeddingBackend {
+        match self.backend {
+            EmbeddingBackend::Auto if self.remote_is_configured() => EmbeddingBackend::Remote,
+            EmbeddingBackend::Auto => EmbeddingBackend::Local,
+            explicit => explicit,
+        }
+    }
+
+    /// Something is configured for the semantic pass. Whether it actually
+    /// works (runtime library present, endpoint reachable) is only known at
+    /// call time; `Embedder::from_config` is the runtime-side check.
+    pub fn is_configured(&self) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        match self.resolved_backend() {
+            EmbeddingBackend::Remote => self.remote_is_configured(),
+            _ => !self.local_model.trim().is_empty(),
+        }
     }
 }
 
@@ -274,9 +519,12 @@ impl ProviderConfig {
             protocol: default_provider_protocol(),
             api_key: None,
             models: vec![OPENCODE_DEFAULT_CHAT_MODEL.to_string()],
+            custom_models: Vec::new(),
             model_context_window: HashMap::new(),
             model_temperature: HashMap::new(),
+            model_tools_loading_mode: HashMap::new(),
             model_modalities: HashMap::new(),
+            tool_result_media: None,
             model_costs: HashMap::new(),
             default_model: OPENCODE_DEFAULT_CHAT_MODEL.to_string(),
             timeout_seconds: default_timeout(),
@@ -295,9 +543,12 @@ impl ProviderConfig {
             protocol: "anthropic".to_string(),
             api_key: Some("$env:ANTHROPIC_API_KEY".to_string()),
             models: Vec::new(),
+            custom_models: Vec::new(),
             model_context_window: HashMap::new(),
             model_temperature: HashMap::new(),
+            model_tools_loading_mode: HashMap::new(),
             model_modalities: HashMap::new(),
+            tool_result_media: None,
             model_costs: HashMap::new(),
             default_model: String::new(),
             timeout_seconds: default_timeout(),
@@ -314,9 +565,9 @@ impl ProviderConfig {
         Self {
             enabled: false,
             protocol: CLAUDE_CODE_PROTOCOL.to_string(),
-            models: ["fable", "opus", "sonnet", "haiku"]
-                .into_iter()
-                .map(str::to_string)
+            models: CLAUDE_CODE_PRESET_MODELS
+                .iter()
+                .map(|name| name.to_string())
                 .collect(),
             default_model: "sonnet".to_string(),
             ..Self::template("claude-code", "Claude Code", "")
@@ -329,6 +580,90 @@ impl ProviderConfig {
         let protocol = self.protocol.trim();
         protocol.eq_ignore_ascii_case(CLAUDE_CODE_PROTOCOL)
             || protocol.eq_ignore_ascii_case("claude-code-cli")
+    }
+
+    /// 内置的 Antigravity 特殊供应商:本机 `agy` CLI 的 Google 登录态中转。
+    /// 形态与 Claude Code 完全同构(恒存在、默认禁用、无 HTTP 字段)。
+    pub fn antigravity_template() -> Self {
+        Self {
+            enabled: false,
+            protocol: ANTIGRAVITY_PROTOCOL.to_string(),
+            models: ANTIGRAVITY_PRESET_MODELS
+                .iter()
+                .map(|model| model.to_string())
+                .collect(),
+            default_model: "gemini-3.8-flash-high".to_string(),
+            ..Self::template("antigravity", "Antigravity", "")
+        }
+    }
+
+    /// 内置的 Codex 特殊供应商:本机 `codex` CLI 的 ChatGPT 登录态中转。
+    pub fn codex_template() -> Self {
+        Self {
+            enabled: false,
+            protocol: CODEX_PROTOCOL.to_string(),
+            models: CODEX_PRESET_MODELS
+                .iter()
+                .map(|model| model.to_string())
+                .collect(),
+            default_model: "gpt-5.6-terra".to_string(),
+            ..Self::template("codex", "Codex", "")
+        }
+    }
+
+    /// 该条目是否 Codex 特殊供应商(按协议判定)。
+    pub fn is_codex(&self) -> bool {
+        let protocol = self.protocol.trim();
+        protocol.eq_ignore_ascii_case(CODEX_PROTOCOL) || protocol.eq_ignore_ascii_case("codex-cli")
+    }
+
+    /// 该条目是否 Antigravity 特殊供应商(按协议判定)。
+    pub fn is_antigravity(&self) -> bool {
+        let protocol = self.protocol.trim();
+        protocol.eq_ignore_ascii_case(ANTIGRAVITY_PROTOCOL)
+            || protocol.eq_ignore_ascii_case("antigravity-cli")
+            || protocol.eq_ignore_ascii_case("agy")
+    }
+
+    /// 内置的本机 CLI 中转供应商(Claude Code / Antigravity):没有 URL、
+    /// API key 概念,列表里恒存在且不可删除。
+    pub fn is_builtin_cli_provider(&self) -> bool {
+        self.is_claude_code() || self.is_antigravity() || self.is_codex()
+    }
+
+    /// 见 `tool_result_media` 字段。
+    pub fn tool_result_carries_media(&self) -> bool {
+        if let Some(explicit) = self.tool_result_media {
+            return explicit;
+        }
+        if self.is_builtin_cli_provider() || self.protocol.trim() == "anthropic" {
+            return false;
+        }
+        let host = self
+            .base_url
+            .trim()
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        host != "api.openai.com"
+    }
+
+    /// 内置 CLI 供应商的模型目录(没有 /models 端点,目录就是预置别名表)。
+    /// 配置里的 `models` 是"已激活"集合,不是目录——两者混为一谈时,用户
+    /// 只激活了一个模型,TUI 就只剩这一个可选(09-03 报"没有模型了")。
+    pub fn preset_model_catalog(&self) -> &'static [&'static str] {
+        if self.is_claude_code() {
+            CLAUDE_CODE_PRESET_MODELS
+        } else if self.is_antigravity() {
+            ANTIGRAVITY_PRESET_MODELS
+        } else if self.is_codex() {
+            CODEX_PRESET_MODELS
+        } else {
+            &[]
+        }
     }
 
     pub fn default_templates() -> Vec<Self> {
@@ -353,8 +688,10 @@ impl ProviderConfig {
             Self::template("ollama", "Ollama", "http://localhost:11434/v1"),
             Self::template("lmstudio", "LMStudio", "http://localhost:1234/v1"),
         ]);
-        // Claude Code 置顶:用户拍板的列表次序。
+        // Claude Code 置顶:用户拍板的列表次序;Antigravity 紧随其后。
         providers.insert(0, Self::claude_code_template());
+        providers.insert(1, Self::antigravity_template());
+        providers.insert(2, Self::codex_template());
         providers
     }
 
@@ -367,9 +704,12 @@ impl ProviderConfig {
             protocol: default_provider_protocol(),
             api_key: None,
             models: Vec::new(),
+            custom_models: Vec::new(),
             model_context_window: HashMap::new(),
             model_temperature: HashMap::new(),
+            model_tools_loading_mode: HashMap::new(),
             model_modalities: HashMap::new(),
+            tool_result_media: None,
             model_costs: HashMap::new(),
             default_model: String::new(),
             timeout_seconds: default_timeout(),
@@ -388,9 +728,12 @@ impl ProviderConfig {
             protocol: default_provider_protocol(),
             api_key: None,
             models: Vec::new(),
+            custom_models: Vec::new(),
             model_context_window: HashMap::new(),
             model_temperature: HashMap::new(),
+            model_tools_loading_mode: HashMap::new(),
             model_modalities: HashMap::new(),
+            tool_result_media: None,
             model_costs: HashMap::new(),
             default_model: String::new(),
             timeout_seconds: default_timeout(),
@@ -405,11 +748,38 @@ impl ProviderConfig {
             .map(|modalities| modalities.iter().any(|m| m == "image"))
     }
 
+    /// 模型**具备**的输入能力(配置声明优先,否则查 models.dev 目录)。
+    ///
+    /// 这是"能不能看"的答案,决定它能不能进多模态池、能不能被标成看图模型。
+    /// "能不能把媒体塞进消息"是另一个问题,见 [`Self::message_input_modalities`]:
+    /// 09-04 两者曾被合成一个(antigravity 直接硬编码成 text),结果用户在设置页
+    /// 给 gemini 勾了视频、多模态池里却永远找不到它。
     pub fn input_modalities(&self, model: &str) -> Option<Vec<String>> {
         if let Some(modalities) = self.model_modalities.get(model) {
             return Some(modalities.clone());
         }
         crate::models_cache::input_modalities(&self.id, model)
+    }
+
+    /// 模型能直接吃进**消息**里的输入种类。
+    ///
+    /// agy 中转线恒为纯文本:它的 stream-json 只收 text 块(09-04 实测,image/
+    /// media 块一律 `not supported (only "text")`),模型看媒体只能自己调原生
+    /// `view_file`。目录里 Gemini 标着 image 输入,照抄就会让 Miyu 把图内联进
+    /// 消息——中转层再降级成占位文本,图没到模型,活体消息与化石还因此字节
+    /// 不同,续传链逢图必断(09-04 群 130515298 实证)。内联、视觉旁路选客户端
+    /// 都要问这个;池成员资格问 [`Self::input_modalities`]。
+    pub fn message_input_modalities(&self, model: &str) -> Option<Vec<String>> {
+        if self.views_media_with_native_file_tool() {
+            return Some(vec!["text".to_string()]);
+        }
+        self.input_modalities(model)
+    }
+
+    /// 本线上模型看媒体靠自己调原生文件工具(`view_file` 对图片/视频/音频/PDF
+    /// 都返回媒体本体,09-04 实测),而不是消息内联或视觉旁路。
+    pub fn views_media_with_native_file_tool(&self) -> bool {
+        self.is_antigravity()
     }
 
     pub fn resolved_api_keys(&self, _paths: &MiyuPaths) -> Result<Vec<ResolvedProviderKey>> {
@@ -455,7 +825,10 @@ impl ProviderConfig {
     }
 }
 
-pub(crate) fn append_resolved_api_keys(out: &mut Vec<ResolvedProviderKey>, raw: &str) -> Result<()> {
+pub(crate) fn append_resolved_api_keys(
+    out: &mut Vec<ResolvedProviderKey>,
+    raw: &str,
+) -> Result<()> {
     for item in split_api_keys(raw) {
         let value = if let Some(env_name) = item.strip_prefix("$env:") {
             std::env::var(env_name)
@@ -482,7 +855,10 @@ pub(crate) fn split_api_keys(raw: &str) -> Vec<&str> {
         .collect()
 }
 
-pub(crate) fn active_model_exists(providers: &[ProviderConfig], active: &ActiveProviderModelConfig) -> bool {
+pub(crate) fn active_model_exists(
+    providers: &[ProviderConfig],
+    active: &ActiveProviderModelConfig,
+) -> bool {
     providers
         .iter()
         .find(|provider| provider.id == active.provider_id.trim())

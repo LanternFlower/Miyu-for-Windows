@@ -1,7 +1,7 @@
 //! 平台配置与模型路由。
 
-use crate::config::*;
 use super::shared::*;
+use crate::config::*;
 
 #[test]
 fn platforms_config_roundtrip_and_default_omission() {
@@ -185,18 +185,21 @@ fn platform_command_defaults_overrides_and_validation() {
 fn qq_platform_model_pools_validate_and_round_trip() {
     let mut config = route_test_config();
     let provider_id = config.providers[0].id.clone();
-    config.platforms.qq.text_models = Some(vec![ActiveProviderModelConfig {
-        provider_id: provider_id.clone(),
-        model: "text-only".to_string(),
-    }]);
-    config.platforms.qq.non_whitelist_text_models = Some(vec![ActiveProviderModelConfig {
-        provider_id: provider_id.clone(),
-        model: "text-only".to_string(),
-    }]);
-    config.platforms.qq.multimodal_models = Some(vec![ActiveProviderModelConfig {
-        provider_id,
-        model: "vision".to_string(),
-    }]);
+    config.platforms.qq.text_models =
+        crate::config::ModelPoolRef::models(vec![ActiveProviderModelConfig {
+            provider_id: provider_id.clone(),
+            model: "text-only".to_string(),
+        }]);
+    config.platforms.qq.non_whitelist_text_models =
+        crate::config::ModelPoolRef::models(vec![ActiveProviderModelConfig {
+            provider_id: provider_id.clone(),
+            model: "text-only".to_string(),
+        }]);
+    config.platforms.qq.multimodal_models =
+        crate::config::ModelPoolRef::models(vec![ActiveProviderModelConfig {
+            provider_id,
+            model: "vision".to_string(),
+        }]);
 
     assert!(config.validate().is_ok());
     let value = serde_json::to_value(&config).unwrap();
@@ -214,14 +217,26 @@ fn qq_platform_model_pools_validate_and_round_trip() {
         config.platforms.qq.non_whitelist_text_models
     );
 
-    config.platforms.qq.multimodal_models.as_mut().unwrap()[0].model = "text-only".to_string();
+    config
+        .platforms
+        .qq
+        .multimodal_models
+        .explicit_models_mut()
+        .unwrap()[0]
+        .model = "text-only".to_string();
     assert!(config.validate().is_err());
-    config.platforms.qq.multimodal_models.as_mut().unwrap()[0].model = "vision".to_string();
+    config
+        .platforms
+        .qq
+        .multimodal_models
+        .explicit_models_mut()
+        .unwrap()[0]
+        .model = "vision".to_string();
     config
         .platforms
         .qq
         .non_whitelist_text_models
-        .as_mut()
+        .explicit_models_mut()
         .unwrap()[0]
         .model = "missing".to_string();
     assert!(config.validate().is_err());
@@ -231,7 +246,7 @@ fn qq_platform_model_pools_validate_and_round_trip() {
 fn qq_non_whitelist_model_pool_normalizes_for_dynamic_inheritance() {
     let mut config = route_test_config();
     let provider_id = config.providers[0].id.clone();
-    config.platforms.qq.non_whitelist_text_models = Some(vec![
+    config.platforms.qq.non_whitelist_text_models = crate::config::ModelPoolRef::models(vec![
         ActiveProviderModelConfig {
             provider_id: format!(" {provider_id} "),
             model: " text-only ".to_string(),
@@ -248,22 +263,33 @@ fn qq_non_whitelist_model_pool_normalizes_for_dynamic_inheritance() {
             .platforms
             .qq
             .non_whitelist_text_models
-            .as_ref()
+            .explicit_models()
             .unwrap()
             .len(),
         1
     );
 
-    config.platforms.qq.non_whitelist_text_models = Some(Vec::new());
+    config.platforms.qq.non_whitelist_text_models = crate::config::ModelPoolRef::models(Vec::new());
     config.normalize_platform_model_routes();
-    assert!(config.platforms.qq.non_whitelist_text_models.is_none());
+    assert!(config.platforms.qq.non_whitelist_text_models.is_inherit());
 }
 
 #[test]
-fn qq_session_limits_resolve_from_conversation_then_kind_then_platform() {
+fn session_limits_resolve_from_conversation_then_kind_then_qq() {
     let mut qq = OneBotConfig::default();
     assert_eq!(qq.session_limits.running, 8);
     assert_eq!(qq.session_limits.queued, 16);
+    // 会话内并行默认关闭:无论配了几个并行位,解析出来都是串行。
+    assert!(!qq.session_parallel);
+    assert_eq!(
+        qq.session_limits(PlatformConversationKind::Group, "42"),
+        PlatformSessionLimits {
+            running: 1,
+            queued: 16
+        }
+    );
+
+    qq.session_parallel = true;
     qq.session_limits = PlatformSessionLimits {
         running: 2,
         queued: 3,
@@ -287,6 +313,7 @@ fn qq_session_limits_resolve_from_conversation_then_kind_then_platform() {
             running: 4,
             queued: 7,
         }),
+        probability_reply: None,
     });
     assert_eq!(
         qq.session_limits(PlatformConversationKind::Group, "42"),
@@ -309,6 +336,15 @@ fn qq_session_limits_resolve_from_conversation_then_kind_then_platform() {
             queued: 3
         }
     );
+    // 串行模式压掉的只是并行数,覆盖项的队列深度照旧生效。
+    qq.session_parallel = false;
+    assert_eq!(
+        qq.session_limits(PlatformConversationKind::Group, "42"),
+        PlatformSessionLimits {
+            running: 1,
+            queued: 7
+        }
+    );
 }
 
 #[test]
@@ -323,9 +359,11 @@ fn qq_text_model_pool_resolution_preserves_conversation_priority() {
     };
     config.active_provider_models = Some(pool("global"));
     config.active_multimodal_provider_models = Some(pool("global-media"));
-    config.platforms.qq.text_models = Some(pool("platform"));
-    config.platforms.qq.multimodal_models = Some(pool("platform-media"));
-    config.platforms.qq.non_whitelist_text_models = Some(pool("non-whitelist"));
+    config.platforms.qq.text_models = crate::config::ModelPoolRef::models(pool("platform"));
+    config.platforms.qq.multimodal_models =
+        crate::config::ModelPoolRef::models(pool("platform-media"));
+    config.platforms.qq.non_whitelist_text_models =
+        crate::config::ModelPoolRef::models(pool("non-whitelist"));
     config.platforms.qq.conversations.push(PlatformModelRoute {
         conversation: PlatformConversationConfig {
             kind: PlatformConversationKind::Group,
@@ -338,6 +376,7 @@ fn qq_text_model_pool_resolution_preserves_conversation_priority() {
         multimodal_models: None,
         extra_prompt: String::new(),
         session_limits: None,
+        probability_reply: None,
     });
 
     {
@@ -350,7 +389,7 @@ fn qq_text_model_pool_resolution_preserves_conversation_priority() {
                 )
                 .unwrap()[0]
                 .model
-                .as_str()
+                .clone()
         };
         assert_eq!(resolved("20002", true), "conversation");
         assert_eq!(resolved("30003", true), "non-whitelist");
@@ -389,7 +428,7 @@ fn qq_text_model_pool_resolution_preserves_conversation_priority() {
             .model,
         "global-media"
     );
-    config.platforms.qq.non_whitelist_text_models = None;
+    config.platforms.qq.non_whitelist_text_models = crate::config::ModelPoolRef::inherit();
     assert_eq!(
         config
             .qq_text_model_pool(PlatformConversationKind::Group, "30003", true)
@@ -397,7 +436,7 @@ fn qq_text_model_pool_resolution_preserves_conversation_priority() {
             .model,
         "platform"
     );
-    config.platforms.qq.text_models = None;
+    config.platforms.qq.text_models = crate::config::ModelPoolRef::inherit();
     assert_eq!(
         config
             .qq_text_model_pool(PlatformConversationKind::Group, "30003", true)
@@ -591,7 +630,9 @@ fn qq_group_join_approval_defaults_are_safe() {
 
     assert_eq!(settings.timeout_seconds, 60);
     assert_eq!(settings.max_retries, 1);
-    assert!(settings.text_models.is_none());
+    // Ships on the lite tier: approvals leave the flagship pool as soon as a
+    // lite pool exists, and resolve to the global pool until then.
+    assert_eq!(settings.text_models.tier_ref(), Some(ModelTier::Lite));
     assert!(settings.groups.is_empty());
     assert!(settings.validate().is_ok());
 }
@@ -763,18 +804,19 @@ fn qq_group_join_approval_normalizes_groups_and_merges_defaults() {
 fn qq_default_non_whitelist_rate_limits_match_the_deployed_contract() {
     let qq = OneBotConfig::default();
 
+    // 08-26 起默认 300 秒 5 条(私聊/群聊同口径)。
     assert_eq!(
         qq.private_chats.non_whitelist_rate_limit,
         PlatformRateLimit {
-            max_messages: 2,
-            window_seconds: 600,
+            max_messages: 5,
+            window_seconds: 300,
         }
     );
     assert_eq!(
         qq.group_chats.non_whitelist_rate_limit,
         PlatformRateLimit {
-            max_messages: 2,
-            window_seconds: 600,
+            max_messages: 5,
+            window_seconds: 300,
         }
     );
 
@@ -883,10 +925,11 @@ fn platform_model_route_validation_rejects_bad_identity_models_and_duplicates() 
 fn platform_model_references_are_renamed_and_pruned() {
     let mut config = route_test_config();
     let old_provider = config.providers[0].id.clone();
-    config.platforms.qq.non_whitelist_text_models = Some(vec![ActiveProviderModelConfig {
-        provider_id: old_provider.clone(),
-        model: "text-only".to_string(),
-    }]);
+    config.platforms.qq.non_whitelist_text_models =
+        crate::config::ModelPoolRef::models(vec![ActiveProviderModelConfig {
+            provider_id: old_provider.clone(),
+            model: "text-only".to_string(),
+        }]);
     config.platforms.qq.conversations.push(test_route(&config));
 
     config.rename_platform_provider_references(&old_provider, "renamed");
@@ -895,7 +938,7 @@ fn platform_model_references_are_renamed_and_pruned() {
             .platforms
             .qq
             .non_whitelist_text_models
-            .as_ref()
+            .explicit_models()
             .unwrap()[0]
             .provider_id,
         "renamed"
@@ -918,5 +961,256 @@ fn platform_model_references_are_renamed_and_pruned() {
     config.remove_active_model_references(&old_provider, "text-only");
     assert_eq!(config.platforms.qq.conversations.len(), 1);
     assert!(config.platforms.qq.conversations[0].text_models.is_none());
-    assert!(config.platforms.qq.non_whitelist_text_models.is_none());
+    assert!(config.platforms.qq.non_whitelist_text_models.is_inherit());
+}
+
+fn tiered_qq_config() -> (AppConfig, String) {
+    let mut config = AppConfig::default();
+    let provider_id = config.active_provider.clone();
+    let provider = config
+        .providers
+        .iter_mut()
+        .find(|provider| provider.id == provider_id)
+        .unwrap();
+    for model in ["global-a", "lite-a", "cheap-a", "pinned"] {
+        provider.models.push(model.to_string());
+    }
+    config.active_provider_models = Some(vec![ActiveProviderModelConfig {
+        provider_id: provider_id.clone(),
+        model: "global-a".to_string(),
+    }]);
+    config
+        .toggle_tier_model(ModelTier::Lite, &provider_id, "lite-a")
+        .unwrap();
+    (config, provider_id)
+}
+
+fn models_of(pool: Option<Vec<ActiveProviderModelConfig>>) -> Vec<String> {
+    pool.unwrap_or_default()
+        .into_iter()
+        .map(|entry| entry.model)
+        .collect()
+}
+
+#[test]
+fn pool_refs_parse_strings_arrays_and_null_and_omit_inherit() {
+    let parsed: AppConfig = serde_json::from_str(
+        r#"{
+            "active_provider": "opencode",
+            "providers": [],
+            "platforms": { "qq": {
+                "text_models": "cheap",
+                "multimodal_models": null,
+                "non_whitelist_text_models": [ { "provider_id": "p", "model": "m" } ]
+            } }
+        }"#,
+    )
+    .unwrap();
+    let qq = &parsed.platforms.qq;
+    assert_eq!(qq.text_models.tier_ref(), Some(ModelTier::Cheap));
+    assert!(qq.multimodal_models.is_inherit());
+    assert_eq!(
+        qq.non_whitelist_text_models.explicit_models().unwrap()[0].model,
+        "m"
+    );
+    let json = serde_json::to_string(&parsed).unwrap();
+    assert!(json.contains("\"text_models\":\"cheap\""), "{json}");
+    assert!(!json.contains("multimodal_models"), "{json}");
+
+    // Old alias in a reference canonicalizes on normalize.
+    let mut old = ModelPoolRef::Named("balanced".to_string());
+    old.normalize();
+    assert_eq!(old, ModelPoolRef::tier(ModelTier::Standard));
+    // An emptied explicit list is `inherit`.
+    assert!(ModelPoolRef::models(Vec::new()).is_inherit());
+}
+
+#[test]
+fn pool_ref_validation_rejects_unknown_names_and_tiers_on_multimodal_slots() {
+    let (mut config, _) = tiered_qq_config();
+    config.platforms.qq.text_models = ModelPoolRef::Named("chep".to_string());
+    let error = config.validate().unwrap_err().to_string();
+    assert!(error.contains("unknown pool 'chep'"), "{error}");
+
+    config.platforms.qq.text_models = ModelPoolRef::inherit();
+    config.platforms.qq.multimodal_models = ModelPoolRef::tier(ModelTier::Lite);
+    let error = config.validate().unwrap_err().to_string();
+    assert!(error.contains("cannot reference a tier"), "{error}");
+
+    config.platforms.qq.multimodal_models = ModelPoolRef::global();
+    assert!(config.validate().is_ok());
+}
+
+#[test]
+fn pool_refs_resolve_through_inherit_global_tier_and_explicit() {
+    let (mut config, provider_id) = tiered_qq_config();
+    let global = || vec!["global-a".to_string()];
+
+    // inherit → global; a configured tier → its members.
+    assert_eq!(models_of(config.qq_default_text_pool()), global());
+    config.platforms.qq.text_models = ModelPoolRef::tier(ModelTier::Lite);
+    assert_eq!(models_of(config.qq_default_text_pool()), vec!["lite-a"]);
+    // An unconfigured tier falls back to the global pool, not a neighbour.
+    config.platforms.qq.text_models = ModelPoolRef::tier(ModelTier::Cheap);
+    assert_eq!(models_of(config.qq_default_text_pool()), global());
+    // Explicit list is used as-is.
+    config.platforms.qq.text_models = ModelPoolRef::models(vec![ActiveProviderModelConfig {
+        provider_id: provider_id.clone(),
+        model: "pinned".to_string(),
+    }]);
+    assert_eq!(models_of(config.qq_default_text_pool()), vec!["pinned"]);
+
+    // Non-whitelist: inherit → default text; global → global.
+    assert_eq!(
+        models_of(config.qq_non_whitelist_text_pool()),
+        vec!["pinned"]
+    );
+    config.platforms.qq.non_whitelist_text_models = ModelPoolRef::global();
+    assert_eq!(models_of(config.qq_non_whitelist_text_pool()), global());
+    assert_eq!(
+        models_of(config.qq_text_model_pool(PlatformConversationKind::Group, "1", true)),
+        global()
+    );
+    assert_eq!(
+        models_of(config.qq_text_model_pool(PlatformConversationKind::Group, "1", false)),
+        vec!["pinned"]
+    );
+
+    // Plugin slots: judge inherits from its parent closure; affection inherits from judge.
+    let judge = ModelPoolRef::tier(ModelTier::Lite);
+    let affection = ModelPoolRef::inherit();
+    let resolved_judge = config.resolve_pool_ref(&judge, false, || {
+        config.qq_text_model_pool(PlatformConversationKind::Group, "1", false)
+    });
+    assert_eq!(models_of(resolved_judge.clone()), vec!["lite-a"]);
+    let resolved_affection = config.resolve_pool_ref(&affection, false, || resolved_judge);
+    assert_eq!(models_of(resolved_affection), vec!["lite-a"]);
+}
+
+#[test]
+fn deleting_a_model_clears_it_from_every_explicit_slot_but_not_from_references() {
+    let (mut config, provider_id) = tiered_qq_config();
+    let pinned = || {
+        ModelPoolRef::models(vec![ActiveProviderModelConfig {
+            provider_id: provider_id.clone(),
+            model: "pinned".to_string(),
+        }])
+    };
+    config.platforms.qq.text_models = ModelPoolRef::tier(ModelTier::Lite);
+    config.platforms.qq.non_whitelist_text_models = pinned();
+    let mut real_context = PlatformPluginInstanceConfig::default();
+    merge_real_context_settings(
+        &mut real_context,
+        &RealContextPluginSettings {
+            text_models: pinned(),
+            affection_text_models: pinned(),
+            ..RealContextPluginSettings::default()
+        },
+    );
+    config
+        .platforms
+        .qq
+        .plugins
+        .insert(REAL_CONTEXT_PLUGIN_ID.to_string(), real_context);
+    assert!(config.validate().is_ok());
+
+    config
+        .remove_active_provider_model(&provider_id, "pinned")
+        .unwrap();
+
+    assert!(config.platforms.qq.non_whitelist_text_models.is_inherit());
+    let settings = RealContextPluginSettings::from_instance(
+        &config.platforms.qq.plugins[REAL_CONTEXT_PLUGIN_ID],
+    )
+    .unwrap();
+    assert!(settings.text_models.is_inherit());
+    assert!(settings.affection_text_models.is_inherit());
+    // The tier reference is untouched by deletion.
+    assert_eq!(
+        config.platforms.qq.text_models.tier_ref(),
+        Some(ModelTier::Lite)
+    );
+    assert!(config.validate().is_ok());
+}
+
+/// 会话专属配置的「概率主动回复」:未覆盖 = 允许;Some(false) 只对那一个会话
+/// 生效;序列化时缺省不落盘、覆盖值原样往返。
+#[test]
+fn probability_reply_override_is_per_conversation_and_round_trips() {
+    let mut config = AppConfig::default();
+    assert!(config
+        .platforms
+        .probability_reply_allowed(PlatformConversationKind::Group, "42"));
+    let mut route = PlatformModelRoute {
+        conversation: PlatformConversationConfig {
+            kind: PlatformConversationKind::Group,
+            id: "42".to_string(),
+        },
+        persona: PlatformPersonaOverride::Inherit,
+        text_models_inheritance: PlatformModelPoolInheritance::Platform,
+        text_models: None,
+        multimodal_models_inheritance: PlatformModelPoolInheritance::Platform,
+        multimodal_models: None,
+        extra_prompt: String::new(),
+        session_limits: None,
+        probability_reply: Some(false),
+    };
+    config.platforms.upsert_model_route(route.clone());
+    assert!(!config
+        .platforms
+        .probability_reply_allowed(PlatformConversationKind::Group, "42"));
+    assert!(config
+        .platforms
+        .probability_reply_allowed(PlatformConversationKind::Group, "43"));
+    assert!(config
+        .platforms
+        .probability_reply_allowed(PlatformConversationKind::Private, "42"));
+    let json = serde_json::to_string(&route).unwrap();
+    assert!(json.contains("\"probability_reply\":false"), "{json}");
+    let parsed: PlatformModelRoute = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.probability_reply, Some(false));
+    route.probability_reply = None;
+    let json = serde_json::to_string(&route).unwrap();
+    assert!(!json.contains("probability_reply"), "{json}");
+}
+
+/// 播报生效条件:开关 + key;`active` 缺省当 MiniMax,不再要求单独"激活"。
+#[test]
+fn tts_is_active_defaults_provider_to_minimax() {
+    let mut tts = VoiceTtsConfig::default();
+    assert!(!tts.is_active());
+    tts.enabled = true;
+    assert!(!tts.is_active(), "no key yet");
+    tts.minimax.api_key = Some("sk-test".to_string());
+    assert!(tts.is_active(), "enabled + key, active unset");
+    tts.active = Some(String::new());
+    assert!(tts.is_active(), "empty active means default");
+    tts.active = Some("minimax".to_string());
+    assert!(tts.is_active());
+    tts.active = Some("other".to_string());
+    assert!(!tts.is_active());
+}
+
+/// 切到 MiMo:看的是 MiMo 自己的 key,MiniMax 的 key 不算数;旧配置没有
+/// `mimo` 节也能读,缺省值齐全。
+#[test]
+fn tts_mimo_provider_uses_its_own_key() {
+    let mut tts = VoiceTtsConfig {
+        enabled: true,
+        active: Some("mimo".to_string()),
+        ..Default::default()
+    };
+    tts.minimax.api_key = Some("sk-minimax".to_string());
+    assert!(!tts.is_active(), "MiniMax key must not activate MiMo");
+    tts.mimo.api_key = Some("sk-mimo".to_string());
+    assert!(tts.is_active());
+    assert!(tts.provider_has_key("mimo"));
+    assert!(!tts.provider_has_key("nope"));
+
+    let parsed: VoiceTtsConfig =
+        serde_json::from_str(r#"{"enabled":true,"minimax":{"api_key":"k"}}"#).unwrap();
+    assert_eq!(parsed.mimo.base_url, "https://api.xiaomimimo.com/v1");
+    assert_eq!(parsed.mimo.model, "mimo-v2.5-tts");
+    assert_eq!(parsed.mimo.voice, "mimo_default");
+    assert!(parsed.is_active(), "legacy config keeps MiniMax as default");
 }

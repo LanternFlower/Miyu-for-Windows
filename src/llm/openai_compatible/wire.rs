@@ -138,7 +138,9 @@ pub(in crate::llm::openai_compatible) struct ResponsesReasoning {
     pub(in crate::llm::openai_compatible) summary: Option<String>,
 }
 
-pub(in crate::llm::openai_compatible) fn default_responses_reasoning(summary: &str) -> ResponsesReasoning {
+pub(in crate::llm::openai_compatible) fn default_responses_reasoning(
+    summary: &str,
+) -> ResponsesReasoning {
     ResponsesReasoning {
         effort: Some("medium".to_string()),
         summary: Some(summary.to_string()),
@@ -177,6 +179,11 @@ pub(in crate::llm::openai_compatible) enum AnthropicContentBlock {
     Text { text: String },
     #[serde(rename = "image")]
     Image { source: AnthropicImageSource },
+    /// PDF 输入。官方规格:`source` 与 image 同构(base64 / url),块要摆在
+    /// 文本块**之前**,base64 里不能有换行;整个请求 ≤32MB、≤600 页
+    /// (200k 窗口的模型 100 页)。
+    #[serde(rename = "document")]
+    Document { source: AnthropicImageSource },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -271,7 +278,9 @@ pub(in crate::llm::openai_compatible) struct ChatChoiceMessage {
     pub(in crate::llm::openai_compatible) tool_calls: Vec<ToolCallDelta>,
 }
 
-pub(in crate::llm::openai_compatible) fn null_as_default<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+pub(in crate::llm::openai_compatible) fn null_as_default<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Default + Deserialize<'de>,
@@ -364,7 +373,8 @@ pub(in crate::llm::openai_compatible) struct ResponsesUsage {
     #[serde(default)]
     pub(in crate::llm::openai_compatible) input_tokens_details: Option<ResponsesInputTokenDetails>,
     #[serde(default)]
-    pub(in crate::llm::openai_compatible) output_tokens_details: Option<ResponsesOutputTokenDetails>,
+    pub(in crate::llm::openai_compatible) output_tokens_details:
+        Option<ResponsesOutputTokenDetails>,
 }
 
 #[derive(Debug, Deserialize)]

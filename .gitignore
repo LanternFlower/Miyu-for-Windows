@@ -17,3 +17,19 @@ config.jsonc
 *.jsonc.bak
 .env
 .claude
+
+# Python 脚本跑过就会生成，不进仓库
+__pycache__/
+*.pyc
+
+# testkit/embedding 一次性产物
+testkit/embedding/home/
+testkit/embedding/out-*.txt
+testkit/embedding/kbsrc/
+
+# testkit/cli 黑盒与真宿主 demo 的一次性产物
+testkit/cli/home/
+testkit/cli/home-demo/
+testkit/cli/out/
+testkit/cli/out-demo/
+testkit/cli/xdg-run/

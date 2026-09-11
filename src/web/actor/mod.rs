@@ -39,6 +39,7 @@ pub(in crate::web) async fn actor_loop(
                 origin_tty,
                 audience,
                 profile,
+                overrides,
                 cancel,
                 turn_origin,
             } => {
@@ -83,6 +84,7 @@ pub(in crate::web) async fn actor_loop(
                         display_content,
                         attachment_run_id,
                         images,
+                        overrides,
                     },
                     mode,
                     audience,
@@ -97,7 +99,7 @@ pub(in crate::web) async fn actor_loop(
                     crate::tools::workspace::with_session(
                         session_id,
                         crate::tools::workspace::with_origin_tty(
-                            origin_tty,
+                            origin_tty.map(|origin| *origin),
                             crate::tools::workspace::with_platform_sender(
                                 platform_sender,
                                 crate::tools::workspace::with_turn_origin(*turn_origin, task),
@@ -362,8 +364,33 @@ pub(in crate::web) async fn actor_loop(
                 release_admin(&manager);
                 let _ = reply.send(result);
             }
-            ActorCommand::Compact { session_id, reply } => {
+            ActorCommand::Compact {
+                session_id,
+                events: event_sink,
+                reply,
+            } => {
+                // 事件出口是 `Option`,发送失败(客户端断开)一律吞掉:渲染
+                // 不该影响一次已经在花钱的摘要调用。kind/data 与回合路
+                // (`event_map`)逐字一致,客户端一套解析吃两条路。
+                let forward = move |event: AgentEvent| -> Result<()> {
+                    let Some(sink) = event_sink.as_ref() else {
+                        return Ok(());
+                    };
+                    let frame = match event {
+                        AgentEvent::CompactStart => Some(("context.compact_start", json!({}))),
+                        AgentEvent::CompactChunk(chunk) => (chunk.kind
+                            == crate::llm::ChatStreamKind::Content)
+                            .then(|| ("context.compact_delta", json!({ "delta": chunk.text }))),
+                        AgentEvent::CompactEnd => Some(("context.compact_end", json!({}))),
+                        _ => None,
+                    };
+                    if let Some((kind, data)) = frame {
+                        let _ = sink.send((kind.to_string(), data));
+                    }
+                    Ok(())
+                };
                 let result = async {
+                    let mut forward = forward;
                     let updates_default = &*state_store.session_id() == &*session_id;
                     let compact = if updates_default {
                         let agent = ensure_actor_agent(
@@ -374,7 +401,7 @@ pub(in crate::web) async fn actor_loop(
                             &turn_engine,
                         )?;
                         let compact = agent
-                            .compact_now(|_| Ok(()))
+                            .compact_now(&mut forward)
                             .await
                             .map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?;
                         manager.lock().unwrap().context = current_context(agent)
@@ -385,7 +412,7 @@ pub(in crate::web) async fn actor_loop(
                         let target_agent = build_actor_agent(&config, &paths, &store)
                             .map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?;
                         target_agent
-                            .compact_now(|_| Ok(()))
+                            .compact_now(&mut forward)
                             .await
                             .map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?
                     };
@@ -505,7 +532,7 @@ pub(in crate::web) fn reset_actor_conversation(
     };
     let context = reset().map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?;
     // claude-code 中转的联动:清空即丢弃该会话的续传映射并尽力删 claude 侧转录。
-    crate::llm::forget_claude_code_session(session_id);
+    crate::llm::forget_relay_sessions(session_id);
     if let Some(context) = context {
         manager.lock().unwrap().context = context;
     }
@@ -526,7 +553,7 @@ pub(in crate::web) fn reset_actor_persona_state(
         let persona = reset_config.active_persona_scope();
         let cleared_sessions = state_store.reset_persona_contexts(&persona, "onebot")?;
         for session_id in &cleared_sessions {
-            crate::llm::forget_claude_code_session(session_id);
+            crate::llm::forget_relay_sessions(session_id);
         }
         MemoryStore::new(reset_config, paths).reset_all(true)?;
         if persona != daemon_config.active_persona_scope() {
@@ -564,7 +591,7 @@ pub(in crate::web) fn clear_actor_session_content(
         .clear_session_content()
         .map_err(|error| AdminFailure::Internal(safe_error_message(error)))?;
     // 与 `reset_actor_conversation` 同理：待办在库外面，得单独清。
-    crate::llm::forget_claude_code_session(session_id);
+    crate::llm::forget_relay_sessions(session_id);
     tools::clear_session_todos(paths, session_id)
         .map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?;
 

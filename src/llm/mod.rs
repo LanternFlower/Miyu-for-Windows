@@ -1,10 +1,11 @@
 mod cache_log;
 mod openai_compatible;
-pub mod request_log;
 pub(crate) mod provider_capabilities;
+pub mod request_log;
 
 pub(crate) use openai_compatible::{
-    forget_claude_code_session, thinking_variant_options_for_model, ThinkingVariantPreferences,
+    forget_relay_sessions, remove_antigravity_relay_files, thinking_variant_options_for_model,
+    ThinkingVariantPreferences,
 };
 pub use openai_compatible::{OpenAiCompatibleClient, ThinkingVariantOptions};
 
@@ -52,11 +53,39 @@ pub enum ChatContentPart {
     Text { text: String },
     #[serde(rename = "image_url")]
     ImageUrl { image_url: ImageUrlContent },
+    /// 视频输入(08-22):OpenRouter/Qwen 系 openai-chat 约定
+    /// `{"type":"video_url","video_url":{"url":…}}`,仅视频能力模型接受。
+    #[serde(rename = "video_url")]
+    VideoUrl { video_url: VideoUrlContent },
+    /// PDF 输入(09-08):openai-chat 约定
+    /// `{"type":"file","file":{"filename":…,"file_data":"data:application/pdf;base64,…"}}`,
+    /// 仅 PDF 能力模型接受。
+    ///
+    /// 变体名与字段名跟着**线格式**走(同 `ImageUrl`/`VideoUrl` 的惯例):
+    /// openai-chat 那条线是把 `ChatMessage` 直接 serde 出去的,名字一改就发错。
+    /// 另两个协议的形状差得远——Anthropic 是 `document` 块套 base64 source,
+    /// Responses 是 `input_file`——由各自的 lower 从这里改写。
+    #[serde(rename = "file")]
+    File { file: FileContent },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageUrlContent {
     pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoUrlContent {
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileContent {
+    /// 原始文件名。openai-chat 的 `file` 块必须带它;Anthropic 不要,但模型
+    /// 看得见,一份带名字的文档比 "document 1" 好指认。
+    pub filename: String,
+    /// `data:application/pdf;base64,…`
+    pub file_data: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,6 +240,20 @@ impl ChatMessage {
                 ChatContentPart::ImageUrl {
                     image_url: ImageUrlContent {
                         url: image_url.into(),
+                    },
+                },
+            ])),
+            ..Self::base("user")
+        }
+    }
+
+    pub fn user_with_video(text: impl Into<String>, video_url: impl Into<String>) -> Self {
+        Self {
+            content: Some(ChatContent::Parts(vec![
+                ChatContentPart::Text { text: text.into() },
+                ChatContentPart::VideoUrl {
+                    video_url: VideoUrlContent {
+                        url: video_url.into(),
                     },
                 },
             ])),
@@ -389,6 +432,11 @@ pub enum ChatStreamKind {
     ReasoningPartStart,
     ReasoningPartEnd,
     ToolCall,
+    /// 中转侧工具名已解码、入参还在流:text 是 `{name,batch}` JSON,回合层
+    /// 翻成 ToolPreparing(「准备编辑/准备执行」)。只有 claude-code 线有这个
+    /// 窗口(`content_block_start(tool_use)` 先到,`input_json_delta` 跟在后面);
+    /// codex 的 item.started / agy 的工具步 ACTIVE 到达时入参已齐,发不出来。
+    RemoteToolPreparing,
     /// 中转(claude-code)侧闭环执行的工具调用開始:text 是
     /// `{id,name,input}` JSON,回合层翻成标准 tool.started 卡片。
     RemoteToolStarted,
@@ -415,24 +463,24 @@ pub fn is_context_overflow_message(message: &str) -> bool {
         return false;
     }
     const PATTERNS: &[&str] = &[
-        "prompt is too long",                     // Anthropic
-        "request_too_large",                      // Anthropic HTTP 413
+        "prompt is too long", // Anthropic
+        "request_too_large",  // Anthropic HTTP 413
         "request entity too large",
-        "input is too long for requested model",  // Bedrock
-        "exceeds the context window",             // OpenAI
-        "maximum context length",                 // OpenAI-compatible / gateways
-        "reduce the length of the messages",      // Groq
-        "context window exceeds limit",           // MiniMax
-        "exceeded model token limit",             // Kimi
-        "but the configured context size",        // DeepSeek
-        "model_context_window_exceeded",          // z.ai
-        "context_length_exceeded",                // OpenAI error code
+        "input is too long for requested model", // Bedrock
+        "exceeds the context window",            // OpenAI
+        "maximum context length",                // OpenAI-compatible / gateways
+        "reduce the length of the messages",     // Groq
+        "context window exceeds limit",          // MiniMax
+        "exceeded model token limit",            // Kimi
+        "but the configured context size",       // DeepSeek
+        "model_context_window_exceeded",         // z.ai
+        "context_length_exceeded",               // OpenAI error code
         "context length exceeded",
-        "prompt too long",                        // Ollama
-        "greater than the context length",        // LM Studio
-        "exceeds the available context size",     // llama.cpp
-        "too many tokens",                        // generic fallback
-        "token limit exceeded",                   // generic fallback
+        "prompt too long",                    // Ollama
+        "greater than the context length",    // LM Studio
+        "exceeds the available context size", // llama.cpp
+        "too many tokens",                    // generic fallback
+        "token limit exceeded",               // generic fallback
     ];
     PATTERNS.iter().any(|pattern| lower.contains(pattern))
 }
@@ -556,12 +604,11 @@ mod continuation_signature_tests {
     #[test]
     fn continuation_unsupported_matches_all_known_wordings() {
         let hit = |text: &str| {
-            super::is_responses_continuation_unsupported_error(&anyhow::anyhow!(
-                "{}",
-                text
-            ))
+            super::is_responses_continuation_unsupported_error(&anyhow::anyhow!("{}", text))
         };
-        assert!(hit("status_code=400, No tool call found for tool output with id x"));
+        assert!(hit(
+            "status_code=400, No tool call found for tool output with id x"
+        ));
         assert!(hit(
             "status_code=400, No tool call found for function call output with call_id call_AhcSn"
         ));

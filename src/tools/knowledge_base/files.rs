@@ -346,11 +346,7 @@ impl KnowledgeBase {
         Ok(())
     }
 
-    pub(in crate::tools::knowledge_base) fn import_file(
-        &self,
-        source: &Path,
-        name: &str,
-    ) -> Result<String> {
+    pub(in crate::tools) fn import_file(&self, source: &Path, name: &str) -> Result<String> {
         // 先看元数据再整读:超大文件不该先撑满 RAM 再被大小校验拒绝。
         let max_bytes = self.config.plugins.knowledge_base.max_file_size_kb * 1024;
         let size = std::fs::metadata(source)?.len();
@@ -403,7 +399,7 @@ impl KnowledgeBase {
         }
     }
 
-    pub(in crate::tools::knowledge_base) fn safe_file_path(&self, rel: &str) -> Result<PathBuf> {
+    pub(in crate::tools) fn safe_file_path(&self, rel: &str) -> Result<PathBuf> {
         let rel = normalize_relative_path(rel)?;
         let path = self.files_dir.join(&rel);
         let parent = path.parent().unwrap_or(&self.files_dir);

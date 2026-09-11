@@ -82,9 +82,20 @@ pub(in crate::agent) fn with_host_environment(
     // 不放人格提示词里——QQ 等平台的排版能力不同,不该看到这段。
     // dev 也不带:极简原则,编码任务用不上排版说明(验收 08-16 解剖)。
     if mode != AgentMode::Dev {
+        // 工具期风格锁:模型进工具循环后切播报腔是 OOC 主场景(AstrBot 4.6
+        // 同款思路)。08-23 工具体制 A/B 实测 n=12/臂:探针全过 5/12→8/12,
+        // 无换行 6/12→10/12,其余指标不降。
         system_prompt.push_str(
-            "\n\nWrite math formulas in LaTeX: important formulas in block delimiters (`$$…$$` or `\\[…\\]`, on their own paragraph) render as typeset images; inline math in `$…$` or `\\(…\\)` is transliterated to Unicode math text; formulas inside table cells are supported too, and fractions are laid out vertically. Do not hand-build formulas from bare Unicode or ASCII.",
+            "\n\n<style-lock>Stay in character across tool calls. Tool results are working material; they are not a reason to switch into an assistant reporting tone.</style-lock>",
         );
+        system_prompt.push_str(
+            "\n\nWrite math in LaTeX. Block formulas (`$$…$$` on their own paragraph) render as typeset images; inline `$…$` becomes Unicode math text. Never hand-build formulas from bare Unicode or ASCII.",
+        );
+        // 语音协议是常量,所有 owner 会话共用:语音会话不换系统提示词,缓存
+        // 前缀与别的会话一致;只有被 <voice_input> 包裹的用户消息才触发
+        // <speak> 块,打字的会话不会多吐一个字。
+        system_prompt.push_str("\n\n");
+        system_prompt.push_str(VOICE_PROTOCOL);
     }
     system_prompt
 }
@@ -101,11 +112,12 @@ pub(in crate::agent) fn with_host_environment(
 /// 注入"的投影(见 `chat_messages`)。ISO 日期比中文日期短,星期用三字母。
 pub(in crate::agent) fn runtime_context(mode: AgentMode, platform: bool) -> String {
     // 时区随时间一起给(%:z 固定 6 字符,同粒度内字节稳定):模型换算
-    // 绝对时间/跨时区事件时不用再猜本机时区。
+    // 绝对时间/跨时区事件时不用再猜本机时区。带 UTC 前缀写成
+    // "UTC+09:00"——裸偏移量容易被当成时间的一部分读(08-26 用户点名)。
     if platform {
         return format!(
             "<runtime now=\"{}\"/>",
-            Local::now().format("%Y-%m-%d %a %H:%M %:z")
+            Local::now().format("%Y-%m-%d %a %H:%M UTC%:z")
         );
     }
     let cwd = crate::tools::workspace::effective_workdir()
@@ -114,10 +126,13 @@ pub(in crate::agent) fn runtime_context(mode: AgentMode, platform: bool) -> Stri
     let _ = mode;
     format!(
         "<runtime now=\"{}\" cwd=\"{}\"/>",
-        Local::now().format("%Y-%m-%d %a %H:00 %:z"),
+        Local::now().format("%Y-%m-%d %a %H:00 UTC%:z"),
         xml_attr_escape(&cwd),
     )
 }
+
+/// 语音对话协议(见 `web::voice_tts`):模型在 `<speak>` 块里给可朗读的口语版。
+pub(crate) const VOICE_PROTOCOL: &str = "<voice-protocol>用户消息被 <voice_input> 包裹时是语音对话:正文照常回答;末尾另起一个 <speak> 块,写两三句能直接读出来的口语版(不含路径、代码、链接、Markdown、表格)。用户消息没有这个标记时绝不输出 <speak>。</voice-protocol>";
 
 pub(in crate::agent) fn clean_user_visible_text(input: &str) -> String {
     let mut output = input.to_string();
@@ -125,6 +140,11 @@ pub(in crate::agent) fn clean_user_visible_text(input: &str) -> String {
         output = strip_tagged_sections(output, tag);
     }
     output
+}
+
+/// 给 crate 内别处(语音播报)复用的标签剥离。
+pub(crate) fn prompt_strip_tagged(text: String, tag: &str) -> String {
+    strip_tagged_sections(text, tag)
 }
 
 pub(in crate::agent) fn strip_tagged_sections(mut text: String, tag: &str) -> String {

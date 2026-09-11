@@ -24,8 +24,15 @@ pub(crate) struct MemeClassification {
     pub(crate) name: LocalizedName,
     pub(crate) description: String,
     pub(crate) usage: String,
+    /// 已废弃, 只为兼容而保留: 本结构体是 deny_unknown_fields, 提示词虽然不再
+    /// 要求 avoid, 但描述模型仍可能习惯性吐出来 —— 没有这个字段接住, 整个入库
+    /// 会解析失败, 且是静默的。收下即丢, 不进 MemeItem。
+    #[serde(default)]
     pub(crate) avoid: String,
     pub(crate) tags: Vec<String>,
+    /// 给库主看的「添加理由」，见 MemeOrigin::reason。缺省允许为空。
+    #[serde(default)]
+    pub(crate) reason: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -179,7 +186,11 @@ pub(crate) async fn add_meme(args: Value, config: &AppConfig, paths: &MiyuPaths)
     .to_string())
 }
 
-pub(crate) async fn update_meme(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Result<String> {
+pub(crate) async fn update_meme(
+    args: Value,
+    config: &AppConfig,
+    paths: &MiyuPaths,
+) -> Result<String> {
     let library = selected_library(&args, config);
     let library_lock = library_lock(&library);
     let _guard = library_lock.lock().await;
@@ -236,7 +247,11 @@ pub(crate) async fn update_meme(args: Value, config: &AppConfig, paths: &MiyuPat
     Ok(json!({ "success": true, "library": library, "id": id, "metadata": item }).to_string())
 }
 
-pub(crate) async fn delete_meme(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Result<String> {
+pub(crate) async fn delete_meme(
+    args: Value,
+    config: &AppConfig,
+    paths: &MiyuPaths,
+) -> Result<String> {
     let library = selected_library(&args, config);
     let library_lock = library_lock(&library);
     let _guard = library_lock.lock().await;

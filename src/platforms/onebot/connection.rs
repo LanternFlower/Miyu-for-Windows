@@ -34,7 +34,11 @@ pub(in crate::platforms::onebot) struct RegisteredConnection {
 }
 
 impl ConnectionRegistry {
-    pub(in crate::platforms::onebot) fn register(&mut self, self_id: i64, handle: ConnectionHandle) -> u64 {
+    pub(in crate::platforms::onebot) fn register(
+        &mut self,
+        self_id: i64,
+        handle: ConnectionHandle,
+    ) -> u64 {
         self.next_generation += 1;
         let generation = self.next_generation;
         if self_id != 0 {
@@ -44,7 +48,12 @@ impl ConnectionRegistry {
         generation
     }
 
-    pub(in crate::platforms::onebot) fn bind(&mut self, self_id: i64, generation: u64, handle: ConnectionHandle) -> bool {
+    pub(in crate::platforms::onebot) fn bind(
+        &mut self,
+        self_id: i64,
+        generation: u64,
+        handle: ConnectionHandle,
+    ) -> bool {
         if self_id == 0
             || self
                 .connections
@@ -114,7 +123,11 @@ impl ConnectionHandle {
 
     /// Sends an `{action, params, echo}` frame and waits for the frame
     /// that echoes it back.
-    pub(in crate::platforms::onebot) async fn call_api(&self, action: &str, params: Value) -> Result<Value> {
+    pub(in crate::platforms::onebot) async fn call_api(
+        &self,
+        action: &str,
+        params: Value,
+    ) -> Result<Value> {
         self.call_api_with_timeout(action, params, API_CALL_TIMEOUT)
             .await
     }
@@ -263,7 +276,10 @@ impl QqListenerManager {
     }
 }
 
-pub(in crate::platforms::onebot) fn effective_reverse_ws_port(state: &DaemonState, config: &OneBotConfig) -> Option<u16> {
+pub(in crate::platforms::onebot) fn effective_reverse_ws_port(
+    state: &DaemonState,
+    config: &OneBotConfig,
+) -> Option<u16> {
     if !config.enabled {
         return None;
     }
@@ -325,7 +341,10 @@ pub(in crate::platforms::onebot) fn qq_listener_router(state: DaemonState) -> Ro
     Router::new()
         .route("/ws", get(onebot_ws))
         .route("/onebot/v11/ws", get(onebot_ws))
-        .route("/api/platform-assets/{token}", get(crate::platforms::platform_asset))
+        .route(
+            "/api/platform-assets/{token}",
+            get(crate::platforms::platform_asset),
+        )
         .with_state(state)
 }
 
@@ -374,7 +393,11 @@ pub(crate) async fn onebot_ws_on_web_port(
     onebot_ws(State(state), peer, headers, ws).await
 }
 
-pub(in crate::platforms::onebot) fn connection_authorized(headers: &HeaderMap, expected: &str, peer: SocketAddr) -> bool {
+pub(in crate::platforms::onebot) fn connection_authorized(
+    headers: &HeaderMap,
+    expected: &str,
+    peer: SocketAddr,
+) -> bool {
     let expected = expected.trim();
     if expected.is_empty() {
         peer.ip().is_loopback()
@@ -383,7 +406,10 @@ pub(in crate::platforms::onebot) fn connection_authorized(headers: &HeaderMap, e
     }
 }
 
-pub(in crate::platforms::onebot) fn resolve_asset_base_url(headers: &HeaderMap, config: &OneBotConfig) -> Option<String> {
+pub(in crate::platforms::onebot) fn resolve_asset_base_url(
+    headers: &HeaderMap,
+    config: &OneBotConfig,
+) -> Option<String> {
     let configured = config.asset_base_url.trim().trim_end_matches('/');
     if configured.starts_with("http://") || configured.starts_with("https://") {
         return Some(configured.to_string());

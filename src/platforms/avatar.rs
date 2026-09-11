@@ -32,11 +32,7 @@ pub(crate) async fn download_avatar(url: &str, dir: &Path, file_stem: &str) -> R
         .redirect(reqwest::redirect::Policy::limited(4))
         .build()
         .context("failed to build the avatar download client")?;
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .context("头像下载请求失败")?;
+    let response = client.get(url).send().await.context("头像下载请求失败")?;
     if !response.status().is_success() {
         bail!("头像下载失败：HTTP {}", response.status());
     }
@@ -92,7 +88,9 @@ pub(crate) fn group_avatar_url(group_id: &str, size: u32) -> Option<String> {
     if !is_numeric_id(group_id) {
         return None;
     }
-    Some(format!("https://p.qlogo.cn/gh/{group_id}/{group_id}/{size}"))
+    Some(format!(
+        "https://p.qlogo.cn/gh/{group_id}/{group_id}/{size}"
+    ))
 }
 
 #[cfg(test)]

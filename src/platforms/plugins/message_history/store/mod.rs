@@ -86,6 +86,22 @@ impl HistoryStore {
             .await
     }
 
+    /// 补写一条已有消息的正文;返回是否真的改了。见 `update_message_text`。
+    pub(crate) async fn update_message_text(
+        &self,
+        group: GroupKey,
+        message_id: String,
+        text: String,
+    ) -> Result<bool> {
+        self.request(|reply| Command::UpdateText {
+            group,
+            message_id,
+            text,
+            reply,
+        })
+        .await
+    }
+
     pub(crate) async fn record_recall(&self, mut recall: NewRecall) -> Result<RecallOutcome> {
         recall.message_id = validate_identifier("message id", recall.message_id)?;
         recall.operator_id = recall
@@ -221,6 +237,12 @@ enum Command {
         messages: Vec<NewHistoryMessage>,
         reply: oneshot::Sender<Result<Vec<RecordOutcome>>>,
     },
+    UpdateText {
+        group: GroupKey,
+        message_id: String,
+        text: String,
+        reply: oneshot::Sender<Result<bool>>,
+    },
     Recall {
         recall: NewRecall,
         reply: oneshot::Sender<Result<RecallOutcome>>,
@@ -261,6 +283,16 @@ fn actor_loop(db_path: PathBuf, mut receiver: mpsc::Receiver<Command>) {
             Command::Record { messages, reply } => {
                 let result = actor_connection(&mut connection, &db_path)
                     .and_then(|conn| insert_messages(conn, messages));
+                let _ = reply.send(result);
+            }
+            Command::UpdateText {
+                group,
+                message_id,
+                text,
+                reply,
+            } => {
+                let result = actor_connection(&mut connection, &db_path)
+                    .and_then(|conn| update_message_text(conn, &group, &message_id, &text));
                 let _ = reply.send(result);
             }
             Command::Recall { recall, reply } => {

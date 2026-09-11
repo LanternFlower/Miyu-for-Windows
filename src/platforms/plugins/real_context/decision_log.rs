@@ -21,6 +21,7 @@ pub(in crate::platforms::plugins::real_context) struct ActiveReplyDecisionLog<'a
     pub(in crate::platforms::plugins::real_context) model_adjustment: f64,
     pub(in crate::platforms::plugins::real_context) affection_level: &'a str,
     pub(in crate::platforms::plugins::real_context) affection_adjustment: f64,
+    pub(in crate::platforms::plugins::real_context) emotion_adjustment: f64,
     pub(in crate::platforms::plugins::real_context) continuation_adjustment: f64,
     pub(in crate::platforms::plugins::real_context) system_adjustment: f64,
     pub(in crate::platforms::plugins::real_context) reply_heat: f64,
@@ -29,9 +30,12 @@ pub(in crate::platforms::plugins::real_context) struct ActiveReplyDecisionLog<'a
     pub(in crate::platforms::plugins::real_context) short_message_threshold_adjustment: f64,
     pub(in crate::platforms::plugins::real_context) moderation: &'a judge::ModerationResult,
     pub(in crate::platforms::plugins::real_context) reason: &'a str,
+    pub(in crate::platforms::plugins::real_context) endpoint: Option<&'a str>,
 }
 
-pub(in crate::platforms::plugins::real_context) fn format_active_reply_decision_log(log: &ActiveReplyDecisionLog<'_>) -> String {
+pub(in crate::platforms::plugins::real_context) fn format_active_reply_decision_log(
+    log: &ActiveReplyDecisionLog<'_>,
+) -> String {
     format_active_reply_decision_log_for(log, crate::i18n::locale())
 }
 
@@ -91,6 +95,11 @@ pub(in crate::platforms::plugins::real_context) fn format_active_reply_decision_
         ),
         format_decision_log_field(
             locale,
+            text_for(locale, "Model", "模型"),
+            log.endpoint.unwrap_or("unknown"),
+        ),
+        format_decision_log_field(
+            locale,
             text_for(locale, "Result", "结果"),
             if log.should_reply {
                 text_for(locale, "reply", "回复")
@@ -128,6 +137,13 @@ pub(in crate::platforms::plugins::real_context) fn format_active_reply_decision_
             ),
         ),
     ];
+    if log.emotion_adjustment.abs() >= 0.0005 {
+        lines.push(format_decision_log_field(
+            locale,
+            text_for(locale, "Emotion threshold adjustment", "情绪阈值调整"),
+            &format_adjustment(log.emotion_adjustment),
+        ));
+    }
     if log.continuation_adjustment.abs() >= 0.0005 {
         lines.push(format_decision_log_field(
             locale,
@@ -195,7 +211,11 @@ pub(in crate::platforms::plugins::real_context) fn format_active_reply_decision_
     lines.join("\n")
 }
 
-pub(in crate::platforms::plugins::real_context) fn format_decision_log_field(locale: Locale, label: &str, value: &str) -> String {
+pub(in crate::platforms::plugins::real_context) fn format_decision_log_field(
+    locale: Locale,
+    label: &str,
+    value: &str,
+) -> String {
     if locale == Locale::Zh {
         format!("{label}：{value}")
     } else {
@@ -203,7 +223,10 @@ pub(in crate::platforms::plugins::real_context) fn format_decision_log_field(loc
     }
 }
 
-pub(in crate::platforms::plugins::real_context) fn format_log_message(message: &str, locale: Locale) -> String {
+pub(in crate::platforms::plugins::real_context) fn format_log_message(
+    message: &str,
+    locale: Locale,
+) -> String {
     let compact = message.split_whitespace().collect::<Vec<_>>().join(" ");
     if compact.is_empty() {
         return text_for(locale, "[non-text message]", "[非文本消息]").to_string();
@@ -263,7 +286,58 @@ pub(in crate::platforms::plugins::real_context) fn format_active_reply_skip_log_
     }
 }
 
-pub(in crate::platforms::plugins::real_context) fn localized_affection_level<'a>(level: &'a str, locale: Locale) -> &'a str {
+/// 未经判官直接回复的留痕。这三条路径(限额耗尽、本会话不做主动判断、
+/// 覆盖窗口沿用已承诺回复)此前一行日志都不打,取证时是黑洞:08-29 排查
+/// 两次「元层拒答」,只能靠"回复出现了但没有判官决定"做减法,推错过一次。
+pub(in crate::platforms::plugins::real_context) fn format_active_reply_bypass_log(
+    account_id: &str,
+    group_id: &str,
+    sender_name: &str,
+    sender_id: &str,
+    trigger: TriggerKind,
+    reason: &str,
+) -> String {
+    format_active_reply_bypass_log_for(
+        account_id,
+        group_id,
+        sender_name,
+        sender_id,
+        trigger,
+        reason,
+        crate::i18n::locale(),
+    )
+}
+
+pub(in crate::platforms::plugins::real_context) fn format_active_reply_bypass_log_for(
+    account_id: &str,
+    group_id: &str,
+    sender_name: &str,
+    sender_id: &str,
+    trigger: TriggerKind,
+    reason: &str,
+    locale: Locale,
+) -> String {
+    if locale == Locale::Zh {
+        format!(
+            "（未经判断直接回复）\n会话：群聊 {group_id}（机器人 QQ {account_id}）\n发送者：{}（QQ {sender_id}）\n触发：{}\n结果：回复\n跳过判断的原因：{}",
+            empty_as(sender_name, "未知用户"),
+            trigger.log_label(locale),
+            empty_as(reason, "未提供"),
+        )
+    } else {
+        format!(
+            "[Replied without an active-reply judgement]\nConversation: group {group_id} (bot QQ {account_id})\nSender: {} (QQ {sender_id})\nTrigger: {}\nResult: reply\nJudgement skipped because: {}",
+            empty_as(sender_name, "unknown user"),
+            trigger.log_label(locale),
+            empty_as(reason, "not provided"),
+        )
+    }
+}
+
+pub(in crate::platforms::plugins::real_context) fn localized_affection_level<'a>(
+    level: &'a str,
+    locale: Locale,
+) -> &'a str {
     if locale == Locale::Zh {
         return level;
     }

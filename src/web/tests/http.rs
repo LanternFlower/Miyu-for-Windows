@@ -11,6 +11,48 @@ fn artifact_tools_are_scoped_to_local_webui_requests() {
     assert!(!is_local_webui_request(PromptAudience::External, true));
 }
 
+/// 清空 token 统计明细:删的是 usage-history.jsonl,累计正账 usage.json
+/// 必须留着(它是"一生用了多少"的唯一记录)。08-26 新增按钮的后端契约。
+#[test]
+fn clearing_usage_history_keeps_the_cumulative_ledger() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_paths(temp.path());
+    let store = crate::state::StateStore::new(&paths).unwrap();
+    store.init_files().unwrap();
+    let usage = crate::llm::Usage {
+        prompt_tokens: 1_000,
+        completion_tokens: 100,
+        total_tokens: 1_100,
+        ..crate::llm::Usage::default()
+    };
+    store
+        .add_auxiliary_usage(
+            &usage,
+            crate::state::UsageMeta {
+                source: "agent",
+                provider: Some("p"),
+                model: Some("m"),
+                kind: None,
+            },
+        )
+        .unwrap();
+    assert!(store.usage_history_file().exists());
+    let before = store.usage_snapshot().unwrap().total_tokens;
+    assert!(before > 0, "累计账应已记上");
+
+    store.clear_usage_history().unwrap();
+    assert!(!store.usage_history_file().exists(), "明细应被清空");
+    assert_eq!(
+        store.usage_snapshot().unwrap().total_tokens,
+        before,
+        "累计正账不得被清"
+    );
+    let stats = store
+        .usage_stats(crate::state::UsageRange::All, None)
+        .unwrap();
+    assert_eq!(stats.totals.requests, 0, "统计页数据应归零");
+}
+
 #[tokio::test]
 async fn persona_asset_store_is_atomic_and_rejects_corrupt_cache_entries() {
     let temp = tempfile::tempdir().unwrap();
@@ -36,14 +78,50 @@ async fn persona_asset_store_is_atomic_and_rejects_corrupt_cache_entries() {
 }
 
 #[test]
-fn attachment_validation_accepts_utf8_code_and_rejects_unknown_binary() {
+fn attachment_validation_classifies_text_and_falls_back_to_file() {
     let (kind, mime, width, height) =
         inspect_user_attachment("main.rs", b"fn main() {}\n").unwrap();
     assert_eq!(kind, "text");
     assert_eq!(mime, "text/plain");
     assert_eq!((width, height), (0, 0));
-    assert!(inspect_user_attachment("payload.bin", &[0xff, 0xfe, 0xfd]).is_err());
-    assert!(inspect_user_attachment("notes.exe", b"plain text").is_err());
+    // 09-03 起不再拒绝未知二进制:一律按 file 落盘,只把路径交给模型。
+    let (kind, mime, _, _) = inspect_user_attachment("payload.bin", &[0xff, 0xfe, 0xfd]).unwrap();
+    assert_eq!(
+        (kind.as_str(), mime.as_str()),
+        ("file", "application/octet-stream")
+    );
+    let (kind, mime, _, _) = inspect_user_attachment("clip.mp4", &[0, 0, 0, 0x18]).unwrap();
+    assert_eq!((kind.as_str(), mime.as_str()), ("file", "video/mp4"));
+    // 白名单外的扩展名即使内容是文本也走 file,不进提示词。
+    let (kind, _, _, _) = inspect_user_attachment("notes.exe", b"plain text").unwrap();
+    assert_eq!(kind, "file");
+    // 白名单内但不是 UTF-8 的也走 file。
+    let (kind, _, _, _) = inspect_user_attachment("broken.txt", &[0xff, 0xfe]).unwrap();
+    assert_eq!(kind, "file");
+}
+
+#[test]
+fn file_attachment_is_injected_as_a_path_reference_only() {
+    let attachment = crate::state::UserAttachmentData {
+        attachment: UserAttachment {
+            attachment_id: "att_video".to_string(),
+            file_name: "clip.mp4".to_string(),
+            mime: "video/mp4".to_string(),
+            kind: "file".to_string(),
+            size_bytes: 4,
+            width: 0,
+            height: 0,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        },
+        bytes: Vec::new(),
+        path: Some(std::path::PathBuf::from("/tmp/att_video/clip.mp4")),
+    };
+    let prepared = prepare_web_attachment_data("cut it", vec![attachment]).unwrap();
+    assert!(prepared.images.is_empty());
+    assert_eq!(
+        prepared.content,
+        "cut it\n\n<user-attachment name=\"clip.mp4\" mime=\"video/mp4\" size=\"4\" path=\"/tmp/att_video/clip.mp4\" />"
+    );
 }
 
 #[test]
@@ -253,13 +331,24 @@ fn origin_tty_gates_and_writeback_against_real_pty() {
     // 拿到 None 就 panic —— 报错指向 Rust 侧,真凶却在字符串里。改这里之后
     // 务必单独跑一遍本用例。
     let script = r#"
-import os, pty, signal, sys
+import os, pty, signal, sys, time
 pid, master = pty.fork()
 if pid == 0:
     os.execvp("sleep", ["sleep", "60"])
 # 子进程是会话首进程,ctty=slave,前台进程组=自己 —— 正是 shell 停在提示符的形状。
 # slave 路径从 /proc/child/fd/0 反查,不依赖 ptsname。
-slave = os.readlink(f"/proc/{pid}/fd/0")
+# 竞态(08-21 验收实测):fork 返回时子进程可能还没做完 login_tty 的 dup,
+# 这一瞬 fd/0 还是继承的管道——读早了就把错误路径一次性交给 Rust,后面
+# 怎么重试都救不回。等到它真变成 pts 再上报。
+slave = ""
+for _ in range(500):
+    try:
+        slave = os.readlink(f"/proc/{pid}/fd/0")
+    except OSError:
+        slave = ""
+    if slave.startswith("/dev/pts/"):
+        break
+    time.sleep(0.01)
 print(pid, slave, flush=True)
 sys.stdin.readline()  # 等 Rust 侧写完
 data = b""
@@ -303,10 +392,19 @@ sys.stdin.readline()  # 等 Rust 侧完成死后判定
         shell_pid: pid.parse().unwrap(),
     };
 
-    assert!(
-        origin_shell_at_prompt(&origin),
-        "pty.fork 出的会话首进程应判定为「在提示符」"
-    );
+    // pty.fork 的父进程拿到 pid 时,子进程的 login_tty(setsid+TIOCSCTTY+dup)
+    // 可能还没执行——那一瞬 /proc 里 pgrp≠tpgid、fd/0 也不是 slave,判定为假
+    // 是正确行为。重负载下这个窗口放大成闪失败(08-21 验收实测),轮询等子进
+    // 程就位再断言;判定函数本身零改动。
+    let mut at_prompt = false;
+    for _ in 0..200 {
+        if origin_shell_at_prompt(&origin) {
+            at_prompt = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(at_prompt, "pty.fork 出的会话首进程应判定为「在提示符」");
     // 走生产写线程:Write 分片 + Finish(flush + SIGWINCH),与流式回写同路。
     {
         use std::os::unix::fs::OpenOptionsExt;

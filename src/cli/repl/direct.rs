@@ -26,6 +26,7 @@ pub(in crate::cli) async fn run_chat_with_images(
             &pasted_images,
             None,
             None,
+            None,
         )
         .await
         {
@@ -117,6 +118,44 @@ pub(in crate::cli) async fn run_chat_with_images(
     Ok(())
 }
 
+/// 程序驱动的文本模式回合:会话已由 `turn_request` 定好,带附图与覆盖,
+/// 只走 daemon(没有 daemon 就报错,不退回进程内直连)。
+pub(in crate::cli) async fn run_chat_with_images_and_options(
+    paths: &MiyuPaths,
+    message: String,
+    images: Vec<Option<crate::clipboard::PastedImage>>,
+    plain: bool,
+    mode: AgentMode,
+    session: TurnSession,
+    overrides: Option<crate::ipc::TurnOverrides>,
+) -> Result<()> {
+    let session_override = match session {
+        TurnSession::Current => None,
+        TurnSession::Explicit(session_id) => Some(session_id),
+        TurnSession::Ephemeral => Some(create_ephemeral_session(paths, None).await?),
+    };
+    match try_run_remote_chat(
+        paths,
+        None,
+        &message,
+        None,
+        plain,
+        mode,
+        &images,
+        session_override,
+        None,
+        overrides,
+    )
+    .await?
+    {
+        Some(_) => Ok(()),
+        None => Err(crate::cli::exit_code::usage_error(t(
+            "this command needs the Miyu daemon (unset MIYU_DIRECT)",
+            "这条命令需要 Miyu daemon(请去掉 MIYU_DIRECT)",
+        ))),
+    }
+}
+
 pub(in crate::cli) async fn run_chat_with_options(
     paths: &MiyuPaths,
     message: String,
@@ -124,6 +163,7 @@ pub(in crate::cli) async fn run_chat_with_options(
     plain: bool,
     mode: AgentMode,
     session: TurnSession,
+    overrides: Option<crate::ipc::TurnOverrides>,
 ) -> Result<()> {
     let message = append_stdin_if_piped(message).await;
     if message.is_empty() {
@@ -133,7 +173,7 @@ pub(in crate::cli) async fn run_chat_with_options(
         let session_override = match &session {
             TurnSession::Current => None,
             TurnSession::Explicit(session_id) => Some(session_id.clone()),
-            TurnSession::Ephemeral => Some(create_ephemeral_session(paths).await?),
+            TurnSession::Ephemeral => Some(create_ephemeral_session(paths, None).await?),
         };
         // Not `?`-through: the throwaway session has to be torn down on the
         // failure path too, otherwise a cancelled turn leaves it behind.
@@ -147,6 +187,7 @@ pub(in crate::cli) async fn run_chat_with_options(
             &[],
             session_override.clone(),
             None,
+            overrides.clone(),
         )
         .await;
         if session == TurnSession::Ephemeral {
@@ -159,6 +200,13 @@ pub(in crate::cli) async fn run_chat_with_options(
             Ok(None) => {}
             Err(err) => return Err(err),
         }
+    }
+    if overrides.is_some() {
+        // 回合级覆盖由 daemon 套用;进程内直连没有那层。
+        return Err(crate::cli::exit_code::usage_error(t(
+            "per-turn overrides need the Miyu daemon (unset MIYU_DIRECT)",
+            "回合级覆盖需要 Miyu daemon(请去掉 MIYU_DIRECT)",
+        )));
     }
     let _core_lease = ipc::acquire_direct_core(paths)?;
     initialize_models_cache(paths);
@@ -394,6 +442,20 @@ pub(in crate::cli) async fn run_direct_repl(
             match run_persona_picker(paths, command_args) {
                 Ok(true) => {
                     reload_repl_config(paths, &state, &mut config, &mut client)?;
+                    // 人格是会话的命名空间维度:切人格后必须重绑到新人格的
+                    // 会话(与启动时 ensure_repl_session 同一条语义),否则 agent
+                    // 还挂在旧人格的会话上,人格提示词与历史命名空间错位。
+                    let persona = if mode == AgentMode::Dev {
+                        crate::state::DEV_PERSONA.to_string()
+                    } else {
+                        config.active_persona_scope()
+                    };
+                    let repl_session_id = state.ensure_repl_session(&persona)?;
+                    state.adopt_session(&repl_session_id);
+                    apply_session_model_override(&state, &mut config);
+                    client = OpenAiCompatibleClient::from_config(&config, paths)?;
+                    input_history = load_repl_input_history(&state, paths)?;
+                    cumulative_tokens = state.session_cumulative_token_totals().unwrap_or_default();
                     footer = ReplFooterStatus::from_config(
                         &config,
                         agent.effective_context_tokens()?,

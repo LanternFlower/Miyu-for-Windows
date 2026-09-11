@@ -416,7 +416,10 @@ pub(in crate::platforms::plugins::renderer) struct ExpandedSpan {
     pub(in crate::platforms::plugins::renderer) emoji: bool,
 }
 
-pub(in crate::platforms::plugins::renderer) fn expand_spans(spans: &[RichSpan], split_emoji: bool) -> Vec<ExpandedSpan> {
+pub(in crate::platforms::plugins::renderer) fn expand_spans(
+    spans: &[RichSpan],
+    split_emoji: bool,
+) -> Vec<ExpandedSpan> {
     let mut expanded: Vec<ExpandedSpan> = Vec::new();
     for span in spans {
         if !split_emoji {
@@ -497,6 +500,9 @@ pub(in crate::platforms::plugins::renderer) fn attrs_for<'a>(
         palette.muted
     } else if matches!(kind, BlockKind::Heading(_)) {
         palette.heading
+    } else if style.bold {
+        // 只有 Regular 字重可用,Weight::BOLD 是空请求——加粗靠变色呈现。
+        palette.strong
     } else {
         palette.text
     };
@@ -521,7 +527,9 @@ pub(in crate::platforms::plugins::renderer) fn attrs_for<'a>(
 pub(in crate::platforms::plugins::renderer) const INLINE_CODE_METADATA: usize = 1;
 
 /// 一条 layout 行内行内代码字形的连续 x 区间(相邻区间合并)。
-pub(in crate::platforms::plugins::renderer) fn inline_code_chip_ranges(glyphs: &[LayoutGlyph]) -> Vec<(f32, f32)> {
+pub(in crate::platforms::plugins::renderer) fn inline_code_chip_ranges(
+    glyphs: &[LayoutGlyph],
+) -> Vec<(f32, f32)> {
     let mut ranges: Vec<(f32, f32)> = Vec::new();
     for glyph in glyphs {
         if glyph.metadata != INLINE_CODE_METADATA {
@@ -542,7 +550,11 @@ pub(in crate::platforms::plugins::renderer) const INLINE_CODE_CHIP_PAD_X: f32 = 
 
 pub(in crate::platforms::plugins::renderer) const INLINE_CODE_CHIP_INSET_RATIO: f32 = 0.10;
 
-pub(in crate::platforms::plugins::renderer) fn metrics_for(kind: BlockKind, style: InlineStyle, config: &NormalizedConfig) -> Metrics {
+pub(in crate::platforms::plugins::renderer) fn metrics_for(
+    kind: BlockKind,
+    style: InlineStyle,
+    config: &NormalizedConfig,
+) -> Metrics {
     let body = config.font_size as f32;
     let code = config.code_font_size as f32;
     let size = match kind {
@@ -576,7 +588,10 @@ pub(in crate::platforms::plugins::renderer) fn block_insets(kind: BlockKind) -> 
     }
 }
 
-pub(in crate::platforms::plugins::renderer) fn block_margins(kind: BlockKind, font_size: u32) -> (u32, u32) {
+pub(in crate::platforms::plugins::renderer) fn block_margins(
+    kind: BlockKind,
+    font_size: u32,
+) -> (u32, u32) {
     let small = (font_size / 4).max(6);
     match kind {
         BlockKind::Heading(1) => (font_size, font_size / 2),
@@ -602,7 +617,10 @@ pub(in crate::platforms::plugins::renderer) struct Placement {
     pub(in crate::platforms::plugins::renderer) y: u32,
 }
 
-pub(in crate::platforms::plugins::renderer) fn plan_columns(layouts: &[LayoutBlock], config: &NormalizedConfig) -> Result<Vec<ColumnPlan>> {
+pub(in crate::platforms::plugins::renderer) fn plan_columns(
+    layouts: &[LayoutBlock],
+    config: &NormalizedConfig,
+) -> Result<Vec<ColumnPlan>> {
     let usable_height = config
         .max_height
         .saturating_sub(config.padding.saturating_mul(2));
@@ -739,7 +757,9 @@ pub(in crate::platforms::plugins::renderer) fn plan_columns_with_height(
     Ok(columns)
 }
 
-pub(in crate::platforms::plugins::renderer) fn push_column(columns: &mut Vec<ColumnPlan>) -> Result<()> {
+pub(in crate::platforms::plugins::renderer) fn push_column(
+    columns: &mut Vec<ColumnPlan>,
+) -> Result<()> {
     columns
         .len()
         .checked_add(1)
@@ -831,7 +851,10 @@ pub(in crate::platforms::plugins::renderer) fn balanced_plan_for_count(
 
 /// Log-space distance between the finished image's aspect ratio (using the
 /// same width/height rules as `render_pages`) and `TARGET_ASPECT_RATIO`.
-pub(in crate::platforms::plugins::renderer) fn aspect_distance(columns: &[ColumnPlan], config: &NormalizedConfig) -> f32 {
+pub(in crate::platforms::plugins::renderer) fn aspect_distance(
+    columns: &[ColumnPlan],
+    config: &NormalizedConfig,
+) -> f32 {
     let count = columns.len() as u64;
     let width = u64::from(config.padding) * 2
         + u64::from(COLUMN_WIDTH) * count

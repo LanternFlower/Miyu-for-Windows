@@ -1,7 +1,7 @@
 //! 命令块的实时显示、预览与终端安全。
 
-use crate::render::*;
 use super::shared::*;
+use crate::render::*;
 
 #[test]
 fn command_stream_handles_split_utf8_and_crlf() {

@@ -94,7 +94,9 @@ pub(crate) fn validate_web_password(password: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn try_load_daemon_launch_config(paths: &MiyuPaths) -> Result<Option<DaemonLaunchConfig>> {
+pub(crate) fn try_load_daemon_launch_config(
+    paths: &MiyuPaths,
+) -> Result<Option<DaemonLaunchConfig>> {
     let path = paths.daemon_launch_state_file();
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
@@ -143,7 +145,10 @@ pub(crate) fn daemon_launch_config_with_port(
     Ok(config)
 }
 
-pub(crate) fn save_daemon_launch_config(paths: &MiyuPaths, config: &DaemonLaunchConfig) -> Result<()> {
+pub(crate) fn save_daemon_launch_config(
+    paths: &MiyuPaths,
+    config: &DaemonLaunchConfig,
+) -> Result<()> {
     let path = paths.daemon_launch_state_file();
     let mut bytes = serde_json::to_vec(config)?;
     bytes.push(b'\n');
@@ -151,7 +156,10 @@ pub(crate) fn save_daemon_launch_config(paths: &MiyuPaths, config: &DaemonLaunch
         .with_context(|| format!("saving daemon launch state to {}", path.display()))
 }
 
-pub(crate) fn commit_daemon_launch_config(paths: &MiyuPaths, config: &DaemonLaunchConfig) -> Result<()> {
+pub(crate) fn commit_daemon_launch_config(
+    paths: &MiyuPaths,
+    config: &DaemonLaunchConfig,
+) -> Result<()> {
     let previous = try_load_daemon_launch_config(paths)?;
     save_daemon_launch_config(paths, config)?;
     if let Some(old_password) = previous.and_then(|value| value.password_file) {
@@ -222,7 +230,10 @@ pub(crate) fn write_private_state(path: &Path, contents: &[u8]) -> Result<()> {
     result
 }
 
-pub(crate) fn finish_private_state_commit(parent: &Path, directory_sync: std::io::Result<()>) -> Result<()> {
+pub(crate) fn finish_private_state_commit(
+    parent: &Path,
+    directory_sync: std::io::Result<()>,
+) -> Result<()> {
     if let Err(error) = directory_sync {
         tracing::warn!(
             directory = %parent.display(),
@@ -306,7 +317,10 @@ pub(crate) fn parse_legacy_password(value: &[u8]) -> Result<String> {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn recover_legacy_daemon_launch(paths: &MiyuPaths, pid: u32) -> Result<DaemonLaunchConfig> {
+pub(crate) fn recover_legacy_daemon_launch(
+    paths: &MiyuPaths,
+    pid: u32,
+) -> Result<DaemonLaunchConfig> {
     let cmdline = std::fs::read(format!("/proc/{pid}/cmdline"))
         .context("reading legacy Miyu daemon arguments")?;
     let cwd = std::fs::read_link(format!("/proc/{pid}/cwd"))
@@ -345,7 +359,10 @@ pub(crate) fn recover_legacy_daemon_launch_from_cmdline(
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn recover_legacy_daemon_launch(_paths: &MiyuPaths, _pid: u32) -> Result<DaemonLaunchConfig> {
+pub(crate) fn recover_legacy_daemon_launch(
+    _paths: &MiyuPaths,
+    _pid: u32,
+) -> Result<DaemonLaunchConfig> {
     Ok(DaemonLaunchConfig::default())
 }
 

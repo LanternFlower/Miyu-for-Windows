@@ -1,7 +1,7 @@
-pub(crate) mod math;
 mod code;
 mod command;
 mod markdown;
+pub(crate) mod math;
 mod patch;
 mod stream;
 mod style;

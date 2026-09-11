@@ -1,7 +1,7 @@
 {
   "name": "get_exchange_rate",
   "display_name": "汇率查询",
-  "description": "Look up the exchange rate between different currencies.",
+  "description": "Query exchange rates between currencies.",
   "parameters": {
     "type": "object",
     "properties": {

@@ -12,12 +12,11 @@ impl Agent {
     /// Runs a batch's `task` tool calls concurrently, in waves bounded by
     /// `tools.subagent_concurrency`. Subagents are independent by design, so
     /// fanning them out preserves semantics while collapsing wall-clock time.
-    /// Batches with fewer than two task calls — or a not-yet-loaded task tool
-    /// (hybrid lazy loading) — return an empty map and take the serial path.
+    /// Batches with fewer than two task calls return an empty map and take the
+    /// serial path.
     pub(in crate::agent) async fn execute_parallel_task_calls<F>(
         &self,
         calls: &[crate::llm::ToolCall],
-        loaded_tools: &std::collections::BTreeSet<String>,
         on_event: &mut F,
     ) -> Result<std::collections::HashMap<usize, GroupTaskOutput>>
     where
@@ -32,14 +31,6 @@ impl Agent {
             .collect();
         if eligible.len() < 2 {
             return Ok(outputs);
-        }
-        {
-            let tools = self.tools.lock().unwrap();
-            if tools::is_hybrid_loading_mode(&self.config.tools.loading_mode)
-                && tools.requires_lazy_load("task", loaded_tools)
-            {
-                return Ok(outputs);
-            }
         }
 
         struct Slot {
@@ -206,8 +197,6 @@ impl Agent {
         F: FnMut(AgentEvent) -> Result<()>,
     {
         on_event(AgentEvent::FlushJournal)?;
-        // 排队插话=人类语境变化,重复链重置。
-        self.repeat_chain.reset();
         // 排队消息=用户更新了请求,平台生图配额随之重置(非平台回合 no-op)。
         crate::tools::workspace::reset_image_gen_limit();
         let mut prepared = Vec::with_capacity(queued.len());
@@ -229,10 +218,30 @@ impl Agent {
             self.platform_context.is_some(),
         );
 
-        let consumed = prepared
-            .iter()
-            .map(|(prompt, input)| (prompt.prompt_id.clone(), input.content.clone()))
-            .collect::<Vec<_>>();
+        // 瞬态尾巴挂在 followup 正文之后,并与正文一起化石化(v31):runtime
+        // 按首轮同一口径"变了才追加"(只挂第一条),图片路径/context-images
+        // 提示原样跟随。live 推进 messages 的就是这同一份 tail,活体与化石
+        // 逐字节一致——少了这一步,下一轮回放在 followup 处比活体短一截,
+        // 缓存前缀与 CLI 续传链都在这里掰断(09-04 codex 线实证)。
+        let runtime = runtime_context(mode, self.platform_context.is_some());
+        let runtime_block = (last_fossil_with_prefix(messages, "<runtime ")
+            != Some(runtime.as_str()))
+        .then(|| ChatMessage::turn_context(runtime));
+        let mut consumed = Vec::with_capacity(prepared.len());
+        let mut tails: Vec<Vec<ChatMessage>> = Vec::with_capacity(prepared.len());
+        for (index, (prompt, input)) in prepared.iter().enumerate() {
+            let mut tail = Vec::new();
+            if index == 0 {
+                tail.extend(runtime_block.clone());
+            }
+            tail.extend(fossil_context_messages(&input.hints));
+            consumed.push((
+                prompt.prompt_id.clone(),
+                input.content.clone(),
+                serde_json::to_string(&tail)?,
+            ));
+            tails.push(tail);
+        }
         self.state.consume_queued_prompts_with_checkpoint(
             current_turn_id,
             &consumed,
@@ -260,15 +269,15 @@ impl Agent {
             }
         }
         on_event(AgentEvent::QueuedPromptsConsumed {
-            prompt_ids: consumed.iter().map(|(id, _)| id.clone()).collect(),
+            prompt_ids: consumed.iter().map(|(id, _, _)| id.clone()).collect(),
             mode,
             provider_id: preceding_assistant.2.map(str::to_string),
             model: preceding_assistant.3.map(str::to_string),
         })?;
 
-        for (_, input) in prepared {
+        for ((_, input), tail) in prepared.into_iter().zip(tails) {
             messages.push(input.message);
-            messages.extend(input.hints);
+            messages.extend(tail);
         }
         Ok(())
     }

@@ -71,7 +71,7 @@ pub fn empty_parameters() -> Value {
 pub(crate) fn load_target_tool_xml(tool: &ToolSpec) -> String {
     let kind = if tool.is_script { "script" } else { "tool" };
     format!(
-        "  <target>\n    <name>{}</name>\n    <type>{kind}</type>\n    <summary>{}</summary>\n  </target>",
+        "  <target name=\"{}\" type=\"{kind}\">{}</target>",
         xml_escape(&tool.name),
         xml_escape(&load_target_summary(&tool.description)),
     )
@@ -85,9 +85,11 @@ pub(crate) fn stub_definition(tool: &ToolSpec) -> ToolDefinition {
     //
     // 例外是 stub_example:参数壳是空的,模型没取契约就调用时只能猜字段名,
     // 声明了示例的工具在这里补上。示例并进同一对括号,不额外占一对。
+    // "stub" 而非 "stub entry":entry 一词零信息,35 条 stub 每请求各省 1 tok
+    // (08-21 token-diet)。
     let note = match &tool.stub_example {
-        Some(example) => format!("stub entry, e.g. {example}"),
-        None => "stub entry".to_string(),
+        Some(example) => format!("stub, e.g. {example}"),
+        None => "stub".to_string(),
     };
     let description = if summary.is_empty() {
         format!("({note}: fetch the full contract via load_tools)")
@@ -200,7 +202,7 @@ mod tests {
         let stub = stub_definition(&spec("查询某个游戏在 Linux 上的兼容性。"));
         assert_eq!(
             stub.function.description,
-            "查询某个游戏在 Linux 上的兼容性。 (stub entry)"
+            "查询某个游戏在 Linux 上的兼容性。 (stub)"
         );
     }
 
@@ -213,7 +215,7 @@ mod tests {
         );
         assert_eq!(
             stub.function.description,
-            r#"查询某个游戏在 Linux 上的兼容性。 (stub entry, e.g. {"query":"艾尔登法环"})"#
+            r#"查询某个游戏在 Linux 上的兼容性。 (stub, e.g. {"query":"艾尔登法环"})"#
         );
     }
 
@@ -222,7 +224,7 @@ mod tests {
         let stub = spec("").with_stub_example(r#"{"query":"x"}"#);
         assert_eq!(
             stub_definition(&stub).function.description,
-            r#"(stub entry, e.g. {"query":"x"}: fetch the full contract via load_tools)"#
+            r#"(stub, e.g. {"query":"x"}: fetch the full contract via load_tools)"#
         );
     }
 }

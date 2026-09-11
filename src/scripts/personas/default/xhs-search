@@ -1,0 +1,1340 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# 显示名称：小红书搜索
+# Description: Search Xiaohongshu (RED) notes or read one note. Pass a keyword in query to search, or a note URL to read its body; action can be omitted. Search returns title, author, likes, saves, comment count and URL, without bodies (to keep context small); pass a returned url again to read the body. sort: 综合/最新/最多点赞/最多评论/最多收藏; type: 全部/视频/图文. Reading a note returns body, tags, images and, when limit>0, comments. Comments are often richer than the body (real experiences, prices, warnings), and replies are richer than top-level comments: RED Q&A happens almost entirely in reply threads, where the top-level comment asks 'what is the name' or 'how much' and the author's answer sits in that comment's replies array. Always read replies together with the comments. Before concluding check these fields: warnings (results are degraded; follow it or tell the user); degraded/sort/sort_requested (sort and type report the values actually applied; when the site changes and a filter silently falls back to default sort, degraded=true, so the first item is no longer 'most liked'); truncated (rate-limited mid-scrape, the result is partial, retry later); comments_count is the site's figure including replies and will not match comments_returned + replies_returned, raise limit for more, comments_has_more=false means the end. action=status checks login. Search requires login: run `xhs-search login` once on the desktop to scan a QR code in the terminal, after which the session renews itself. One call takes 10-30 s (real browser) and search has a per-account daily quota, so avoid needless repeats. Misspelled parameter names, sort or type values fail loudly instead of silently using defaults. Errors return error and fix fields; relay fix to the user, who will handle it.
+# Timeout: 300
+# Group: research, shopping
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "query": {
+#       "type": "string",
+#       "description": "A keyword such as '手冲咖啡' searches; a note link (https://www.xiaohongshu.com/explore/xxx?xsec_token=...) reads the note. Prefer the url from search results, it carries the required xsec_token. Not needed for action=status"
+#     },
+#     "action": {
+#       "type": "string",
+#       "enum": [
+#         "search",
+#         "note",
+#         "status"
+#       ],
+#       "description": "Usually omitted: inferred from whether query is a keyword or a link. Pass status explicitly only to check login"
+#     },
+#     "sort": {
+#       "type": "string",
+#       "enum": [
+#         "综合",
+#         "最新",
+#         "最多点赞",
+#         "最多评论",
+#         "最多收藏"
+#       ],
+#       "description": "action=search only, default 综合"
+#     },
+#     "type": {
+#       "type": "string",
+#       "enum": [
+#         "全部",
+#         "视频",
+#         "图文"
+#       ],
+#       "description": "action=search only, default 全部"
+#     },
+#     "limit": {
+#       "type": "integer",
+#       "description": "search: number of results (1-100, default 20); note: number of top-level comments (0-100, default 0 = no comments). Counts top-level comments only; each one's replies come along without using the quota"
+#     }
+#   },
+#   "additionalProperties": false
+# }
+"""
+xhs-search — 小红书笔记检索 CLI
+
+小红书的 web 接口要求 X-s / X-s-common 等签名头，其中 x-s-common 会话内不断变化，
+手搓请求凑不齐就会吃 300011 风控（还会把登录态搞掉）。所以这里不手搓：打开真实
+页面让站点自己发签名请求，我们只截它的 JSON 响应。慢一点，但不用跟版签名算法。
+
+用法:
+  xhs-search search "关键词" [--limit N] [--sort 综合|最新|最多点赞|最多评论|最多收藏]
+                            [--type 全部|视频|图文] [--json]
+  xhs-search note <笔记链接|note_id> [--comments N] [--json]
+  xhs-search login                  扫码登录(终端二维码, 只需一次)
+  xhs-search status                 查看登录态
+  xhs-search doctor                 环境自检
+  xhs-search setup                  自动安装缺失依赖
+"""
+import argparse
+import json
+import os
+import random
+import select
+import signal
+import shutil
+import subprocess
+import sys
+import time
+import urllib.parse
+
+# 窗口尺寸。不设 viewport, 让 outerWidth/innerHeight 保持真实浏览器该有的边框差
+# ——两者完全相等在真实浏览器里不可能出现, 是一眼可辨的自动化特征。
+WINDOW_SIZE = (1440, 900)
+# 缓存根目录。`MIYU_SCRIPT_CACHE_DIR` 让 Miyu（或运维）把所有脚本的中间
+# 产物集中到一处；不设时退回 XDG 默认，脚本单独拿去用也不会往奇怪的地方写。
+DATA_DIR = os.path.join(
+    os.environ.get("MIYU_SCRIPT_CACHE_DIR")
+    or os.environ.get("XDG_CACHE_HOME")
+    or os.path.join(os.path.expanduser("~"), ".cache"),
+    "xhs-search")
+PROFILE_DIR = os.environ.get("XHS_PROFILE_DIR", os.path.join(DATA_DIR, "profile"))
+LOCK_WAIT = int(os.environ.get("XHS_LOCK_WAIT", "60"))    # 等 profile 锁的上限(秒)
+DEADLINE = int(os.environ.get("XHS_DEADLINE", "180"))     # 整体看门狗(秒), 防止无限期挂住
+SORTS = {"综合": None, "最新": "最新", "最多点赞": "最多点赞",
+         "最多评论": "最多评论", "最多收藏": "最多收藏"}
+TYPES = {"全部": None, "视频": "视频", "图文": "图文"}
+
+QUIET = False
+
+
+class NotLoggedIn(RuntimeError):
+    pass
+
+
+class RateLimited(RuntimeError):
+    """本地限速拦下的, 不是站点报的错 —— 调用方不该当故障重试。"""
+    pass
+
+
+def kill_orphan_chrome():
+    """杀掉占着我们 profile 的孤儿 Chrome。
+
+    上一次运行被 Ctrl+C 或 kill 掉时, Python 死了但它拉起的 chrome 常常活下来,
+    继续占着 user-data-dir。flock 只能协调我们自己的进程, 拦不住这个孤儿, 于是
+    下一次运行会**无声地挂死在导航上**。调用点在拿到 flock 之后 —— 那时按定义
+    不存在其它合法实例, 还活着的 chrome 一定是孤儿, 可以安全清掉。
+    """
+    killed = []
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                cmd = f.read().decode("utf-8", "replace")
+        except OSError:
+            continue
+        if PROFILE_DIR in cmd and "chrome" in cmd:
+            try:
+                os.kill(int(pid), signal.SIGKILL)
+                killed.append(pid)
+            except OSError:
+                pass
+    if killed:
+        log(f"清掉 {len(killed)} 个占着 profile 的孤儿 Chrome 进程")
+        time.sleep(1)
+    return killed
+
+
+def install_signal_handlers():
+    """Ctrl+C 要真的能退出。
+
+    sync Playwright 阻塞在驱动管道上时会把 KeyboardInterrupt 吞掉, 表现成"卡住
+    还杀不掉"。所以这里不走异常路径: 直接清掉 chrome 然后 os._exit。
+    """
+    def bail(signum, _frame):
+        try:
+            kill_orphan_chrome()
+        finally:
+            print(json.dumps({"error": f"被信号 {signum} 中断"}, ensure_ascii=False),
+                  flush=True)
+            os._exit(130)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, bail)
+    if DEADLINE > 0 and hasattr(signal, "SIGALRM"):
+        # 看门狗: 任何路径都不允许无限期挂住
+        def timeout(_signum, _frame):
+            kill_orphan_chrome()
+            print(json.dumps({"error": f"超过 {DEADLINE}s 未完成, 已中止",
+                              "fix": "重跑一次; 一直如此就 XHS_DEADLINE=300 加大上限"},
+                             ensure_ascii=False), flush=True)
+            os._exit(1)
+
+        signal.signal(signal.SIGALRM, timeout)
+        signal.alarm(DEADLINE)
+
+
+def log(msg):
+    """进度日志走 stderr, 不污染 stdout 的 JSON"""
+    if not QUIET:
+        print(f"[{time.strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
+
+
+# ---------------------------------------------------------------- 环境
+
+def find_system_chromium():
+    for name in ("google-chrome", "google-chrome-stable", "chromium",
+                 "chromium-browser", "microsoft-edge", "microsoft-edge-stable"):
+        p = shutil.which(name)
+        if p:
+            return name, p
+    return None, None
+
+
+# Playwright 驱动 JS 求值要开 CDP 的 Runtime 域, 页面能从执行上下文的侧信道探到,
+# 这是目前反爬最主要的自动化特征, 页内 JS 注入补不掉。patchright 是官方的 drop-in
+# 补丁版, 从驱动层绕开 Runtime.enable(代价: Console API 不可用, 本脚本不依赖)。
+# 没装就退回 playwright: 功能完全一样, 只是隐蔽性差。
+_DRIVERS = ("patchright", "playwright")
+
+
+def driver_name():
+    for mod in _DRIVERS:
+        try:
+            __import__(mod)
+            return mod
+        except ImportError:
+            continue
+    return None
+
+
+def playwright_available():
+    return driver_name() is not None
+
+
+def chromium_bundled():
+    cache = os.path.expanduser("~/.cache/ms-playwright")
+    return os.path.isdir(cache) and any(d.startswith("chromium") for d in os.listdir(cache))
+
+
+_XVFB = None
+_ON_XVFB = False
+
+
+def _stop_display():
+    global _XVFB
+    if _XVFB is not None:
+        try:
+            _XVFB.terminate()
+            _XVFB.wait(timeout=3)
+        except Exception:
+            pass
+        _XVFB = None
+
+
+def ensure_display():
+    """返回 True 表示可以按 headed 启动浏览器。
+
+    headless 模式有两个躲不掉的硬特征: WebGL 回落到 SwiftShader 软件渲染,
+    以及 outerWidth/outerHeight 等于 inner。所以默认起一块 Xvfb 虚拟屏跑真
+    headed —— 浏览器以为自己有屏幕, 用户桌面上却看不到窗口。
+    XHS_HEADED=1 时改用真实显示, 让人能看见窗口(排查登录用)。
+    """
+    global _XVFB, _ON_XVFB
+    if os.environ.get("XHS_HEADED") == "1":
+        return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    if _XVFB is not None:
+        return True
+    if not shutil.which("Xvfb"):
+        # 没有 Xvfb 就只能二选一: 有真显示就用(会弹窗, 但比 headless 隐蔽)。
+        return bool(os.environ.get("DISPLAY"))
+    import atexit
+    for num in range(99, 130):
+        if os.path.exists("/tmp/.X%d-lock" % num):
+            continue
+        try:
+            proc = subprocess.Popen(
+                ["Xvfb", ":%d" % num, "-screen", "0", "1920x1080x24", "-nolisten", "tcp"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            return bool(os.environ.get("DISPLAY"))
+        # 固定 sleep 是竞态: 赌输时 Chrome 连不上虚拟屏, 行为不确定(实测会拿到真实
+        # 显示器分辨率)。改成等它的 socket 真出现。
+        sock = "/tmp/.X11-unix/X%d" % num
+        deadline = time.time() + 10
+        while time.time() < deadline and proc.poll() is None and not os.path.exists(sock):
+            time.sleep(0.05)
+        if proc.poll() is None and os.path.exists(sock):
+            os.environ["DISPLAY"] = ":%d" % num
+            # Chrome 的 ozone 只要看见 WAYLAND_DISPLAY 就走 Wayland 后端, 完全无视
+            # DISPLAY —— 虚拟屏会被绕过, 窗口直接弹到用户桌面上。必须摘掉。
+            os.environ.pop("WAYLAND_DISPLAY", None)
+            _XVFB = proc
+            _ON_XVFB = True
+            atexit.register(_stop_display)
+            return True
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        break
+    return bool(os.environ.get("DISPLAY"))
+
+
+# ---- 行为层 ----------------------------------------------------------------
+# 指纹只是风控的一半; 另一半是行为序列。固定间隔、固定滚动距离、连续高频检索,
+# 这些特征跟浏览器多真实无关, 光靠反检测补丁盖不住。
+PACE_FILE = os.path.join(DATA_DIR, "pace.json")
+MIN_GAP_S = float(os.environ.get("XHS_MIN_GAP") or 20)      # 两次检索最小间隔
+# 每日上限默认不设: 小红书自己就有当日检索上限, 我们再压一道只会先于站点把人拦住。
+# 想要本地闸的设 XHS_DAILY_CAP=N 即可。
+DAILY_CAP = int(os.environ.get("XHS_DAILY_CAP") or 0)
+
+
+def jitter(ms, spread=0.35):
+    """把固定等待摊成一个区间。机器等得比人准, 这是最廉价的行为特征。"""
+    return int(ms * (1.0 + random.uniform(-spread, spread)))
+
+
+def _load_pace():
+    try:
+        with open(PACE_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def throttle(kind="search"):
+    """按最小间隔限速; 设了 XHS_DAILY_CAP 时再加一道每日上限。返回实际等待秒数。"""
+    now = time.time()
+    pace = _load_pace()
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    if pace.get("day") != day:
+        pace = {"day": day, "count": 0, "last": 0.0}
+    if DAILY_CAP and pace.get("count", 0) >= DAILY_CAP:
+        raise RateLimited(
+            "今日已检索 %d 次, 达到 XHS_DAILY_CAP 设定的上限 %d。"
+            % (pace["count"], DAILY_CAP))
+    waited = 0.0
+    gap = now - float(pace.get("last") or 0)
+    need = MIN_GAP_S * random.uniform(0.8, 1.4) - gap
+    if need > 0:
+        waited = min(need, MIN_GAP_S * 2)
+        time.sleep(waited)
+    pace["last"] = time.time()
+    pace["count"] = int(pace.get("count") or 0) + 1
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        tmp = PACE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(pace, f)
+        os.replace(tmp, PACE_FILE)
+    except OSError:
+        pass
+    return waited
+
+
+def _has_render_node():
+    try:
+        return any(n.startswith("renderD") for n in os.listdir("/dev/dri"))
+    except OSError:
+        return False
+
+
+def launch_kwargs():
+    headed = ensure_display()
+    args = ["--no-sandbox", "--disable-blink-features=AutomationControlled",
+            "--window-size=%d,%d" % WINDOW_SIZE]
+    if _ON_XVFB:
+        # 虚拟屏上必须锁死 x11 后端(见 ensure_display 里摘 WAYLAND_DISPLAY 的原因)。
+        args.append("--ozone-platform=x11")
+        # Xvfb 里没有 GLX, Chrome 的 WebGL 会直接创建失败(比 SwiftShader 更可疑)。
+        # ANGLE 走 Vulkan 不经过 X, 能直接用 /dev/dri 上的真显卡。
+        if _has_render_node():
+            args += ["--use-gl=angle", "--use-angle=vulkan"]
+    kw = {"headless": not headed, "args": args}
+    if shutil.which("google-chrome") or shutil.which("google-chrome-stable"):
+        kw["channel"] = "chrome"
+    elif shutil.which("microsoft-edge") or shutil.which("microsoft-edge-stable"):
+        kw["channel"] = "msedge"
+    elif chromium_bundled():
+        kw["channel"] = "chromium"
+    else:
+        _, path = find_system_chromium()
+        if path:
+            kw["executable_path"] = path
+        else:
+            kw["channel"] = "chromium"
+    return kw
+
+
+class Browser:
+    """带登录态的持久化浏览器上下文。登录态存 profile 目录, cookie 会自己续期。"""
+
+    def __init__(self):
+        self._lockf = None
+        self._pw = None
+        self.ctx = None
+        self.page = None
+
+    def _acquire(self):
+        """独占 profile。持久化 profile 上有 Chrome 自己的文件锁，两个进程同时开会
+        撞出难懂的报错(或静默复用同一个窗口)，不如在这里先排队。"""
+        import fcntl
+        os.makedirs(DATA_DIR, exist_ok=True)
+        self._lockf = open(os.path.join(DATA_DIR, "profile.lock"), "w")
+        deadline = time.monotonic() + LOCK_WAIT
+        announced = False
+        while True:
+            try:
+                fcntl.flock(self._lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return
+            except OSError:
+                if not announced:  # 别让它看起来像卡死了
+                    log(f"另一个 xhs-search 正占着 profile, 等它释放(最多 {LOCK_WAIT}s, Ctrl+C 可中断)")
+                    announced = True
+                if time.monotonic() > deadline:
+                    raise RuntimeError(
+                        f"另一个 xhs-search 正在占用浏览器 profile(等了 {LOCK_WAIT}s)。"
+                        "请等它跑完, 或确认没有 login 窗口还开着。")
+                time.sleep(1)
+
+    def _release(self):
+        import fcntl
+        if getattr(self, "_lockf", None):
+            try:
+                fcntl.flock(self._lockf, fcntl.LOCK_UN)
+                self._lockf.close()
+            except Exception:
+                pass
+            self._lockf = None
+
+    def __enter__(self):
+        if driver_name() == "patchright":
+            from patchright.sync_api import sync_playwright
+        else:
+            from playwright.sync_api import sync_playwright
+        self._acquire()
+        os.makedirs(PROFILE_DIR, exist_ok=True)
+        kill_orphan_chrome()
+        # 上一次 Chrome 没退干净还会留下 Singleton*, 一并清掉。
+        for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+            try:
+                os.unlink(os.path.join(PROFILE_DIR, name))
+            except OSError:
+                pass
+        # 必须先算好 launch_kwargs: 它内部会起虚拟屏并改写 DISPLAY/WAYLAND_DISPLAY,
+        # 而 driver 进程在 start() 那一刻就把环境拷贝走了 —— 顺序反了的话 Chrome
+        # 继承的还是旧环境, 会绕开虚拟屏跑到用户真实桌面上。
+        kwargs = launch_kwargs()
+        self._pw = sync_playwright().start()
+        self.ctx = self._pw.chromium.launch_persistent_context(
+            user_data_dir=PROFILE_DIR, locale="zh-CN",
+            timezone_id="Asia/Shanghai", no_viewport=True,
+            **kwargs)
+        self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            self.ctx.close()
+        finally:
+            try:
+                self._pw.stop()
+            finally:
+                self._release()
+
+    def collect(self, url, match, want, max_scrolls=10, settle=2500, before_scroll=None):
+        """打开页面, 收集站点自己发出的、URL 含 match 的成功响应; 滚动直到够数或到底。
+
+        回调里**只攒 Response 对象, 不读 body** —— sync API 在事件回调里发协议调用
+        (r.json()) 会把调用嵌套死, 表现为 page.goto 一直挂到超时。body 留到主流程读。
+        """
+        pending, payloads, blocked = [], [], []
+
+        def on_resp(r):
+            if match in r.url:
+                pending.append(r)
+
+        def drain():
+            while pending:
+                r = pending.pop(0)
+                try:
+                    body = r.json()
+                except Exception:
+                    continue
+                if body.get("code") in (0, 1000) or body.get("success"):
+                    payloads.append(body.get("data") or {})
+                else:
+                    blocked.append(f"code={body.get('code')} msg={body.get('msg')}")
+
+        def got():
+            return sum(len(p.get("items") or p.get("comments") or p.get("notes") or [])
+                       for p in payloads)
+
+        self.page.on("response", on_resp)
+        try:
+            # 只等 commit: 登录态下这些页面常有长期挂起的子资源, 等 domcontentloaded
+            # 会一直挂到超时, 但内容其实早就在渲染了。
+            self.page.goto(url, wait_until="commit", timeout=60000)
+            self.page.wait_for_timeout(jitter(settle))
+            if before_scroll:
+                # reset 交给钩子在"切换动作刚发生"的那一刻调用: 切换前抓到的是旧排序
+                # 的结果, 必须丢掉; 但切换后到达的必须留下, 所以时机只能由钩子决定。
+                def reset():
+                    pending.clear()
+                    payloads.clear()
+
+                before_scroll(self.page, reset)
+                self.page.wait_for_timeout(jitter(settle))
+            drain()
+            for _ in range(max_scrolls):
+                if got() >= want:
+                    break
+                before = len(payloads)
+                # 人不会一次滚 4000px 再精确停 2.5 秒: 拆成几段不等长的滚动,
+                # 偶尔往回带一点(看漏了往回翻是很常见的动作)。
+                for _ in range(random.randint(3, 5)):
+                    self.page.mouse.wheel(0, random.randint(700, 1300))
+                    self.page.wait_for_timeout(random.randint(90, 320))
+                if random.random() < 0.25:
+                    self.page.mouse.wheel(0, -random.randint(150, 400))
+                    self.page.wait_for_timeout(random.randint(150, 450))
+                self.page.wait_for_timeout(jitter(settle))
+                drain()
+                if len(payloads) == before:  # 一轮没新数据, 到底了
+                    break
+        finally:
+            self.page.remove_listener("response", on_resp)
+        drain()
+
+        if not payloads:
+            text = self.page.evaluate("document.body.innerText")
+            if "登录后查看" in text or "扫码" in text:
+                raise NotLoggedIn("登录态已失效")
+            if blocked:
+                raise RuntimeError("接口被拒: " + "; ".join(blocked[:2]))
+            raise RuntimeError("没拿到数据: 可能被验证码拦截, 或页面结构变了")
+        # blocked 一起交出去: 滚到第三屏才撞上"今日搜索次数已达上限"时, 前面那两屏是
+        # 真数据, 全丢掉可惜; 但闷声只返回前两屏更糟 —— 调用方会把"限频截断的半截结果"
+        # 当成完整结果, 得出"就这么多"的错结论。所以照常返回, 但必须带上这件事。
+        return payloads, blocked
+
+
+# ---------------------------------------------------------------- 解析
+
+def _int(v):
+    """点赞数可能是 '1.2万' 这类字符串"""
+    if isinstance(v, int):
+        return v
+    s = str(v or "0").strip()
+    try:
+        if s.endswith("万"):
+            return int(float(s[:-1]) * 10000)
+        if s.endswith("亿"):
+            return int(float(s[:-1]) * 100000000)
+        return int("".join(c for c in s if c.isdigit()) or 0)
+    except ValueError:
+        return 0
+
+
+def note_url(nid, token=""):
+    u = f"https://www.xiaohongshu.com/explore/{nid}"
+    if token:
+        u += f"?xsec_token={urllib.parse.quote(token)}&xsec_source=pc_search"
+    return u
+
+
+def looks_like_note(arg):
+    """链接, 或者 24 位十六进制的裸 note_id, 都当成"看正文"。"""
+    if arg.startswith("http"):
+        return "xiaohongshu.com" in arg or "xhslink.com" in arg
+    return len(arg) == 24 and all(c in "0123456789abcdef" for c in arg.lower())
+
+
+def parse_ref(ref):
+    """从链接或裸 id 里取出 (note_id, xsec_token)"""
+    if not ref.startswith("http"):
+        return ref, ""
+    p = urllib.parse.urlparse(ref)
+    return (p.path.rstrip("/").split("/")[-1],
+            urllib.parse.parse_qs(p.query).get("xsec_token", [""])[0])
+
+
+# ---------------------------------------------------------------- 命令
+
+def do_search(keyword, limit, sort, ntype):
+    throttle("search")
+    # 「综合」和「全部」不用点任何东西, 天生就是生效的; 其余的要靠点击, 点不动就降级。
+    eff = {"sort": "综合" if SORTS.get(sort) is None else None,
+           "type": "全部" if TYPES.get(ntype) is None else None,
+           "warnings": []}
+
+    def apply_filters(page, reset):
+        # 面板是 hover 展开的, 而且鼠标一离开「筛选」就收起 —— 所以不能用 click()
+        # (它要移动鼠标, 移到一半面板就没了), 只能直接派发 DOM click。
+        def dom_click(text):
+            el = page.get_by_text(text, exact=True).first
+            el.wait_for(state="visible", timeout=5000)
+            el.evaluate("e => (e.closest('li') || e.parentElement || e).click()")
+
+        try:
+            if TYPES.get(ntype):
+                dom_click(TYPES[ntype])
+                reset()
+                page.wait_for_timeout(2500)
+                log(f"已切换类型: {ntype}")
+                eff["type"] = ntype
+        except Exception:
+            # 降级本身不致命, 但"没告诉调用方"才是: 要「视频」给了图文混排,
+            # 结果长得完全正常, 光看输出发现不了。
+            log("类型标签点不动, 退回全部")
+            eff["type"] = "全部"
+            eff["warnings"].append(
+                f"筛选「{ntype}」没点动(站点可能改版), 实际返回的是「全部」类型的结果。")
+        try:
+            if SORTS.get(sort):
+                page.get_by_text("筛选", exact=True).first.hover(timeout=5000)
+                page.wait_for_timeout(1200)
+                dom_click(SORTS[sort])
+                reset()
+                page.wait_for_timeout(3000)
+                log(f"已切换排序: {sort}")
+                eff["sort"] = sort
+        except Exception:
+            log("筛选面板点不动(可能改版了), 退回综合排序")
+            eff["sort"] = "综合"
+            eff["warnings"].append(
+                f"排序「{sort}」没点动(站点可能改版), 实际是「综合」排序 —— "
+                "别把第一条当成点赞/评论最多的那条。")
+
+    # 末尾斜杠 + type=51 是站点自己的规范形式, 省掉一次 301
+    url = ("https://www.xiaohongshu.com/search_result/?keyword="
+           + urllib.parse.quote(keyword) + "&type=51")
+    with Browser() as b:
+        log(f"打开搜索页: 「{keyword}」")
+        payloads, blocked = b.collect(url, "/search/notes", want=limit, max_scrolls=12,
+                                      before_scroll=apply_filters)
+    if blocked:
+        eff["warnings"].append(
+            "抓到一半接口开始拒绝(" + "; ".join(blocked[:2]) + "), "
+            "下面是被截断的部分结果 —— 不代表全部, 也别据此判断"
+            "「就这么多」。多半是触发了搜索频率限制, 隔一阵再试。")
+    notes, seen = [], set()
+    for p in payloads:
+        for raw in p.get("items", []):
+            if raw.get("model_type") != "note":
+                continue  # 广告位/热搜词条
+            nid = raw.get("id", "")
+            if nid in seen:
+                continue
+            seen.add(nid)
+            card = raw.get("note_card") or {}
+            st = card.get("interact_info") or {}
+            notes.append({
+                "note_id": nid,
+                "title": card.get("display_title", ""),
+                "author": (card.get("user") or {}).get("nickname", ""),
+                "type": card.get("type", ""),
+                "liked": _int(st.get("liked_count")),
+                "collected": _int(st.get("collected_count")),
+                "comments": _int(st.get("comment_count")),
+                "url": note_url(nid, raw.get("xsec_token", "")),
+            })
+    log(f"共 {len(notes)} 条")
+    if len(notes) < limit and not blocked:
+        eff["warnings"].append(
+            f"只翻到 {len(notes)} 条(要的是 {limit} 条), 已经滚到底了 —— "
+            "这个关键词的结果就这么多。")
+    # sort/type 写的是**实际生效值**, 不是请求值。之前这里回显请求值, 于是
+    # 「要最多点赞, 拿到综合排序」在返回结构里长得跟成功一模一样。
+    return {"keyword": keyword,
+            "sort": eff["sort"], "type": eff["type"],
+            "sort_requested": sort, "type_requested": ntype,
+            "degraded": eff["sort"] != sort or eff["type"] != ntype,
+            "truncated": bool(blocked),
+            "warnings": eff["warnings"],
+            "count": len(notes[:limit]), "notes": notes[:limit]}
+
+
+def _comment(c):
+    """一条评论 + 它的楼中楼。
+
+    楼中楼不是"次要信息": 小红书的问答几乎全发生在这里 —— 主楼是"求名字/多少钱",
+    博主的回答在 subComments 里。之前只取主楼, 等于把三个问题原样交出去、零个答案,
+    读起来像所有人都在自言自语。
+    """
+    subs = c.get("subComments") or []
+    total = _int(c.get("subCommentCount"))
+    return {
+        "author": (c.get("userInfo") or {}).get("nickname", ""),
+        "content": c.get("content", ""),
+        "liked": _int(c.get("likeCount")),
+        "ip_location": c.get("ipLocation", ""),
+        "replies": [{
+            "author": (s.get("userInfo") or {}).get("nickname", ""),
+            "content": s.get("content", ""),
+            "liked": _int(s.get("likeCount")),
+            "ip_location": s.get("ipLocation", ""),
+            # 回复谁: 楼中楼里 A 回 B 很常见, 没这个字段读起来会串线
+            "reply_to": ((s.get("targetComment") or {}).get("userInfo") or {}).get("nickname", ""),
+        } for s in subs],
+        "reply_count": max(total, len(subs)),
+        "replies_truncated": bool(c.get("subCommentHasMore")) or total > len(subs),
+    }
+
+
+def do_note(ref, want_comments):
+    throttle("note")
+    """笔记正文不走接口: 它 SSR 在 window.__INITIAL_STATE__ 里, 评论也在同一个 store,
+    滚动时 store 自己会增长。直接读 store 比拼 API 的 snake_case 和 SSR 的 camelCase 干净。"""
+    nid, token = parse_ref(ref)
+    url = note_url(nid, token)
+    read = ("() => { const m = (window.__INITIAL_STATE__||{}).note?.noteDetailMap || {};"
+            " const k = Object.keys(m)[0]; return k ? JSON.parse(JSON.stringify(m[k])) : null; }")
+    with Browser() as b:
+        log(f"打开笔记: {nid}")
+        b.page.goto(url, wait_until="commit", timeout=60000)
+        b.page.wait_for_timeout(3500)
+        data = b.page.evaluate(read)
+        if not data or not (data.get("note") or {}).get("noteId"):
+            text = b.page.evaluate("document.body.innerText")
+            if "登录后查看" in text or "扫码" in text:
+                raise NotLoggedIn("登录态已失效")
+            raise RuntimeError(f"笔记取不到, 可能已删除或 xsec_token 失效: {nid}")
+        if want_comments:
+            for _ in range(10):
+                got = len(((data.get("comments") or {}).get("list")) or [])
+                if got >= want_comments or not (data.get("comments") or {}).get("hasMore"):
+                    break
+                b.page.mouse.wheel(0, 3000)
+                b.page.wait_for_timeout(2000)
+                fresh = b.page.evaluate(read)
+                if fresh:
+                    data = fresh
+
+    note = data.get("note") or {}
+    st = note.get("interactInfo") or {}
+    out = {
+        "note_id": nid,
+        "title": note.get("title", ""),
+        "desc": note.get("desc", ""),
+        "author": (note.get("user") or {}).get("nickname", ""),
+        "type": note.get("type", ""),
+        "time": note.get("time"),
+        "ip_location": note.get("ipLocation", ""),
+        "tags": [t.get("name") for t in note.get("tagList") or [] if t.get("name")],
+        "liked": _int(st.get("likedCount")),
+        "collected": _int(st.get("collectedCount")),
+        "comments_count": _int(st.get("commentCount")),
+        "images": [(im.get("infoList") or [{}])[-1].get("url", "")
+                   for im in note.get("imageList") or []],
+        "url": url,
+    }
+    if want_comments:
+        blk = (data.get("comments") or {})
+        main = (blk.get("list") or [])[:want_comments]
+        out["comments"] = [_comment(c) for c in main]
+        out["comments_returned"] = len(main)
+        out["replies_returned"] = sum(len(c["replies"]) for c in out["comments"])
+        out["comments_has_more"] = bool(blk.get("hasMore"))
+        notes_ = []
+        # commentCount 是站点口径的**总数(含楼中楼)**, 跟我们返回的主楼数不是一回事。
+        # 之前只回显 commentCount, 于是"18 条评论只给了 3 条"看起来像抓漏了,
+        # 其实是 15 条都在楼中楼里。把两个数都摆出来, 免得调用方误判。
+        if out["comments_count"] > out["comments_returned"] + out["replies_returned"]:
+            notes_.append(
+                f"站点显示共 {out['comments_count']} 条评论(该口径含楼中楼), "
+                f"这里返回 {out['comments_returned']} 条主楼 + "
+                f"{out['replies_returned']} 条回复。"
+                + ("还能往下翻, 加大 limit 可以多拿。" if out["comments_has_more"]
+                   else "已经翻到底了, 剩下的是没展开的楼中楼。"))
+        if any(c["replies_truncated"] for c in out["comments"]):
+            notes_.append("有楼中楼没展开完(replies_truncated=true 的那几条), "
+                          "站点要点「展开更多回复」才给, 这里拿到的是首屏那几条。")
+        if notes_:
+            out["warnings"] = notes_
+    return out
+
+
+def _whoami(b, timeout_s=12):
+    """截站点自己发的 user/me 响应判断登录态 —— 不手搓请求, 免得踩风控"""
+    box = {}
+
+    def on_resp(r):
+        if "/v2/user/me" in r.url and not box:
+            try:
+                box.update((r.json().get("data") or {}))
+            except Exception:
+                pass
+
+    b.page.on("response", on_resp)
+    b.page.goto("https://www.xiaohongshu.com/explore", wait_until="commit", timeout=60000)
+    for _ in range(timeout_s * 2):
+        if box:
+            break
+        b.page.wait_for_timeout(500)
+    b.page.remove_listener("response", on_resp)
+    return box
+
+
+def do_status():
+    with Browser() as b:
+        me = _whoami(b)
+    # 游客会话也有 user_id, 但带 guest=true, 搜不了东西
+    ok = bool(me.get("user_id")) and not me.get("guest")
+    return {"logged_in": ok, "nickname": me.get("nickname"), "user_id": me.get("user_id"),
+            "hint": None if ok else f"运行: {login_command_hint('xhs-search')}"}
+
+
+LOGIN_STATUS_PATH = os.path.join(DATA_DIR, "login-status.json")
+
+def login_command_hint(tool):
+    """给出**能真正生效**的登录命令。
+
+    Miyu 调脚本时会设 MIYU_SCRIPT_CACHE_DIR(指向 ~/.miyu/cache),登录态落在
+    那儿。用户照着裸命令在终端跑,会登到 ~/.cache/<tool> 去——登了等于没登。
+    变量在场时把它带进命令里。
+    """
+    root = os.environ.get("MIYU_SCRIPT_CACHE_DIR")
+    if not root:
+        return f"{tool} login"
+    return f"MIYU_SCRIPT_CACHE_DIR={root} {tool} login"
+
+
+
+def _write_login_status(**fields):
+    """登录进度写文件，供 `login --check` 读。
+
+    check 不能去开浏览器：登录窗口开着时 profile 被 flock 独占，check 会一直
+    等锁到超时。
+    """
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        fields.setdefault("updated_at", int(time.time()))
+        with open(LOGIN_STATUS_PATH, "w") as f:
+            json.dump(fields, f)
+    except Exception:
+        pass
+
+
+def read_login_status():
+    try:
+        with open(LOGIN_STATUS_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {"state": "unknown"}
+
+
+def start_login(timeout_s=600, qr_wait=25):
+    """拉起后台登录、等二维码出来就返回，不等人扫。
+
+    原来是单次阻塞调用等满 600 秒——Miyu 脚本工具的超时上限是 300 秒
+    (index.rs 的 .min(300))，必被砍断，而且整轮对话卡住。现在第一步只负责
+    把二维码交出来，调用方(AI)把图发给用户，再轮询 `login --check`。
+    """
+    status = read_login_status()
+    if status.get("state") == "waiting" and time.time() - status.get("updated_at", 0) < timeout_s:
+        return status
+    png_path = os.path.join(DATA_DIR, "login-qr.png")
+    for stale in (png_path, LOGIN_STATUS_PATH):
+        try:
+            os.remove(stale)
+        except OSError:
+            pass
+    _write_login_status(state="waiting", message="正在获取二维码")
+    subprocess.Popen(
+        [sys.executable, os.path.abspath(__file__), "login", "--blocking",
+         "--timeout", str(timeout_s)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + qr_wait
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        cur = read_login_status()
+        if cur.get("state") in ("qr_ready", "done", "failed"):
+            return cur
+    return {"state": "waiting", "message": "二维码还没出来，稍后再用 login --check 查"}
+
+
+def do_login(timeout_s=600):
+    if hasattr(signal, "SIGALRM"):
+        signal.alarm(0)  # 等人扫码本来就慢, 关掉看门狗
+    qr = {}
+
+    def on_resp(r):
+        if "/login/qrcode/create" in r.url and not qr:
+            try:
+                d = r.json().get("data") or {}
+            except Exception:
+                return
+            if d.get("url"):
+                qr["url"] = d["url"]
+
+    with Browser() as b:
+        me = _whoami(b)
+        if me.get("user_id") and not me.get("guest"):
+            print(f"已是登录态: {me.get('nickname')} ({me.get('user_id')})", file=sys.stderr)
+            return {"logged_in": True, "nickname": me.get("nickname"), "user_id": me.get("user_id")}
+        b.page.on("response", on_resp)
+        b.page.goto("https://www.xiaohongshu.com/explore", wait_until="commit", timeout=60000)
+        for _ in range(20):
+            if qr:
+                break
+            b.page.wait_for_timeout(1000)
+        print("\n用小红书 App 扫码登录:\n", file=sys.stderr)
+        matrix = None
+        try:
+            matrix = b.page.evaluate(_QR_MATRIX_JS)
+        except Exception:
+            pass
+        if matrix:
+            _print_qr_matrix(matrix)
+        elif qr:
+            _print_qr(qr["url"])
+        png = _save_qr_png(b.page)
+        if png:
+            print(f"\n二维码图片: {png}", file=sys.stderr)
+        _write_login_status(state="qr_ready", qr_png=png or None,
+                            qr_url=(qr or {}).get("url"),
+                            message="扫这个二维码登录小红书，或在手机上打开链接")
+        if qr:
+            # 手机上直接点开这个链接也能登录, 不一定非要扫码
+            print(f"或在手机上打开: {qr['url']}\n", file=sys.stderr)
+        if not matrix and not png:
+            print("[!] 没抓到二维码, 试试有头模式: XHS_HEADED=1 xhs-search login", file=sys.stderr)
+        print(f"等待扫码({timeout_s}s)...", file=sys.stderr)
+        for _ in range(timeout_s):
+            b.page.wait_for_timeout(1000)
+            if _has_session_cookie(b) and not _login_modal_visible(b.page):
+                info = _whoami(b)
+                if info.get("user_id") and not info.get("guest"):
+                    print(f"\n登录成功: {info.get('nickname')} ({info.get('user_id')})", file=sys.stderr)
+                    _write_login_status(state="done", logged_in=True,
+                                        nickname=info.get("nickname"),
+                                        user_id=info.get("user_id"))
+                    return {"logged_in": True, "nickname": info.get("nickname"),
+                            "user_id": info.get("user_id")}
+        _write_login_status(state="timeout", logged_in=False, message="超时未完成扫码")
+        raise RuntimeError("超时未完成扫码")
+
+
+def _has_session_cookie(b):
+    """web_session 带 HttpOnly, document.cookie 里永远读不到 —— 拿页面 JS 判断登录
+    会恒为假, 扫码明明成功了也只会一路等到超时。只能从浏览器上下文取。"""
+    try:
+        return any(c.get("name") == "web_session" and c.get("value") for c in b.ctx.cookies())
+    except Exception:
+        return False
+
+
+def _login_modal_visible(page):
+    try:
+        return "登录后查看" in page.evaluate("document.body.innerText")
+    except Exception:
+        return False
+
+
+def _save_qr_png(page):
+    """把页面上的二维码截成 PNG, 留一份给远程/无终端渲染的场景。"""
+    for sel in (".qrcode-img", "img.qrcode-img", ".qrcode", "[class*='qrcode']",
+                ".login-container", ".login-box"):
+        try:
+            el = page.locator(sel).first
+            if el.count() and el.is_visible():
+                path = os.path.join(DATA_DIR, "login-qr.png")
+                os.makedirs(DATA_DIR, exist_ok=True)
+                el.screenshot(path=path)
+                return path
+        except Exception:
+            continue
+    return None
+
+
+# 让浏览器把二维码读成 0/1 矩阵: 它本来就有完整的图形栈, 比在 Python 里解 PNG
+# 或者自己实现一个 QR 编码器都省事, 而且画出来的就是页面上那个码本身。
+_QR_MATRIX_JS = r"""() => {
+  // 逐个按优先级试 —— 写成一串给 querySelector 会命中 DOM 里更靠前的其它 data 图
+  let el = null;
+  for (const sel of ['img.qrcode-img', '.qrcode-img img', '[class*=qrcode] img',
+                     '[class*=qrcode] canvas', 'img[src^="data:image"]']) {
+    const hit = document.querySelector(sel);
+    if (hit) { el = hit; break; }
+  }
+  if (!el) return null;
+  const w = el.naturalWidth || el.width, h = el.naturalHeight || el.height;
+  if (!w || !h) return null;
+  const cv = document.createElement('canvas');
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d');
+  ctx.drawImage(el, 0, 0, w, h);
+  let d;
+  try { d = ctx.getImageData(0, 0, w, h).data; } catch (e) { return null; }
+  const dark = (x, y) => {
+    const i = (y * w + x) * 4;
+    return d[i + 3] > 128 && (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) < 128;
+  };
+  // 去掉白边, 框出码本身
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (dark(x, y)) {
+    if (x < x0) x0 = x; if (x > x1) x1 = x;
+    if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  if (x1 < 0) return null;
+  // 左上角定位图案横向是 7 个模块宽, 由此反推模块尺寸
+  let run = 0;
+  while (x0 + run <= x1 && dark(x0 + run, y0 + 1)) run++;
+  const mod = run / 7;
+  if (!(mod >= 1)) return null;
+  const n = Math.round((x1 - x0 + 1) / mod);
+  if (n < 21 || n > 177) return null;
+  const out = [];
+  for (let r = 0; r < n; r++) {
+    const row = [];
+    for (let c = 0; c < n; c++) {
+      const px = Math.min(w - 1, Math.round(x0 + (c + 0.5) * mod));
+      const py = Math.min(h - 1, Math.round(y0 + (r + 0.5) * mod));
+      row.push(dark(px, py) ? 1 : 0);
+    }
+    out.push(row);
+  }
+  return out;
+}"""
+
+
+def _print_qr_matrix(m):
+    """半块字符 + 真彩背景画出来: 一个字符格装两行模块, 长宽比刚好接近正方。
+    显式指定前景/背景色, 免得终端主题把黑白反过来导致扫不出。"""
+    quiet = 4
+    n = len(m)
+    grid = [[0] * (n + quiet * 2) for _ in range(quiet)]
+    for row in m:
+        grid.append([0] * quiet + list(row) + [0] * quiet)
+    grid += [[0] * (n + quiet * 2) for _ in range(quiet)]
+    if len(grid) % 2:
+        grid.append([0] * len(grid[0]))
+    BLACK, WHITE = "0;0;0", "255;255;255"
+    for r in range(0, len(grid), 2):
+        line = []
+        for top, bot in zip(grid[r], grid[r + 1]):
+            fg = BLACK if top else WHITE
+            bg = BLACK if bot else WHITE
+            line.append(f"\033[38;2;{fg}m\033[48;2;{bg}m\u2580")
+        print("".join(line) + "\033[0m", file=sys.stderr)
+
+
+def _print_qr(url):
+    try:
+        import qrcode
+    except ImportError:
+        return  # 没这个模块就算了, 上面已经给了矩阵/PNG/链接
+    qr = qrcode.QRCode(border=1)
+    qr.add_data(url)
+    qr.make(fit=True)
+    qr.print_ascii(out=sys.stderr, invert=True)
+
+
+# ---------------------------------------------------------------- doctor / setup
+
+def preflight():
+    problems = []
+    if not playwright_available():
+        problems.append("playwright 未安装 → 运行: xhs-search setup (或 sudo pacman -S python-playwright)")
+    if not chromium_bundled() and not find_system_chromium()[0]:
+        problems.append("没有可用浏览器(需 Chromium 系) → 运行: xhs-search setup (或 sudo pacman -S chromium)")
+    return not problems, problems
+
+
+def stealth_warnings():
+    """能跑 ≠ 够隐蔽。这些不算故障, 但会显著提高账号被风控标记的概率。"""
+    warns = []
+    if driver_name() != "patchright":
+        warns.append("用的是 playwright 而非 patchright: CDP Runtime.enable 会暴露自动化特征 "
+                     "→ pip install --user patchright")
+    if not shutil.which("Xvfb") and not os.environ.get("DISPLAY"):
+        warns.append("没有 Xvfb 也没有显示器, 只能 headless 运行: WebGL 会回落到 SwiftShader "
+                     "软件渲染, 是明显的自动化特征 → 安装 xorg-server-xvfb")
+    if shutil.which("Xvfb") and not _has_render_node():
+        warns.append("/dev/dri 下没有渲染节点: 虚拟屏里 WebGL 会创建失败, 这本身是异常特征")
+    if not (shutil.which("google-chrome") or shutil.which("google-chrome-stable")):
+        warns.append("没装 Google Chrome, 退回 Chromium: 指纹与普通用户不同 → 建议装 google-chrome")
+    return warns
+
+
+def do_doctor():
+    ok, problems = preflight()
+    name, path = find_system_chromium()
+    logged = None
+    if ok:
+        try:
+            logged = do_status().get("logged_in")
+        except Exception as e:
+            problems.append(f"浏览器启动失败: {e}")
+            ok = False
+    return {"ok": ok, "playwright": playwright_available(),
+            "driver": driver_name(), "stealth_warnings": stealth_warnings(),
+            "system_browser": name, "browser_path": path,
+            "bundled_chromium": chromium_bundled(),
+            "profile_dir": PROFILE_DIR, "logged_in": logged, "problems": problems}
+
+
+def _pip_install(pkgs):
+    """PEP 668 的发行版(Arch/Debian)会拦 pip; --user 装到家目录是安全的, 加旗标放行。"""
+    base = [sys.executable, "-m", "pip", "install", "--user"]
+    r = subprocess.run(base + pkgs, capture_output=True, text=True)
+    if r.returncode != 0 and "externally-managed-environment" in (r.stderr or ""):
+        r = subprocess.run(base + ["--break-system-packages"] + pkgs,
+                           capture_output=True, text=True)
+    return r
+
+
+def do_setup():
+    steps = []
+    if not playwright_available():
+        r = _pip_install(["playwright", "qrcode"])
+        steps.append({"step": "pip install playwright qrcode", "ok": r.returncode == 0,
+                      "output": (r.stderr or r.stdout)[-400:]})
+    if driver_name() != "patchright":
+        # 隐蔽性关键项, 但装不上不致命 —— 退回 playwright 功能一样。
+        r = _pip_install(["patchright"])
+        steps.append({"step": "pip install patchright (反检测, 可选)", "ok": r.returncode == 0,
+                      "output": (r.stderr or r.stdout)[-400:]})
+    if not chromium_bundled() and not find_system_chromium()[0]:
+        r = subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"],
+                           capture_output=True, text=True)
+        steps.append({"step": "playwright install chromium", "ok": r.returncode == 0,
+                      "output": (r.stderr or r.stdout)[-400:]})
+    ok, problems = preflight()
+    return {"ok": ok, "steps": steps, "problems": problems}
+
+
+def doctor_text():
+    try:
+        return do_doctor()
+    except Exception as e:
+        return {"ok": False, "problems": [str(e)]}
+
+
+# ---------------------------------------------------------------- Miyu stdin-JSON 模式
+
+def stdin_json_mode(raw):
+    """Miyu script 工具入口: 无命令行参数且 stdin 不是终端时启用。
+    输入: {"action":"search|note|status", "query":"...", "limit":N, ...}
+    输出: 纯 JSON(stdout), 进度静默。"""
+    global QUIET
+    QUIET = True
+
+    def die(msg, extra=None):
+        out = {"error": msg}
+        if extra:
+            out.update(extra)
+        print(json.dumps(out, ensure_ascii=False))
+        sys.exit(1)
+
+    try:
+        req = json.loads(raw)
+    except Exception:
+        die("stdin 不是有效 JSON")
+
+    if not isinstance(req, dict):
+        die("stdin 的 JSON 得是一个对象", {"example": {"query": "手冲咖啡", "limit": 10}})
+
+    # 拼错的参数**必须**报错, 不能默默用默认值: 这脚本每次搜索都烧一次账号级的
+    # 日频配额, "跑完了才发现 sort 拼错、结果按综合排的"等于白烧一次, 还得出错结论。
+    known = {"action", "query", "keyword", "url", "limit", "sort", "type", "comments"}
+    unknown = [k for k in req if k not in known]
+    if unknown:
+        die(f"不认识这些参数: {', '.join(map(repr, sorted(unknown)))}",
+            {"known": sorted(known)})
+
+    query = str(req.get("query") or req.get("keyword") or req.get("url") or "").strip()
+    limit = req.get("limit", req.get("comments"))
+    # action 可以不传: 链接/note_id → 看正文, 其余 → 搜索
+    action = str(req.get("action") or ("note" if looks_like_note(query) else "search")).strip()
+    valid = ("search", "note", "status")
+    if action not in valid:
+        die(f"未知 action: {action} (可选 {' / '.join(valid)})")
+    if action != "status" and not query:
+        die("query 参数缺失")
+
+    sort = str(req.get("sort") or "综合").strip()
+    ntype = str(req.get("type") or "全部").strip()
+    if sort not in SORTS:
+        die(f"未知 sort: {sort!r}", {"known": list(SORTS)})
+    if ntype not in TYPES:
+        die(f"未知 type: {ntype!r}", {"known": list(TYPES)})
+    try:
+        limit = int(limit) if limit is not None else None
+    except (TypeError, ValueError):
+        die(f"limit 得是整数, 收到 {req.get('limit')!r}")
+
+    good, probs = preflight()
+    if not good:
+        die("依赖未就绪", {"problems": probs,
+                          "fix": "运行 xhs-search setup 自动安装",
+                          "doctor": doctor_text()})
+    try:
+        if action == "status":
+            out = do_status()
+        elif action == "search":
+            out = do_search(query, max(1, min(limit or 20, 100)), sort, ntype)
+        else:
+            out = do_note(query, max(0, min(limit or 0, 100)))
+    except NotLoggedIn as e:
+        die(str(e), {"fix": f"运行: {login_command_hint('xhs-search')}（会给出二维码）"})
+    except RateLimited as e:
+        # 必须排在 RuntimeError 前面, 否则会被当成普通故障 —— 调用方一重试就把
+        # 账号往风控上送, 正是这道闸要防的事。
+        die(str(e), {"rate_limited": True, "retryable": False})
+    except RuntimeError as e:
+        die(str(e))
+    except Exception as e:
+        die(f"执行失败: {e}", {"doctor": doctor_text()})
+    print(json.dumps(out, ensure_ascii=False, indent=1))
+
+
+# ---------------------------------------------------------------- 渲染
+
+def render(data, as_json, kind):
+    if as_json:
+        print(json.dumps(data, ensure_ascii=False, indent=1))
+        return
+    if kind == "search":
+        head = f"共 {data['count']} 条 · 关键词: {data['keyword']} · 排序: {data['sort']}"
+        if data.get("degraded"):
+            head += f"(要的是 {data['sort_requested']}/{data['type_requested']})"
+        print(head)
+        for n in data["notes"]:
+            print(f"赞{n['liked']:<7} 藏{n['collected']:<7} 评{n['comments']:<6} {n['title'][:38]}")
+            print(f"  {n['author']} · {n['url']}")
+    elif kind == "note":
+        print(f"{data['title']}\n作者: {data['author']} · 赞{data['liked']} 藏{data['collected']}"
+              f" · {data.get('ip_location','')}")
+        print(f"\n{data['desc']}\n")
+        if data.get("tags"):
+            print("标签: " + " ".join("#" + t for t in data["tags"]))
+        for c in data.get("comments", []):
+            print(f"  · {c['author']}({c['liked']}赞): {c['content'][:60]}")
+            for s in c.get("replies", []):
+                to = f" →{s['reply_to']}" if s.get("reply_to") else ""
+                print(f"      ↳ {s['author']}{to}: {s['content'][:56]}")
+            if c.get("replies_truncated"):
+                print(f"      ↳ …还有 {c['reply_count'] - len(c.get('replies', []))} 条回复没展开")
+    else:
+        print(json.dumps(data, ensure_ascii=False, indent=1))
+    for w in data.get("warnings", []) if isinstance(data, dict) else []:
+        print(f"\n⚠ {w}")
+
+
+KNOWN_CMDS = {"search", "note", "login", "status", "doctor", "setup"}
+
+USAGE = """xhs-search — 小红书检索
+
+  xhs-search "手冲咖啡"                    搜索关键词
+  xhs-search <笔记链接>                    看这篇的正文
+  xhs-search <笔记链接> --comments 20      正文 + 20 条评论
+
+  搜索还能加:  --limit 30
+               --sort 综合|最新|最多点赞|最多评论|最多收藏
+               --type 全部|视频|图文
+  任何命令加 --json 输出 JSON。
+
+  xhs-search login     扫码登录(终端直接出二维码, 只需一次)
+  xhs-search status    查登录态
+  xhs-search doctor    环境自检
+  xhs-search setup     装缺失依赖
+
+给 AI 用(stdin JSON, 无需 action —— 关键词还是链接会自动判断):
+  echo '{"query":"手冲咖啡","limit":10}' | xhs-search
+  echo '{"query":"<笔记链接>","limit":20}' | xhs-search
+"""
+
+
+def main():
+    global QUIET
+    install_signal_handlers()
+    if len(sys.argv) == 1:
+        # Miyu script 工具模式: stdin 上真有数据才按 JSON 处理。只判断 isatty 不够 ——
+        # 被脚本调用时 stdin 常是个一直开着却没数据的管道, 那样会永远阻塞在 read 上。
+        raw = ""
+        if not sys.stdin.isatty() and select.select([sys.stdin], [], [], 2.0)[0]:
+            raw = sys.stdin.read().strip()  # 空的说明是 EOF(比如 </dev/null), 不是调用
+        if raw:
+            stdin_json_mode(raw)
+            return 0
+        print(USAGE)  # 人在终端里直接敲 → 给帮助, 别偷偷去开浏览器
+        return 0
+
+    # 裸参数自动分派: 像链接/note_id 的去看正文, 其余当关键词搜
+    argv = sys.argv[1:]
+    for i, a in enumerate(argv):
+        if not a.startswith("-"):
+            if a not in KNOWN_CMDS:
+                argv = argv[:i] + ["note" if looks_like_note(a) else "search"] + argv[i:]
+            break
+
+    ap = argparse.ArgumentParser(prog="xhs-search", add_help=False, usage=USAGE)
+    ap.add_argument("-h", "--help", action="store_true")
+    sub = ap.add_subparsers(dest="cmd")
+
+    s = sub.add_parser("search", add_help=False)
+    s.add_argument("keyword")
+    s.add_argument("--limit", type=int, default=20)
+    s.add_argument("--sort", default="综合", choices=list(SORTS))
+    s.add_argument("--type", dest="ntype", default="全部", choices=list(TYPES))
+
+    n = sub.add_parser("note", add_help=False)
+    n.add_argument("ref")
+    n.add_argument("--comments", type=int, default=0)
+
+    for name in ("login", "status", "doctor", "setup"):
+        pp = sub.add_parser(name, add_help=False)
+        if name == "login":
+            # 默认(都不给)= 拉起后台登录、拿到二维码就返回,不等人扫。
+            pp.add_argument("--check", action="store_true",
+                            help="只查一次登录进度就返回")
+            pp.add_argument("--blocking", action="store_true",
+                            help="留在前台等到扫码完成(后台子进程自己用)")
+            pp.add_argument("--timeout", type=int, default=600,
+                            help="等待扫码上限(秒)")
+    for pp in sub.choices.values():
+        pp.add_argument("--json", action="store_true")
+    ap.add_argument("--json", action="store_true")
+
+    a = ap.parse_args(argv)
+    if getattr(a, "help", False):
+        print(USAGE)
+        return 0
+    QUIET = getattr(a, "json", False)
+    cmd = a.cmd or "status"
+
+    if cmd in ("search", "note", "login", "status"):
+        ok, problems = preflight()
+        if not ok:
+            out = {"error": "环境不满足", "problems": problems}
+            print(json.dumps(out, ensure_ascii=False, indent=1))
+            return 1
+    try:
+        if cmd == "search":
+            render(do_search(a.keyword, min(max(a.limit, 1), 100), a.sort, a.ntype), a.json, "search")
+        elif cmd == "note":
+            render(do_note(a.ref, min(max(a.comments, 0), 100)), a.json, "note")
+        elif cmd == "login":
+            if getattr(a, "blocking", False):
+                render(do_login(timeout_s=a.timeout), a.json, "raw")
+            elif getattr(a, "check", False):
+                render(read_login_status(), a.json, "raw")
+            else:
+                render(start_login(timeout_s=a.timeout), a.json, "raw")
+        elif cmd == "status":
+            render(do_status(), a.json, "raw")
+        elif cmd == "doctor":
+            render(do_doctor(), True, "raw")
+        elif cmd == "setup":
+            render(do_setup(), True, "raw")
+        return 0
+    except NotLoggedIn as e:
+        print(json.dumps({"error": str(e), "fix": f"运行: {login_command_hint('xhs-search')}"},
+                         ensure_ascii=False, indent=1))
+        return 1
+    except RateLimited as e:
+        print(json.dumps({"error": str(e), "rate_limited": True, "retryable": False},
+                         ensure_ascii=False, indent=1))
+        return 1
+    except Exception as e:
+        print(json.dumps({"error": str(e)}, ensure_ascii=False, indent=1))
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

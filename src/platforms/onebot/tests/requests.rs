@@ -1,8 +1,8 @@
 //! 好友申请与入群审核。
 
-use crate::platforms::onebot::*;
-use crate::paths::MiyuPaths;
 use super::shared::*;
+use crate::paths::MiyuPaths;
+use crate::platforms::onebot::*;
 
 #[test]
 fn friend_request_access_uses_admins_private_whitelist_and_dynamic_grants() {
@@ -191,16 +191,14 @@ fn group_join_decision_parser_handles_plain_and_fenced_json() {
     assert_eq!(decision, GroupJoinDecision::Approve);
     assert_eq!(reason, "符合通过条件");
 
-    let (decision, reason) = parse_group_join_decision(
-        "前缀 {\"decision\":\"reject\",\"reason\":\"理由\\n换行\"} 后缀",
-    )
-    .unwrap();
+    let (decision, reason) =
+        parse_group_join_decision("前缀 {\"decision\":\"reject\",\"reason\":\"理由\\n换行\"} 后缀")
+            .unwrap();
     assert_eq!(decision, GroupJoinDecision::Reject);
     assert_eq!(reason, "理由换行");
 
     let (decision, reason) =
-        parse_group_join_decision("{\"decision\":\"pending\",\"reason\":\"信息不足\"}")
-            .unwrap();
+        parse_group_join_decision("{\"decision\":\"pending\",\"reason\":\"信息不足\"}").unwrap();
     assert_eq!(decision, GroupJoinDecision::Pending);
     assert_eq!(reason, "信息不足");
 
@@ -240,14 +238,13 @@ async fn group_add_request_handler_approves_rejects_and_pends() {
     }
     let (handle, mut frames) = test_connection(None);
 
-    let approve_review = |_config: AppConfig,
-                          _paths: MiyuPaths,
-                          _settings: QqGroupJoinApprovalPluginSettings,
-                          _condition: String,
-                          _request: GroupJoinRequest,
-                          _state: StateStore| async move {
-        Ok((GroupJoinDecision::Approve, String::new()))
-    };
+    let approve_review =
+        |_config: AppConfig,
+         _paths: MiyuPaths,
+         _settings: QqGroupJoinApprovalPluginSettings,
+         _condition: String,
+         _request: GroupJoinRequest,
+         _state: StateStore| async move { Ok((GroupJoinDecision::Approve, String::new())) };
     let task = tokio::spawn(handle_group_add_request_with_llm(
         state.clone(),
         handle.clone(),
@@ -301,14 +298,13 @@ async fn group_add_request_handler_approves_rejects_and_pends() {
     task.await.unwrap();
     assert!(frames.try_recv().is_err());
 
-    let pending_review = |_config: AppConfig,
-                          _paths: MiyuPaths,
-                          _settings: QqGroupJoinApprovalPluginSettings,
-                          _condition: String,
-                          _request: GroupJoinRequest,
-                          _state: StateStore| async move {
-        Ok((GroupJoinDecision::Pending, String::new()))
-    };
+    let pending_review =
+        |_config: AppConfig,
+         _paths: MiyuPaths,
+         _settings: QqGroupJoinApprovalPluginSettings,
+         _condition: String,
+         _request: GroupJoinRequest,
+         _state: StateStore| async move { Ok((GroupJoinDecision::Pending, String::new())) };
     handle_group_add_request_with_llm(
         state,
         handle.clone(),
@@ -325,14 +321,13 @@ async fn group_add_request_handler_leaves_unknown_or_disabled_pending() {
     let state = test_web_state(temp.path(), 0);
     state.manager.lock().unwrap().config.platforms.qq.enabled = true;
     let (handle, mut frames) = test_connection(None);
-    let review = |_config: AppConfig,
-                  _paths: MiyuPaths,
-                  _settings: QqGroupJoinApprovalPluginSettings,
-                  _condition: String,
-                  _request: GroupJoinRequest,
-                  _state: StateStore| async move {
-        Ok((GroupJoinDecision::Approve, String::new()))
-    };
+    let review =
+        |_config: AppConfig,
+         _paths: MiyuPaths,
+         _settings: QqGroupJoinApprovalPluginSettings,
+         _condition: String,
+         _request: GroupJoinRequest,
+         _state: StateStore| async move { Ok((GroupJoinDecision::Approve, String::new())) };
 
     // No plugin settings at all.
     handle_group_add_request_with_llm(

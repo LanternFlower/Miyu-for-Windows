@@ -288,6 +288,23 @@ pub(crate) enum OutboundSegment {
         path: PathBuf,
         name: Option<String>,
     },
+    /// 语音消息(wav/mp3 文件),适配器按平台规则单独成一条消息发。
+    /// `transcript` 是合成前的原文,只进历史(`[语音] 原文`),不上平台。
+    AudioPath {
+        path: PathBuf,
+        transcript: String,
+    },
+}
+
+/// 语音消息在历史库里的样子:`[语音] 原文`,没有原文时只留 `[语音]`。
+/// 入站(别人发的语音转写)与出站(她自己合成的语音)共用同一格式。
+pub(crate) fn voice_history_text(transcript: &str) -> String {
+    let transcript = transcript.trim();
+    if transcript.is_empty() {
+        "[语音]".to_string()
+    } else {
+        format!("[语音] {transcript}")
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -533,6 +550,13 @@ pub(crate) trait PlatformToolContext: Send + Sync {
         &self,
         message_id: String,
     ) -> futures_util::future::BoxFuture<'static, anyhow::Result<Vec<PlatformImageData>>>;
+
+    /// 把一个上下文文件引用(`file_<msg>_<n>`)懒下载到本地缓存。看视频
+    /// 走这条:视频和文件共用同一条懒下载链路(09-04)。
+    fn fetch_platform_file_task(
+        &self,
+        file_ref: PlatformContextFileRef,
+    ) -> futures_util::future::BoxFuture<'static, anyhow::Result<PlatformFileDownload>>;
 }
 
 // ── QQ 头像 URL 的可信判定 ──

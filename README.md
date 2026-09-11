@@ -83,6 +83,7 @@ miyu config
 > 说明：
 > - 配置与数据目录默认在 `%USERPROFILE%\.miyu`（可用 `MIYU_HOME` 环境变量覆盖）。下文中的 `~/.miyu` 在 Windows 上即指这个目录。
 > - 搜索工具 `glob_files` 与 `grep_text` 运行时需要 [ripgrep](https://github.com/BurntSushi/ripgrep)（`rg`），未安装时这两个功能不可用，其余功能不受影响。
+> - 语音唤醒与本地语音识别依赖可选组件 `miyu-voice`（上游目前只随 Arch 包分发），Windows 暂未提供。
 
 ### Linux / macOS
 
@@ -92,13 +93,24 @@ miyu config
 yay -S miyu
 ```
 
+语音唤醒和本地语音识别是可选组件，单独打成 `miyu-voice` 包（依赖 `miyu`，大约 30MB，不装不影响其他功能）：
+
+```
+yay -S miyu-voice
+```
+
+装好后运行 `miyu config`，在「全局设置」里开启「语音功能」，daemon 会自动拉起 `miyu-voice` 进程。
+
 从源码构建：
 
 ```
 git clone https://github.com/SHORiN-KiWATA/Miyu.git
 cd Miyu
-cargo build --release
+cargo build --release                    # 只出 miyu
+cargo build --release --features voice   # 再出 miyu-voice(可选,链接 sherpa-onnx)
 ```
+
+源码构建时把 `target/release/miyu`（以及可选的 `miyu-voice`）放到同一个 `PATH` 目录里即可，daemon 在主程序同目录寻找 `miyu-voice`。
 
 安装完成后可以运行 `miyu init` 初始化配置和状态文件；也可以直接运行 `miyu daemon start`，首次启动会自动初始化。查看完整帮助信息可以运行 `miyu -h`。
 
@@ -135,6 +147,15 @@ cargo build --release
   ```
 
   初始化后可以直接在终端打字对话。
+
+- 语音唤醒（可选，需装 `miyu-voice`，当前仅 Linux）
+
+  设置里开启「语音功能」后 daemon 会拉起独立的 `miyu-voice` 进程常开麦克风：
+  喊唤醒词（默认「未有未有 / 密友密友 / miyumiyu / みゆみゆ」）→ 提示音 + 桌面通知「在听」→ 说指令 → 执行完
+  提示音 + 通知回复摘要。识别全在本机（SenseVoice，不联网）；不开语音时零占用。
+  REPL 里 `/stt`、终端 `miyu stt`、WebUI 麦克风按钮可用同一套识别做听写。
+  可选回复播报（MiniMax / 小米 MiMo 语音合成）；`miyu listen` 绑快捷键一键收听（再按一次关闭）。
+  详见 `docs/voice.md`。
 
 ## 重要配置调整
 

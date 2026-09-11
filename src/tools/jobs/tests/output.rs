@@ -1,7 +1,7 @@
 //! 日志读取、截断与完成结论。
 
-use crate::tools::jobs::*;
 use super::shared::*;
+use crate::tools::jobs::*;
 
 /// 尾部读取只取最后 N 行,超长行截断,前面还有内容时开头补 `…`。
 #[test]
@@ -17,7 +17,10 @@ fn log_tail_keeps_the_last_lines_and_clips_long_ones() {
     assert!(!tail.starts_with('…'));
 
     // 超出时只留最后几行,并标出前面还有。
-    let many = (1..=20).map(|n| format!("line{n}")).collect::<Vec<_>>().join("\n");
+    let many = (1..=20)
+        .map(|n| format!("line{n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     std::fs::write(&path, &many).unwrap();
     let (tail, _) = read_log_tail(&path, 3);
     assert!(tail.starts_with("…\n"), "{tail:?}");
@@ -27,7 +30,11 @@ fn log_tail_keeps_the_last_lines_and_clips_long_ones() {
     // 单行超长要截断,不能把额度吃光。
     std::fs::write(&path, "x".repeat(MAX_TAIL_LINE_CHARS * 3)).unwrap();
     let (tail, _) = read_log_tail(&path, 10);
-    assert!(tail.chars().count() <= MAX_TAIL_LINE_CHARS + 2, "{}", tail.chars().count());
+    assert!(
+        tail.chars().count() <= MAX_TAIL_LINE_CHARS + 2,
+        "{}",
+        tail.chars().count()
+    );
     assert!(tail.trim_end().ends_with('…'));
 
     // 日志不存在时是空的,不是报错。
@@ -58,7 +65,11 @@ fn completion_result_returns_the_whole_subagent_conclusion() {
 fn completion_result_recognises_a_failed_subagent() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("k.log");
-    std::fs::write(&path, format!("…\n{SUBAGENT_ERROR_MARKER}\nmodel refused\n")).unwrap();
+    std::fs::write(
+        &path,
+        format!("…\n{SUBAGENT_ERROR_MARKER}\nmodel refused\n"),
+    )
+    .unwrap();
     let (label, body) = completion_result(&path, true, false).unwrap();
     assert_eq!(label, "子代理失败");
     assert_eq!(body, "model refused");
@@ -69,7 +80,10 @@ fn completion_result_recognises_a_failed_subagent() {
 fn completion_result_gives_a_command_more_lines_when_it_failed() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("c.log");
-    let body = (1..=40).map(|n| format!("line{n}")).collect::<Vec<_>>().join("\n");
+    let body = (1..=40)
+        .map(|n| format!("line{n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     std::fs::write(&path, &body).unwrap();
 
     let (label, ok_tail) = completion_result(&path, false, true).unwrap();
@@ -109,17 +123,21 @@ async fn incremental_output_reads_from_offset() {
     let command = "printf 'AAABBB'";
     #[cfg(windows)]
     let command = "echo|set /p=AAABBB";
-    let spawned: Value =
-        serde_json::from_str(&spawn_background(command, None, &test_progress()).await.unwrap()).unwrap();
-    let job_id = spawned["job_id"].as_str().unwrap().to_string();
-    await_terminal(&job_id).await;
-    let first: Value = serde_json::from_str(
-        &job_status(json!({"job_id": job_id})).await.unwrap(),
+    let spawned: Value = serde_json::from_str(
+        &spawn_background(command, None, &test_progress())
+            .await
+            .unwrap(),
     )
     .unwrap();
+    let job_id = spawned["job_id"].as_str().unwrap().to_string();
+    await_terminal(&job_id).await;
+    let first: Value =
+        serde_json::from_str(&job_status(json!({"job_id": job_id})).await.unwrap()).unwrap();
     assert_eq!(first["output"]["content"], "AAABBB");
     let second: Value = serde_json::from_str(
-        &job_status(json!({"job_id": job_id, "offset": 3})).await.unwrap(),
+        &job_status(json!({"job_id": job_id, "offset": 3}))
+            .await
+            .unwrap(),
     )
     .unwrap();
     assert_eq!(second["output"]["content"], "BBB");

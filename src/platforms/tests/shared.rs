@@ -1,7 +1,7 @@
 //! 平台层测试共用的 fixture。
 
-use crate::platforms::*;
 use crate::paths::MiyuPaths;
+use crate::platforms::*;
 use futures_util::future::BoxFuture;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -40,7 +40,7 @@ pub(super) fn test_group_members() -> Vec<PlatformGroupMember> {
         .collect()
 }
 
-pub(super) fn test_turn_context(
+pub(crate) fn test_turn_context(
     fail_first: bool,
 ) -> (tempfile::TempDir, PlatformTurnContext, Arc<CountingAdapter>) {
     let temp = tempfile::tempdir().unwrap();
@@ -138,7 +138,7 @@ impl plugins::PlatformPlugin for SuppressingToolPlugin {
     }
 }
 
-pub(super) struct CountingAdapter {
+pub(crate) struct CountingAdapter {
     pub(super) calls: AtomicUsize,
     pub(super) fail_first: bool,
     pub(super) messages: Mutex<Vec<OutboundMessage>>,

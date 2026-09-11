@@ -529,9 +529,33 @@ pub(in crate::cli) fn print_variant_updated() {
 
 /// Direct (daemon-less) sessions read their pinned model pool straight from
 /// the state store; daemon-run turns get the same treatment in the turn task.
+/// 覆盖指向的模型全都解析不动时:清掉这条覆盖,永久退回全局池。
+///
+/// 只在日志里留痕,不打到终端上(08-28 用户点名):这是自愈,不是需要用户当场
+/// 处理的事故,每次进 REPL 糊一行灰字纯属噪音。
+///
+/// 清掉而不是只在运行时忽略,同样是用户要的("模型丢失的话就把模型换成回退就
+/// 行了"):留着一条永远失效的覆盖,footer 与实际用的模型会一直对不上,而且每
+/// 次进来都要重算一遍。
+pub(in crate::cli) fn drop_stale_model_override(store: &StateStore, session_id: &str) {
+    if let Err(error) = store.set_session_model_override(session_id, None) {
+        tracing::debug!(
+            error = %error,
+            "{}",
+            t(
+                "clearing the stale session model override failed",
+                "清除失效的会话模型覆盖失败"
+            )
+        );
+    }
+}
+
 pub(in crate::cli) fn apply_session_model_override(state: &StateStore, config: &mut AppConfig) {
     match state.session_model_override(&state.session_id()) {
-        Ok(Some(models)) => config.active_provider_models = Some(models),
+        Ok(Some(models)) => match config.usable_model_override(models) {
+            Some(usable) => config.active_provider_models = Some(usable),
+            None => drop_stale_model_override(state, &state.session_id()),
+        },
         Ok(None) => {}
         Err(error) => tracing::warn!(
             error = %error,

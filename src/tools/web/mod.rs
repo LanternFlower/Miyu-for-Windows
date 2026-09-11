@@ -346,6 +346,42 @@ fn clip_fetch_output(value: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
 
+    /// 压缩响应必须透明解压(08-24 bilibili 乱码取证:服务器对 Chrome UA
+    /// 无视 Accept-Encoding 缺席强发 gzip)。退回 reqwest 的 gzip 特性,
+    /// 这里读到的是 gzip 原始字节,断言报红。
+    #[tokio::test]
+    async fn fetch_transparently_decompresses_gzip_bodies() {
+        use std::io::Write as _;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buffer = [0u8; 4096];
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let _ = sock.read(&mut buffer).await.unwrap();
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder
+                .write_all("你好，这是明文正文。".as_bytes())
+                .unwrap();
+            let gz = encoder.finish().unwrap();
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                gz.len()
+            );
+            sock.write_all(head.as_bytes()).await.unwrap();
+            sock.write_all(&gz).await.unwrap();
+        });
+        let output = web_fetch(serde_json::json!({
+            "url": format!("http://{addr}/page"),
+            "format": "text"
+        }))
+        .await
+        .unwrap();
+        assert!(output.contains("你好，这是明文正文。"), "got: {output:?}");
+        server.await.unwrap();
+    }
+
     #[test]
     fn clips_fetch_output_with_notice() {
         let output = clip_fetch_output("abcdef", 3);

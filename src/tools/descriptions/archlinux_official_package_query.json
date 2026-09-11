@@ -1,7 +1,7 @@
 {
   "name": "archlinux_official_package_query",
   "display_name": "查询 Arch 官方包",
-  "description": "Query the official Arch Linux package database; supports search and exact package details.",
+  "description": "Query the official Arch Linux package database.",
   "parameters": {
     "type": "object",
     "properties": {

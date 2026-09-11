@@ -80,12 +80,6 @@ impl TurnStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct PruneStats {
-    pub turns: usize,
-    pub saved_chars: usize,
-}
-
 /// Deterministic per-turn tool footprint. BTreeSet: sorted, deduplicated,
 /// byte-deterministic serialization (cache-purity requirement for anything
 /// that ends up in a rendered summary).
@@ -312,6 +306,16 @@ pub struct TurnFollowup {
     pub preceding_assistant_reasoning: Option<String>,
     pub preceding_assistant_provider_id: Option<String>,
     pub preceding_assistant_model: Option<String>,
+    /// followup 正文之后随发的瞬态尾巴(runtime/图片路径/context-images 提示),
+    /// JSON 数组的 ChatMessage,口径同 `Turn::context_messages`;回放逐字节
+    /// 跟在正文后面。老行为 `[]`。
+    pub context_messages_json: String,
+}
+
+impl TurnFollowup {
+    pub fn context_messages(&self) -> Vec<ChatMessage> {
+        serde_json::from_str(&self.context_messages_json).unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -326,10 +330,34 @@ pub struct UserAttachment {
     pub created_at: String,
 }
 
+/// 回合内紧跟某次工具调用追加给模型的媒体块(v30)。
+///
+/// `image`/`video`:`data` 有值就按 data URL 内联,为空则 `source` 是
+/// http(s) 地址(原样交给供应商取)或本地路径(重放时从文件读)。
+/// `text`:视觉旁路给出的描述,`data` 是 UTF-8 正文。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnInlineMedia {
+    pub call_id: String,
+    pub seq: i64,
+    pub kind: String,
+    pub mime: String,
+    pub source: String,
+    pub data: Option<Vec<u8>>,
+}
+
+pub const INLINE_MEDIA_KIND_IMAGE: &str = "image";
+pub const INLINE_MEDIA_KIND_VIDEO: &str = "video";
+pub const INLINE_MEDIA_KIND_PDF: &str = "pdf";
+pub const INLINE_MEDIA_KIND_TEXT: &str = "text";
+
+/// 附件本体。旧行把内容存在 `data` 列里,`path` 为 `None`;v29 起新上传一律
+/// 落盘,`path` 指向磁盘文件。`file` 类附件不读内容进内存(可能是几 GB 的
+/// 视频),`bytes` 为空,消费方只拿路径。
 #[derive(Debug, Clone)]
 pub struct UserAttachmentData {
     pub attachment: UserAttachment,
     pub bytes: Vec<u8>,
+    pub path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -463,6 +491,22 @@ pub struct PlatformMemeRefRecord {
     pub meme_id: String,
     pub direction: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlatformPluginRow {
+    pub scope: PlatformPluginScopeKey,
+    pub key: String,
+    pub value_json: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlatformMemeRefCount {
+    pub meme_id: String,
+    pub inbound: i64,
+    pub outbound: i64,
+    pub last_seen_at: String,
 }
 
 /// One replayable turn: the prompt echo plus either its ordered transcript or,

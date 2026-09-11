@@ -233,7 +233,11 @@ pub(crate) fn reasoning_variants(
     variants
 }
 
-pub(crate) fn push_variant(variants: &mut Vec<ReasoningVariant>, id: String, setting: ReasoningSetting) {
+pub(crate) fn push_variant(
+    variants: &mut Vec<ReasoningVariant>,
+    id: String,
+    setting: ReasoningSetting,
+) {
     if variants.iter().any(|variant| variant.id == id) {
         return;
     }

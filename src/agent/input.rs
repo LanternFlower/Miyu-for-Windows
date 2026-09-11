@@ -62,6 +62,7 @@ impl Agent {
                     self.paths.clone(),
                     binary_paths.iter().map(PathBuf::from).collect(),
                     self.context_images.clone(),
+                    self.context_files.clone(),
                     platform_context,
                 );
             } else if !tools.contains("vision_analyze") {
@@ -77,21 +78,147 @@ impl Agent {
             self.tools_enabled && self.tools.lock().unwrap().contains("vision_analyze");
         let input = rewrite_image_placeholders_with_paths(&input, &absolute_image_paths);
         let current_model_supports_vision = self.current_model_supports_vision();
-        let content = if !binary_images.is_empty() && !current_model_supports_vision {
+        // 视频先从路径附件里分出来:它和图片不是同一种内容块,能力判定也各管
+        // 各的(08-27 用户要求"当附件"传)。扩展名判据与视觉工具同源,免得两边
+        // 对"什么算视频"各有一套。
+        // PDF 同理再分一层(09-08):它既不是图也不是视频,`vision_analyze` 那条
+        // 旁路也不收它,所以能力判定与内容块都独立一份。
+        let (pdf_paths, media_paths): (Vec<&str>, Vec<&str>) = path_images
+            .iter()
+            .partition(|path| crate::tools::vision::pdf_mime(path).is_some());
+        let (video_paths, image_paths): (Vec<&str>, Vec<&str>) = media_paths
+            .iter()
+            .partition(|path| crate::tools::vision::video_mime(path).is_some());
+        // Path 形态的图(shell-hook 跨进程、REPL 粘贴路径)在视觉模型
+        // 在场时同样内联直读,和 Binary 对齐;读不出来(不存在/超限/
+        // 非图片扩展名)的落进 `unread_image_paths`,由 vision_analyze 提示兜底。
+        //
+        // 分开记"内联成功"与"没读进来"是有讲究的:提示只该提没读进来的那些。
+        // 原先两处提示都不看图有没有已经内联,于是多模态模型明明已经看见图,
+        // 同一轮还会收到一句"你可以用 vision_analyze 分析这些图片"——它照做,
+        // 就成了用户看到的"多模态模型总去调视觉工具"(08-27 定位)。
+        let mut inline_path_urls: Vec<String> = Vec::new();
+        let mut unread_image_paths: Vec<&str> = Vec::new();
+        for path in &image_paths {
+            match current_model_supports_vision
+                .then(|| crate::tools::vision::local_image_data_url(path).ok())
+                .flatten()
+            {
+                Some(url) => inline_path_urls.push(url),
+                None => unread_image_paths.push(path),
+            }
+        }
+        // 视频同理:当前模型吃视频才内联,否则原样留给 vision_analyze。读不出来
+        // (不存在/超 200MB)的也落回提示,理由与图片一致——附件读不了不该让整
+        // 轮对话失败。
+        let supports_video = self.current_model_supports_video();
+        let mut inline_video_urls: Vec<String> = Vec::new();
+        let mut unread_video_paths: Vec<&str> = Vec::new();
+        for path in &video_paths {
+            // 读盘 + base64 挪到阻塞线程:视频上限 200MB,编码后约 +33%,在
+            // async worker 上同步做会把这条线程占住好几秒——daemon 同时还在
+            // 服务 QQ 和别的会话(08-27 二轮自审)。
+            let owned = path.to_string();
+            let url = if supports_video {
+                tokio::task::spawn_blocking(move || {
+                    let mime = crate::tools::vision::video_mime(&owned)?;
+                    crate::tools::vision::local_video_data_url(&owned, mime).ok()
+                })
+                .await
+                .ok()
+                .flatten()
+            } else {
+                None
+            };
+            match url {
+                Some(url) => inline_video_urls.push(url),
+                None => unread_video_paths.push(path),
+            }
+        }
+        // PDF 与视频同构:吃得下才内联,吃不下原样留给下面的路径提示。读盘 +
+        // base64 同样挪去阻塞线程——20MB 的 PDF 编码完约 27MB,在 async worker
+        // 上同步做会把这条线程占住,而 daemon 还在同时服务 QQ 和别的会话。
+        let supports_pdf = self.current_model_supports_pdf();
+        let mut inline_pdfs: Vec<(String, String)> = Vec::new();
+        let mut unread_pdf_paths: Vec<&str> = Vec::new();
+        for path in &pdf_paths {
+            let owned = path.to_string();
+            let url = if supports_pdf {
+                tokio::task::spawn_blocking(move || {
+                    crate::tools::vision::local_pdf_data_url(&owned).ok()
+                })
+                .await
+                .ok()
+                .flatten()
+            } else {
+                None
+            };
+            match url {
+                Some(url) => inline_pdfs.push((url, pdf_file_name(path))),
+                None => unread_pdf_paths.push(path),
+            }
+        }
+        // agy 线:模型自己用 view_file 看本地文件就是真图(09-04 实测图片/
+        // 视频/音频/PDF 都通),不再花一次视觉旁路把图转述成文字。
+        let native_media_viewer = self
+            .config
+            .active_pool_views_media_with_native_file_tool(self.mode == AgentMode::Dev);
+        let content = if !binary_images.is_empty()
+            && !current_model_supports_vision
+            && !native_media_viewer
+        {
             self.describe_images_with_vision_provider(&input, &binary_images)
                 .await?
         } else {
             input
         };
 
-        let message = if !binary_images.is_empty() && current_model_supports_vision {
+        let inlined_video = !inline_video_urls.is_empty();
+        let inlined_pdf = !inline_pdfs.is_empty();
+        let has_inline_media = (!binary_images.is_empty() || !inline_path_urls.is_empty())
+            && current_model_supports_vision
+            || inlined_video
+            || inlined_pdf;
+        let message = if has_inline_media {
             let mut parts = vec![ChatContentPart::Text {
                 text: content.clone(),
             }];
-            parts.extend(binary_images.iter().map(|image| ChatContentPart::ImageUrl {
-                image_url: ImageUrlContent {
-                    url: image.data_url().to_string(),
-                },
+            // 图片这一份要**单独**受视觉能力约束。只因为带了视频就走进这个
+            // 分支时,当前模型未必吃图:那种情况下 `content` 已经是视觉插件
+            // 写好的图片描述,再把原图塞进去等于同一批图处理两遍,还发给了
+            // 我们刚判定"不该收图"的模型(08-27 自审)。
+            if current_model_supports_vision {
+                parts.extend(binary_images.iter().map(|image| ChatContentPart::ImageUrl {
+                    image_url: ImageUrlContent {
+                        url: image.data_url().to_string(),
+                    },
+                }));
+            }
+            parts.extend(
+                inline_path_urls
+                    .into_iter()
+                    .map(|url| ChatContentPart::ImageUrl {
+                        image_url: ImageUrlContent { url },
+                    }),
+            );
+            // 视频块只进**本轮请求**。历史存的是 `content` 这段纯文本
+            // (`turns.user_content`),所以附件天然不会被后续每一轮反复重发
+            // ——图片一直是这个待遇,视频体积大一两个数量级,更不能破例。
+            parts.extend(
+                inline_video_urls
+                    .into_iter()
+                    .map(|url| ChatContentPart::VideoUrl {
+                        video_url: crate::llm::VideoUrlContent { url },
+                    }),
+            );
+            // 同视频:只进本轮请求,不进 `turns.user_content`。
+            parts.extend(inline_pdfs.into_iter().map(|(file_data, filename)| {
+                ChatContentPart::File {
+                    file: crate::llm::FileContent {
+                        filename,
+                        file_data,
+                    },
+                }
             }));
             ChatMessage::user_parts(parts)
         } else {
@@ -106,7 +233,14 @@ impl Agent {
                 .or(self.image_platform.as_deref())
                 .map(|platform| format!("通过 {platform} 发送"))
                 .unwrap_or_else(|| "粘贴".to_string());
-            let tool_hint = if vision_tool_available {
+            // 图已经内联给模型时不再邀请它调工具:它自己看得见,再调一次是白
+            // 烧一次旁路请求。临时文件路径仍然留着——生图参考图、artifact 这些
+            // 工具要靠它定位(08-27)。
+            let invite_vision_tool =
+                vision_tool_available && !current_model_supports_vision && !native_media_viewer;
+            let tool_hint = if native_media_viewer {
+                "\nOpen the path with view_file to look at the image itself."
+            } else if invite_vision_tool {
                 "\n你可以使用 vision_analyze 工具对此图片进行更详细的分析。"
             } else {
                 ""
@@ -127,7 +261,9 @@ impl Agent {
                     "用户{source}了 {} 张图片，已保存到临时文件：\n{}{}",
                     binary_paths.len(),
                     list,
-                    if vision_tool_available {
+                    if native_media_viewer {
+                        "\nOpen these paths with view_file to look at the images themselves."
+                    } else if invite_vision_tool {
                         "\n你可以使用 vision_analyze 工具对这些图片进行更详细的分析。"
                     } else {
                         ""
@@ -136,18 +272,78 @@ impl Agent {
             };
             hints.push(ChatMessage::turn_context(hint));
         }
-        if !path_images.is_empty() && vision_tool_available {
-            let list = path_images
+        if !unread_image_paths.is_empty() && (vision_tool_available || native_media_viewer) {
+            let list = unread_image_paths
                 .iter()
                 .enumerate()
                 .map(|(index, path)| format!("  [Image {}] {}", index + 1, path))
                 .collect::<Vec<_>>()
                 .join("\n");
+            let tool_hint = if native_media_viewer {
+                "Open these paths with view_file to look at the images themselves."
+            } else {
+                "你可以使用 vision_analyze 工具读取并分析这些图片。"
+            };
             hints.push(ChatMessage::turn_context(format!(
-                "用户粘贴了 {} 张本地图片路径：\n{}\n你可以使用 vision_analyze 工具读取并分析这些图片。",
-                path_images.len(),
+                "用户粘贴了 {} 张本地图片路径：\n{}\n{tool_hint}",
+                unread_image_paths.len(),
                 list
             )));
+        }
+        // 视频没能内联时才提示走工具:已经内联的那些模型自己看得见,再叫它去
+        // 调工具就是白烧一次旁路请求(而且工具那条路还要另外挑一个吃视频的
+        // 模型)。
+        if !unread_video_paths.is_empty() && (vision_tool_available || native_media_viewer) {
+            let list = unread_video_paths
+                .iter()
+                .enumerate()
+                .map(|(index, path)| format!("  [Video {}] {}", index + 1, path))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let tool_hint = if native_media_viewer {
+                "Open these paths with view_file to watch the videos themselves."
+            } else {
+                "你可以使用 vision_analyze 工具读取并分析这些视频。"
+            };
+            hints.push(ChatMessage::turn_context(format!(
+                "用户粘贴了 {} 个本地视频路径：\n{}\n{tool_hint}",
+                unread_video_paths.len(),
+                list
+            )));
+        }
+        // PDF 没能内联时给路径。这里的门槛比图片/视频低——不要求 vision 工具
+        // 在场:PDF 从来就不走 vision_analyze,能读它的是原生文件工具
+        // (claude-code 的 Read / agy 的 view_file),再不济还有 run_command。
+        // 拿掉提示等于把文件藏起来,那才是最坏的结果。
+        if !unread_pdf_paths.is_empty() {
+            let list = unread_pdf_paths
+                .iter()
+                .enumerate()
+                .map(|(index, path)| format!("  [PDF {}] {}", index + 1, path))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let tool_hint = if native_media_viewer {
+                "Open these paths with view_file to read the documents themselves."
+            } else {
+                "当前模型不能直接读 PDF，可用文件工具打开这些路径。"
+            };
+            hints.push(ChatMessage::turn_context(format!(
+                "用户提供了 {} 个 PDF 路径：\n{}\n{tool_hint}",
+                unread_pdf_paths.len(),
+                list
+            )));
+        }
+        if !self.context_images.is_empty() && !vision_tool_available {
+            tracing::warn!(
+                target: "miyu::qq",
+                refs = self.context_images.len(),
+                tools_enabled = self.tools_enabled,
+                "{}",
+                crate::i18n::text(
+                    "context image refs are available but vision_analyze is not registered; the block was not emitted",
+                    "有历史图片引用但未注册 vision_analyze,<context-images> 块未发出"
+                )
+            );
         }
         if !self.context_images.is_empty() && vision_tool_available {
             let ids = self
@@ -171,28 +367,37 @@ impl Agent {
         })
     }
 
-    pub(in crate::agent) async fn clipboard_image_message(
+    /// 当前模型看不了图时的退路:把媒体块里的图片交给视觉插件转述,换成
+    /// 一条 text 块(同样落库重放)。
+    pub(in crate::agent) async fn describe_inline_media(
         &self,
-        img: ClipboardImage,
-    ) -> Result<Option<ChatMessage>> {
-        if self.current_model_supports_vision() {
-            return Ok(Some(ChatMessage::user_parts(vec![
-                ChatContentPart::ImageUrl {
-                    image_url: ImageUrlContent {
-                        url: img.data_url().to_string(),
-                    },
-                },
-            ])));
+        items: Vec<crate::state::TurnInlineMedia>,
+    ) -> Result<Vec<crate::state::TurnInlineMedia>> {
+        let images = items
+            .iter()
+            .filter(|item| item.kind == crate::state::INLINE_MEDIA_KIND_IMAGE)
+            .filter_map(|item| {
+                item.data
+                    .clone()
+                    .map(|data| ClipboardImage::new(item.mime.clone(), data))
+            })
+            .collect::<Vec<_>>();
+        if images.is_empty() {
+            return Ok(Vec::new());
         }
-
-        let images = vec![&img];
-        let description = self
-            .describe_images_with_vision_provider("", &images)
-            .await?;
+        let refs = images.iter().collect::<Vec<_>>();
+        let description = self.describe_images_with_vision_provider("", &refs).await?;
         if description.trim().is_empty() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
-        Ok(Some(ChatMessage::plain("user", description)))
+        Ok(vec![crate::state::TurnInlineMedia {
+            call_id: String::new(),
+            seq: 0,
+            kind: crate::state::INLINE_MEDIA_KIND_TEXT.to_string(),
+            mime: "text/plain".to_string(),
+            source: String::new(),
+            data: Some(description.into_bytes()),
+        }])
     }
 
     pub(in crate::agent) fn uploaded_attachment_image_parts(
@@ -236,4 +441,15 @@ impl Agent {
         }
         Ok(images)
     }
+}
+
+/// PDF 内容块要带的文件名。openai-chat 的 `file` 块把它当必填字段,别的协议
+/// 拿它当标题——两处都不能是空串,所以取不到 basename 时兜底一个通用名。
+fn pdf_file_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("document.pdf")
+        .to_string()
 }

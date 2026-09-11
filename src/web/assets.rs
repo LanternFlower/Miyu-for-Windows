@@ -56,9 +56,15 @@ pub(in crate::web) async fn index_asset(headers: HeaderMap) -> Response {
     // Version the asset references so browsers and intermediaries can never
     // serve a stale app.js/styles.css after an upgrade.
     static VERSIONED_INDEX: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-        INDEX_HTML
-            .replace("href=\"/styles.css\"", concat!("href=\"/styles.css?v=", env!("MIYU_BUILD_ID"), "\""))
-            .replace("src=\"/app.js\"", concat!("src=\"/app.js?v=", env!("MIYU_BUILD_ID"), "\""))
+        let mut html = INDEX_HTML
+            .replace(
+                "href=\"/styles.css\"",
+                concat!("href=\"/styles.css?v=", env!("MIYU_BUILD_ID"), "\""),
+            )
+            .replace(
+                "src=\"/app.js\"",
+                concat!("src=\"/app.js?v=", env!("MIYU_BUILD_ID"), "\""),
+            )
             .replace(
                 "src=\"/commands.js\"",
                 concat!("src=\"/commands.js?v=", env!("MIYU_BUILD_ID"), "\""),
@@ -77,14 +83,33 @@ pub(in crate::web) async fn index_asset(headers: HeaderMap) -> Response {
             )
             .replace(
                 "href=\"/vendor/katex/katex.min.css\"",
-                concat!("href=\"/vendor/katex/katex.min.css?v=", env!("MIYU_BUILD_ID"), "\""),
+                concat!(
+                    "href=\"/vendor/katex/katex.min.css?v=",
+                    env!("MIYU_BUILD_ID"),
+                    "\""
+                ),
             )
             .replace(
                 "src=\"/vendor/katex/katex.min.js\"",
-                concat!("src=\"/vendor/katex/katex.min.js?v=", env!("MIYU_BUILD_ID"), "\""),
-            )
+                concat!(
+                    "src=\"/vendor/katex/katex.min.js?v=",
+                    env!("MIYU_BUILD_ID"),
+                    "\""
+                ),
+            );
+        for (name, _) in DASH_SCRIPTS {
+            html = html.replace(
+                &format!("src=\"/dash/{name}\""),
+                &format!("src=\"/dash/{name}?v={}\"", env!("MIYU_BUILD_ID")),
+            );
+        }
+        html
     });
-    embedded_asset(&headers, VERSIONED_INDEX.as_bytes(), "text/html; charset=utf-8")
+    embedded_asset(
+        &headers,
+        VERSIONED_INDEX.as_bytes(),
+        "text/html; charset=utf-8",
+    )
 }
 
 pub(in crate::web) async fn styles_asset(headers: HeaderMap) -> Response {
@@ -92,7 +117,11 @@ pub(in crate::web) async fn styles_asset(headers: HeaderMap) -> Response {
 }
 
 pub(in crate::web) async fn app_asset(headers: HeaderMap) -> Response {
-    embedded_asset(&headers, APP_JS.as_bytes(), "application/javascript; charset=utf-8")
+    embedded_asset(
+        &headers,
+        APP_JS.as_bytes(),
+        "application/javascript; charset=utf-8",
+    )
 }
 
 pub(in crate::web) async fn commands_js_asset(headers: HeaderMap) -> Response {
@@ -127,19 +156,63 @@ pub(in crate::web) async fn shared_js_asset(headers: HeaderMap) -> Response {
     )
 }
 
+/// 插件 dashboard 脚本表:`/dash/<name>` 一张表一个 handler。新增面板只在这里
+/// 加一行(外加 index.html 的 script 标签),不再逐个写 handler + route。
+/// `dashboards.js` 是共享层,得排在各面板之前加载,顺序由 index.html 决定。
+static DASH_SCRIPTS: &[(&str, &str)] = &[
+    ("dashboards.js", include_str!("../../web/dashboards.js")),
+    ("dash-memory.js", include_str!("../../web/dash-memory.js")),
+    ("dash-kb.js", include_str!("../../web/dash-kb.js")),
+    ("dash-memes.js", include_str!("../../web/dash-memes.js")),
+    ("dash-qq.js", include_str!("../../web/dash-qq.js")),
+    ("dash-groups.js", include_str!("../../web/dash-groups.js")),
+    (
+        "dash-affection.js",
+        include_str!("../../web/dash-affection.js"),
+    ),
+    ("dash-scripts.js", include_str!("../../web/dash-scripts.js")),
+    // 设置页(09-04 重做):字段模式表 + 渲染层,走同一条静态表。
+    (
+        "settings-schema.js",
+        include_str!("../../web/settings-schema.js"),
+    ),
+    ("settings.js", include_str!("../../web/settings.js")),
+];
+
+pub(in crate::web) async fn dash_script_asset(
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
+    match DASH_SCRIPTS.iter().find(|(entry, _)| *entry == name) {
+        Some((_, content)) => embedded_asset(
+            &headers,
+            content.as_bytes(),
+            "application/javascript; charset=utf-8",
+        ),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 pub(in crate::web) async fn logo_asset(headers: HeaderMap) -> Response {
     embedded_asset(&headers, MIYU_LOGO, "image/png")
 }
 
 pub(in crate::web) async fn katex_js_asset(headers: HeaderMap) -> Response {
-    embedded_asset(&headers, KATEX_JS.as_bytes(), "text/javascript; charset=utf-8")
+    embedded_asset(
+        &headers,
+        KATEX_JS.as_bytes(),
+        "text/javascript; charset=utf-8",
+    )
 }
 
 pub(in crate::web) async fn katex_css_asset(headers: HeaderMap) -> Response {
     embedded_asset(&headers, KATEX_CSS.as_bytes(), "text/css; charset=utf-8")
 }
 
-pub(in crate::web) async fn katex_font_asset(headers: HeaderMap, Path(font): Path<String>) -> Response {
+pub(in crate::web) async fn katex_font_asset(
+    headers: HeaderMap,
+    Path(font): Path<String>,
+) -> Response {
     match KATEX_FONTS.iter().find(|(name, _)| *name == font) {
         Some((_, bytes)) => embedded_asset(&headers, bytes, "font/woff2"),
         None => StatusCode::NOT_FOUND.into_response(),
@@ -298,11 +371,17 @@ pub(in crate::web) fn binary_asset(content: &'static [u8], content_type: &'stati
     asset_response(content, content_type)
 }
 
-pub(in crate::web) fn asset_response(content: &'static [u8], content_type: &'static str) -> Response {
+pub(in crate::web) fn asset_response(
+    content: &'static [u8],
+    content_type: &'static str,
+) -> Response {
     finish_asset_response(content.into_response(), content_type)
 }
 
-pub(in crate::web) fn finish_asset_response(mut response: Response, content_type: &'static str) -> Response {
+pub(in crate::web) fn finish_asset_response(
+    mut response: Response,
+    content_type: &'static str,
+) -> Response {
     response
         .headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
@@ -500,7 +579,10 @@ pub(in crate::web) async fn artifact_asset(
     Ok(response)
 }
 
-pub(in crate::web) fn resolve_persona_asset_path(paths: &MiyuPaths, value: &str) -> Option<PathBuf> {
+pub(in crate::web) fn resolve_persona_asset_path(
+    paths: &MiyuPaths,
+    value: &str,
+) -> Option<PathBuf> {
     let value = value.trim();
     if persona_asset_uses_managed_namespace(value) {
         return managed_persona_asset_path(paths, value);
@@ -516,7 +598,10 @@ pub(in crate::web) fn resolve_persona_asset_path(paths: &MiyuPaths, value: &str)
     })
 }
 
-pub(in crate::web) fn managed_persona_asset_path(paths: &MiyuPaths, value: &str) -> Option<PathBuf> {
+pub(in crate::web) fn managed_persona_asset_path(
+    paths: &MiyuPaths,
+    value: &str,
+) -> Option<PathBuf> {
     let value = value.trim();
     if value.contains('\\') || value.chars().any(char::is_control) {
         return None;
@@ -554,7 +639,10 @@ pub(in crate::web) fn persona_asset_uses_managed_namespace(value: &str) -> bool 
         })
 }
 
-pub(in crate::web) fn validate_managed_persona_asset_file(paths: &MiyuPaths, path: &FilePath) -> Result<()> {
+pub(in crate::web) fn validate_managed_persona_asset_file(
+    paths: &MiyuPaths,
+    path: &FilePath,
+) -> Result<()> {
     let root_path = paths.persona_avatars_dir();
     let root_metadata = std::fs::symlink_metadata(&root_path)?;
     if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {

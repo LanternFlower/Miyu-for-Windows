@@ -5,7 +5,11 @@
 
 use crate::cli::*;
 
-pub(in crate::cli) async fn run_tool(paths: &MiyuPaths, mode: AgentMode, args: ToolArgs) -> Result<()> {
+pub(in crate::cli) async fn run_tool(
+    paths: &MiyuPaths,
+    mode: AgentMode,
+    args: ToolArgs,
+) -> Result<()> {
     let config = AppConfig::load_or_default(paths)?;
     let registry = build_tool_registry(&config, paths, mode, false)?;
     let output = registry
@@ -60,9 +64,15 @@ pub(in crate::cli) async fn run_tool_call(paths: &MiyuPaths, args: ToolCallArgs)
                 eprintln!(
                     "{}",
                     if is_zh() {
-                        format!("# 本会话目录({mode_label} 模式,{} 个工具);列出即可调用", tools.len())
+                        format!(
+                            "# 本会话目录({mode_label} 模式,{} 个工具);列出即可调用",
+                            tools.len()
+                        )
                     } else {
-                        format!("# session catalog ({mode_label} mode, {} tools); listed = callable", tools.len())
+                        format!(
+                            "# session catalog ({mode_label} mode, {} tools); listed = callable",
+                            tools.len()
+                        )
                     }
                 );
                 for tool in &tools {
@@ -145,7 +155,9 @@ pub(in crate::cli) async fn run_tool_call(paths: &MiyuPaths, args: ToolCallArgs)
         args.arguments.clone().unwrap_or_else(|| "{}".to_string())
     };
     let session = std::env::var("MIYU_SESSION").ok().filter(|s| !s.is_empty());
-    let origin = std::env::var("MIYU_TURN_ORIGIN").ok().filter(|s| !s.is_empty());
+    let origin = std::env::var("MIYU_TURN_ORIGIN")
+        .ok()
+        .filter(|s| !s.is_empty());
     let depth: u32 = std::env::var("MIYU_BRIDGE_DEPTH")
         .ok()
         .and_then(|raw| raw.parse().ok())
@@ -251,7 +263,9 @@ pub(in crate::cli) fn remote_tool_image_asset_id(event: &serde_json::Value) -> O
         .filter(|id| !id.trim().is_empty())
 }
 
-pub(in crate::cli) fn remote_image_preview(asset: &crate::state::ImageAssetData) -> Result<tempfile::NamedTempFile> {
+pub(in crate::cli) fn remote_image_preview(
+    asset: &crate::state::ImageAssetData,
+) -> Result<tempfile::NamedTempFile> {
     let suffix = if asset.asset.mime == "image/gif" {
         ".png"
     } else {

@@ -34,10 +34,17 @@ impl AdaptiveResponseTargetPolicy {
         }
     }
 
+    /// `last_message_is_own`:会话里最后一条是不是她自己刚发的。
+    ///
+    /// 08-29 用户点名:连发时两条定向线索会一起哑火。艾特要"隔了时间**且**
+    /// 别人说过话",引用要"隔了几条别人的消息";她回完 A 立刻回 B,B 那条
+    /// 两个条件都不满足,于是既不引用也不艾特——而上一条还是她自己的,读的
+    /// 人分不清她在跟谁说话。真人在群里连着说话也会靠引用分流。
     pub(crate) fn resolve(
         self,
         mut target: ResponseTarget,
         current: Option<PlatformMessagePosition>,
+        last_message_is_own: bool,
         now: Instant,
     ) -> Option<ResponseTarget> {
         let other_messages = self.position.zip(current).map(|(start, current)| {
@@ -48,7 +55,8 @@ impl AdaptiveResponseTargetPolicy {
             total.saturating_sub(same_sender)
         });
         if target.quote {
-            target.quote = self.quote_after_other_messages == 0
+            target.quote = last_message_is_own
+                || self.quote_after_other_messages == 0
                 || other_messages.is_some_and(|count| count >= self.quote_after_other_messages);
         }
         if target.mention {
@@ -79,6 +87,94 @@ pub(crate) fn apply_resolved_response_target(
     }
 }
 
+/// 剥掉模型漏进正文通道的工具调用模板(08-23 线上取证:mimo 系复读退化
+/// 时把 `<tool_call><function=...>` 当文本吐出,中转解析器不认就落进
+/// content,QQ 分段投递原样发到群里)。返回 true = 有段被改写或移除;剥完
+/// 没有任何文本/媒体段的消息由调用方整条抑制。
+pub(crate) fn strip_tool_call_leaks(message: &mut OutboundMessage) -> bool {
+    let OutboundBody::Segments(segments) = &mut message.body else {
+        return false;
+    };
+    let mut changed = false;
+    segments.retain_mut(|segment| match segment {
+        OutboundSegment::Markdown(part) | OutboundSegment::Text(part) => {
+            let Some(stripped) = strip_leak_spans(part) else {
+                return true;
+            };
+            changed = true;
+            if stripped.trim().is_empty() {
+                false
+            } else {
+                *part = stripped;
+                true
+            }
+        }
+        _ => true,
+    });
+    changed
+}
+
+/// 剥完后还有没有值得投递的内容(纯 Mention 不算)。
+pub(crate) fn message_has_deliverable_content(message: &OutboundMessage) -> bool {
+    let OutboundBody::Segments(segments) = &message.body else {
+        return true;
+    };
+    segments.iter().any(|segment| match segment {
+        OutboundSegment::Markdown(part) | OutboundSegment::Text(part) => !part.trim().is_empty(),
+        OutboundSegment::Mention(_) => false,
+        _ => true,
+    })
+}
+
+/// 移除文本里的 `<tool_call>…</tool_call>` 与裸 `<function=…</function>`
+/// span(缺闭合标签=剥到结尾,流式截断的残模板就是这个形态)。
+/// None = 文本干净没动。
+fn strip_leak_spans(text: &str) -> Option<String> {
+    const SPANS: [(&str, &str); 2] = [
+        ("<tool_call>", "</tool_call>"),
+        ("<function=", "</function>"),
+    ];
+    let mut output = text.to_string();
+    let mut changed = false;
+    loop {
+        let Some((start, open, close)) = SPANS
+            .iter()
+            .filter_map(|(open, close)| output.find(open).map(|at| (at, *open, *close)))
+            .min_by_key(|(at, _, _)| *at)
+        else {
+            break;
+        };
+        let _ = open;
+        let end = output[start..]
+            .find(close)
+            .map(|at| start + at + close.len())
+            .unwrap_or(output.len());
+        output.replace_range(start..end, "");
+        changed = true;
+    }
+    changed.then_some(output)
+}
+
+/// 看起来是空的:只有空白或不可见字符(零宽空格/零宽连接符/BOM/软连字…)。
+/// 模型"什么都不想说"时常吐一个 U+200B,`trim()` 不认它,发出去就是一条空气泡
+/// (09-06 QQ 群里被人调侃「叛逆了」)。只用来判空,不用来改写正文——U+200D 在
+/// emoji 序列里是有意义的。
+pub(crate) fn visibly_blank(text: &str) -> bool {
+    text.chars().all(|ch| {
+        ch.is_whitespace()
+            || matches!(
+                ch,
+                '\u{200B}'..='\u{200F}'
+                    | '\u{2060}'..='\u{2064}'
+                    | '\u{FEFF}'
+                    | '\u{00AD}'
+                    | '\u{180E}'
+                    | '\u{2028}'
+                    | '\u{2029}'
+            )
+    })
+}
+
 pub(crate) fn message_is_parenthetical_only(message: &OutboundMessage) -> bool {
     let OutboundBody::Segments(segments) = &message.body else {
         return false;
@@ -90,7 +186,8 @@ pub(crate) fn message_is_parenthetical_only(message: &OutboundMessage) -> bool {
             OutboundSegment::Mention(_) => {}
             OutboundSegment::ImageBytes { .. }
             | OutboundSegment::ImagePath { .. }
-            | OutboundSegment::FilePath { .. } => return false,
+            | OutboundSegment::FilePath { .. }
+            | OutboundSegment::AudioPath { .. } => return false,
         }
     }
     let text = text.trim();
@@ -131,6 +228,9 @@ pub(crate) fn outbound_text_for_history(message: &OutboundMessage) -> String {
                 OutboundSegment::ImageBytes { .. }
                 | OutboundSegment::ImagePath { .. }
                 | OutboundSegment::FilePath { .. } => {}
+                OutboundSegment::AudioPath { transcript, .. } => {
+                    parts.push(crate::platform_types::voice_history_text(transcript))
+                }
             }
         }
     }
@@ -174,6 +274,17 @@ impl ReplySuppression {
         self.ranges.clear();
         self.open_at = None;
         self.final_reply_already_sent = false;
+    }
+
+    /// 回合中途把已说的正文当中间消息发走、`text` 随即清空之后的复位。
+    ///
+    /// 与 [`Self::model_started`] 的区别在于「这不是新一轮模型回复」:抑制这件
+    /// 事本身还在继续,只有区间偏移要跟着清空的 `text` 归零。`open_at` 是
+    /// 「从这里往后都抑制」的游标,text 一空它的锚点就是 0;本来没在抑制的
+    /// 仍旧没在抑制。`final_reply_already_sent` 属于整轮,不动。
+    pub(crate) fn round_flushed(&mut self) {
+        self.ranges.clear();
+        self.open_at = self.open_at.map(|_| 0);
     }
 
     pub(crate) fn finish(mut self, text_len: usize) -> (Vec<(usize, usize)>, bool) {
@@ -243,7 +354,7 @@ pub(crate) async fn flush_intermediate_reply(
     }
     let visible = cut_suppressed_ranges(text, &suppression.round_ranges(text.len()));
     let visible = visible.trim();
-    if visible.is_empty() {
+    if visibly_blank(visible) {
         return;
     }
     match context
@@ -253,7 +364,11 @@ pub(crate) async fn flush_intermediate_reply(
         ))
         .await
     {
-        Ok(_) => tracing::info!(
+        // 投递成功才进幂等闸登记(失败就登记会把之后的正当重发也拦掉):
+        // 模型下一轮若用工具重发同段(端点故障日的重演惯犯),send 侧被拒。
+        Ok(_) => {
+            context.record_delivered_reply_text(visible);
+            tracing::info!(
             target: "miyu::qq",
             chars = visible.chars().count(),
             "{}",
@@ -261,7 +376,8 @@ pub(crate) async fn flush_intermediate_reply(
                 "sent an intermediate platform reply",
                 "已发送平台中间消息",
             )
-        ),
+            );
+        }
         Err(error) => tracing::warn!(
             target: "miyu::qq",
             error = %error,

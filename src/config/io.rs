@@ -137,7 +137,7 @@ impl AppConfig {
         // where it was first needed. It now also backs memory recall, and a
         // knowledge-base setting silently steering group-chat search is a trap
         // for whoever reads this next.
-        if !self.embedding.is_configured() {
+        if !self.embedding.remote_is_configured() {
             let kb = &self.plugins.knowledge_base;
             if !kb.embedding_provider_id.trim().is_empty() && !kb.embedding_model.trim().is_empty()
             {
@@ -171,6 +171,21 @@ impl AppConfig {
             if position != 0 {
                 let provider = self.providers.remove(position);
                 self.providers.insert(0, provider);
+            }
+        }
+        // Antigravity、Codex 紧随其后(同样是内置 CLI 中转),顺序固定。
+        let mut target = usize::from(
+            self.providers
+                .first()
+                .is_some_and(ProviderConfig::is_claude_code),
+        );
+        for predicate in [ProviderConfig::is_antigravity, ProviderConfig::is_codex] {
+            if let Some(position) = self.providers.iter().position(predicate) {
+                if position != target && target < self.providers.len() {
+                    let provider = self.providers.remove(position);
+                    self.providers.insert(target, provider);
+                }
+                target += 1;
             }
         }
         if self.active_provider == "opencodezen" {
@@ -310,11 +325,13 @@ impl AppConfig {
             if !provider_ids.insert(provider.id.as_str()) {
                 bail!("duplicate provider id: {}", provider.id);
             }
-            // Claude Code 特殊供应商的传输层是本机 CLI 子进程,没有 URL 概念。
-            if provider.base_url.trim().is_empty() && !provider.is_claude_code() {
+            // Claude Code / Antigravity 特殊供应商的传输层是本机 CLI 子进程,
+            // 没有 URL 概念。
+            if provider.base_url.trim().is_empty() && !provider.is_builtin_cli_provider() {
                 bail!("provider {} base_url cannot be empty", provider.id);
             }
         }
+        self.model_tiers.validate_roles()?;
         if !(0.1..=1.0).contains(&self.context.trim_at_ratio) {
             bail!("context.trim_at_ratio must be between 0.1 and 1.0");
         }
@@ -323,16 +340,6 @@ impl AppConfig {
         }
         if self.context.compact_force_ratio < self.context.trim_at_ratio {
             bail!("context.compact_force_ratio must be >= context.trim_at_ratio");
-        }
-        if !(0.05..=1.0).contains(&self.context.compact_soft_ratio)
-            || !(0.05..=1.0).contains(&self.context.compact_snip_ratio)
-        {
-            bail!("context.compact_soft_ratio and compact_snip_ratio must be between 0.05 and 1.0");
-        }
-        if self.context.compact_soft_ratio > self.context.compact_snip_ratio
-            || self.context.compact_snip_ratio > self.context.trim_at_ratio
-        {
-            bail!("context watermarks must be ordered: compact_soft_ratio <= compact_snip_ratio <= trim_at_ratio <= compact_force_ratio");
         }
         if !(0.01..=0.9).contains(&self.context.trim_batch_ratio) {
             bail!("context.trim_batch_ratio must be between 0.01 and 0.9");

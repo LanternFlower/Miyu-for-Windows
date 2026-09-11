@@ -1,93 +1,36 @@
-mod search;
-mod store;
-pub(crate) use search::embed_text;
+mod dashboard;
 mod files;
 mod index;
+mod search;
+mod store;
 #[cfg(test)]
 use index::keyword_search_blocking;
+pub(in crate::tools) use store::reject_non_kb_upload;
 
 use search::*;
 use store::*;
 
 use super::{ToolRegistry, ToolSpec};
-use crate::config::{AppConfig, KnowledgeBasePluginConfig, ProviderConfig};
+use crate::config::{AppConfig, KnowledgeBasePluginConfig};
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Context, Result};
 use chrono::Local;
-use reqwest::Client;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+// 08-21 Edit/Read 统一(用户裁定):upload/edit/remove/read 四个 CRUD 工具退场,
+// 写走统一 `edit` 的 kb: 命名空间(apply_patch.rs 路由回本模块的 import_file/
+// remove,索引钩子不绕过),读走统一 `read` 的 kb: 前缀。只留语义检索。
 pub fn register(registry: &mut ToolRegistry, config: AppConfig, paths: MiyuPaths) {
     register_readonly(registry, config.clone(), paths.clone());
+    // 08-21 二次裁定:知识库写入独立成 `kb` 工具(补丁语义,域名即广告)。
     if config.plugins.knowledge_base.upload_tool_enabled {
-        let upload_config = config.clone();
-        let upload_paths = paths.clone();
-        registry.register(ToolSpec::new(
-                "upload_text_to_knowledge_base",
-            "Create a new knowledge-base file or replace an entire existing file. For updating part of an existing file, first search/read it and prefer edit_knowledge_base_file. Never use this for skills, memory, persona, identity, or configuration.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "content": { "type": "string", "description": "Text content to save." },
-                    "title": { "type": "string", "description": "Optional title used for markdown heading and default file name." },
-                    "file_name": { "type": "string", "description": "Optional knowledge base relative path." }
-                },
-                "required": ["content"],
-                "additionalProperties": false
-            }),
-            move |args| {
-                let config = upload_config.clone();
-                let paths = upload_paths.clone();
-                async move { tool_upload(args, config, paths).await }
-            },
-        ).writes());
-        let edit_config = config.clone();
-        let edit_paths = paths.clone();
-        registry.register(ToolSpec::new(
-            "edit_knowledge_base_file",
-            "Edit an existing knowledge-base file by replacing an inclusive 1-based line range. Use after search_knowledge_base/read_knowledge_base_file identifies the exact file and line numbers. This updates metadata and refreshes semantic indexing when embeddings are enabled.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "file_name": { "type": "string", "description": "Knowledge base relative path to edit." },
-                    "start_line": { "type": "integer", "description": "1-based first line to replace." },
-                    "end_line": { "type": "integer", "description": "1-based last line to replace, inclusive." },
-                    "replacement": { "type": "string", "description": "Replacement text. May contain multiple lines. Empty text deletes the line range." }
-                },
-                "required": ["file_name", "start_line", "end_line", "replacement"],
-                "additionalProperties": false
-            }),
-            move |args| {
-                let config = edit_config.clone();
-                let paths = edit_paths.clone();
-                async move { tool_edit(args, config, paths).await }
-            },
-        ).writes());
-        let remove_config = config.clone();
-        let remove_paths = paths.clone();
-        registry.register(ToolSpec::new(
-            "remove_knowledge_base_file",
-            "Remove a knowledge-base file by relative path. Use only after the user asks to delete a knowledge-base entry or confirms the exact file. This also removes its metadata and semantic chunks.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "file_name": { "type": "string", "description": "Knowledge base relative path to remove." }
-                },
-                "required": ["file_name"],
-                "additionalProperties": false
-            }),
-            move |args| {
-                let config = remove_config.clone();
-                let paths = remove_paths.clone();
-                async move { tool_remove(args, config, paths).await }
-            },
-        ).writes());
+        crate::tools::apply_patch::register_kb(registry, config, paths);
     }
 }
 
@@ -120,29 +63,6 @@ pub fn register_readonly(registry: &mut ToolRegistry, config: AppConfig, paths: 
                         other => bail!("unknown by: {other}; expected content or name"),
                     }
                 }
-            }
-        },
-    ));
-    registry.register(ToolSpec::new(
-        "read_knowledge_base_file",
-        "Read a knowledge base file by relative path with line pagination. Prefer paths returned by search_knowledge_base or search_knowledge_base_by_name. Summarize the relevant content without exposing raw tool JSON.",
-        json!({
-            "type": "object",
-            "properties": {
-                "file_name": { "type": "string", "description": "Knowledge base relative path." },
-                "start_line": { "type": "integer", "description": "1-based start line." },
-                "max_lines": { "type": "integer", "description": "Optional line limit." }
-            },
-            "required": ["file_name"],
-            "additionalProperties": false
-        }),
-        {
-            let config = config.clone();
-            let paths = paths.clone();
-            move |args| {
-                let config = config.clone();
-                let paths = paths.clone();
-                async move { tool_read_readonly(args, config, paths).await }
             }
         },
     ));
@@ -295,138 +215,6 @@ async fn tool_find_readonly(args: Value, config: AppConfig, paths: MiyuPaths) ->
         .to_string())
 }
 
-async fn tool_read_readonly(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<String> {
-    ensure_enabled(&config)?;
-    let name = args
-        .get("file_name")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    if name.is_empty() {
-        bail!("file_name is required")
-    }
-    let start_line = args.get("start_line").and_then(Value::as_u64).unwrap_or(1) as usize;
-    let max_lines = args
-        .get("max_lines")
-        .and_then(Value::as_u64)
-        .map(|value| value as usize);
-    KnowledgeBase::new(config, paths)?.read_file_readonly(name, start_line, max_lines)
-}
-
-async fn tool_upload(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<String> {
-    ensure_enabled(&config)?;
-    if !config.plugins.knowledge_base.upload_tool_enabled {
-        bail!("knowledge base upload tool is disabled")
-    }
-    let content = args
-        .get("content")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    if content.is_empty() {
-        bail!("content is required")
-    }
-    let title = args
-        .get("title")
-        .and_then(Value::as_str)
-        .unwrap_or("knowledge note")
-        .trim();
-    let file_name = args
-        .get("file_name")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    reject_non_kb_upload(content, title, file_name)?;
-    let rel = if file_name.is_empty() {
-        format!(
-            "chat_uploads/{}/{}.md",
-            Local::now().format("%Y-%m-%d"),
-            slug(title)
-        )
-    } else {
-        normalize_relative_path(file_name)?
-    };
-    let body = format!(
-        "# {}\n\n> 来源：用户要求保存到本地知识库\n> 上传时间：{}\n\n{}\n",
-        if title.is_empty() {
-            Path::new(&rel)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("knowledge note")
-        } else {
-            title
-        },
-        Local::now().format("%Y-%m-%d %H:%M:%S"),
-        content
-    );
-    let kb = KnowledgeBase::new(config, paths)?;
-    kb.init()?;
-    let temp = tempfile::NamedTempFile::new()?;
-    std::fs::write(temp.path(), body.as_bytes())?;
-    let saved = kb.import_file(temp.path(), &rel)?;
-    kb.spawn_embedding_reindex()?;
-    Ok(json!({
-        "ok": true,
-        "path": saved,
-    })
-    .to_string())
-}
-
-async fn tool_edit(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<String> {
-    ensure_enabled(&config)?;
-    let name = args
-        .get("file_name")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    if name.is_empty() {
-        bail!("file_name is required")
-    }
-    let start_line = args
-        .get("start_line")
-        .and_then(Value::as_u64)
-        .context("start_line is required")? as usize;
-    let end_line = args
-        .get("end_line")
-        .and_then(Value::as_u64)
-        .context("end_line is required")? as usize;
-    let replacement = args
-        .get("replacement")
-        .and_then(Value::as_str)
-        .context("replacement is required")?;
-    let result =
-        KnowledgeBase::new(config, paths)?.edit_lines(name, start_line, end_line, replacement)?;
-    Ok(json!({
-        "ok": true,
-        "path": result.path,
-        "old_line_count": result.old_line_count,
-        "new_line_count": result.new_line_count,
-        "semantic_refreshed": result.semantic_refreshed,
-        "warning": if name.starts_with("default-kb/") { Some("default-kb files may be overwritten by miyu update-default-kb") } else { None::<&str> },
-    })
-    .to_string())
-}
-
-async fn tool_remove(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<String> {
-    ensure_enabled(&config)?;
-    let name = args
-        .get("file_name")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    if name.is_empty() {
-        bail!("file_name is required")
-    }
-    let rel = normalize_relative_path(name)?;
-    KnowledgeBase::new(config, paths)?.remove(&rel)?;
-    Ok(json!({
-        "ok": true,
-        "path": rel,
-        "warning": if name.starts_with("default-kb/") { Some("default-kb files may be restored by miyu update-default-kb") } else { None::<&str> },
-    })
-    .to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,7 +242,10 @@ mod tests {
     fn edit_lines_replaces_inclusive_range() {
         let temp = tempfile::tempdir().unwrap();
         let paths = test_paths(temp.path());
-        let config = AppConfig::default();
+        let mut config = AppConfig::default();
+        // 内置本地 embedding 成为默认后,不关掉这一项编辑就会排语义重建;
+        // 这条测的是行编辑本身。
+        config.plugins.knowledge_base.embedding_enabled = false;
         let kb = KnowledgeBase::new(config, paths).unwrap();
         let source = temp.path().join("note.md");
         std::fs::write(&source, "one\ntwo\nthree\n").unwrap();

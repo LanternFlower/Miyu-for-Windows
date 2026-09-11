@@ -23,7 +23,11 @@ pub(in crate::llm::openai_compatible) const MAX_STREAM_LINE_BYTES: usize = 4 * 1
 
 pub(in crate::llm::openai_compatible) const MAX_STREAM_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
-pub(in crate::llm::openai_compatible) fn append_bounded(target: &mut String, text: &str, limit: usize) {
+pub(in crate::llm::openai_compatible) fn append_bounded(
+    target: &mut String,
+    text: &str,
+    limit: usize,
+) {
     let remaining = limit.saturating_sub(target.len());
     if remaining == 0 {
         return;
@@ -35,7 +39,10 @@ pub(in crate::llm::openai_compatible) fn append_bounded(target: &mut String, tex
     target.push_str(&text[..end]);
 }
 
-pub(in crate::llm::openai_compatible) fn bounded_stream_string(mut value: String, limit: usize) -> String {
+pub(in crate::llm::openai_compatible) fn bounded_stream_string(
+    mut value: String,
+    limit: usize,
+) -> String {
     if value.len() <= limit {
         return value;
     }
@@ -53,7 +60,11 @@ pub(in crate::llm::openai_compatible) struct AnthropicToolAccumulator {
 }
 
 impl AnthropicToolAccumulator {
-    pub(in crate::llm::openai_compatible) fn start(&mut self, index: usize, block: AnthropicStreamBlock) -> Option<String> {
+    pub(in crate::llm::openai_compatible) fn start(
+        &mut self,
+        index: usize,
+        block: AnthropicStreamBlock,
+    ) -> Option<String> {
         if index >= MAX_STREAM_TOOL_CALLS {
             return None;
         }
@@ -67,7 +78,11 @@ impl AnthropicToolAccumulator {
         (!call.name.is_empty()).then(|| call.name.clone())
     }
 
-    pub(in crate::llm::openai_compatible) fn append_arguments(&mut self, index: usize, text: String) {
+    pub(in crate::llm::openai_compatible) fn append_arguments(
+        &mut self,
+        index: usize,
+        text: String,
+    ) {
         if index >= MAX_STREAM_TOOL_CALLS {
             return;
         }
@@ -120,7 +135,10 @@ pub(in crate::llm::openai_compatible) struct PartialResponsesToolCall {
 }
 
 impl ResponsesToolAccumulator {
-    pub(in crate::llm::openai_compatible) fn start(&mut self, item: ResponsesStreamItem) -> Option<String> {
+    pub(in crate::llm::openai_compatible) fn start(
+        &mut self,
+        item: ResponsesStreamItem,
+    ) -> Option<String> {
         if item.kind != "function_call" || self.calls.len() >= MAX_STREAM_TOOL_CALLS {
             return None;
         }
@@ -141,7 +159,11 @@ impl ResponsesToolAccumulator {
         (!name.is_empty()).then_some(name)
     }
 
-    pub(in crate::llm::openai_compatible) fn append_arguments(&mut self, item_id: Option<String>, delta: String) {
+    pub(in crate::llm::openai_compatible) fn append_arguments(
+        &mut self,
+        item_id: Option<String>,
+        delta: String,
+    ) {
         if let Some(item_id) = item_id {
             if let Some(partial) = self.calls.iter_mut().find(|call| call.item_id == item_id) {
                 append_bounded(
@@ -253,7 +275,10 @@ pub(in crate::llm::openai_compatible) struct PartialToolCall {
 }
 
 impl ToolCallAccumulator {
-    pub(in crate::llm::openai_compatible) fn push(&mut self, delta: ToolCallDelta) -> Option<String> {
+    pub(in crate::llm::openai_compatible) fn push(
+        &mut self,
+        delta: ToolCallDelta,
+    ) -> Option<String> {
         if delta.index >= MAX_STREAM_TOOL_CALLS {
             return None;
         }

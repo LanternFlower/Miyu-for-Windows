@@ -410,7 +410,10 @@ pub(in crate::tools::web) async fn search_exa_public(
     }
     let body = parse_mcp_body(response).await?;
     if let Some(error) = body.get("error") {
-        bail!("Exa free quota RPC error: {}", clip(&error.to_string(), 240));
+        bail!(
+            "Exa free quota RPC error: {}",
+            clip(&error.to_string(), 240)
+        );
     }
     let result = body.get("result").cloned().unwrap_or(Value::Null);
     if result

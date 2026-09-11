@@ -160,9 +160,34 @@ impl StateStore {
         self.conv_db.load_artifact_asset(asset_id)
     }
 
+    /// 记下某次工具调用之后追加给模型的媒体块,供历史重放逐字节回灌。
+    pub fn save_turn_inline_media(&self, turn_id: &str, items: &[TurnInlineMedia]) -> Result<()> {
+        self.conv_db.insert_turn_inline_media(turn_id, items)
+    }
+
+    pub fn load_turn_inline_media(&self, turn_id: &str) -> Result<Vec<TurnInlineMedia>> {
+        self.conv_db.load_turn_inline_media(turn_id)
+    }
+
     pub fn save_user_attachment(&self, attachment: &UserAttachment, data: &[u8]) -> Result<()> {
         self.conv_db
             .insert_user_attachment(&self.session(), attachment, data)
+    }
+
+    /// 登记一个已经写到 `user_attachment_path()` 的落盘附件。
+    pub fn save_user_attachment_file(&self, attachment: &UserAttachment) -> Result<()> {
+        self.conv_db
+            .insert_user_attachment_file(&self.session(), attachment)
+    }
+
+    /// 落盘附件的目标目录(`<state>/attachments/<id>`),上传前由调用方创建。
+    pub fn user_attachment_dir(&self, attachment_id: &str) -> std::path::PathBuf {
+        self.conv_db.attachment_dir(attachment_id)
+    }
+
+    /// 落盘附件的目标文件路径。
+    pub fn user_attachment_path(&self, attachment: &UserAttachment) -> std::path::PathBuf {
+        self.conv_db.attachment_path(attachment)
     }
 
     pub fn load_user_attachment(&self, attachment_id: &str) -> Result<Option<UserAttachmentData>> {
@@ -337,7 +362,11 @@ impl StateStore {
         Ok(())
     }
 
-    pub(crate) fn reconcile_managed_artifacts_for_turn(&self, session_id: &str, turn_id: &str) -> Result<()> {
+    pub(crate) fn reconcile_managed_artifacts_for_turn(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+    ) -> Result<()> {
         use std::path::Component;
 
         let mut components = Path::new(session_id).components();

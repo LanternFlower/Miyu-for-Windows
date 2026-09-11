@@ -1,7 +1,7 @@
 //! 反向 WS 连接、鉴权与 API 往返。
 
-use crate::platforms::onebot::*;
 use super::shared::*;
+use crate::platforms::onebot::*;
 
 #[tokio::test]
 async fn listener_rebind_is_transactional_and_reuses_the_web_port() {

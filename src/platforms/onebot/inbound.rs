@@ -37,6 +37,9 @@ pub(in crate::platforms::onebot) const MAX_ONEBOT_ID_BYTES: usize = 128;
 
 pub(in crate::platforms::onebot) const MAX_INBOUND_FILE_NAME_CHARS: usize = 512;
 
+/// 一条消息里最多跟进几个合并转发。转发套转发的深度另有上限(见 `forward`)。
+pub(in crate::platforms::onebot) const MAX_INBOUND_FORWARDS: usize = 4;
+
 #[derive(Default)]
 pub(in crate::platforms::onebot) struct InboundMessage {
     pub(in crate::platforms::onebot) text: String,
@@ -50,6 +53,10 @@ pub(in crate::platforms::onebot) struct InboundMessage {
     pub(in crate::platforms::onebot) quoted_message_data: Option<Value>,
     pub(in crate::platforms::onebot) mentioned_user_ids: Vec<String>,
     pub(in crate::platforms::onebot) media: Vec<PlatformInboundMedia>,
+    /// 合并转发的资源 id。段里只有这个 id,内容要另外调 `get_forward_msg` 取
+    /// (见 `forward`)——解析是同步的,拿不到连接,所以只记 id,展开留给
+    /// dispatch。
+    pub(in crate::platforms::onebot) forward_ids: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -111,9 +118,14 @@ pub(in crate::platforms::onebot) fn inbound_file_placeholders(
         }
         let file_index = index + 1;
         let id = format!("file_{}_{}", message_id, file_index);
+        let label = if crate::tools::vision::video_mime(&file.name).is_some() {
+            t("video", "视频")
+        } else {
+            t("file", "文件")
+        };
         text.push_str(&format!(
             "[{} id={}, label={}]",
-            t("file", "文件"),
+            label,
             id,
             crate::platforms::plugins::real_context::safe_prompt_field(&file.name)
         ));
@@ -127,6 +139,26 @@ pub(in crate::platforms::onebot) fn inbound_file_placeholders(
         });
     }
     (text, refs)
+}
+
+/// 视频段的文件名:优先 name / file_name,再取 file(NapCat 放的是文件名,
+/// 有时是 md5 裸串)。没有视频扩展名就补 `.mp4`,下游全靠扩展名认视频
+/// (`vision::video_mime`),缺了它视频会被当普通二进制文件拒掉。
+pub(in crate::platforms::onebot) fn video_file_name(data: &Value) -> String {
+    let raw = data
+        .get("name")
+        .and_then(Value::as_str)
+        .or_else(|| data.get("file_name").and_then(Value::as_str))
+        .or_else(|| data.get("file").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && !name.starts_with("base64://"))
+        .unwrap_or("video");
+    let name = bounded_chars(raw, MAX_INBOUND_FILE_NAME_CHARS);
+    if crate::tools::vision::video_mime(&name).is_some() {
+        name
+    } else {
+        format!("{name}.mp4")
+    }
 }
 
 /// Group wake check. `Some(text)` = triggered, with any wake prefix
@@ -144,19 +176,21 @@ pub(in crate::platforms::onebot) fn group_trigger_text(
         return Some(parsed.text.clone());
     }
     let text = parsed.text.trim_start();
-    let keyword = config
+    // 唤醒词留在正文里。这里曾把它连同后面的分隔符一起剥掉——那是按名字型
+    // 唤醒词想的(`miyu 你好` → `你好`),但关键词表接受任何词:用户把「为什么」
+    // 设成唤醒词,「为什么不查知识库」被剥成「不查知识库」,疑问句变祈使句,
+    // 她照着"别查"去做(08-29 实测)。
+    //
+    // 剥离还只影响人格模型那一份:`observe_inbound`(入历史库)与主动回复判官
+    // 都在 `parsed.text = trigger.content`(dispatch.rs)之前跑,读到的是完整
+    // 原文。剥离制造的是"同一条消息两个模型读出两个意思",不是干净。
+    // @ 唤醒与引用唤醒本来也不剥,上面那两条分支直接返回全文。
+    config
         .group_chats
         .trigger_keywords
         .iter()
-        .filter(|keyword| text.starts_with(keyword.as_str()))
-        .max_by_key(|keyword| keyword.chars().count())?;
-    let rest = &text[keyword.len()..];
-    Some(
-        rest.trim_start_matches(|ch: char| {
-            ch.is_whitespace() || matches!(ch, ':' | '：' | ',' | '，')
-        })
-        .to_string(),
-    )
+        .any(|keyword| text.starts_with(keyword.as_str()))
+        .then(|| parsed.text.clone())
 }
 
 pub(in crate::platforms::onebot) fn decode_cq_text(text: &str) -> String {
@@ -246,7 +280,10 @@ pub(in crate::platforms::onebot) fn push_image_ref_with_limits(
     true
 }
 
-pub(in crate::platforms::onebot) fn push_inbound_base64(parsed: &mut InboundMessage, encoded: &str) -> bool {
+pub(in crate::platforms::onebot) fn push_inbound_base64(
+    parsed: &mut InboundMessage,
+    encoded: &str,
+) -> bool {
     // Refuse before decoding once the shared count budget is full.
     if parsed.images.len() >= MAX_INBOUND_IMAGES {
         return false;
@@ -284,7 +321,10 @@ pub(in crate::platforms::onebot) fn push_inbound_base64(parsed: &mut InboundMess
     )
 }
 
-pub(in crate::platforms::onebot) fn http_image_source<'a>(file: &'a str, url: Option<&'a str>) -> Option<&'a str> {
+pub(in crate::platforms::onebot) fn http_image_source<'a>(
+    file: &'a str,
+    url: Option<&'a str>,
+) -> Option<&'a str> {
     url.filter(|url| {
         (url.starts_with("http://") || url.starts_with("https://")) && url.len() <= 4096
     })
@@ -295,7 +335,11 @@ pub(in crate::platforms::onebot) fn http_image_source<'a>(file: &'a str, url: Op
     })
 }
 
-pub(in crate::platforms::onebot) fn push_inbound_image_source(parsed: &mut InboundMessage, file: &str, url: Option<&str>) -> bool {
+pub(in crate::platforms::onebot) fn push_inbound_image_source(
+    parsed: &mut InboundMessage,
+    file: &str,
+    url: Option<&str>,
+) -> bool {
     if let Some(encoded) = file.strip_prefix("base64://") {
         return push_inbound_base64(parsed, encoded);
     }
@@ -332,7 +376,11 @@ pub(in crate::platforms::onebot) fn push_unresolved_image_file(
     unresolved.push(file.to_string());
 }
 
-pub(in crate::platforms::onebot) fn append_cq_image_sources(parsed: &mut InboundMessage, raw: &str, unresolved: &mut Vec<String>) {
+pub(in crate::platforms::onebot) fn append_cq_image_sources(
+    parsed: &mut InboundMessage,
+    raw: &str,
+    unresolved: &mut Vec<String>,
+) {
     let mut remaining = raw;
     for _ in 0..MAX_INBOUND_SEGMENTS {
         let Some(start) = remaining.find("[CQ:") else {
@@ -411,7 +459,10 @@ pub(in crate::platforms::onebot) fn append_message_image_sources(
     unresolved
 }
 
-pub(in crate::platforms::onebot) fn ordered_image_source(file: &str, url: Option<&str>) -> Option<OrderedMessageImageSource> {
+pub(in crate::platforms::onebot) fn ordered_image_source(
+    file: &str,
+    url: Option<&str>,
+) -> Option<OrderedMessageImageSource> {
     if let Some(encoded) = file.strip_prefix("base64://") {
         let maximum_encoded = MAX_INBOUND_IMAGE_BYTES
             .saturating_add(2)
@@ -539,6 +590,16 @@ pub(in crate::platforms::onebot) fn parse_cq_string(raw: &str, self_id: i64) -> 
                     .map(|value| decode_cq_text(value))
                     .and_then(bounded_onebot_id);
             }
+            "forward" if parsed.forward_ids.len() < MAX_INBOUND_FORWARDS => {
+                if let Some(id) = parameters
+                    .get("id")
+                    .or_else(|| parameters.get("res_id"))
+                    .map(|value| decode_cq_text(value))
+                    .and_then(bounded_onebot_id)
+                {
+                    parsed.forward_ids.push(id);
+                }
+            }
             "image" | "file" | "record" | "video" | "face"
                 if parsed.media.len() < MAX_INBOUND_MEDIA_RECORDS =>
             {
@@ -555,6 +616,8 @@ pub(in crate::platforms::onebot) fn parse_cq_string(raw: &str, self_id: i64) -> 
                     id: parameters
                         .get("id")
                         .or_else(|| parameters.get("file_id"))
+                        // 语音段只有 `file`(NapCat 的 get_record 就认它)。
+                        .or_else(|| (kind == "record").then(|| parameters.get("file")).flatten())
                         .map(|value| decode_cq_text(value))
                         .and_then(bounded_onebot_id),
                     name: parameters
@@ -679,6 +742,17 @@ pub(in crate::platforms::onebot) fn parse_message(
                     .and_then(value_id_string)
                     .and_then(bounded_onebot_id);
             }
+            "forward" if parsed.forward_ids.len() < MAX_INBOUND_FORWARDS => {
+                // 实现之间字段名不统一:NapCat 用 id,部分实现用 res_id。
+                if let Some(id) = data
+                    .get("id")
+                    .or_else(|| data.get("res_id"))
+                    .and_then(value_id_string)
+                    .and_then(bounded_onebot_id)
+                {
+                    parsed.forward_ids.push(id);
+                }
+            }
             "file" => {
                 if parsed.media.len() < MAX_INBOUND_MEDIA_RECORDS {
                     parsed.media.push(PlatformInboundMedia {
@@ -724,18 +798,50 @@ pub(in crate::platforms::onebot) fn parse_message(
                         .map(str::to_string),
                 });
             }
-            "face" | "record" | "video" if parsed.media.len() < MAX_INBOUND_MEDIA_RECORDS => {
+            "video" => {
+                // 视频走文件那条懒下载链路(09-04):此前只进 media,当轮正文里
+                // 没有任何 id,模型连"有段视频可以看"都不知道。NapCat 视频段带
+                // file(文件名)/url/file_id/file_size;file_id 不是群文件 id,
+                // 下载时由 fetch_platform_file 用 url 或 get_file 兜底。
+                let name = video_file_name(data);
+                let file_id = data
+                    .get("file_id")
+                    .and_then(value_id_string)
+                    .or_else(|| data.get("id").and_then(value_id_string))
+                    .and_then(bounded_onebot_id);
+                let url = data
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .filter(|url| url.starts_with("http") && url.len() <= 4096)
+                    .map(str::to_string);
+                if parsed.media.len() < MAX_INBOUND_MEDIA_RECORDS {
+                    parsed.media.push(PlatformInboundMedia {
+                        kind: PlatformMediaKind::Video,
+                        id: file_id.clone(),
+                        name: Some(name.clone()),
+                        url: url.clone(),
+                    });
+                }
+                if parsed.files.len() < MAX_INBOUND_FILES && (file_id.is_some() || url.is_some()) {
+                    parsed.files.push(FileRef { file_id, name, url });
+                }
+            }
+            "face" | "record" if parsed.media.len() < MAX_INBOUND_MEDIA_RECORDS => {
                 parsed.media.push(PlatformInboundMedia {
                     kind: match kind {
                         "face" => PlatformMediaKind::Emoji,
                         "record" => PlatformMediaKind::Audio,
-                        "video" => PlatformMediaKind::Video,
                         _ => PlatformMediaKind::Other,
                     },
                     id: data
                         .get("id")
                         .and_then(value_id_string)
                         .or_else(|| data.get("file_id").and_then(value_id_string))
+                        .or_else(|| {
+                            (kind == "record")
+                                .then(|| data.get("file").and_then(value_id_string))
+                                .flatten()
+                        })
                         .and_then(bounded_onebot_id),
                     name: data
                         .get("name")
@@ -763,7 +869,10 @@ pub(in crate::platforms::onebot) fn onebot_id_value(value: &str) -> Value {
         .unwrap_or_else(|_| Value::String(value.trim().to_string()))
 }
 
-pub(in crate::platforms::onebot) fn parse_message_info(data: &Value, self_id: i64) -> Option<PlatformMessageInfo> {
+pub(in crate::platforms::onebot) fn parse_message_info(
+    data: &Value,
+    self_id: i64,
+) -> Option<PlatformMessageInfo> {
     let message_id = data.get("message_id").and_then(value_id_string)?;
     let parsed = parse_message(data.get("message"), data.get("raw_message"), self_id);
     let sender = data.get("sender");
@@ -791,8 +900,26 @@ pub(in crate::platforms::onebot) fn parse_message_info(data: &Value, self_id: i6
     let conversation_id = data
         .get("group_id")
         .and_then(value_id_string)
-        .or_else(|| data.get("target_id").and_then(value_id_string))
-        .or_else(|| data.get("peer_id").and_then(value_id_string))
+        // 私聊的会话 id 是**对方**,不是自己。`target_id`/`peer_id` 在
+        // user→bot 的消息里指向机器人,原来不过滤就直接采信,于是
+        // `get_msg` 回来的会话 id 成了自己的号,与 `Target::Private` 期望的
+        // 对方号对不上——`adapter.rs` 的归属校验判成"属于另一个会话",
+        // vision_analyze 取历史图必失败(08-30 测具实测,报错原文
+        // "the requested image message belongs to another conversation")。
+        //
+        // 三个来源统一按"不是我"过滤:bot 发出的消息里 target_id 是对方
+        // (保留),user_id 是自己(跳过);用户发来的消息反过来。两个方向都
+        // 落到同一个人身上。
+        .or_else(|| {
+            data.get("target_id")
+                .and_then(value_id_string)
+                .filter(|id| id != &self_id.to_string())
+        })
+        .or_else(|| {
+            data.get("peer_id")
+                .and_then(value_id_string)
+                .filter(|id| id != &self_id.to_string())
+        })
         .or_else(|| {
             data.get("user_id")
                 .and_then(value_id_string)
@@ -818,7 +945,10 @@ pub(in crate::platforms::onebot) fn parse_message_info(data: &Value, self_id: i6
     })
 }
 
-pub(in crate::platforms::onebot) fn parse_group_member(data: &Value, fallback_group_id: i64) -> Option<PlatformGroupMember> {
+pub(in crate::platforms::onebot) fn parse_group_member(
+    data: &Value,
+    fallback_group_id: i64,
+) -> Option<PlatformGroupMember> {
     Some(PlatformGroupMember {
         group_id: data
             .get("group_id")

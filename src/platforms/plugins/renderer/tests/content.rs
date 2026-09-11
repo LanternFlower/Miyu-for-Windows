@@ -1,8 +1,7 @@
 //! 内容解析与字体回退。
 
-use crate::platforms::plugins::renderer::*;
 use super::shared::*;
-
+use crate::platforms::plugins::renderer::*;
 
 #[test]
 fn renderer_client_and_payloads_satisfy_async_bounds() {
@@ -181,12 +180,7 @@ fn freshly_shaped_cjk_word_keeps_positive_advances() {
         let mut buffer = Buffer::new(&mut font_system, metrics);
         buffer.set_size(Some(960.0), None);
         let attrs = Attrs::new().family(Family::SansSerif).metrics(metrics);
-        buffer.set_rich_text(
-            [(text, attrs.clone())],
-            &attrs,
-            Shaping::Advanced,
-            None,
-        );
+        buffer.set_rich_text([(text, attrs.clone())], &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut font_system, true);
         for run in buffer.layout_runs() {
             for glyph in run.glyphs {
@@ -339,17 +333,15 @@ background_opacity 0.92
     );
 
     let scaled_width = 568_u32;
-    let scaled_height = (u64::from(page.height) * u64::from(scaled_width)
-        / u64::from(page.width))
-    .max(1) as u32;
+    let scaled_height =
+        (u64::from(page.height) * u64::from(scaled_width) / u64::from(page.width)).max(1) as u32;
     let scaled = image::imageops::resize(
         &image,
         scaled_width,
         scaled_height,
         image::imageops::FilterType::Triangle,
     );
-    let scale_x =
-        |x: u32| (u64::from(x) * u64::from(scaled_width) / u64::from(page.width)) as u32;
+    let scale_x = |x: u32| (u64::from(x) * u64::from(scaled_width) / u64::from(page.width)) as u32;
     let scale_y =
         |y: u32| (u64::from(y) * u64::from(scaled_height) / u64::from(page.height)) as u32;
     let outside = scaled.get_pixel(scale_x(outside_x), scale_y(sample_y));

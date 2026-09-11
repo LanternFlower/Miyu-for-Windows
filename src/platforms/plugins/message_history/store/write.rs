@@ -130,6 +130,37 @@ pub(crate) fn insert_messages(
     Ok(outcomes)
 }
 
+/// 只改一条已有消息的正文。
+///
+/// 合并转发要用它:连接层的 `observe_ingress` 抢在展开之前就把这条消息写进
+/// 库了(那时正文里只有一个 `[forward]` 记号),而写入是 `INSERT OR IGNORE`,
+/// dispatch 展开后再写会被静默丢弃——于是群历史里那条永远是空的,当轮看得
+/// 见、下一轮就忘了(08-26 一轮审查)。这里把摘要补上去。
+///
+/// 用 UPDATE 而不是把插入改成 upsert:后者会改动所有消息的写入语义,而
+/// `messages_fts_update` 触发器本来就是为改正文准备的。
+pub(in crate::platforms::plugins::message_history) fn update_message_text(
+    conn: &mut Connection,
+    group: &GroupKey,
+    message_id: &str,
+    text: &str,
+) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE messages SET text = ?6
+         WHERE platform = ?1 AND account_id = ?2 AND conversation_kind = ?3
+           AND conversation_id = ?4 AND message_id = ?5 AND text != ?6",
+        params![
+            group.platform,
+            group.account_id,
+            group.conversation_kind,
+            group.conversation_id,
+            message_id,
+            text,
+        ],
+    )?;
+    Ok(changed != 0)
+}
+
 pub(crate) fn insert_recall(conn: &mut Connection, recall: NewRecall) -> Result<RecallOutcome> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let existed: bool = tx.query_row(
@@ -262,7 +293,10 @@ pub(crate) fn read_boundary(
     .map_err(Into::into)
 }
 
-pub(crate) fn delete_history(conn: &mut Connection, request: DeleteRequest) -> Result<DeleteReport> {
+pub(crate) fn delete_history(
+    conn: &mut Connection,
+    request: DeleteRequest,
+) -> Result<DeleteReport> {
     let cutoff = match request.mode {
         DeleteMode::All => None,
         DeleteMode::KeepDays(days) => Some(

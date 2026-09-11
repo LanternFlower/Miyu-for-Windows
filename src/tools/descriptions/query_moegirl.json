@@ -1,7 +1,7 @@
 {
   "name": "query_moegirl",
   "display_name": "查询萌娘百科",
-  "description": "Query Moegirlpedia. Use when asked about ACG-related content.",
+  "description": "Query Moegirlpedia. Use for ACG-related questions.",
   "parameters": {
     "type": "object",
     "properties": {

@@ -66,9 +66,7 @@ async fn search(args: Value) -> Result<String> {
         if let Some(pos) = line.find("/man/") {
             let tail = &line[pos + 5..];
             // 在 href 闭合处截断，避免把 `">systemd(1)</a>` 之类 HTML 垃圾带进链接。
-            let href_end = tail
-                .find(['"', '\'', '<', '>'])
-                .unwrap_or(tail.len());
+            let href_end = tail.find(['"', '\'', '<', '>']).unwrap_or(tail.len());
             let href = &tail[..href_end];
             let end = href.find('.').unwrap_or(href.len());
             let name = href[..end].trim_matches('/');

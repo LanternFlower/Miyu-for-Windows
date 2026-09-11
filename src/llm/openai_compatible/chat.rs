@@ -83,7 +83,7 @@ impl OpenAiCompatibleClient {
         let client = self.with_endpoint(endpoint);
         if client.uses_openai_responses()
             || client.uses_anthropic_messages()
-            || provider_uses_claude_code(&client.provider)
+            || provider_uses_cli_relay(&client.provider)
         {
             return Ok(None);
         }
@@ -391,10 +391,19 @@ impl OpenAiCompatibleClient {
         F: FnMut(ChatStreamChunk) -> Result<()>,
     {
         let protocol = ProviderProtocol::from_provider(&self.provider)?;
+        // CLI 中转线的 future 装箱:三条线的状态机(子进程泵/事件解析)都很
+        // 大,内联进本函数的 future 会把 debug 构建下 2MB 的线程栈撑爆
+        // (agent 层测试实录),装箱后外层只剩一个指针。
         if protocol == ProviderProtocol::ClaudeCode {
-            return self
-                .chat_claude_code_stream(messages, tools, request_id, on_chunk)
+            return Box::pin(self.chat_claude_code_stream(messages, tools, request_id, on_chunk))
                 .await;
+        }
+        if protocol == ProviderProtocol::Antigravity {
+            return Box::pin(self.chat_antigravity_stream(messages, tools, request_id, on_chunk))
+                .await;
+        }
+        if protocol == ProviderProtocol::Codex {
+            return Box::pin(self.chat_codex_stream(messages, tools, request_id, on_chunk)).await;
         }
         let uses_responses = protocol == ProviderProtocol::OpenAiResponses
             || (protocol == ProviderProtocol::Auto && self.uses_openai_responses());

@@ -1,7 +1,7 @@
 {
   "name": "todowrite",
   "display_name": "任务列表",
-  "description": "Maintain the task list for the current session: pass todos to replace the whole list, or updates for incremental changes.\nExactly one of the two must be provided. updates supports add/update/remove/clear, and targets items by index (1-based) or match_content.",
+  "description": "Maintain this session's task list. Pass todos to replace the whole list, or updates for incremental changes.",
   "parameters": {
     "type": "object",
     "properties": {

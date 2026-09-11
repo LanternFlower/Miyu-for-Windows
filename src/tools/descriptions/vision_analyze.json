@@ -1,22 +1,27 @@
 {
   "name": "vision_analyze",
-  "display_name": "分析图片",
-  "description": "Analyze an image with the current multimodal model. Supports local image paths and http(s) image URLs.",
+  "display_name": "视觉分析",
+  "description": "Look at images or a video. When the current model can see them itself, the media is attached to the conversation directly; otherwise a vision model describes it. Pass images (array) to handle several in one call. Accepts local paths or http(s) URLs. Video (mp4/mkv/mov/webm/mpeg) needs a video-capable model; local videos are capped at 200 MB.",
   "parameters": {
     "type": "object",
     "properties": {
       "image": {
         "type": "string",
-        "description": "A local image path or an http(s) image URL."
+        "description": "A single local image/video path or an http(s) URL."
+      },
+      "images": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Several images to analyze in one call (paths or URLs). Overrides image."
       },
       "prompt": {
         "type": "string",
         "description": "Question or instruction for the image analysis. Defaults to a concise description of the image."
       }
     },
-    "required": [
-      "image"
-    ],
+    "required": [],
     "additionalProperties": false
   },
   "permission": "readonly",

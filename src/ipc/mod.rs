@@ -18,9 +18,7 @@ use std::os::unix::ffi::OsStringExt;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::{
-    fs::File, fs::OpenOptions, path::PathBuf, process::Stdio, time::Duration,
-};
+use std::{fs::File, fs::OpenOptions, path::PathBuf, process::Stdio, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub const ADMIN_BUSY_MESSAGE: &str = "Miyu is busy with another operation";
@@ -33,6 +31,56 @@ pub const BUILD_ID: &str = env!("MIYU_BUILD_ID");
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn paths_with_logs(root: &std::path::Path) -> crate::paths::MiyuPaths {
+        let paths = crate::paths::MiyuPaths {
+            root_dir: root.to_path_buf(),
+            config_dir: root.join("config"),
+            config_file: root.join("config/config.jsonc"),
+            skills_dir: root.join("config/skills"),
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            state_dir: root.join("state"),
+            pictures_dir: root.join("pictures"),
+            fish_hook_file: root.join("fish/miyu.fish"),
+            bash_hook_file: root.join("shell/bash-hook.sh"),
+            zsh_hook_file: root.join("shell/zsh-hook.zsh"),
+            scripts_dir: root.join("config/scripts"),
+            system_scripts_dir: std::path::PathBuf::new(),
+        };
+        std::fs::create_dir_all(paths.logs_dir()).unwrap();
+        paths
+    }
+
+    /// 启动失败时要给出**这次**写进 daemon.log 的内容。日志是所有启动共用
+    /// 的追加文件:tail 固定行数会把上一次成功启动的 "Miyu WebUI: …" 当成这
+    /// 次的输出,用户会以为起来了——比不给还糟(08-29 用户反馈现场)。
+    #[test]
+    fn the_daemon_log_excerpt_covers_only_this_launch() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths_with_logs(temp.path());
+        let log = paths.logs_dir().join("daemon.log");
+        std::fs::write(&log, "Miyu WebUI: http://127.0.0.1:8300\n").unwrap();
+
+        let offset = crate::ipc::lifecycle::daemon_log_len(&paths);
+        // 一个字都没写就死了:不能把上一次的成功输出算进来。
+        let quiet = crate::ipc::lifecycle::daemon_log_since(&paths, offset);
+        assert!(!quiet.contains("Miyu WebUI"), "{quiet}");
+        assert!(quiet.contains("没有留下任何输出"), "{quiet}");
+        assert!(quiet.contains("daemon.log"), "{quiet}");
+
+        std::fs::write(
+            &log,
+            "Miyu WebUI: http://127.0.0.1:8300\n错误: database disk image is malformed\n",
+        )
+        .unwrap();
+        let excerpt = crate::ipc::lifecycle::daemon_log_since(&paths, offset);
+        assert!(
+            excerpt.contains("database disk image is malformed"),
+            "{excerpt}"
+        );
+        assert!(!excerpt.contains("Miyu WebUI"), "{excerpt}");
+    }
 
     #[test]
     fn request_protocol_is_explicitly_versioned() {
@@ -280,7 +328,7 @@ mod tests {
             &DaemonLaunchConfig {
                 port: 8300,
                 password_file: Some(old_password.clone()),
-            bind: None,
+                bind: None,
             },
         )
         .unwrap();
@@ -388,6 +436,7 @@ mod tests {
                 path: std::path::PathBuf::from("/dev/pts/7"),
                 shell_pid: 4321,
             }),
+            overrides: None,
         });
         let writer = tokio::spawn(async move { send(&mut left, &request).await });
         let received = receive::<Request>(&mut right).await.unwrap().unwrap();
@@ -402,12 +451,14 @@ mod tests {
                 cwd,
                 session_id,
                 origin_tty,
+                overrides,
             } => {
                 assert_eq!(content, "hello");
                 assert_eq!(mode, "normal");
                 assert_eq!(images.len(), 1);
                 assert_eq!(cwd, Some(std::path::PathBuf::from("/tmp/workdir")));
                 assert_eq!(session_id.as_deref(), Some("sess_test"));
+                assert!(overrides.is_none());
                 let origin = origin_tty.expect("origin tty should round-trip");
                 assert_eq!(origin.path, std::path::PathBuf::from("/dev/pts/7"));
                 assert_eq!(origin.shell_pid, 4321);
@@ -426,6 +477,7 @@ mod tests {
             cwd: None,
             session_id: None,
             origin_tty: None,
+            overrides: None,
         });
         assert!(send(&mut left, &request).await.is_err());
     }

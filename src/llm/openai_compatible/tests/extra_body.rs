@@ -2,7 +2,6 @@
 
 use crate::llm::openai_compatible::*;
 
-
 #[test]
 fn extra_body_reserved_keys_match_each_protocol() {
     for reserved in [

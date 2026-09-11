@@ -464,7 +464,9 @@ fn looks_gpt_image_model(model: &str) -> bool {
 
 fn expand_path(value: &str) -> PathBuf {
     if let Some(rest) = value.trim().strip_prefix("~/") {
-        if let Some(home) = crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+        if let Some(home) =
+            crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
+        {
             return home.join(rest);
         }
     }

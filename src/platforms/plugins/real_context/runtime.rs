@@ -11,9 +11,11 @@ use crate::platforms::plugins::real_context::*;
 
 pub(in crate::platforms::plugins::real_context) const SESSION_STATE_SOFT_LIMIT: usize = 512;
 
-pub(in crate::platforms::plugins::real_context) const SESSION_STATE_IDLE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+pub(in crate::platforms::plugins::real_context) const SESSION_STATE_IDLE_TTL: Duration =
+    Duration::from_secs(24 * 60 * 60);
 
-pub(in crate::platforms::plugins::real_context) const PENDING_REPLY_TTL: Duration = Duration::from_secs(31 * 60);
+pub(in crate::platforms::plugins::real_context) const PENDING_REPLY_TTL: Duration =
+    Duration::from_secs(31 * 60);
 
 #[derive(Default)]
 pub(in crate::platforms::plugins::real_context) struct RuntimeState {
@@ -22,7 +24,11 @@ pub(in crate::platforms::plugins::real_context) struct RuntimeState {
 }
 
 impl RuntimeState {
-    pub(in crate::platforms::plugins::real_context) fn session_mut(&mut self, key: &str, now: Instant) -> &mut SessionRuntime {
+    pub(in crate::platforms::plugins::real_context) fn session_mut(
+        &mut self,
+        key: &str,
+        now: Instant,
+    ) -> &mut SessionRuntime {
         let session = self
             .sessions
             .entry(key.to_string())
@@ -80,14 +86,22 @@ impl SessionRuntime {
         }
     }
 
-    pub(in crate::platforms::plugins::real_context) fn decay_heat(&mut self, now: Instant, recover_minutes: u64) {
+    pub(in crate::platforms::plugins::real_context) fn decay_heat(
+        &mut self,
+        now: Instant,
+        recover_minutes: u64,
+    ) {
         let recover = Duration::from_secs(recover_minutes.max(1) * 60).as_secs_f64();
         let elapsed = now.duration_since(self.heat_updated).as_secs_f64();
         self.heat = (self.heat - elapsed / recover).max(0.0);
         self.heat_updated = now;
     }
 
-    pub(in crate::platforms::plugins::real_context) fn increase_heat(&mut self, now: Instant, settings: &RealContextPluginSettings) {
+    pub(in crate::platforms::plugins::real_context) fn increase_heat(
+        &mut self,
+        now: Instant,
+        settings: &RealContextPluginSettings,
+    ) {
         if !settings.reply_restraint_enable {
             return;
         }
@@ -96,7 +110,12 @@ impl SessionRuntime {
         self.heat_updated = now;
     }
 
-    pub(in crate::platforms::plugins::real_context) fn continuation_match(&mut self, sender_id: &str, now: Instant, enabled: bool) -> bool {
+    pub(in crate::platforms::plugins::real_context) fn continuation_match(
+        &mut self,
+        sender_id: &str,
+        now: Instant,
+        enabled: bool,
+    ) -> bool {
         if !enabled {
             self.continuation = None;
             return false;
@@ -172,7 +191,9 @@ pub(in crate::platforms::plugins::real_context) struct PendingReply {
     pub(in crate::platforms::plugins::real_context) cancel: tokio::sync::watch::Sender<bool>,
 }
 
-pub(in crate::platforms::plugins::real_context) async fn wait_for_supersede(receiver: &mut tokio::sync::watch::Receiver<bool>) {
+pub(in crate::platforms::plugins::real_context) async fn wait_for_supersede(
+    receiver: &mut tokio::sync::watch::Receiver<bool>,
+) {
     if *receiver.borrow() {
         return;
     }
@@ -190,7 +211,11 @@ pub(in crate::platforms::plugins::real_context) struct DynamicGate {
 }
 
 impl DynamicGate {
-    pub(in crate::platforms::plugins::real_context) async fn acquire(&self, limit: usize, timeout: Duration) -> Option<DynamicGatePermit<'_>> {
+    pub(in crate::platforms::plugins::real_context) async fn acquire(
+        &self,
+        limit: usize,
+        timeout: Duration,
+    ) -> Option<DynamicGatePermit<'_>> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let current = self.active.load(Ordering::Acquire);
@@ -242,7 +267,9 @@ pub(super) fn account_key(context: &PlatformTurnContext) -> Result<AccountKey> {
     )
 }
 
-pub(in crate::platforms::plugins::real_context) fn runtime_session_key(context: &PlatformTurnContext) -> String {
+pub(in crate::platforms::plugins::real_context) fn runtime_session_key(
+    context: &PlatformTurnContext,
+) -> String {
     format!(
         "{}|persona:{}",
         context.conversation.scope_key(),

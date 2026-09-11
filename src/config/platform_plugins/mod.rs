@@ -79,7 +79,9 @@ impl PlatformPluginInstanceConfig {
     }
 }
 
-pub(crate) fn validate_reply_processor_plugin_config(instance: &PlatformPluginInstanceConfig) -> Result<()> {
+pub(crate) fn validate_reply_processor_plugin_config(
+    instance: &PlatformPluginInstanceConfig,
+) -> Result<()> {
     let settings = &instance.settings;
     for key in [
         "default_enabled",
@@ -193,7 +195,9 @@ pub(crate) fn validate_qq_scheduled_messages_plugin_config(
             .get("message")
             .and_then(serde_json::Value::as_str)
             .with_context(|| {
-                format!("platform plugin qq_scheduled_messages.tasks[{index}].message must be a string")
+                format!(
+                    "platform plugin qq_scheduled_messages.tasks[{index}].message must be a string"
+                )
             })?;
         if message.trim().is_empty() || message.chars().count() > 4_096 {
             bail!(
@@ -213,13 +217,20 @@ pub(crate) fn validate_qq_scheduled_messages_plugin_config(
                 let valid_day = day.as_str().is_some_and(|day| {
                     matches!(
                         day.trim().to_ascii_lowercase().as_str(),
-                        "mon" | "monday"
-                            | "tue" | "tuesday"
-                            | "wed" | "wednesday"
-                            | "thu" | "thursday"
-                            | "fri" | "friday"
-                            | "sat" | "saturday"
-                            | "sun" | "sunday"
+                        "mon"
+                            | "monday"
+                            | "tue"
+                            | "tuesday"
+                            | "wed"
+                            | "wednesday"
+                            | "thu"
+                            | "thursday"
+                            | "fri"
+                            | "friday"
+                            | "sat"
+                            | "saturday"
+                            | "sun"
+                            | "sunday"
                     )
                 });
                 if !valid_day {

@@ -1,8 +1,8 @@
 //! daemon 日志的格式化、跟随与增量读取。
 
 // 被测的东西散在 cli::mod 与 repl 的兄弟模块里，这里全都要够到。
-use crate::cli::*;
 use super::shared::*;
+use crate::cli::*;
 #[test]
 fn config_reload_response_uses_codes_and_supports_legacy_busy_errors() {
     assert_eq!(
@@ -14,22 +14,19 @@ fn config_reload_response_uses_codes_and_supports_legacy_busy_errors() {
         ConfigReloadResponse::Busy
     );
     assert_eq!(
-        validate_config_reload_response(Some(IpcFrame::error(ipc::ADMIN_BUSY_MESSAGE)))
-            .unwrap(),
+        validate_config_reload_response(Some(IpcFrame::error(ipc::ADMIN_BUSY_MESSAGE))).unwrap(),
         ConfigReloadResponse::Busy
     );
     assert!(
-        validate_config_reload_response(Some(IpcFrame::error("invalid configuration")))
-            .is_err()
+        validate_config_reload_response(Some(IpcFrame::error("invalid configuration"))).is_err()
     );
 }
 
 #[test]
 fn daemon_log_formatter_parses_targets_and_preserves_multiline_content() {
-    let parsed = parse_daemon_log_line(
-        "2026-07-29T12:34:56.789Z  INFO miyu::qq: listener ready port=8090",
-    )
-    .unwrap();
+    let parsed =
+        parse_daemon_log_line("2026-07-29T12:34:56.789Z  INFO miyu::qq: listener ready port=8090")
+            .unwrap();
     assert_eq!(parsed.level, "INFO");
     assert_eq!(parsed.module, "miyu::qq");
     assert_eq!(parsed.message, "listener ready port=8090");
@@ -120,9 +117,7 @@ fn daemon_log_formatter_recognizes_english_active_reply_decisions() {
         format_daemon_log_line_with_state("[Active reply decision: reply]", true, &mut color);
     assert_eq!(color, Some(Color::Green));
     assert!(title.contains('\x1b'));
-    assert!(
-        format_daemon_log_line_with_state("Result: reply", true, &mut color).contains('\x1b')
-    );
+    assert!(format_daemon_log_line_with_state("Result: reply", true, &mut color).contains('\x1b'));
 }
 
 #[test]
@@ -263,14 +258,12 @@ fn daemon_log_delta_avoids_duplicates_across_append_rotation_and_truncation() {
     let mut output = Vec::new();
     let mut old_offset = 0;
     assert!(
-        write_daemon_log_delta(&old, &mut old_offset, &mut formatter, false, &mut output,)
-            .unwrap()
+        write_daemon_log_delta(&old, &mut old_offset, &mut formatter, false, &mut output,).unwrap()
     );
     assert!(output.is_empty());
     append(&old, b" completed\nold tail\n");
     assert!(
-        write_daemon_log_delta(&old, &mut old_offset, &mut formatter, false, &mut output,)
-            .unwrap()
+        write_daemon_log_delta(&old, &mut old_offset, &mut formatter, false, &mut output,).unwrap()
     );
     formatter.finish(false, &mut output).unwrap();
 
@@ -281,8 +274,7 @@ fn daemon_log_delta_avoids_duplicates_across_append_rotation_and_truncation() {
     .unwrap();
     let mut offset = 0;
     assert!(
-        write_daemon_log_delta(&current, &mut offset, &mut formatter, false, &mut output,)
-            .unwrap()
+        write_daemon_log_delta(&current, &mut offset, &mut formatter, false, &mut output,).unwrap()
     );
     assert!(
         !write_daemon_log_delta(&current, &mut offset, &mut formatter, false, &mut output,)
@@ -291,24 +283,20 @@ fn daemon_log_delta_avoids_duplicates_across_append_rotation_and_truncation() {
 
     append(&current, b"2026-07-29T12:00:01Z  INFO miyu::qq: \xe7\xbe");
     assert!(
-        write_daemon_log_delta(&current, &mut offset, &mut formatter, false, &mut output,)
-            .unwrap()
+        write_daemon_log_delta(&current, &mut offset, &mut formatter, false, &mut output,).unwrap()
     );
     append(&current, b"\xa4\xe8\x81\x8a\n");
     assert!(
-        write_daemon_log_delta(&current, &mut offset, &mut formatter, false, &mut output,)
-            .unwrap()
+        write_daemon_log_delta(&current, &mut offset, &mut formatter, false, &mut output,).unwrap()
     );
 
     append(&current, b"dangling");
     assert!(
-        write_daemon_log_delta(&current, &mut offset, &mut formatter, false, &mut output,)
-            .unwrap()
+        write_daemon_log_delta(&current, &mut offset, &mut formatter, false, &mut output,).unwrap()
     );
     std::fs::write(&current, b"reset\n").unwrap();
     assert!(
-        write_daemon_log_delta(&current, &mut offset, &mut formatter, false, &mut output,)
-            .unwrap()
+        write_daemon_log_delta(&current, &mut offset, &mut formatter, false, &mut output,).unwrap()
     );
     assert_eq!(offset, 6);
 

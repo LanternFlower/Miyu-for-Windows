@@ -1,7 +1,7 @@
 {
   "name": "run_command",
   "display_name": "运行命令",
-  "description": "Run a shell command or complex shell script for testing, building, checks, and scripted tasks. For long-running commands (builds, dev servers, batch jobs) use background=true to run detached and attach a short title: a short job_id is returned immediately; use job(action=status) to check progress and output, job(action=stop) to stop; when the command finishes the system will automatically notify you to follow up. Prefer apply_patch for editing files; do not write source code files via shell heredoc/cat/tee unless the user explicitly asks. Inside scripts you can call structured tools under this session's identity with `miyu tool-call <name> --stdin`; --list shows exactly the set callable in this session, and --describe shows a tool's parameter contract — bash loops plus pipes are the orchestration layer, and intermediate data does not pass through the model context. Inner calls execute in the daemon-side session workspace: they do not inherit the script's environment variables or current directory; pass data across tools via parameter JSON or files.",
+  "description": "Run a shell command or a complex shell script. Use background=true with a short title for long work: it returns a job_id immediately; check progress with job(action=status), stop with job(action=stop), and you are notified automatically when it finishes. Inside scripts, `miyu tool-call <name> --stdin` calls structured tools as this session. Internal calls execute in the daemon-side session workspace: they do not inherit the script's environment or working directory, so pass data between tools via argument JSON or files.",
   "parameters": {
     "type": "object",
     "properties": {

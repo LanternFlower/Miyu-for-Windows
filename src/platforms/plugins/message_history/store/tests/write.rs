@@ -1,7 +1,7 @@
 //! 写入、删除与边界。
 
-use crate::platforms::plugins::message_history::store::*;
 use super::shared::*;
+use crate::platforms::plugins::message_history::store::*;
 
 #[tokio::test]
 async fn records_are_idempotent_isolated_and_sanitized() {
@@ -290,4 +290,69 @@ fn opening_an_existing_database_repairs_a_stale_reset_boundary() {
             .after_row_id,
         0
     );
+}
+
+/// 合并转发的摘要靠显式补写落库(08-26):写入是 `INSERT OR IGNORE`,而连接层
+/// 在展开之前就先记过一次,不补写的话群历史里那条永远停在展开前的样子。
+#[tokio::test]
+async fn text_updates_repair_a_row_recorded_before_expansion() {
+    let (_temp, store) = test_store();
+    let key = group("bot-a", "group-1");
+    // 连接层先记:纯转发消息此刻正文是空的。
+    store
+        .record_message(message(key.clone(), "m1", "u1", "Alice", "", 10))
+        .await
+        .unwrap();
+    // dispatch 展开后再记同一条——被 INSERT OR IGNORE 丢弃,正文没变。
+    let ignored = store
+        .record_message(message(
+            key.clone(),
+            "m1",
+            "u1",
+            "Alice",
+            "[forward x2] 阿: 一 / 布: 二",
+            10,
+        ))
+        .await
+        .unwrap();
+    assert!(!ignored.inserted);
+    let stored = |store: &HistoryStore| {
+        let store = store.clone();
+        let key = key.clone();
+        async move {
+            store
+                .recent(RecentQuery::for_context(key, "default", 10))
+                .await
+                .unwrap()
+                .messages
+                .into_iter()
+                .map(|message| message.content.text)
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(stored(&store).await, vec![String::new()]);
+
+    // 补写把摘要按上去,重复补写不再改动。
+    assert!(store
+        .update_message_text(
+            key.clone(),
+            "m1".to_string(),
+            "[forward x2] 阿: 一 / 布: 二".to_string()
+        )
+        .await
+        .unwrap());
+    assert_eq!(stored(&store).await, vec!["[forward x2] 阿: 一 / 布: 二"]);
+    assert!(!store
+        .update_message_text(
+            key.clone(),
+            "m1".to_string(),
+            "[forward x2] 阿: 一 / 布: 二".to_string()
+        )
+        .await
+        .unwrap());
+    // 不存在的消息不该被误改。
+    assert!(!store
+        .update_message_text(key, "missing".to_string(), "x".to_string())
+        .await
+        .unwrap());
 }

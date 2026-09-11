@@ -3,7 +3,7 @@ use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
-const BASE_DESCRIPTION: &str = "Load the full description and parameter schema of tools, scripts, or tool groups on demand. Pick <name> values from <available_load_targets> and load them with {\"names\":[\"name\"]}. type=tool/script loads a single tool; type=group loads every not-yet-loaded tool in that group. <script_summary> summarizes the state of all scripts: always_loaded scripts are directly callable and need no loading; lazy scripts must be picked from available_load_targets and loaded; unregistered_scripts only counts user script files that lack a description and are not registered yet — it says nothing about how many scripts are registered. Files in <unregistered_scripts> cannot be loaded or called directly; read the listed path first and register them with register_script.";
+const BASE_DESCRIPTION: &str = "Load the full description and parameter schema of tools, scripts, or tool groups on demand. Pick <name> values from <available_load_targets> and load them with {\"names\":[\"name\"]}. type=tool/script loads a single tool; type=group loads every not-yet-loaded tool in that group.";
 
 pub fn register(registry: &mut ToolRegistry) {
     registry.register(
@@ -52,9 +52,9 @@ pub(super) fn stub_mode_description(registry: &ToolRegistry) -> String {
     // <unregistered_scripts></unregistered_scripts>:既白占 53 字符,又是
     // 一个静默的缓存杀手——往 scripts 目录扔一个未注册文件,tools 数组的
     // 字节就变,所有会话的前缀缓存从 token 0 掰断(08-17 实测)。
-    let base = "Fetch the full parameter contract of tools or scripts. Every tool of this session is already pinned in the tools list as a stub entry (stub-marked tools carry only a one-line summary and a permissive parameter shell). Request with {\"names\":[\"tool_name\"]}; the result's contracts field returns each tool's full description and parameter JSON Schema. Then call the tool with the actual arguments placed directly in its top-level parameter object as the contract specifies. group:name fetches a whole group's contracts at once.";
+    let base = "Fetch full tool contracts. Stub-marked tools carry only a one-line summary and a permissive parameter shell. Request {\"names\":[\"tool_name\"]} to get each tool's full description and parameter JSON Schema, then call the tool with real arguments at the top level. group:name fetches a whole group at once.";
     match unregistered_scripts_xml(registry) {
-        Some(xml) => format!("{base} Files in <unregistered_scripts> are not registered yet; read the listed path first and register them with register_script.\n\n{xml}"),
+        Some(xml) => format!("{base} Files in <unregistered_scripts> are not registered yet; read the listed path first and register them with manage_script.\n\n{xml}"),
         None => base.to_string(),
     }
 }
@@ -114,18 +114,33 @@ pub(super) fn execute(args: Value, registry: &ToolRegistry) -> Result<String> {
     }
     let contracts = registry.tool_contracts(&contract_names);
 
-    let note = if loaded_tools.is_empty() {
-        "nothing to load; every requested tool is already available"
+    // 08-21 token-diet:文本形态替代 pretty JSON——描述不再被 JSON 转义,
+    // schema 单行紧凑输出(实测旧形态 54% 是结构开销)。stub 模式下契约本体
+    // 是模型拿到参数的唯一渠道,必须保留。头部行供 agent/reports.rs 的
+    // loaded_items_from_output 解析(旧 JSON 形态在那边保持双兼容)。
+    let mut output = String::new();
+    if loaded_tools.is_empty() {
+        output.push_str("nothing to load; every requested tool is already available\n");
     } else {
-        "loaded"
-    };
-    Ok(serde_json::to_string_pretty(&json!({
-        "loaded_targets": loaded_targets,
-        "loaded_tools": loaded_tools,
-        "skipped": skipped,
-        "contracts": contracts,
-        "note": note,
-    }))?)
+        output.push_str(&format!("loaded_targets: {}\n", loaded_targets.join(", ")));
+        output.push_str(&format!("loaded_tools: {}\n", loaded_tools.join(", ")));
+    }
+    if !skipped.is_empty() {
+        output.push_str(&format!("skipped: {}\n", skipped.join("; ")));
+    }
+    for contract in &contracts {
+        let name = contract.get("name").and_then(Value::as_str).unwrap_or("");
+        let description = contract
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let parameters = contract.get("parameters").cloned().unwrap_or(Value::Null);
+        output.push_str(&format!(
+            "\n### {name}\n{description}\nschema: {}\n",
+            serde_json::to_string(&parameters)?
+        ));
+    }
+    Ok(output)
 }
 
 /// `None` = 没有未注册脚本(常态)。调用方据此整段跳过,不发空壳。
@@ -194,10 +209,10 @@ mod tests {
             .unwrap();
 
         let description = dynamic_description(&registry, &BTreeSet::new());
-        assert!(description.contains("<total>1</total>"));
-        assert!(description.contains("<lazy>1</lazy>"));
-        assert!(description.contains("<unregistered>1</unregistered>"));
-        assert!(description.contains("<registered_names>lazy_script</registered_names>"));
+        assert!(description.contains("total=\"1\""));
+        assert!(description.contains("lazy=\"1\""));
+        assert!(description.contains("unregistered=\"1\""));
+        assert!(description.contains("registered_names=\"lazy_script\""));
         assert!(description.contains("<available_load_targets>"));
         assert!(description.contains("custom_builtin"));
         assert!(description.contains("lazy_script"));
@@ -227,8 +242,7 @@ mod tests {
             .call("load_tools", r#"{"names":["lazy_script"]}"#)
             .await
             .unwrap();
-        assert!(output.contains("lazy_script"));
-        assert!(output.contains("\"loaded_tools\""));
+        assert!(output.contains("loaded_tools: lazy_script"));
     }
 
     #[tokio::test]
@@ -262,22 +276,17 @@ mod tests {
             .call("load_tools", r#"{"names":["group:gaming","web_search"]}"#)
             .await
             .unwrap();
-        let value: Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(value["loaded_tools"][0], "protondb_query");
-        assert!(value["skipped"][0]
-            .as_str()
-            .unwrap()
-            .contains("already available"));
+        assert!(output.contains("loaded_tools: protondb_query"), "{output}");
+        assert!(output.contains("already available"), "{output}");
 
         // Only-already-available requests succeed with an explanatory note.
         let output = registry
             .call("load_tools", r#"{"names":["web_search"]}"#)
             .await
             .unwrap();
-        let value: Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(
-            value["note"],
-            "nothing to load; every requested tool is already available"
+        assert!(
+            output.contains("nothing to load; every requested tool is already available"),
+            "{output}"
         );
 
         // Mixed known+unknown must ALSO error, naming the unknowns: an
@@ -334,11 +343,14 @@ mod tests {
             .find(|def| def.function.name == "lazy_tool")
             .unwrap();
         assert!(lazy.function.description.contains("多行描述的第一行摘要"));
-        assert!(lazy.function.description.contains("stub entry"));
+        assert!(lazy.function.description.contains("stub"));
         assert!(!lazy.function.description.contains("第二行细节"));
         // 裸 {"type":"object"}:JSON Schema 里等价于显式写 properties:{} +
         // additionalProperties:true,少 48 字符/条。
-        assert_eq!(lazy.function.parameters, serde_json::json!({"type":"object"}));
+        assert_eq!(
+            lazy.function.parameters,
+            serde_json::json!({"type":"object"})
+        );
         let always = definitions
             .iter()
             .find(|def| def.function.name == "always_tool")
@@ -376,13 +388,14 @@ mod tests {
             .call("load_tools", r#"{"names":["lazy_tool"]}"#)
             .await
             .unwrap();
-        let value: Value = serde_json::from_str(&output).unwrap();
-        let contracts = value["contracts"].as_array().unwrap();
-        assert_eq!(contracts[0]["name"], "lazy_tool");
-        assert_eq!(
-            contracts[0]["parameters"]["properties"]["x"]["type"],
-            "integer"
-        );
+        assert!(output.contains("### lazy_tool"), "{output}");
+        let schema_line = output
+            .lines()
+            .find(|line| line.starts_with("schema: "))
+            .expect("schema line");
+        let schema: Value =
+            serde_json::from_str(schema_line.strip_prefix("schema: ").unwrap()).unwrap();
+        assert_eq!(schema["properties"]["x"]["type"], "integer");
 
         // Asking for an already-available tool still returns its contract:
         // in stub mode that is a legitimate schema fetch.
@@ -390,9 +403,7 @@ mod tests {
             .call("load_tools", r#"{"names":["always_tool"]}"#)
             .await
             .unwrap();
-        let value: Value = serde_json::from_str(&output).unwrap();
-        let contracts = value["contracts"].as_array().unwrap();
-        assert_eq!(contracts[0]["name"], "always_tool");
+        assert!(output.contains("### always_tool"), "{output}");
     }
 
     #[tokio::test]
@@ -419,18 +430,7 @@ mod tests {
             .call("load_tools", r#"{"names":["group:gaming"]}"#)
             .await
             .unwrap();
-        let value: Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(
-            value["loaded_targets"].as_array().unwrap()[0]
-                .as_str()
-                .unwrap(),
-            "group:gaming"
-        );
-        assert_eq!(
-            value["loaded_tools"].as_array().unwrap()[0]
-                .as_str()
-                .unwrap(),
-            "protondb_query"
-        );
+        assert!(output.contains("loaded_targets: group:gaming"), "{output}");
+        assert!(output.contains("loaded_tools: protondb_query"), "{output}");
     }
 }

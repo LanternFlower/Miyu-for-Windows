@@ -54,10 +54,17 @@ impl ModelEntry {
     }
 }
 
-pub(in crate::config_tui) fn fetch_models(provider: &ProviderConfig) -> Result<Vec<String>> {
-    if provider.is_claude_code() {
-        // 本机 CLI 后端没有 /models HTTP 端点;模型列表就是预置的 CLI 别名。
-        return Ok(provider.models.clone());
+/// `cli_binary`:内置 CLI 供应商列模型要跑的二进制(见 `cli_catalog`);
+/// HTTP 供应商忽略。
+pub(crate) fn fetch_models(
+    provider: &ProviderConfig,
+    cli_binary: Option<&str>,
+) -> Result<Vec<String>> {
+    if provider.is_builtin_cli_provider() {
+        // 本机 CLI 后端没有 /models HTTP 端点:目录问 CLI 要(失败就报错),
+        // 再并上配置里手工加的名字。只返回 `provider.models` 的话,用户一旦
+        // 只激活一个模型,下次进来就只剩那一个可选(09-03)。
+        return crate::config_tui::cli_catalog::builtin_cli_catalog(provider, cli_binary);
     }
     let api_key = provider.api_key.as_deref().unwrap_or_default();
     let mut api_key = if let Some(env_name) = api_key.strip_prefix("$env:") {
@@ -93,22 +100,154 @@ pub(in crate::config_tui) fn fetch_models(provider: &ProviderConfig) -> Result<V
         .collect())
 }
 
+/// 该模型在 models.dev 目录里的条目(读磁盘全量目录,没有就联网取一次)。
+pub(in crate::config_tui) fn catalog_entry(
+    paths: &MiyuPaths,
+    provider: &ProviderConfig,
+    model: &str,
+) -> Option<crate::models_cache::ModelCatalogEntry> {
+    crate::models_cache::describe_models(
+        paths,
+        &provider.id,
+        &provider.base_url,
+        &[model.to_string()],
+    )
+    .pop()
+}
+
+/// 从目录自动同步模型元数据:输入模态、上下文窗口,只补空缺不覆盖手填
+/// (09-04,与 WebUI 「从目录补全」同一语义)。价格不落盘——运行时本来就按
+/// 目录价估算,编辑表单里只把目录价显示出来。
 pub(in crate::config_tui) fn auto_configure_model_tags(
     paths: &MiyuPaths,
     provider: &mut ProviderConfig,
     model: &str,
 ) {
-    if provider.model_modalities.contains_key(model) {
+    let needs_modalities = !provider.model_modalities.contains_key(model);
+    let needs_window = !provider.model_context_window.contains_key(model);
+    if !needs_modalities && !needs_window {
         return;
     }
-    if let Some(modalities) =
-        crate::models_cache::input_modalities_blocking(paths, &provider.id, model)
-            .filter(|modalities| !modalities.is_empty())
-    {
-        provider
-            .model_modalities
-            .insert(model.to_string(), modalities);
+    let Some(entry) = catalog_entry(paths, provider, model) else {
+        return;
+    };
+    if needs_modalities {
+        if let Some(modalities) = entry.modalities.filter(|modalities| !modalities.is_empty()) {
+            provider
+                .model_modalities
+                .insert(model.to_string(), modalities);
+        }
     }
+    if needs_window {
+        if let Some(window) = entry.context_window.filter(|window| *window > 0) {
+            provider
+                .model_context_window
+                .insert(model.to_string(), window as usize);
+        }
+    }
+}
+
+/// 模型目录分组:手填的模型置顶,后面接拉取结果(同名只留置顶那份),按
+/// `filter` 过滤后按组织分组;"All" 组恒收全部。
+///
+/// 手填的必须置顶:它们不在供应商目录里,混进几百条中间就等于没加。同名去重
+/// 是给内置 CLI 供应商准备的——它的目录本来就并了 `models`(见 `cli_catalog`)。
+///
+/// 抽成自由函数是为了能直接测:`ProviderBrowser` 要一份 `MiyuPaths`,建一个
+/// 就会去碰真实 home。
+pub(in crate::config_tui) fn group_models(
+    custom: &[String],
+    raw: &[String],
+    filter: &str,
+) -> BTreeMap<String, Vec<ModelEntry>> {
+    let filter = filter.to_ascii_lowercase();
+    let mut grouped: BTreeMap<String, Vec<ModelEntry>> = BTreeMap::new();
+    let listed = custom.iter().chain(
+        raw.iter()
+            .filter(|model| !custom.iter().any(|known| known == *model)),
+    );
+    for model in listed {
+        if !filter.is_empty() && !model.to_ascii_lowercase().contains(&filter) {
+            continue;
+        }
+        let org = model
+            .split_once('/')
+            .map(|(org, _)| org)
+            .unwrap_or("All")
+            .to_string();
+        let name = model
+            .split_once('/')
+            .map(|(_, name)| name)
+            .unwrap_or(model)
+            .to_string();
+        grouped
+            .entry("All".to_string())
+            .or_default()
+            .push(ModelEntry::new(model, model));
+        if org != "All" {
+            grouped
+                .entry(org)
+                .or_default()
+                .push(ModelEntry::new(&name, model));
+        }
+    }
+    grouped
+}
+
+/// 记下一个手填的模型名并激活它。已经在目录里或已经手填过就不重复记
+/// (返回 `false`):目录里的本来就是正常模型,再记一份只会让它被永久置顶,
+/// 还多一条删得掉的假条目。
+pub(in crate::config_tui) fn insert_custom_model(
+    config: &mut AppConfig,
+    provider_idx: usize,
+    raw_models: &[String],
+    name: &str,
+) -> bool {
+    let Some(provider) = config.providers.get_mut(provider_idx) else {
+        return false;
+    };
+    if raw_models.iter().any(|model| model == name)
+        || provider.custom_models.iter().any(|model| model == name)
+    {
+        return false;
+    }
+    provider.custom_models.push(name.to_string());
+    if !provider.models.iter().any(|model| model == name) {
+        provider.models.push(name.to_string());
+    }
+    if provider.default_model.trim().is_empty() {
+        provider.default_model = name.to_string();
+    }
+    true
+}
+
+/// 删掉一个手填的模型:手填清单、激活状态、按模型的设置、各处池子引用一起
+/// 清掉。不是手填的返回 `false`——拉取来的模型是供应商目录的内容,这里只是
+/// 显示,删不掉。
+pub(in crate::config_tui) fn remove_custom_model(
+    config: &mut AppConfig,
+    provider_idx: usize,
+    model: &str,
+) -> bool {
+    let Some(provider) = config.providers.get_mut(provider_idx) else {
+        return false;
+    };
+    if !provider.custom_models.iter().any(|item| item == model) {
+        return false;
+    }
+    let provider_id = provider.id.clone();
+    provider.custom_models.retain(|item| item != model);
+    provider.models.retain(|item| item != model);
+    provider.model_context_window.remove(model);
+    provider.model_temperature.remove(model);
+    provider.model_tools_loading_mode.remove(model);
+    provider.model_modalities.remove(model);
+    provider.model_costs.remove(model);
+    if provider.default_model == model {
+        provider.default_model = provider.models.first().cloned().unwrap_or_default();
+    }
+    config.remove_active_model_references(&provider_id, model);
+    true
 }
 
 pub(in crate::config_tui) fn models_url(base_url: &str) -> String {
@@ -224,14 +363,72 @@ pub(in crate::config_tui) fn model_is_embedding(provider: &ProviderConfig, model
 }
 
 pub(in crate::config_tui) fn embedding_model_label(config: &AppConfig) -> String {
-    if config.embedding.is_configured() {
-        format!(
+    let embedding = &config.embedding;
+    if !embedding.enabled {
+        return t("disabled", "已关闭").to_string();
+    }
+    match embedding.resolved_backend() {
+        crate::config::EmbeddingBackend::Remote if embedding.remote_is_configured() => format!(
             "{}/{}",
-            config.embedding.provider_id.trim(),
-            config.embedding.model.trim()
-        )
-    } else {
-        t("not set", "未设置").to_string()
+            embedding.provider_id.trim(),
+            embedding.model.trim()
+        ),
+        crate::config::EmbeddingBackend::Remote => t("remote: not set", "远程：未设置").to_string(),
+        _ => format!("{} · {}", t("local", "本地"), embedding.local_model.trim()),
+    }
+}
+
+/// Embedding 模型菜单的一行。本地模型来自模型搜索链上装好的目录，远程模型来自
+/// 供应商里标了 embedding 模态的模型；两类平铺在一个单选里，选哪个就用哪个。
+enum EmbeddingRow {
+    Local { id: String, installed: bool },
+    Remote { provider: String, model: String },
+    Advanced,
+}
+
+fn embedding_rows(config: &AppConfig) -> Vec<EmbeddingRow> {
+    let mut rows = Vec::new();
+    let installed: Vec<String> = crate::embedding::installed_local_models()
+        .into_iter()
+        .map(|model| model.manifest.id)
+        .collect();
+    let configured_local = config.embedding.local_model.trim();
+    // 配置里写的本地模型装好了就正常列出；没装（拼错、目录删了）也得列出来，
+    // 否则用户看不见自己当前选的是什么，也无从换掉它。
+    if !configured_local.is_empty() && !installed.iter().any(|id| id == configured_local) {
+        rows.push(EmbeddingRow::Local {
+            id: configured_local.to_string(),
+            installed: false,
+        });
+    }
+    rows.extend(installed.into_iter().map(|id| EmbeddingRow::Local {
+        id,
+        installed: true,
+    }));
+    for provider in &config.providers {
+        for model in &provider.models {
+            if model_is_embedding(provider, model) {
+                rows.push(EmbeddingRow::Remote {
+                    provider: provider.id.clone(),
+                    model: model.clone(),
+                });
+            }
+        }
+    }
+    rows.push(EmbeddingRow::Advanced);
+    rows
+}
+
+fn embedding_row_is_current(config: &AppConfig, row: &EmbeddingRow) -> bool {
+    let embedding = &config.embedding;
+    match (row, embedding.resolved_backend()) {
+        (EmbeddingRow::Local { id, .. }, crate::config::EmbeddingBackend::Local) => {
+            id == embedding.local_model.trim()
+        }
+        (EmbeddingRow::Remote { provider, model }, crate::config::EmbeddingBackend::Remote) => {
+            provider == embedding.provider_id.trim() && model == embedding.model.trim()
+        }
+        _ => false,
     }
 }
 
@@ -241,45 +438,45 @@ pub(in crate::config_tui) fn edit_embedding_model(
 ) -> Result<()> {
     // 候选每轮从 config 重建：删除和撤销都改的是 config 本身，重建比两边各维护
     // 一份再想办法同步简单，也不会漏。
-    fn embedding_candidates(config: &AppConfig) -> Vec<(String, String)> {
-        let mut candidates = Vec::new();
-        for provider in &config.providers {
-            for model in &provider.models {
-                if model_is_embedding(provider, model) {
-                    candidates.push((provider.id.clone(), model.clone()));
-                }
-            }
-        }
-        candidates
-    }
-
-    if embedding_candidates(config).is_empty() {
-        message(
-            stdout,
-            t(
-                "No embedding models yet. Mark one in Providers and models -> Edit model.",
-                "还没有语义模型。请在「供应商和模型」->「编辑模型」里把某个模型标记为语义模型。",
-            ),
-        )?;
-        return Ok(());
-    }
-    let mut selected = embedding_candidates(config)
+    let mut selected = embedding_rows(config)
         .iter()
-        .position(|(provider, model)| {
-            provider == config.embedding.provider_id.trim()
-                && model == config.embedding.model.trim()
-        })
+        .position(|row| embedding_row_is_current(config, row))
         .unwrap_or(0);
     let mut undo = ConfigUndo::default();
     loop {
-        let candidates = embedding_candidates(config);
-        // 尾部两项不是模型，删除键要挡住它们
-        let mut options: Vec<String> = candidates
+        let rows = embedding_rows(config);
+        let options: Vec<String> = rows
             .iter()
-            .map(|(provider, model)| format!("{provider}/{model}"))
+            .map(|row| {
+                let marker = if embedding_row_is_current(config, row) {
+                    "(•) "
+                } else {
+                    "( ) "
+                };
+                match row {
+                    EmbeddingRow::Local {
+                        id,
+                        installed: true,
+                    } => {
+                        format!("{marker}{} · {id}", t("local", "本地"))
+                    }
+                    EmbeddingRow::Local {
+                        id,
+                        installed: false,
+                    } => format!(
+                        "{marker}{} · {id} ({})",
+                        t("local", "本地"),
+                        t("not found", "未找到")
+                    ),
+                    EmbeddingRow::Remote { provider, model } => {
+                        format!("{marker}{provider}/{model}")
+                    }
+                    EmbeddingRow::Advanced => {
+                        format!("    {}", t("Advanced settings", "高级设置"))
+                    }
+                }
+            })
             .collect();
-        options.push(t("Advanced settings", "高级设置").to_string());
-        options.push(t("Clear selection", "清除选择").to_string());
         selected = selected.min(options.len() - 1);
         draw_menu(
             stdout,
@@ -289,8 +486,8 @@ pub(in crate::config_tui) fn edit_embedding_model(
             &format!(
                 "{}{}",
                 t(
-                    "[Enter]select [j/k]move [d]remove [q]back",
-                    "[Enter]选择 [j/k]移动 [d]移除 [q]返回",
+                    "[Enter]select [j/k]move [d]remove remote model [q]back",
+                    "[Enter]选择 [j/k]移动 [d]移除远程模型 [q]返回",
                 ),
                 undo.hint()
             ),
@@ -299,56 +496,68 @@ pub(in crate::config_tui) fn edit_embedding_model(
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
-            KeyCode::Char('d') if selected < candidates.len() => {
-                undo.record(config);
-                let (provider, model) = candidates[selected].clone();
-                config.remove_active_provider_model(&provider, &model)?;
-                if embedding_candidates(config).is_empty() {
-                    // 空列表没法继续画，当场撤销并说明
-                    undo.undo(config);
-                    message(
-                        stdout,
-                        t(
-                            "That was the last embedding model; removal was undone.",
-                            "这是最后一个语义模型，已撤销该删除。",
-                        ),
-                    )?;
+            KeyCode::Char('d') => {
+                if let EmbeddingRow::Remote { provider, model } = &rows[selected] {
+                    undo.record(config);
+                    config.remove_active_provider_model(provider, model)?;
                 }
             }
             KeyCode::Char('u') => {
                 undo.undo(config);
             }
-            KeyCode::Enter => {
-                if selected == options.len() - 1 {
-                    config.embedding.provider_id.clear();
-                    config.embedding.model.clear();
+            KeyCode::Enter => match &rows[selected] {
+                EmbeddingRow::Local { id, .. } => {
+                    // 配了远程模型时 auto 会选远程，这时选本地必须写死 local；没配
+                    // 远程就留 auto，配置文件里少一行显式后端。
+                    config.embedding.local_model = id.clone();
+                    config.embedding.backend = if config.embedding.remote_is_configured() {
+                        crate::config::EmbeddingBackend::Local
+                    } else {
+                        crate::config::EmbeddingBackend::Auto
+                    };
                     return Ok(());
                 }
-                if selected == options.len() - 2 {
-                    edit_embedding_advanced(stdout, config)?;
-                    continue;
+                EmbeddingRow::Remote { provider, model } => {
+                    // auto 在配了远程模型时就是远程，不必写死 remote——写死了以后
+                    // 清掉远程模型会变成「远程：未设置」的死局。
+                    config.embedding.provider_id = provider.clone();
+                    config.embedding.model = model.clone();
+                    config.embedding.backend = crate::config::EmbeddingBackend::Auto;
+                    return Ok(());
                 }
-                let (provider, model) = candidates[selected].clone();
-                config.embedding.provider_id = provider;
-                config.embedding.model = model;
-                return Ok(());
-            }
+                EmbeddingRow::Advanced => edit_embedding_advanced(stdout, config)?,
+            },
             _ => {}
         }
     }
 }
 
+/// 模型之外的几个数值；用哪个模型在上一层菜单里选，这里不再重复。
 pub(in crate::config_tui) fn edit_embedding_advanced(
     stdout: &mut io::Stdout,
     config: &mut AppConfig,
 ) -> Result<()> {
     let mut fields = vec![
         Field::new(
-            t("Request timeout (seconds)", "请求超时（秒）"),
+            t(
+                "Semantic search enabled (true/false)",
+                "启用语义检索（true/false）",
+            ),
+            config.embedding.enabled.to_string(),
+        ),
+        Field::new(
+            t(
+                "Local worker idle unload (seconds)",
+                "本地 worker 空闲卸载（秒）",
+            ),
+            config.embedding.idle_unload_seconds.to_string(),
+        ),
+        Field::new(
+            t("Remote request timeout (seconds)", "远程请求超时（秒）"),
             config.embedding.timeout_seconds.to_string(),
         ),
         Field::new(
-            t("Similarity floor (0-1)", "相似度下限（0-1）"),
+            t("Remote similarity floor (0-1)", "远程相似度下限（0-1）"),
             config.embedding.min_score.to_string(),
         ),
     ];
@@ -359,12 +568,18 @@ pub(in crate::config_tui) fn edit_embedding_advanced(
     )? {
         return Ok(());
     }
-    let timeout: u64 = fields[0]
+    let enabled = parse_bool_field(&fields[0].value)?;
+    let idle: u64 = fields[1]
+        .value
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!(t("Invalid idle timeout.", "空闲卸载数值无效。")))?;
+    let timeout: u64 = fields[2]
         .value
         .trim()
         .parse()
         .map_err(|_| anyhow::anyhow!(t("Invalid timeout.", "超时数值无效。")))?;
-    let score: f32 = fields[1]
+    let score: f32 = fields[3]
         .value
         .trim()
         .parse()
@@ -381,142 +596,17 @@ pub(in crate::config_tui) fn edit_embedding_advanced(
             "相似度下限必须在 0 与 1 之间。"
         )));
     }
+    if idle == 0 {
+        return Err(anyhow::anyhow!(t(
+            "Idle unload must be positive.",
+            "空闲卸载必须大于 0。"
+        )));
+    }
+    config.embedding.enabled = enabled;
+    config.embedding.idle_unload_seconds = idle;
     config.embedding.timeout_seconds = timeout;
     config.embedding.min_score = score;
     Ok(())
-}
-
-pub(in crate::config_tui) fn subagent_tiers_label(config: &AppConfig) -> String {
-    let counts = crate::config::ModelTier::ALL.map(|tier| config.subagent_tier_choices(tier).len());
-    if counts.iter().all(|count| *count == 0) {
-        t("not configured", "未配置").to_string()
-    } else {
-        format!(
-            "cheap:{} balanced:{} strong:{}",
-            counts[0], counts[1], counts[2]
-        )
-    }
-}
-
-pub(in crate::config_tui) fn tier_display_name(tier: crate::config::ModelTier) -> &'static str {
-    use crate::config::ModelTier;
-    match tier {
-        ModelTier::Cheap => "cheap",
-        ModelTier::Balanced => "balanced",
-        ModelTier::Strong => "strong",
-    }
-}
-
-/// Tier pool overview: pick a tier, then toggle models for it. Subagents
-/// choose a tier by task complexity; unconfigured pools fall back to the
-/// main model pool.
-pub(in crate::config_tui) fn select_subagent_tiers(
-    stdout: &mut io::Stdout,
-    config: &mut AppConfig,
-) -> Result<()> {
-    use crate::config::ModelTier;
-    let mut selected = 0usize;
-    loop {
-        let options = ModelTier::ALL
-            .iter()
-            .map(|tier| {
-                let pool = config.subagent_tier_choices(*tier);
-                let summary = if pool.is_empty() {
-                    t("fallback to main model", "回退主模型").to_string()
-                } else {
-                    pool.iter()
-                        .map(|choice| choice.model.clone())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                };
-                let hint = match tier {
-                    ModelTier::Cheap => t("simple tasks", "简单任务"),
-                    ModelTier::Balanced => t("normal tasks", "普通任务"),
-                    ModelTier::Strong => t("complex tasks", "复杂任务"),
-                };
-                format!("{} ({hint}): {summary}", tier_display_name(*tier))
-            })
-            .collect::<Vec<_>>();
-        draw_menu(
-            stdout,
-            t(" SUBAGENT TIER POOLS ", " 子代理档位池 "),
-            &options,
-            selected,
-            t(
-                "[Enter]configure tier [j/k]move [q]back",
-                "[Enter]配置该档位 [j/k]移动 [q]返回",
-            ),
-        )?;
-        match read_key()? {
-            KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
-            KeyCode::Enter => {
-                select_subagent_tier_models(stdout, config, ModelTier::ALL[selected])?
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Model multi-select for one tier pool, mirroring the text-model picker:
-/// candidates are the configured text models, Tab toggles membership.
-pub(in crate::config_tui) fn select_subagent_tier_models(
-    stdout: &mut io::Stdout,
-    config: &mut AppConfig,
-    tier: crate::config::ModelTier,
-) -> Result<()> {
-    let choices = config.text_provider_model_choices();
-    if choices.is_empty() {
-        message(
-            stdout,
-            t(
-                "No text models are configured. Add models under Providers and models first.",
-                "没有可用的文本模型，请先在供应商和模型里添加模型。",
-            ),
-        )?;
-        return Ok(());
-    }
-    let mut selected = 0usize;
-    let title = format!(
-        " {} · {} ",
-        t("TIER POOL", "档位池"),
-        tier_display_name(tier)
-    );
-    loop {
-        let options = choices
-            .iter()
-            .map(|choice| {
-                let marker =
-                    if config.is_subagent_tier_model(tier, &choice.provider_id, &choice.model) {
-                        "[*] "
-                    } else {
-                        "[ ] "
-                    };
-                format!("{marker}{}", choice.label())
-            })
-            .collect::<Vec<_>>();
-        draw_menu(
-            stdout,
-            &title,
-            &options,
-            selected,
-            t(
-                "[Tab]add/remove [Enter/q]confirm",
-                "[Tab]加入/移出 [Enter/q]确认",
-            ),
-        )?;
-        match read_key()? {
-            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => return Ok(()),
-            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
-            KeyCode::Tab => {
-                let choice = choices[selected].clone();
-                config.toggle_subagent_tier_model(tier, &choice.provider_id, &choice.model)?;
-            }
-            _ => {}
-        }
-    }
 }
 
 pub(in crate::config_tui) fn select_model_pool(
@@ -653,9 +743,12 @@ pub(in crate::config_tui) fn edit_provider_form(
             protocol: fields[3].value.trim().to_string(),
             api_key: Some(fields[4].value.trim().to_string()).filter(|value| !value.is_empty()),
             models: provider.models.clone(),
+            custom_models: provider.custom_models.clone(),
             model_context_window: provider.model_context_window.clone(),
             model_temperature: provider.model_temperature.clone(),
+            model_tools_loading_mode: provider.model_tools_loading_mode.clone(),
             model_modalities: provider.model_modalities.clone(),
+            tool_result_media: provider.tool_result_media,
             model_costs: provider.model_costs.clone(),
             default_model: provider.default_model.clone(),
             timeout_seconds: timeout,
@@ -690,15 +783,37 @@ pub(in crate::config_tui) fn parse_extra_body(
 
 pub(in crate::config_tui) fn edit_model_form(
     stdout: &mut io::Stdout,
+    paths: &MiyuPaths,
     provider: &mut ProviderConfig,
     model: &str,
     thinking_variants: &mut ThinkingVariantPreferences,
 ) -> Result<bool> {
+    // 目录信息只用来预填与提示;真正落盘的仍是表单里保存的值。
+    let catalog = catalog_entry(paths, provider, model);
     let context_window = provider
         .model_context_window
         .get(model)
         .copied()
+        .or_else(|| {
+            catalog
+                .as_ref()
+                .and_then(|entry| entry.context_window)
+                .map(|window| window as usize)
+        })
         .unwrap_or_default();
+    let catalog_price_label: &'static str =
+        match catalog.as_ref().and_then(|entry| entry.cost.as_ref()) {
+            Some(cost) => Box::leak(
+                format!(
+                    "{} ${}/{}",
+                    t("catalogue", "目录价"),
+                    trim_price(cost.input),
+                    trim_price(cost.output)
+                )
+                .into_boxed_str(),
+            ),
+            None => t("catalogue", "目录价"),
+        };
     let stored_variant = thinking_variants
         .selected(&provider.id, model)
         .filter(|selected| !selected.trim().is_empty())
@@ -751,7 +866,7 @@ pub(in crate::config_tui) fn edit_model_form(
             currency_value,
         )
         .choices(&["", "USD", "CNY"])
-        .empty_choice_label(t("catalogue", "目录价")),
+        .empty_choice_label(catalog_price_label),
         Field::new(
             t("Input price / 1M tokens", "输入价 / 1M tokens"),
             price_text(cost.map(|c| c.input)),
@@ -767,6 +882,19 @@ pub(in crate::config_tui) fn edit_model_form(
             ),
             price_text(cost.and_then(|c| c.cache_read)),
         ),
+        // 按模型工具加载模式覆盖:约束解码型模型(实测 bigmodel glm-5.3-flash)
+        // 把参数生成硬限制在声明 schema 内,吃不下空壳 stub,要单独配完整。
+        // 池级解析取最保守(tools::effective_tools_loading_mode)。
+        Field::new(
+            t("Tool loading mode", "工具加载模式"),
+            provider
+                .model_tools_loading_mode
+                .get(model)
+                .map(|mode| crate::config_tui::settings::normalize_tools_loading_mode(mode))
+                .unwrap_or_default(),
+        )
+        .choices(&["", "full", "stub"])
+        .empty_choice_label(t("inherit global", "跟随全局")),
     ];
     loop {
         if !run_form(stdout, t(" EDIT MODEL ", " 编辑模型 "), &mut fields)? {
@@ -859,8 +987,24 @@ pub(in crate::config_tui) fn edit_model_form(
                 provider.model_temperature.remove(model);
             }
         }
+        match fields[9].value.trim() {
+            "" => {
+                provider.model_tools_loading_mode.remove(model);
+            }
+            mode => {
+                provider.model_tools_loading_mode.insert(
+                    model.to_string(),
+                    crate::config_tui::settings::normalize_tools_loading_mode(mode),
+                );
+            }
+        }
         return Ok(true);
     }
+}
+
+fn trim_price(value: f64) -> String {
+    let text = format!("{value:.4}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 pub(in crate::config_tui) fn thinking_variant_field(

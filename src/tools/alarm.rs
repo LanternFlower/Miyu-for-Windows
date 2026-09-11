@@ -175,7 +175,9 @@ fn resolve_audio_file(value: &str) -> Result<PathBuf> {
 
 fn expand_path(value: &str) -> PathBuf {
     if let Some(rest) = value.strip_prefix("~/") {
-        if let Some(home) = crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+        if let Some(home) =
+            crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
+        {
             return home.join(rest);
         }
     }

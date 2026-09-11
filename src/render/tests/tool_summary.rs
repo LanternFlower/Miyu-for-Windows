@@ -1,7 +1,7 @@
 //! 工具与子代理的活动摘要。
 
-use crate::render::*;
 use super::shared::*;
+use crate::render::*;
 
 #[test]
 fn completed_tools_are_committed_per_call_instead_of_aggregated() {
@@ -604,7 +604,9 @@ fn final_progress_keeps_lines_that_carry_their_own_marker() {
     };
     let lines = renderer.tool_block_lines("trash_path", &stats, false);
     assert!(
-        lines.iter().any(|line| line.trim() == "✗ /etc/hosts  权限不足"),
+        lines
+            .iter()
+            .any(|line| line.trim() == "✗ /etc/hosts  权限不足"),
         "失败行应原样保留：{lines:?}"
     );
     assert!(
@@ -658,8 +660,11 @@ fn read_file_subject_shows_the_page_range() {
         Some("/tmp/a.rs")
     );
     assert_eq!(
-        tool_subject("read_file", r#"{"path":"/tmp/a.rs","offset":2001,"limit":2000}"#)
-            .as_deref(),
+        tool_subject(
+            "read_file",
+            r#"{"path":"/tmp/a.rs","offset":2001,"limit":2000}"#
+        )
+        .as_deref(),
         Some("/tmp/a.rs (L2001-4000)")
     );
     assert_eq!(
@@ -756,7 +761,7 @@ fn readable_tool_names_translate_known_tools_and_fallback_unknown() {
         ("check_os_info", "System information", "查看系统信息"),
         ("get_weather", "Weather", "天气查询"),
         ("get_exchange_rate", "Exchange rates", "汇率查询"),
-        ("vision_analyze", "Analyze image", "分析图片"),
+        ("vision_analyze", "Visual analysis", "视觉分析"),
         ("use_meme", "Meme", "表情包"),
         ("manage_meme", "Manage memes", "管理表情包"),
         ("task", "Subagent", "子代理"),
@@ -894,11 +899,9 @@ fn tool_preparing_announces_every_slow_argument_tool() {
 
     // 同一条消息里的第 2+ 个调用:每个工具单看都不够慢,但参数接连流完
     // 的静默窗口和一次大 patch 一样长,所以退到通用提示而不是空白。
-    assert!(phase_for_batch("read_file", true)
-        .contains(t("~ Preparing tools", "~ 准备工具")));
+    assert!(phase_for_batch("read_file", true).contains(t("~ Preparing tools", "~ 准备工具")));
     // 工具自己的提示更具体,批量时也不该被通用的顶掉。
-    assert!(phase_for_batch("run_command", true)
-        .contains(t("~ Preparing command", "~ 准备执行")));
+    assert!(phase_for_batch("run_command", true).contains(t("~ Preparing command", "~ 准备执行")));
 }
 
 /// Regression: the hint above is announced mid-turn, when a reasoning

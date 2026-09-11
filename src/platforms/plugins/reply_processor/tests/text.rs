@@ -2,8 +2,6 @@
 
 use crate::platforms::plugins::reply_processor::*;
 
-
-
 #[test]
 fn command_prefix_requires_a_boundary() {
     assert_eq!(reply_command("/回复处理 状态"), Some("状态"));

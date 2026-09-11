@@ -1,18 +1,12 @@
 {
   "name": "scientific_calculator",
   "display_name": "科学计算",
-  "description": "numeric calculator. Supports evaluate operation for arithmetic expressions and common math functions. ",
+  "description": "Scientific calculator.",
   "parameters": {
     "type": "object",
     "properties": {
       "expression": {
         "type": "string"
-      },
-      "operation": {
-        "type": "string",
-        "enum": [
-          "evaluate"
-        ]
       }
     },
     "required": [

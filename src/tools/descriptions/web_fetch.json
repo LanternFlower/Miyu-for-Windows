@@ -1,7 +1,7 @@
 {
   "name": "web_fetch",
   "display_name": "读取网页",
-  "description": "Fetch a URL and return markdown, text, or html. Does not search the web.",
+  "description": "Fetch a URL and return markdown, text, or html.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -16,10 +16,6 @@
           "text",
           "html"
         ]
-      },
-      "timeout": {
-        "type": "integer",
-        "description": "Timeout seconds, max 120."
       },
       "max_chars": {
         "type": "integer",

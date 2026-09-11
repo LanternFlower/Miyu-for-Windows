@@ -1,7 +1,7 @@
 //! Chat Completions 协议的流式解析。
 
-use crate::llm::openai_compatible::*;
 use super::shared::*;
+use crate::llm::openai_compatible::*;
 
 #[test]
 fn strip_tagged_sections_handles_truncated_open_tag() {
@@ -205,8 +205,8 @@ fn reasoning_only_stream_result_is_preserved() {
 
 #[test]
 fn fully_empty_stream_result_is_rejected() {
-    let error = finalize_stream_result(String::new(), String::new(), None, Vec::new(), false)
-        .unwrap_err();
+    let error =
+        finalize_stream_result(String::new(), String::new(), None, Vec::new(), false).unwrap_err();
 
     let message = format!("{error:#}");
     assert!(message.contains("流式响应为空") || message.contains("stream response was empty"));
@@ -241,8 +241,9 @@ fn taotoken_glm_request_enables_thinking() {
     let mut provider = test_provider("taotoken", "https://taotoken.net/api/v1");
     provider.default_model = "glm_for_coding".to_string();
 
-    assert!(taotoken_glm_chat_template_kwargs(&provider)
-        .is_some_and(|kwargs| kwargs.enable_thinking));
+    assert!(
+        taotoken_glm_chat_template_kwargs(&provider).is_some_and(|kwargs| kwargs.enable_thinking)
+    );
 }
 
 #[test]

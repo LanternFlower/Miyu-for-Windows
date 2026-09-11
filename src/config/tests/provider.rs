@@ -9,7 +9,7 @@ fn first_http_provider(config: &mut AppConfig) -> &mut ProviderConfig {
     config
         .providers
         .iter_mut()
-        .find(|provider| !provider.is_claude_code())
+        .find(|provider| !provider.is_builtin_cli_provider())
         .expect("default templates always carry HTTP providers")
 }
 
@@ -343,74 +343,188 @@ fn subagent_tier_pools_toggle_filter_and_prune() {
     config.providers[0].models.push("mini-b".to_string());
 
     // Unconfigured pool resolves empty.
-    assert!(config.subagent_tier_choices(ModelTier::Cheap).is_empty());
+    assert!(config.tier_choices(ModelTier::Cheap).is_empty());
 
     // Toggle in/out mirrors the text-model picker semantics.
     assert!(config
-        .toggle_subagent_tier_model(ModelTier::Cheap, &provider_id, "mini-a")
+        .toggle_tier_model(ModelTier::Cheap, &provider_id, "mini-a")
         .unwrap());
     assert!(config
-        .toggle_subagent_tier_model(ModelTier::Cheap, &provider_id, "mini-b")
+        .toggle_tier_model(ModelTier::Cheap, &provider_id, "mini-b")
         .unwrap());
-    assert!(config.is_subagent_tier_model(ModelTier::Cheap, &provider_id, "mini-a"));
-    let choices = config.subagent_tier_choices(ModelTier::Cheap);
+    assert!(config.is_tier_model(ModelTier::Cheap, &provider_id, "mini-a"));
+    let choices = config.tier_choices(ModelTier::Cheap);
     assert_eq!(
         choices.iter().map(|c| c.model.as_str()).collect::<Vec<_>>(),
         vec!["mini-a", "mini-b"]
     );
     assert!(!config
-        .toggle_subagent_tier_model(ModelTier::Cheap, &provider_id, "mini-b")
+        .toggle_tier_model(ModelTier::Cheap, &provider_id, "mini-b")
         .unwrap());
-    assert_eq!(config.subagent_tier_choices(ModelTier::Cheap).len(), 1);
+    assert_eq!(config.tier_choices(ModelTier::Cheap).len(), 1);
 
     // Unknown provider is rejected.
     assert!(config
-        .toggle_subagent_tier_model(ModelTier::Strong, "no-such", "x")
+        .toggle_tier_model(ModelTier::Flagship, "no-such", "x")
         .is_err());
 
     // A model removed from the text models leaves the pool too.
     config
-        .toggle_subagent_tier_model(ModelTier::Balanced, &provider_id, "mini-a")
+        .toggle_tier_model(ModelTier::Standard, &provider_id, "mini-a")
         .unwrap();
     config
         .remove_active_provider_model(&provider_id, "mini-a")
         .unwrap();
-    assert!(config.subagent_tier_choices(ModelTier::Cheap).is_empty());
-    assert!(config.subagent_tiers.pool(ModelTier::Cheap).is_empty());
-    assert!(config.subagent_tiers.pool(ModelTier::Balanced).is_empty());
+    assert!(config.tier_choices(ModelTier::Cheap).is_empty());
+    assert!(config.model_tiers.pool(ModelTier::Cheap).is_empty());
+    assert!(config.model_tiers.pool(ModelTier::Standard).is_empty());
 
-    // prune_subagent_tiers drops entries that no longer resolve.
+    // prune_model_tiers drops entries that no longer resolve.
     config
-        .toggle_subagent_tier_model(ModelTier::Cheap, &provider_id, "mini-b")
+        .toggle_tier_model(ModelTier::Cheap, &provider_id, "mini-b")
         .unwrap();
     config.providers[0].models.retain(|m| m != "mini-b");
-    assert!(config.subagent_tier_choices(ModelTier::Cheap).is_empty());
-    config.prune_subagent_tiers();
-    assert!(config.subagent_tiers.pool(ModelTier::Cheap).is_empty());
+    assert!(config.tier_choices(ModelTier::Cheap).is_empty());
+    config.prune_model_tiers();
+    assert!(config.model_tiers.pool(ModelTier::Cheap).is_empty());
 }
 
 #[test]
-fn subagent_tiers_roundtrip_and_default_omission() {
+fn model_tiers_roundtrip_and_default_omission() {
     let config = AppConfig::default();
     let json = serde_json::to_string(&config).unwrap();
     // Empty pools stay out of the serialized config.
-    assert!(!json.contains("subagent_tiers"));
+    assert!(!json.contains("model_tiers"));
 
     let parsed: AppConfig = serde_json::from_str(
         r#"{
             "active_provider": "opencode",
             "providers": [],
-            "subagent_tiers": {
+            "model_tiers": {
                 "cheap": [ { "provider_id": "p", "model": "m" } ]
             }
         }"#,
     )
     .unwrap();
-    assert_eq!(parsed.subagent_tiers.cheap.len(), 1);
-    assert_eq!(parsed.subagent_tiers.cheap[0].model, "m");
-    assert!(parsed.subagent_tiers.balanced.is_empty());
+    assert_eq!(parsed.model_tiers.cheap.len(), 1);
+    assert_eq!(parsed.model_tiers.cheap[0].model, "m");
+    assert!(parsed.model_tiers.standard.is_empty());
     // Choices filter out entries with unknown providers.
-    assert!(parsed.subagent_tier_choices(ModelTier::Cheap).is_empty());
+    assert!(parsed.tier_choices(ModelTier::Cheap).is_empty());
+}
+
+#[test]
+fn aux_roles_default_per_role_and_accept_global_and_old_aliases() {
+    use crate::config::AuxRole;
+    let parsed: AppConfig = serde_json::from_str(
+        r#"{
+            "active_provider": "opencode",
+            "providers": [],
+            "model_tiers": {
+                "cheap": [ { "provider_id": "p", "model": "m" } ],
+                "roles": { "memory_organizer": "cheap", "deep_research": "strong", "session_title": "global" }
+            }
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(
+        parsed.model_tiers.role_tier(AuxRole::MemoryOrganizer),
+        Some(ModelTier::Cheap)
+    );
+    // Old tier name keeps working in role values.
+    assert_eq!(
+        parsed.model_tiers.role_tier(AuxRole::DeepResearch),
+        Some(ModelTier::Flagship)
+    );
+    // "global" pins the role to the global pool.
+    assert_eq!(parsed.model_tiers.role_tier(AuxRole::SessionTitle), None);
+    assert!(parsed.model_tiers.validate_roles().is_ok());
+    let json = serde_json::to_string(&parsed).unwrap();
+    let again: AppConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(again.model_tiers.roles, parsed.model_tiers.roles);
+
+    // Absent keys resolve to the built-in defaults and serialize nothing.
+    let mut config = AppConfig::default();
+    assert!(config.model_tiers.roles.is_empty());
+    assert_eq!(
+        config.model_tiers.role_tier(AuxRole::SessionTitle),
+        Some(ModelTier::Lite)
+    );
+    assert_eq!(
+        config.model_tiers.role_tier(AuxRole::MemoryOrganizer),
+        Some(ModelTier::Lite)
+    );
+    assert_eq!(
+        config.model_tiers.role_tier(AuxRole::DeepResearch),
+        Some(ModelTier::Standard)
+    );
+    assert!(!serde_json::to_string(&config).unwrap().contains("roles"));
+    // set / reset round-trip through the explicit map.
+    config.model_tiers.set_role(AuxRole::SessionTitle, None);
+    assert!(config.model_tiers.role_is_explicit(AuxRole::SessionTitle));
+    assert_eq!(config.model_tiers.role_tier(AuxRole::SessionTitle), None);
+    config.model_tiers.reset_role(AuxRole::SessionTitle);
+    assert!(!config.model_tiers.role_is_explicit(AuxRole::SessionTitle));
+    assert_eq!(
+        config.model_tiers.role_tier(AuxRole::SessionTitle),
+        Some(ModelTier::Lite)
+    );
+}
+
+#[test]
+fn model_tiers_read_the_old_key_and_old_tier_names_and_save_new_ones() {
+    // A pre-09-05 config: `subagent_tiers` with `balanced` / `strong`.
+    let parsed: AppConfig = serde_json::from_str(
+        r#"{
+            "active_provider": "opencode",
+            "providers": [],
+            "subagent_tiers": {
+                "balanced": [ { "provider_id": "p", "model": "b" } ],
+                "strong":   [ { "provider_id": "p", "model": "s" } ]
+            }
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(parsed.model_tiers.standard[0].model, "b");
+    assert_eq!(parsed.model_tiers.flagship[0].model, "s");
+    assert_eq!(ModelTier::from_str("balanced"), Some(ModelTier::Standard));
+    assert_eq!(ModelTier::from_str("strong"), Some(ModelTier::Flagship));
+    let json = serde_json::to_string(&parsed).unwrap();
+    assert!(json.contains("\"model_tiers\""), "{json}");
+    assert!(
+        json.contains("\"standard\"") && json.contains("\"flagship\""),
+        "{json}"
+    );
+    assert!(
+        !json.contains("subagent_tiers") && !json.contains("\"balanced\""),
+        "{json}"
+    );
+}
+
+#[test]
+fn subagent_tier_roles_reject_unknown_roles_and_tiers() {
+    // A typo must fail loudly at validation instead of silently routing the
+    // role to the main pool.
+    let mut config = AppConfig::default();
+    config
+        .model_tiers
+        .roles
+        .insert("memory_organizer".to_string(), "chep".to_string());
+    let error = config.validate().unwrap_err().to_string();
+    assert!(error.contains("unknown tier 'chep'"), "{error}");
+    assert!(
+        error.contains("lite, cheap, standard, flagship, global"),
+        "{error}"
+    );
+
+    let mut config = AppConfig::default();
+    config
+        .model_tiers
+        .roles
+        .insert("compact".to_string(), "cheap".to_string());
+    let error = config.validate().unwrap_err().to_string();
+    assert!(error.contains("unknown role 'compact'"), "{error}");
+    assert!(error.contains("memory_organizer"), "{error}");
 }
 
 #[test]
@@ -456,7 +570,9 @@ fn the_embedding_model_moves_out_from_under_the_knowledge_base() {
 
     // Configuring a model only makes it available; there is no switch.
     assert!(config.embedding.is_configured());
-    assert!(!AppConfig::default().embedding.is_configured());
+    // 内置本地 embedding 让缺省配置本身就"已配置";这里只证明迁移把 omlx
+    // 这条搬了过来,而不是缺省值碰巧相同。
+    assert_ne!(AppConfig::default().embedding.provider_id, "omlx");
 }
 
 #[test]
@@ -464,7 +580,7 @@ fn real_context_models_follow_provider_lifecycle() {
     let mut config = route_test_config();
     let old_id = config.providers[0].id.clone();
     let settings = RealContextPluginSettings {
-        text_models: Some(vec![ActiveProviderModelConfig {
+        text_models: crate::config::ModelPoolRef::models(vec![ActiveProviderModelConfig {
             provider_id: old_id.clone(),
             model: "text-only".to_string(),
         }]),
@@ -485,7 +601,10 @@ fn real_context_models_follow_provider_lifecycle() {
     config.rename_provider_references(&old_id, "renamed");
     let instance = &config.platforms.qq.plugins[REAL_CONTEXT_PLUGIN_ID];
     let reparsed = RealContextPluginSettings::from_instance(instance).unwrap();
-    assert_eq!(reparsed.text_models.unwrap()[0].provider_id, "renamed");
+    assert_eq!(
+        reparsed.text_models.explicit_models().unwrap()[0].provider_id,
+        "renamed"
+    );
     assert_eq!(instance.settings["future_option"], true);
 
     config.remove_active_model_references("renamed", "text-only");
@@ -493,7 +612,7 @@ fn real_context_models_follow_provider_lifecycle() {
         &config.platforms.qq.plugins[REAL_CONTEXT_PLUGIN_ID],
     )
     .unwrap();
-    assert!(reparsed.text_models.is_none());
+    assert!(reparsed.text_models.is_inherit());
 }
 
 #[test]
@@ -509,14 +628,15 @@ fn provider_reference_updates_cover_every_model_pool_and_plugin() {
         provider_id: old_id.clone(),
         model: "vision".to_string(),
     }]);
-    config.subagent_tiers.cheap.push(ActiveProviderModelConfig {
+    config.model_tiers.cheap.push(ActiveProviderModelConfig {
         provider_id: old_id.clone(),
         model: "text-only".to_string(),
     });
-    config.platforms.qq.non_whitelist_text_models = Some(vec![ActiveProviderModelConfig {
-        provider_id: old_id.clone(),
-        model: "text-only".to_string(),
-    }]);
+    config.platforms.qq.non_whitelist_text_models =
+        crate::config::ModelPoolRef::models(vec![ActiveProviderModelConfig {
+            provider_id: old_id.clone(),
+            model: "text-only".to_string(),
+        }]);
     config.platforms.qq.conversations.push(test_route(&config));
     config.plugins.vision.vision_provider_id = old_id.clone();
     config.plugins.vision.vision_model = "vision".to_string();
@@ -535,13 +655,13 @@ fn provider_reference_updates_cover_every_model_pool_and_plugin() {
         config.active_multimodal_provider_models.as_ref().unwrap()[0].provider_id,
         "renamed"
     );
-    assert_eq!(config.subagent_tiers.cheap[0].provider_id, "renamed");
+    assert_eq!(config.model_tiers.cheap[0].provider_id, "renamed");
     assert_eq!(
         config
             .platforms
             .qq
             .non_whitelist_text_models
-            .as_ref()
+            .explicit_models()
             .unwrap()[0]
             .provider_id,
         "renamed"
@@ -565,8 +685,8 @@ fn provider_reference_updates_cover_every_model_pool_and_plugin() {
     config.remove_provider_references("renamed");
     assert!(config.active_provider_models.is_none());
     assert!(config.active_multimodal_provider_models.is_none());
-    assert!(config.subagent_tiers.cheap.is_empty());
-    assert!(config.platforms.qq.non_whitelist_text_models.is_none());
+    assert!(config.model_tiers.cheap.is_empty());
+    assert!(config.platforms.qq.non_whitelist_text_models.is_inherit());
     assert_eq!(config.platforms.qq.conversations.len(), 1);
     assert!(config.platforms.qq.conversations[0].text_models.is_none());
     assert!(config.plugins.vision.vision_provider_id.is_empty());
@@ -746,9 +866,12 @@ fn extra_body_roundtrip() {
         protocol: "auto".to_string(),
         api_key: None,
         models: vec![],
+        custom_models: Vec::new(),
         model_context_window: HashMap::new(),
         model_temperature: HashMap::new(),
+        model_tools_loading_mode: HashMap::new(),
         model_modalities: HashMap::new(),
+        tool_result_media: None,
         model_costs: HashMap::new(),
         default_model: String::new(),
         timeout_seconds: 60,
@@ -909,6 +1032,58 @@ fn real_config_window_source() {
 
 /// 08-20:Claude Code 是内置特殊供应商——normalize 自动注入、默认禁用、
 /// 模型预置 CLI 别名;未启用时不进任何模型选择器,启用即出现。
+/// 09-04:设置页给 agy 的 gemini 勾了图片/视频,多模态池却找不到它——因为
+/// "具备能力"和"能塞进消息"被合成了一个函数。拆开后:能力按声明算,池里
+/// 收得下;消息内联与视觉旁路仍按纯文本对待。
+#[test]
+fn antigravity_declared_modalities_count_for_pools_but_not_for_messages() {
+    let mut config = AppConfig::default();
+    config.normalize_builtin_providers();
+    let provider = config
+        .providers
+        .iter_mut()
+        .find(|provider| provider.is_antigravity())
+        .expect("antigravity template");
+    provider.enabled = true;
+    provider.models = vec!["gemini-3.8-flash-high".to_string()];
+    provider.default_model = "gemini-3.8-flash-high".to_string();
+    provider.model_modalities.insert(
+        "gemini-3.8-flash-high".to_string(),
+        vec!["text".to_string(), "image".to_string(), "video".to_string()],
+    );
+    let provider = provider.clone();
+    assert_eq!(
+        provider.input_modalities("gemini-3.8-flash-high").unwrap(),
+        vec!["text", "image", "video"]
+    );
+    assert_eq!(
+        provider
+            .message_input_modalities("gemini-3.8-flash-high")
+            .unwrap(),
+        vec!["text"]
+    );
+    assert!(config.model_supports_any_input("antigravity", "gemini-3.8-flash-high", &["image"]));
+    assert!(!config.model_accepts_message_input(
+        "antigravity",
+        "gemini-3.8-flash-high",
+        &["image"]
+    ));
+    assert!(config
+        .multimodal_provider_model_choices()
+        .iter()
+        .any(|choice| choice.provider_id == "antigravity"));
+    config.active_multimodal_provider_models = Some(vec![ActiveProviderModelConfig {
+        provider_id: "antigravity".to_string(),
+        model: "gemini-3.8-flash-high".to_string(),
+    }]);
+    assert_eq!(config.active_multimodal_provider_model_choices().len(), 1);
+    // 视觉旁路不能落到这条线上:它收不了图。
+    assert!(
+        config.vision_provider_choice().is_err()
+            || config.vision_provider_choice().unwrap().0 != "antigravity"
+    );
+}
+
 #[test]
 fn claude_code_builtin_provider_is_injected_disabled_with_preset_models() {
     let mut config = AppConfig::default();
@@ -953,4 +1128,122 @@ fn claude_code_builtin_provider_is_injected_disabled_with_preset_models() {
             .count(),
         1
     );
+}
+
+/// 09-03:Antigravity 是第二个内置 CLI 中转供应商——normalize 注入、紧随
+/// Claude Code 之后、默认禁用、模型预置 agy 别名;未启用不进选择器。
+#[test]
+fn antigravity_builtin_provider_is_injected_disabled_after_claude_code() {
+    let mut config = AppConfig::default();
+    config.normalize_builtin_providers();
+    assert!(config.providers[0].is_claude_code());
+    assert!(config.providers[1].is_antigravity());
+    assert!(
+        config.providers[2].is_codex(),
+        "Codex 紧随 Antigravity 之后"
+    );
+    assert!(!config.providers[2].enabled);
+    assert_eq!(config.providers[2].default_model, "gpt-5.6-terra");
+    assert!(!config.codex_enabled());
+    let provider = &config.providers[1];
+    assert_eq!(provider.id, "antigravity");
+    assert!(!provider.enabled, "默认必须是禁用态");
+    assert_eq!(provider.default_model, "gemini-3.8-flash-high");
+    assert!(provider
+        .models
+        .iter()
+        .any(|model| model == "claude-sonnet-4-6"));
+    assert!(!config.antigravity_enabled());
+    assert!(!config
+        .text_provider_model_choices()
+        .iter()
+        .any(|choice| choice.provider_id == "antigravity"));
+
+    // 存量配置把它排到后面:normalize 搬回第二位;重复 normalize 不二次注入。
+    let moved = config.providers.remove(1);
+    config.providers.push(moved);
+    let moved = config.providers.remove(1);
+    config.providers.push(moved);
+    config.normalize_builtin_providers();
+    assert!(config.providers[1].is_antigravity());
+    assert!(config.providers[2].is_codex());
+    assert_eq!(
+        config
+            .providers
+            .iter()
+            .filter(|provider| provider.is_antigravity())
+            .count(),
+        1
+    );
+    for provider in &mut config.providers {
+        if provider.is_antigravity() {
+            provider.enabled = true;
+        }
+    }
+    assert!(config.antigravity_enabled());
+    assert!(config
+        .text_provider_model_choices()
+        .iter()
+        .any(|choice| choice.provider_id == "antigravity"));
+}
+
+/// 会话模型覆盖指向已删除的模型时,必须能退回全局池而不是把入口锁死。
+///
+/// 08-28 实录:`opencodego/glm-5.3-flash` 被移出供应商的 models 之后,钉着它
+/// 的会话让 `miyu normal` 直接报 "no active provider/model endpoint is
+/// configured"——而且尾巴是空的,因为筛掉的原因被静默丢了。用户连 REPL 都进
+/// 不去,也就没机会用 `/model` 换一个。
+#[test]
+fn a_stale_session_override_falls_back_instead_of_locking_the_entry() {
+    let mut config = AppConfig::default();
+    let provider_id = config.providers[0].id.clone();
+    config.providers[0].models = vec!["deepseek-v4-flash-free".to_string()];
+    config.providers[0].default_model = "deepseek-v4-flash-free".to_string();
+
+    // 覆盖里全是已删除的模型 → 无一可用 → 调用方据此退回全局池。
+    let all_stale = vec![ActiveProviderModelConfig {
+        provider_id: provider_id.clone(),
+        model: "glm-5.3-flash".to_string(),
+    }];
+    assert!(config.usable_model_override(all_stale).is_none());
+
+    // 覆盖里指向不存在的供应商同样算不可用。
+    let unknown_provider = vec![ActiveProviderModelConfig {
+        provider_id: "no-such-provider".to_string(),
+        model: "deepseek-v4-flash-free".to_string(),
+    }];
+    assert!(config.usable_model_override(unknown_provider).is_none());
+
+    // 还剩得下的就只保留那些,不因为有坏条目就整份作废。
+    let mixed = vec![
+        ActiveProviderModelConfig {
+            provider_id: provider_id.clone(),
+            model: "glm-5.3-flash".to_string(),
+        },
+        ActiveProviderModelConfig {
+            provider_id: provider_id.clone(),
+            model: "deepseek-v4-flash-free".to_string(),
+        },
+    ];
+    let usable = config.usable_model_override(mixed).expect("还有可用条目");
+    assert_eq!(usable.len(), 1);
+    assert_eq!(usable[0].model, "deepseek-v4-flash-free");
+}
+
+/// 工具结果带图的能力推断:openai-chat 端点默认能,OpenAI 官方/本机 CLI/
+/// anthropic 协议不能,显式配置压过推断(09-03 智谱实测)。
+#[test]
+fn tool_result_media_capability_is_inferred_per_provider() {
+    let mut zhipu =
+        ProviderConfig::template("bigmodel", "智谱", "https://open.bigmodel.cn/api/paas/v4");
+    assert!(zhipu.tool_result_carries_media());
+    let openai = ProviderConfig::template("openai", "OpenAI", "https://api.openai.com/v1");
+    assert!(!openai.tool_result_carries_media());
+    assert!(!ProviderConfig::codex_template().tool_result_carries_media());
+    assert!(!ProviderConfig::antigravity_template().tool_result_carries_media());
+    let mut anthropic = ProviderConfig::template("a", "A", "https://api.anthropic.com");
+    anthropic.protocol = "anthropic".to_string();
+    assert!(!anthropic.tool_result_carries_media());
+    zhipu.tool_result_media = Some(false);
+    assert!(!zhipu.tool_result_carries_media());
 }

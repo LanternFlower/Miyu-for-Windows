@@ -83,7 +83,11 @@ pub(in crate::platforms::onebot) fn update_group_ban_notice(event: &Value) {
         .insert((self_id, group_id), availability, ttl, now);
 }
 
-pub(in crate::platforms::onebot) fn recall_event(target: Target, event: &Value, user_id: i64) -> PlatformInboundEvent {
+pub(in crate::platforms::onebot) fn recall_event(
+    target: Target,
+    event: &Value,
+    user_id: i64,
+) -> PlatformInboundEvent {
     let self_id = event.get("self_id").and_then(Value::as_i64).unwrap_or(0);
     PlatformInboundEvent {
         kind: PlatformInboundEventKind::MessageRecall,
@@ -115,7 +119,9 @@ pub(in crate::platforms::onebot) fn recall_event(target: Target, event: &Value, 
     }
 }
 
-pub(in crate::platforms::onebot) fn group_upload_event(event: &Value) -> Option<PlatformInboundEvent> {
+pub(in crate::platforms::onebot) fn group_upload_event(
+    event: &Value,
+) -> Option<PlatformInboundEvent> {
     let self_id = event.get("self_id").and_then(Value::as_i64)?;
     let group_id = event.get("group_id").and_then(Value::as_i64)?;
     let user_id = event.get("user_id").and_then(Value::as_i64)?;
@@ -176,7 +182,11 @@ pub(in crate::platforms::onebot) fn group_upload_event(event: &Value) -> Option<
     })
 }
 
-pub(in crate::platforms::onebot) async fn handle_group_file_upload(state: DaemonState, conn: ConnectionHandle, event: Value) {
+pub(in crate::platforms::onebot) async fn handle_group_file_upload(
+    state: DaemonState,
+    conn: ConnectionHandle,
+    event: Value,
+) {
     let app_config = state.manager.lock().unwrap().config.clone();
     let config = &app_config.platforms.qq;
     if !config.enabled {
@@ -220,7 +230,9 @@ pub(in crate::platforms::onebot) async fn handle_group_file_upload(state: Daemon
     context.observe_inbound(&inbound).await;
 }
 
-pub(in crate::platforms::onebot) fn group_management_notice(event: &Value) -> Option<PlatformInboundEvent> {
+pub(in crate::platforms::onebot) fn group_management_notice(
+    event: &Value,
+) -> Option<PlatformInboundEvent> {
     let self_id = event.get("self_id").and_then(Value::as_i64)?;
     let group_id = event.get("group_id").and_then(Value::as_i64)?;
     let user_id = event.get("user_id").and_then(Value::as_i64)?;
@@ -259,7 +271,11 @@ pub(in crate::platforms::onebot) fn group_management_notice(event: &Value) -> Op
     })
 }
 
-pub(in crate::platforms::onebot) async fn handle_group_management_notice(state: DaemonState, conn: ConnectionHandle, event: Value) {
+pub(in crate::platforms::onebot) async fn handle_group_management_notice(
+    state: DaemonState,
+    conn: ConnectionHandle,
+    event: Value,
+) {
     let Some(inbound) = group_management_notice(&event) else {
         return;
     };
@@ -294,7 +310,11 @@ pub(in crate::platforms::onebot) async fn handle_group_management_notice(state: 
     }
 }
 
-pub(in crate::platforms::onebot) async fn handle_message_recall(state: DaemonState, conn: ConnectionHandle, event: Value) {
+pub(in crate::platforms::onebot) async fn handle_message_recall(
+    state: DaemonState,
+    conn: ConnectionHandle,
+    event: Value,
+) {
     let app_config = state.manager.lock().unwrap().config.clone();
     let config = &app_config.platforms.qq;
     if !config.enabled {

@@ -184,6 +184,9 @@ pub struct UsageRecord {
     pub cache_write: u64,
     #[serde(default, skip_serializing_if = "is_false")]
     pub aux: bool,
+    /// 细项标签(见 [`UsageMeta::kind`]);老记录没有,空串=主线。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
     /// 计费估算(USD),读取时按当前价目计算,不落盘。
     #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub cost: Option<f64>,
@@ -195,7 +198,17 @@ pub struct UsageMeta<'a> {
     pub source: &'a str,
     pub provider: Option<&'a str>,
     pub model: Option<&'a str>,
+    /// 细项标签:同一来源里再分一层(如 "judge"=主动回复判断)。None=主线
+    /// 调用。统计据此在来源下挂出子项,不改变来源本身的归属与合计。
+    pub kind: Option<&'a str>,
 }
+
+/// 主动回复判断(QQ 每条消息都跑)的细项标签。
+pub const USAGE_KIND_JUDGE: &str = "judge";
+/// 好感度更新。
+pub const USAGE_KIND_AFFECTION: &str = "affection";
+/// 入群审批。
+pub const USAGE_KIND_GROUP_JOIN: &str = "group_join";
 
 pub fn record_usage(path: &Path, usage: &Usage, meta: UsageMeta<'_>, aux: bool) -> Result<()> {
     record_usage_at(path, usage, meta, aux, chrono::Utc::now().timestamp())
@@ -226,6 +239,7 @@ fn record_usage_at(
         cache_read: usage.cache_read_tokens,
         cache_write: usage.cache_write_tokens,
         aux,
+        kind: meta.kind.unwrap_or_default().to_string(),
         cost: None,
     };
     let mut file = std::fs::OpenOptions::new()
@@ -298,6 +312,17 @@ pub struct ModelUsage {
     pub aggregate: UsageAggregate,
 }
 
+/// 来源内的细项(如主动回复判断),已含在来源合计里,不重复计数。
+/// `models` 让前端把细项摊进饼图与模型表——只给一个合计数字,细项就只能
+/// 当页脚摆着(08-26 用户点名)。
+#[derive(Debug, Clone, Serialize)]
+pub struct KindUsage {
+    pub kind: String,
+    #[serde(flatten)]
+    pub aggregate: UsageAggregate,
+    pub models: Vec<ModelUsage>,
+}
+
 /// 一个来源(智能体/某平台)在选定范围内的汇总与模型构成。
 #[derive(Debug, Clone, Serialize)]
 pub struct SourceUsage {
@@ -305,6 +330,9 @@ pub struct SourceUsage {
     #[serde(flatten)]
     pub aggregate: UsageAggregate,
     pub models: Vec<ModelUsage>,
+    /// 细项拆解(见 [`KindUsage`]);无标签记录不产生条目。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kinds: Vec<KindUsage>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -392,8 +420,15 @@ pub fn usage_stats(path: &Path, range: UsageRange, price: PriceFn<'_>) -> Result
     let mut totals = UsageAggregate::default();
     let mut prev_totals = UsageAggregate::default();
     let mut daily = BTreeMap::<String, DailyUsage>::new();
-    let mut sources =
-        BTreeMap::<String, (UsageAggregate, BTreeMap<(String, String), UsageAggregate>)>::new();
+    #[allow(clippy::type_complexity)]
+    let mut sources = BTreeMap::<
+        String,
+        (
+            UsageAggregate,
+            BTreeMap<(String, String), UsageAggregate>,
+            BTreeMap<String, (UsageAggregate, BTreeMap<(String, String), UsageAggregate>)>,
+        ),
+    >::new();
     let daily_floor = today_start - 363 * 86_400;
     let mut first_ts: Option<i64> = None;
 
@@ -408,12 +443,20 @@ pub fn usage_stats(path: &Path, range: UsageRange, price: PriceFn<'_>) -> Result
             } else {
                 record.src.as_str()
             };
-            let (agg, models) = sources.entry(src.to_string()).or_default();
+            let (agg, models, kinds) = sources.entry(src.to_string()).or_default();
             agg.absorb(record, cost);
             models
                 .entry((record.provider.clone(), record.model.clone()))
                 .or_default()
                 .absorb(record, cost);
+            if !record.kind.is_empty() {
+                let (kind_agg, kind_models) = kinds.entry(record.kind.clone()).or_default();
+                kind_agg.absorb(record, cost);
+                kind_models
+                    .entry((record.provider.clone(), record.model.clone()))
+                    .or_default()
+                    .absorb(record, cost);
+            }
         } else if let (Some(s), Some(p)) = (start, prev_start) {
             if record.ts >= p && record.ts < s {
                 prev_totals.absorb(record, cost);
@@ -469,7 +512,7 @@ pub fn usage_stats(path: &Path, range: UsageRange, price: PriceFn<'_>) -> Result
 
     let sources = sources
         .into_iter()
-        .map(|(src, (aggregate, models))| {
+        .map(|(src, (aggregate, models, kinds))| {
             let mut models: Vec<ModelUsage> = models
                 .into_iter()
                 .map(|((provider, model), aggregate)| ModelUsage {
@@ -479,10 +522,31 @@ pub fn usage_stats(path: &Path, range: UsageRange, price: PriceFn<'_>) -> Result
                 })
                 .collect();
             models.sort_by(|a, b| b.aggregate.total.cmp(&a.aggregate.total));
+            let mut kinds: Vec<KindUsage> = kinds
+                .into_iter()
+                .map(|(kind, (aggregate, kind_models))| {
+                    let mut models: Vec<ModelUsage> = kind_models
+                        .into_iter()
+                        .map(|((provider, model), aggregate)| ModelUsage {
+                            provider,
+                            model,
+                            aggregate,
+                        })
+                        .collect();
+                    models.sort_by(|a, b| b.aggregate.total.cmp(&a.aggregate.total));
+                    KindUsage {
+                        kind,
+                        aggregate,
+                        models,
+                    }
+                })
+                .collect();
+            kinds.sort_by(|a, b| b.aggregate.total.cmp(&a.aggregate.total));
             SourceUsage {
                 src,
                 aggregate,
                 models,
+                kinds,
             }
         })
         .collect::<Vec<_>>();
@@ -569,6 +633,7 @@ mod tests {
                 source: "agent",
                 provider: Some("priced"),
                 model: Some("m"),
+                kind: None,
             },
             false,
         )
@@ -580,6 +645,7 @@ mod tests {
                 source: "agent",
                 provider: Some("unknown"),
                 model: Some("m"),
+                kind: None,
             },
             false,
         )
@@ -707,6 +773,7 @@ mod tests {
             source,
             provider: Some("prov"),
             model: Some(model),
+            kind: None,
         };
 
         record_usage_at(&path, &usage(100, 20, 60), meta("agent", "m-a"), false, now).unwrap();

@@ -1,0 +1,22 @@
+{
+  "name": "artifact",
+  "display_name": "编辑预览文件",
+  "description": "Create or edit deliverable files in the WebUI Artifact workspace via patch (*** Begin Patch / *** End Patch). Paths are plain artifact file names. Use for reports, documents, and standalone files the user should inspect, not routine source edits. Publish an existing local file with present_artifact; read entries with read using artifact: paths.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "patchText": {
+        "type": "string",
+        "description": "Full patch text wrapped in *** Begin Patch / *** End Patch."
+      }
+    },
+    "required": [
+      "patchText"
+    ],
+    "additionalProperties": false
+  },
+  "permission": "presentation",
+  "always_loaded": true,
+  "load_policy": "summary",
+  "groups": []
+}

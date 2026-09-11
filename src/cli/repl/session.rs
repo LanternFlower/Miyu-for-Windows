@@ -29,8 +29,11 @@ pub(in crate::cli) async fn one_shot_session(
     continue_session: bool,
 ) -> Result<TurnSession> {
     if let Some(arg) = session_arg {
+        // 与 `miyu session list` 同一份列表、同一套编号,找不到退出码 3。
         return Ok(TurnSession::Explicit(
-            resolve_session_id_for_turn(paths, arg).await?,
+            crate::cli::turn_request::resolve_managed_session(paths, arg)
+                .await?
+                .id,
         ));
     }
     if continue_session {
@@ -46,14 +49,18 @@ pub(in crate::cli) fn ephemeral_session_name() -> String {
     t("One-shot", "一次性对话").to_string()
 }
 
-pub(in crate::cli) async fn create_ephemeral_session(paths: &MiyuPaths) -> Result<String> {
+/// `mode`(normal/dev)决定阅后即焚会话建在哪个人格名下;None = 普通。
+pub(in crate::cli) async fn create_ephemeral_session(
+    paths: &MiyuPaths,
+    mode: Option<&str>,
+) -> Result<String> {
     let (_, data) = session_admin(
         paths,
         IpcCommand::CreateSession {
             name: Some(ephemeral_session_name()),
             switch: false,
             kind: Some(crate::state::ASK_SESSION_KIND.to_string()),
-            mode: None,
+            mode: mode.map(str::to_string),
         },
     )
     .await?;
@@ -68,6 +75,9 @@ pub(in crate::cli) async fn create_ephemeral_session(paths: &MiyuPaths) -> Resul
 /// pointing at a session that is about to disappear. Best effort: a daemon
 /// that has gone away leaves a row the startup sweep collects.
 pub(in crate::cli) async fn discard_ephemeral_session(paths: &MiyuPaths, session_id: &str) {
+    // CLI 中转(claude-code/antigravity)的联动:直连形态没有 daemon,DeleteSession
+    // 那条路上的 forget 不会跑到,这里自己收——续传映射与 CLI 侧转录都在本进程。
+    crate::llm::forget_relay_sessions(session_id);
     let _ = send_ipc_admin(
         paths,
         IpcCommand::StopSessionJobs {
@@ -95,6 +105,7 @@ pub(in crate::cli) struct EphemeralSessionGuard {
 
 impl Drop for EphemeralSessionGuard {
     fn drop(&mut self) {
+        crate::llm::forget_relay_sessions(&self.session_id);
         let _ = self.state.delete_session(&self.session_id);
     }
 }
@@ -259,6 +270,7 @@ pub(in crate::cli) async fn apply_repl_session_switch(
 }
 
 /// One row of the daemon's session list, parsed from `ListSessions` JSON.
+#[derive(Clone, Debug)]
 pub(in crate::cli) struct SessionListEntry {
     pub(in crate::cli) id: String,
     pub(in crate::cli) name: String,
@@ -692,35 +704,21 @@ pub(in crate::cli) async fn session_admin(
     paths: &MiyuPaths,
     command: IpcCommand,
 ) -> Result<(ipc::SessionState, serde_json::Value)> {
-    ipc::ensure_daemon(paths, None).await?;
-    let refreshed = MiyuPaths::new()?;
-    send_ipc_admin(&refreshed, command).await
+    session_admin_streaming(paths, command, |_, _| Ok(())).await
 }
 
-/// Resolves a `miyu session/delete` target argument outside the REPL:
-/// numbers index into the visible session list, anything else is a name.
-/// Resolves a `--session` argument (name or list index) to a concrete
-/// session id, without moving the global current pointer.
-pub(in crate::cli) async fn resolve_session_id_for_turn(
+/// `session_admin` + 中途事件回调,见 [`send_ipc_admin_streaming`]。
+pub(in crate::cli) async fn session_admin_streaming<F>(
     paths: &MiyuPaths,
-    arg: &str,
-) -> Result<String> {
-    let (_, data) = session_admin(paths, IpcCommand::ListSessions { mode: None }).await?;
-    let entries = session_list_entries(&data);
-    if let Ok(index) = arg.parse::<usize>() {
-        if let Some(entry) = index.checked_sub(1).and_then(|index| entries.get(index)) {
-            return Ok(entry.id.clone());
-        }
-        bail!(
-            "{}: {index}",
-            t("no session with this number", "没有这个编号的会话")
-        );
-    }
-    entries
-        .into_iter()
-        .find(|entry| entry.name.eq_ignore_ascii_case(arg) || entry.id == arg)
-        .map(|entry| entry.id)
-        .ok_or_else(|| anyhow::anyhow!("{}: {arg}", t("session not found", "找不到该会话")))
+    command: IpcCommand,
+    on_event: F,
+) -> Result<(ipc::SessionState, serde_json::Value)>
+where
+    F: FnMut(&str, &serde_json::Value) -> Result<()>,
+{
+    ipc::ensure_daemon(paths, None).await?;
+    let refreshed = MiyuPaths::new()?;
+    send_ipc_admin_streaming(&refreshed, command, on_event).await
 }
 
 /// `/goal edit`（无参数）的编辑器内变身：把「/goal edit <当前目标>」放进
@@ -754,12 +752,31 @@ pub(in crate::cli) async fn send_ipc_admin(
     paths: &MiyuPaths,
     command: IpcCommand,
 ) -> Result<(ipc::SessionState, serde_json::Value)> {
+    send_ipc_admin_streaming(paths, command, |_, _| Ok(())).await
+}
+
+/// 同上,但把终局帧之前到达的事件逐条交给 `on_event`(kind, data)。
+///
+/// 管理面的绝大多数命令是一问一答,只有压缩会在中间吐 `context.compact_*`
+/// ——它要跑一次完整的摘要调用,几十秒不吭声的话终端看着就是死的。所以这里
+/// 收帧改成循环而不是只读一帧;不关心事件的调用方用上面那层薄壳,行为不变。
+pub(in crate::cli) async fn send_ipc_admin_streaming<F>(
+    paths: &MiyuPaths,
+    command: IpcCommand,
+    mut on_event: F,
+) -> Result<(ipc::SessionState, serde_json::Value)>
+where
+    F: FnMut(&str, &serde_json::Value) -> Result<()>,
+{
     let mut stream = ipc::connect(&paths.ipc_socket()).await?;
     ipc::send(&mut stream, &IpcRequest::new(command)).await?;
-    match ipc::receive::<IpcFrame>(&mut stream).await? {
-        Some(IpcFrame::AdminResult { state, data }) => Ok((state, data)),
-        Some(IpcFrame::Error { message, .. }) => bail!("{message}"),
-        _ => bail!("Miyu core returned an invalid admin response"),
+    loop {
+        match ipc::receive::<IpcFrame>(&mut stream).await? {
+            Some(IpcFrame::Event { kind, data, .. }) => on_event(&kind, &data)?,
+            Some(IpcFrame::AdminResult { state, data }) => return Ok((state, data)),
+            Some(IpcFrame::Error { message, .. }) => bail!("{message}"),
+            _ => bail!("Miyu core returned an invalid admin response"),
+        }
     }
 }
 

@@ -1,9 +1,11 @@
 mod anthropic;
+mod antigravity;
 mod builder;
 mod chat;
 mod chat_consume;
 mod claude_code;
-mod variants;
+mod cli_relay;
+mod codex;
 mod dsml;
 mod endpoints;
 mod errors;
@@ -11,15 +13,20 @@ mod lower;
 mod protocol;
 mod sse;
 mod tool_schema;
+mod variants;
 mod wire;
+mod zen_headers;
+pub(crate) use antigravity::remove_relay_files_now as remove_antigravity_relay_files;
+use antigravity::AntigravityRuntime;
 use claude_code::ClaudeCodeRuntime;
-pub(crate) use claude_code::forget_claude_code_session;
+pub(crate) use cli_relay::forget_relay_sessions;
+use codex::CodexRuntime;
 use dsml::*;
 use endpoints::*;
 use errors::*;
 use lower::*;
-use protocol::*;
 pub use protocol::ThinkingVariantOptions;
+use protocol::*;
 pub(crate) use protocol::{thinking_variant_options_for_model, ThinkingVariantPreferences};
 use sse::*;
 use tool_schema::*;
@@ -95,9 +102,17 @@ pub struct OpenAiCompatibleClient {
     request_scope: &'static str,
     /// claude-code 协议的运行时参数;端点池里没有该协议的端点时为 None。
     claude_code: Option<Arc<ClaudeCodeRuntime>>,
+    /// antigravity 协议的运行时参数;端点池里没有该协议的端点时为 None。
+    antigravity: Option<Arc<AntigravityRuntime>>,
+    /// codex 协议的运行时参数;端点池里没有该协议的端点时为 None。
+    codex: Option<Arc<CodexRuntime>>,
     /// 本会话是否 dev 模式(Agent 构造时置位),claude-code 的双四档工具
     /// 作用域(native_tools/miyu_tools)按它判定。
     claude_code_dev_mode: bool,
+    /// 会话标识,只给 opencode Zen 的 `x-opencode-session` 用(Agent 构造时
+    /// 由 `StateStore::session_id` 置位)。未置位时退回进程级的那个,见
+    /// `zen_headers`。
+    zen_session: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -113,9 +128,7 @@ enum ReasoningVisibility {
     Full,
 }
 
-impl OpenAiCompatibleClient {
-
-}
+impl OpenAiCompatibleClient {}
 
 #[cfg(test)]
 mod tests;

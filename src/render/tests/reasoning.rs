@@ -236,9 +236,7 @@ fn reasoning_phase_starts_as_neutral_waiting_without_content() {
     );
 
     renderer
-        .start_reasoning_phase(
-            std::time::Instant::now() - std::time::Duration::from_millis(1_200),
-        )
+        .start_reasoning_phase(std::time::Instant::now() - std::time::Duration::from_millis(1_200))
         .unwrap();
 
     assert!(renderer.reasoning_title.is_none());
@@ -299,7 +297,9 @@ fn batch_preparation_timer_spans_the_whole_window() {
     );
 
     // 工具真跑起来了 = 窗口结束，下一批重新计时。
-    renderer.write_tool_result("write_file", true, "ok").unwrap();
+    renderer
+        .write_tool_result("write_file", true, "ok")
+        .unwrap();
     renderer.write_tool_preparing("apply_patch", false).unwrap();
     assert_ne!(
         renderer.tool_preparing.expect("新一批的准备状态").1,
@@ -347,4 +347,40 @@ fn full_reasoning_waiting_phase_is_empty() {
     );
 
     assert!(renderer.waiting_phase_text().is_empty());
+}
+
+/// 等待计时器要在每次工具跑完后重新起算(08-26 用户点名"进度条计时是累计
+/// 的")。锚点是 ReasoningStart,而它每次 LLM 请求才发一次;claude-code 的工具
+/// 在同一条流里闭环执行,整轮只有一次请求,不重锚就会一路累加。
+#[test]
+fn wait_timer_reanchors_after_each_tool_result() {
+    let mut renderer = StreamRenderer::new(
+        ReasoningDisplayMode::Summary,
+        ToolCallDisplayMode::Summary,
+        true,
+        true,
+        10,
+    );
+    let started = std::time::Instant::now() - std::time::Duration::from_secs(30);
+    renderer.reasoning_started_at = Some(started);
+
+    renderer.reanchor_wait_timer();
+    let reanchored = renderer.reasoning_started_at.expect("锚点仍在");
+    assert!(
+        reanchored > started,
+        "工具跑完后计时应从此刻重新起算,而不是接着回合开头累加"
+    );
+    assert!(renderer.reasoning_elapsed.is_none());
+
+    // 有待落地的思考摘要时不动:那条要显示的是它自己那段的耗时。
+    renderer.reasoning_started_at = Some(started);
+    renderer.reasoning_title = Some("盘算".to_string());
+    renderer.reanchor_wait_timer();
+    assert_eq!(renderer.reasoning_started_at, Some(started));
+
+    // 没有在计时就不凭空造一个锚点。
+    renderer.reasoning_title = None;
+    renderer.reasoning_started_at = None;
+    renderer.reanchor_wait_timer();
+    assert!(renderer.reasoning_started_at.is_none());
 }

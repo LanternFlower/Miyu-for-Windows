@@ -1,11 +1,13 @@
 //! 真实感插件测试共用的 fixture。
 
-use crate::platforms::plugins::real_context::*;
 use crate::paths::MiyuPaths;
+use crate::platforms::plugins::real_context::*;
 use crate::platforms::PlatformAdapter;
 use crate::state::StateStore;
 
-pub(super) fn test_context(adapter: Arc<dyn PlatformAdapter>) -> (tempfile::TempDir, PlatformTurnContext) {
+pub(super) fn test_context(
+    adapter: Arc<dyn PlatformAdapter>,
+) -> (tempfile::TempDir, PlatformTurnContext) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     let paths = MiyuPaths {
@@ -41,6 +43,31 @@ pub(super) fn test_context(adapter: Arc<dyn PlatformAdapter>) -> (tempfile::Temp
     )
     .with_inbound_event(inbound_event());
     (temp, context)
+}
+
+/// 私聊版上下文。群聊那份走 real_context 全套,私聊只借用图片引用。
+pub(super) fn private_availability_context(
+    availability: BotSendAvailability,
+) -> (tempfile::TempDir, PlatformTurnContext) {
+    let (temp, context) = availability_context(availability);
+    let mut conversation = context.conversation.clone();
+    conversation.kind = ConversationKind::Private;
+    conversation.conversation_id = "30000".to_string();
+    let mut event = inbound_event();
+    event.conversation = conversation.clone();
+    let rebuilt = PlatformTurnContext::new(
+        conversation,
+        context.sender_id.clone(),
+        context.sender_display_name.clone(),
+        false,
+        context.config.clone(),
+        context.paths.clone(),
+        context.state_store.clone(),
+        context.adapter.clone(),
+        context.plugins.clone(),
+    )
+    .with_inbound_event(event);
+    (temp, rebuilt)
 }
 
 pub(super) fn availability_context(
@@ -146,5 +173,16 @@ impl PlatformAdapter for ReactionAdapter {
             ));
             Ok(())
         })
+    }
+}
+
+pub(super) fn empty_turn_input() -> PlatformTurnInput {
+    PlatformTurnInput {
+        content: "当前输入".to_string(),
+        memory_content: "当前输入".to_string(),
+        system_context: Vec::new(),
+        turn_system_context: Vec::new(),
+        context_images: Vec::new(),
+        context_files: Vec::new(),
     }
 }

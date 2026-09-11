@@ -1,0 +1,24 @@
+{
+  "name": "kb",
+  "display_name": "知识库写入",
+  "description": "Write knowledge-base files: create, update, or delete via patch (*** Begin Patch / Add File / Update File / Delete File / *** End Patch). Paths are knowledge-base relative. The knowledge base holds persistent reference documents, not Miyu's memories (those go through remember_fact). Read entries with read using kb: paths; search with search_knowledge_base.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "patchText": {
+        "type": "string",
+        "description": "Full patch text wrapped in *** Begin Patch / *** End Patch."
+      }
+    },
+    "required": [
+      "patchText"
+    ],
+    "additionalProperties": false
+  },
+  "permission": "writes",
+  "always_loaded": false,
+  "load_policy": "summary",
+  "groups": [
+    "knowledge-admin"
+  ]
+}

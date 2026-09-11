@@ -22,10 +22,16 @@ pub(in crate::llm::openai_compatible) enum ProviderProtocol {
     /// 本机 Claude Code CLI 中转:传输层是子进程 stream-json,不是 HTTP。
     /// 只能显式配置,`auto` 永远不会猜到这条线。
     ClaudeCode,
+    /// 本机 Antigravity CLI(`agy`)中转:同样是子进程 stream-json。
+    Antigravity,
+    /// 本机 OpenAI Codex CLI 中转:`codex exec --json` 的 JSONL。
+    Codex,
 }
 
 impl ProviderProtocol {
-    pub(in crate::llm::openai_compatible) fn from_provider(provider: &ProviderConfig) -> Result<Self> {
+    pub(in crate::llm::openai_compatible) fn from_provider(
+        provider: &ProviderConfig,
+    ) -> Result<Self> {
         match provider.protocol.trim().to_ascii_lowercase().as_str() {
             "" | "auto" => Ok(Self::Auto),
             "openai-chat" => Ok(Self::OpenAiChat),
@@ -34,6 +40,8 @@ impl ProviderProtocol {
                 Ok(Self::Anthropic)
             }
             "claude-code" | "claude-code-cli" => Ok(Self::ClaudeCode),
+            "antigravity" | "antigravity-cli" | "agy" => Ok(Self::Antigravity),
+            "codex" | "codex-cli" => Ok(Self::Codex),
             protocol => bail!("unsupported provider protocol: {protocol}"),
         }
     }
@@ -50,7 +58,67 @@ pub(in crate::llm::openai_compatible) fn provider_uses_claude_code(
     )
 }
 
-pub(in crate::llm::openai_compatible) fn effective_protocol(provider: &ProviderConfig, model: &str) -> Result<ProviderProtocol> {
+/// 该 provider 是否走 Antigravity CLI 中转。
+pub(in crate::llm::openai_compatible) fn provider_uses_antigravity(
+    provider: &ProviderConfig,
+) -> bool {
+    matches!(
+        ProviderProtocol::from_provider(provider),
+        Ok(ProviderProtocol::Antigravity)
+    )
+}
+
+/// 该 provider 是否走 Codex CLI 中转。
+pub(in crate::llm::openai_compatible) fn provider_uses_codex(provider: &ProviderConfig) -> bool {
+    matches!(
+        ProviderProtocol::from_provider(provider),
+        Ok(ProviderProtocol::Codex)
+    )
+}
+
+/// 三条本机 CLI 中转线的合称:端点装配(无 API key)、keepalive 分流按它豁免。
+pub(in crate::llm::openai_compatible) fn provider_uses_cli_relay(
+    provider: &ProviderConfig,
+) -> bool {
+    provider_uses_claude_code(provider)
+        || provider_uses_antigravity(provider)
+        || provider_uses_codex(provider)
+}
+
+/// Codex 的思考档:config 的 `model_reasoning_effort` 五档,所有模型通用。
+pub(in crate::llm::openai_compatible) fn codex_reasoning_variants(
+    _model: &str,
+) -> Vec<ReasoningVariant> {
+    ["minimal", "low", "medium", "high", "xhigh"]
+        .into_iter()
+        .map(|effort| ReasoningVariant {
+            id: effort.to_string(),
+            setting: ReasoningSetting::Effort(effort.to_string()),
+        })
+        .collect()
+}
+
+/// Antigravity 的思考档:CLI 的 `--effort` 三档。gemini/gpt-oss 模型名自带
+/// 档位后缀(-high/-low),只给 claude-* 模型暴露 effort。
+pub(in crate::llm::openai_compatible) fn antigravity_reasoning_variants(
+    model: &str,
+) -> Vec<ReasoningVariant> {
+    if !model.starts_with("claude-") {
+        return Vec::new();
+    }
+    ["low", "medium", "high"]
+        .into_iter()
+        .map(|effort| ReasoningVariant {
+            id: effort.to_string(),
+            setting: ReasoningSetting::Effort(effort.to_string()),
+        })
+        .collect()
+}
+
+pub(in crate::llm::openai_compatible) fn effective_protocol(
+    provider: &ProviderConfig,
+    model: &str,
+) -> Result<ProviderProtocol> {
     match ProviderProtocol::from_provider(provider)? {
         ProviderProtocol::Auto if provider_looks_anthropic(provider) => {
             Ok(ProviderProtocol::Anthropic)
@@ -79,7 +147,10 @@ pub(in crate::llm::openai_compatible) fn is_openrouter_provider(provider: &Provi
             .contains("openrouter.ai")
 }
 
-pub(in crate::llm::openai_compatible) fn uses_enable_thinking(provider: &ProviderConfig, info: &ModelReasoningInfo) -> bool {
+pub(in crate::llm::openai_compatible) fn uses_enable_thinking(
+    provider: &ProviderConfig,
+    info: &ModelReasoningInfo,
+) -> bool {
     info.provider_npm.as_deref() == Some("@ai-sdk/alibaba")
         || provider.id.to_ascii_lowercase().contains("alibaba")
         || provider
@@ -88,7 +159,10 @@ pub(in crate::llm::openai_compatible) fn uses_enable_thinking(provider: &Provide
             .contains("dashscope.aliyuncs.com")
 }
 
-pub(in crate::llm::openai_compatible) fn anthropic_reasoning_budget(max_tokens: u32, requested: u64) -> Option<u64> {
+pub(in crate::llm::openai_compatible) fn anthropic_reasoning_budget(
+    max_tokens: u32,
+    requested: u64,
+) -> Option<u64> {
     (max_tokens > 1024 && requested < u64::from(max_tokens)).then_some(requested)
 }
 
@@ -110,9 +184,18 @@ pub(in crate::llm::openai_compatible) fn claude_code_reasoning_variants(
         .collect()
 }
 
-pub(in crate::llm::openai_compatible) fn supported_reasoning_variants(provider: &ProviderConfig, model: &str) -> Vec<ReasoningVariant> {
+pub(in crate::llm::openai_compatible) fn supported_reasoning_variants(
+    provider: &ProviderConfig,
+    model: &str,
+) -> Vec<ReasoningVariant> {
     if provider_uses_claude_code(provider) {
         return claude_code_reasoning_variants(model);
+    }
+    if provider_uses_antigravity(provider) {
+        return antigravity_reasoning_variants(model);
+    }
+    if provider_uses_codex(provider) {
+        return codex_reasoning_variants(model);
     }
     let Some(info) = models_cache::reasoning_info(&provider.id, model) else {
         return Vec::new();
@@ -144,7 +227,9 @@ pub(in crate::llm::openai_compatible) fn reasoning_variant_supported_for_protoco
 ) -> bool {
     match protocol {
         // Claude Code 只认 `--effort` 的档位语义。
-        ProviderProtocol::ClaudeCode => matches!(variant.setting, ReasoningSetting::Effort(_)),
+        ProviderProtocol::ClaudeCode | ProviderProtocol::Antigravity | ProviderProtocol::Codex => {
+            matches!(variant.setting, ReasoningSetting::Effort(_))
+        }
         ProviderProtocol::OpenAiResponses => matches!(
             variant.setting,
             ReasoningSetting::Effort(_) | ReasoningSetting::Toggle(_) | ReasoningSetting::Disabled
@@ -173,7 +258,10 @@ pub(in crate::llm::openai_compatible) fn reasoning_variant_supported_for_protoco
     }
 }
 
-pub(in crate::llm::openai_compatible) fn thinking_variant_key(provider_id: &str, model: &str) -> String {
+pub(in crate::llm::openai_compatible) fn thinking_variant_key(
+    provider_id: &str,
+    model: &str,
+) -> String {
     format!("{provider_id}\t{model}")
 }
 
@@ -207,11 +295,15 @@ pub(crate) struct ThinkingVariantPreferences {
     pub(in crate::llm::openai_compatible) provider_renames: Vec<(String, String)>,
 }
 
-pub(in crate::llm::openai_compatible) fn thinking_variant_preferences_file(paths: &MiyuPaths) -> PathBuf {
+pub(in crate::llm::openai_compatible) fn thinking_variant_preferences_file(
+    paths: &MiyuPaths,
+) -> PathBuf {
     paths.state_dir.join("thinking-variants.json")
 }
 
-pub(in crate::llm::openai_compatible) fn lock_thinking_variant_preferences(paths: &MiyuPaths) -> Result<File> {
+pub(in crate::llm::openai_compatible) fn lock_thinking_variant_preferences(
+    paths: &MiyuPaths,
+) -> Result<File> {
     let lock_path = paths.state_dir.join("thinking-variants.lock");
     let lock = OpenOptions::new()
         .create(true)
@@ -233,7 +325,9 @@ pub(in crate::llm::openai_compatible) fn lock_thinking_variant_preferences(paths
     Ok(lock)
 }
 
-pub(in crate::llm::openai_compatible) fn load_thinking_variant_preferences(paths: &MiyuPaths) -> ThinkingVariantPreferences {
+pub(in crate::llm::openai_compatible) fn load_thinking_variant_preferences(
+    paths: &MiyuPaths,
+) -> ThinkingVariantPreferences {
     ThinkingVariantPreferences::load(paths)
 }
 
@@ -382,7 +476,9 @@ pub(crate) fn thinking_variant_options_for_model(
     }
 }
 
-pub(in crate::llm::openai_compatible) fn reasoning_visibility(config: &AppConfig) -> ReasoningVisibility {
+pub(in crate::llm::openai_compatible) fn reasoning_visibility(
+    config: &AppConfig,
+) -> ReasoningVisibility {
     match config
         .display
         .reasoning
@@ -400,7 +496,9 @@ pub(in crate::llm::openai_compatible) fn reasoning_summary_is_detailed(config: &
     config.display.reasoning.trim().eq_ignore_ascii_case("full")
 }
 
-pub(in crate::llm::openai_compatible) fn provider_looks_anthropic(provider: &ProviderConfig) -> bool {
+pub(in crate::llm::openai_compatible) fn provider_looks_anthropic(
+    provider: &ProviderConfig,
+) -> bool {
     let id = provider.id.to_ascii_lowercase();
     let display_name = provider.display_name.to_ascii_lowercase();
     let base_url = provider.base_url.to_ascii_lowercase();
@@ -412,7 +510,9 @@ pub(in crate::llm::openai_compatible) fn provider_looks_anthropic(provider: &Pro
         || base_url.contains("anthropic.com/v1")
 }
 
-pub(in crate::llm::openai_compatible) fn provider_looks_claude_related(provider: &ProviderConfig) -> bool {
+pub(in crate::llm::openai_compatible) fn provider_looks_claude_related(
+    provider: &ProviderConfig,
+) -> bool {
     let id = provider.id.to_ascii_lowercase();
     let display_name = provider.display_name.to_ascii_lowercase();
     let base_url = provider.base_url.to_ascii_lowercase();
@@ -424,7 +524,9 @@ pub(in crate::llm::openai_compatible) fn provider_looks_claude_related(provider:
         || base_url.contains("claude")
 }
 
-pub(in crate::llm::openai_compatible) fn claude_protocol_hint(provider: &ProviderConfig) -> &'static str {
+pub(in crate::llm::openai_compatible) fn claude_protocol_hint(
+    provider: &ProviderConfig,
+) -> &'static str {
     let protocol = provider.protocol.trim();
     if (protocol.is_empty()
         || protocol.eq_ignore_ascii_case("auto")
@@ -447,7 +549,9 @@ pub(in crate::llm::openai_compatible) fn anthropic_thinking_config() -> Value {
 /// only to providers known to understand it and strip it everywhere else, so
 /// the transport copy stays byte-identical to the pre-A17 shape on unrelated
 /// endpoints (prompt-cache prefix preserved).
-pub(in crate::llm::openai_compatible) fn provider_accepts_reasoning_content(provider: &ProviderConfig) -> bool {
+pub(in crate::llm::openai_compatible) fn provider_accepts_reasoning_content(
+    provider: &ProviderConfig,
+) -> bool {
     let haystack = format!(
         "{} {} {}",
         provider.id.to_ascii_lowercase(),

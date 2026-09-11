@@ -1,8 +1,8 @@
 //! 转发模式与图片模式。
 
-use crate::platforms::plugins::reply_processor::*;
 use super::shared::*;
-use crate::platforms::{ResponseTarget};
+use crate::platforms::plugins::reply_processor::*;
+use crate::platforms::ResponseTarget;
 use std::path::PathBuf;
 
 #[test]
@@ -158,8 +158,7 @@ async fn command_output_is_processed_like_a_model_reply() {
     set_plugin_setting(&mut context, "mode", json!("forward"));
     let plugin = ReplyProcessorPlugin::new().unwrap();
 
-    let long_listing =
-        OutboundMessage::markdown(OutboundOrigin::Command, "x".repeat(301));
+    let long_listing = OutboundMessage::markdown(OutboundOrigin::Command, "x".repeat(301));
     let converted = plugin.before_send(&context, long_listing).await.unwrap();
     assert!(matches!(converted.primary.body, OutboundBody::Forward(_)));
 

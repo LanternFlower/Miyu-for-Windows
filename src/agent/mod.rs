@@ -6,6 +6,7 @@ mod images;
 mod input;
 mod journal;
 mod prompt;
+pub(crate) use prompt::prompt_strip_tagged;
 mod pruning;
 mod reasoning;
 mod reports;
@@ -24,6 +25,8 @@ pub(crate) use control::{
     AgentMode, AgentTurnControl, QueueIngressBarrier, QueueIngressReservation, RedoPromptInput,
     TurnSupersedeSignal,
 };
+// 平台侧的 PDF 工具要问同一个能力判定,不能自己另写一份"池吃不吃 PDF"。
+pub(crate) use images::active_text_pool_supports_pdf;
 use images::*;
 use journal::*;
 use prompt::*;
@@ -159,6 +162,9 @@ pub enum AgentEvent {
         round: Box<Usage>,
         turn: TurnTokens,
         estimated: bool,
+        /// 刚结束这次请求实际应答的端点,供日志/前端标注(08-24 需求)。
+        provider_id: Option<String>,
+        model: Option<String>,
     },
     SpinnerTick,
     CompactStart,
@@ -226,6 +232,13 @@ pub struct Agent {
     /// rendered as a tail system message after the user turn. Kept out of the
     /// system prompt so the stable prefix stays byte-identical across turns.
     turn_system_context: Vec<String>,
+    /// 程序驱动 CLI 的「整体替换提示词」。设了就顶掉人格/模式提示词与
+    /// 属主主机环境块(风格锁等人格附件对纯后端用法是噪音);运行时追加段
+    /// 与记忆前言照旧。刻意不进指纹:否则每个带覆盖的回合都翻转指纹文件。
+    system_prompt_override: Option<String>,
+    /// 程序驱动 CLI 的「本回合上下文窗口」。走字段而不改 config,免得冲刷
+    /// 以整份 config 为键的 TurnResourceCache。
+    context_window_override: Option<usize>,
     /// Raw user input snapshot taken before platform plugins wrapped the turn
     /// content (instruction boilerplate, group history, …). The memory diary
     /// records this instead of the wrapped prompt — the minimal C10 "记忆只读
@@ -261,10 +274,8 @@ pub struct Agent {
     /// `request_messages`,永不进 `messages`,因此不化石化、不落库——
     /// 见 persona_hint 模块头注释。
     persona_reminder: Option<String>,
-    /// 重复调用链(advisory 防死循环,见 tools::repeat_reminder 模块头)。
     /// 人类新输入(新回合/排队插话)重置;注入的提醒只进本轮工作消息,
     /// 不进化石。
-    repeat_chain: crate::tools::repeat_reminder::RepeatChain,
     /// 预设对话(begin_dialogs):system 之后、真实历史之前的 user/assistant
     /// 示例对,每请求注入、永不落库。构造时从当前人格 scope 的
     /// dialogs/<scope>.md 加载。
@@ -295,8 +306,6 @@ pub struct Agent {
     /// window instantly — compacting harder won't help ("thrashing").
     last_compact_max_seq: std::sync::atomic::AtomicI64,
     rapid_compacts: std::sync::atomic::AtomicU32,
-    /// One-shot "context is getting large" notice at the soft watermark.
-    soft_notice_sent: std::sync::atomic::AtomicBool,
     /// SpinnerTick 的发射周期。终端直连形态用 40ms 驱动动画；daemon 内
     /// 的回合（平台/WebUI/子代理）tick 出不了进程（event_map 丢弃），
     /// 唯一作用是给 journal 尾部冲刷兜底，200ms 足够——25Hz 定时器在
@@ -413,6 +422,7 @@ impl Agent {
                 source: self.usage_source(),
                 provider: compact.provider_id.as_deref(),
                 model: None,
+                kind: None,
             },
         )?;
         Ok(Some(ChatResult {
@@ -525,6 +535,7 @@ impl Agent {
                 source: self.usage_source(),
                 provider: compact.provider_id.as_deref(),
                 model: None,
+                kind: None,
             },
         )?;
         Ok(Some(ChatResult {

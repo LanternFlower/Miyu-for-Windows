@@ -1,8 +1,8 @@
 //! 存取、检索与重置。
 
-use crate::memory::*;
-use crate::config::AppConfig;
 use super::shared::*;
+use crate::config::AppConfig;
+use crate::memory::*;
 
 #[test]
 fn evicted_search_is_indexed_and_can_be_narrowed_by_time() {

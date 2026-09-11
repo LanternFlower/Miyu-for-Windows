@@ -103,7 +103,7 @@ pub fn register_authoring(registry: &mut ToolRegistry, config: AppConfig, paths:
                     "scope": {
                         "type": "string",
                         "enum": ["global", "persona"],
-                        "description": "global is available to every persona; persona belongs to the current persona. Required for update/delete, defaults to global for create."
+                        "description": "global is available to every persona; persona belongs to the current persona. Required for update/delete; for create it defaults to persona (choose global only to share the skill with every persona)."
                     },
                     "draft_id": {
                         "type": "string",
@@ -182,11 +182,6 @@ fn register_load_skill(
     ));
 }
 
-
-
-
-
-
 fn load_skill(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Result<String> {
     let name = required_string(&args, "name")?;
     let loaded = skills::load(&name, config, paths)?;
@@ -253,7 +248,13 @@ fn skill_metadata_xml(metadata: &crate::skills::SkillMetadata) -> String {
 fn create_skill(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Result<String> {
     let name = required_string(&args, "name")?;
     let description = required_string(&args, "description")?;
-    let scope = SkillScope::parse(args.get("scope").and_then(Value::as_str))?;
+    // 创建默认落当前人格,不再默认 global(09-01)。在某人格对话里学会/创作的
+    // 技能默认属于那个人格,漏给所有人格要显式选 global——尤其自动学习的技能,
+    // 默认 global 会让 QQ 线学的习惯出现在别人的自定义人格里。
+    let scope = match args.get("scope").and_then(Value::as_str) {
+        Some(value) if !value.trim().is_empty() => SkillScope::parse(Some(value))?,
+        _ => SkillScope::Persona,
+    };
     let draft = skills::create_draft(config, paths, &name, &description, scope)?;
     Ok(serde_json::to_string_pretty(&json!({
         "ok": true,
@@ -316,11 +317,13 @@ fn available_skills_xml(entries: &[SkillEntry]) -> String {
     let items = entries
         .iter()
         .map(|entry| {
+            // 08-21 文风批:条目单行化——五行 XML 壳对每技能是纯结构开销,
+            // QQ 会话随 load_skill 描述每请求常驻。
             format!(
-                "  <skill>\n    <name>{}</name>\n    <description>{}</description>\n    <source>{}</source>\n  </skill>",
+                "  <skill name=\"{}\" source=\"{}\">{}</skill>",
                 xml_escape(&entry.metadata.name),
-                xml_escape(&entry.metadata.description),
                 entry.source.as_str(),
+                xml_escape(&entry.metadata.description),
             )
         })
         .collect::<Vec<_>>()
@@ -367,8 +370,8 @@ mod tests {
         let mut registry = ToolRegistry::new();
         register_skills(&mut registry, &config, &paths).unwrap();
         let description = &registry.get("load_skill").unwrap().description;
-        assert!(description.contains("<name>skill-creator</name>"));
-        assert!(description.contains("<source>built_in</source>"));
+        assert!(description.contains("name=\"skill-creator\""));
+        assert!(description.contains("source=\"built_in\""));
     }
 
     #[test]
@@ -428,7 +431,7 @@ mod tests {
             .get("load_skill")
             .unwrap()
             .description
-            .contains("<name>new-skill</name>"));
+            .contains("name=\"new-skill\""));
         assert!(!refresh_skills(&mut registry, &config, &paths).unwrap());
     }
 
@@ -457,9 +460,7 @@ mod tests {
             .find(|definition| definition.function.name == "load_skill")
             .expect("load_skill 应当在 stub 目录里");
         assert!(
-            stub.function
-                .description
-                .contains("<name>skill-creator</name>"),
+            stub.function.description.contains("name=\"skill-creator\""),
             "stub 里看不到技能名——模型只能猜"
         );
         assert_eq!(

@@ -1,7 +1,7 @@
 {
   "name": "recall_memories",
   "display_name": "召回记忆",
-  "description": "Search remembered knowledge points and past events; scope=episode searches only diary-style past events.\nTruncated entries in associative memory carry an id; use recall_memories id=<id> to fetch the full text. Use include_forgotten to include forgotten memories when needed. Read-only; does not change memory state.",
+  "description": "Search remembered knowledge and past events. Fetch full text with recall_memories id=<id>. Use include_forgotten to include forgotten memories when needed.",
   "parameters": {
     "type": "object",
     "properties": {

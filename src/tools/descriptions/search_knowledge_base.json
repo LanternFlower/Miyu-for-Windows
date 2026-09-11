@@ -1,7 +1,7 @@
 {
   "name": "search_knowledge_base",
   "display_name": "搜索知识库",
-  "description": "Search the local knowledge base: by=content searches file contents (default); by=name finds files by file name, directory, extension, or path fragment.\nContent search returns paths plus verbatim snippets; when a snippet is not enough, read the full file with read_knowledge_base_file. Name search returns relative paths. Only mention paths when useful or when the user asks.",
+  "description": "Search the local knowledge base. by=content (default) searches file contents; by=name finds files by name, directory, extension, or path fragment. Content search returns paths plus snippets. When snippets are not enough, read the file with read using its kb: path. Mention paths only when useful or asked.",
   "parameters": {
     "type": "object",
     "properties": {

@@ -11,12 +11,18 @@ use crate::memory::{MemoryOrganizer, MemoryStore};
 use crate::paths::MiyuPaths;
 mod args;
 mod daemon_cmds;
+pub(crate) mod exit_code;
 mod inline_picker;
 mod localize;
+mod mcp_schema;
 mod mcp_serve;
+mod output;
+mod session_cmds;
 mod setup;
 mod stdin_input;
+mod stdio;
 mod tool_cmds;
+mod turn_request;
 mod usage_view;
 use args::*;
 use daemon_cmds::*;
@@ -30,6 +36,8 @@ use usage_view::*;
 mod alarm_worker;
 mod daemon_log;
 mod data_cmds;
+mod embed_cmds;
+use embed_cmds::*;
 mod footer;
 mod migrate_cmds;
 mod model_cmds;
@@ -37,6 +45,7 @@ mod pop_cmds;
 mod repl;
 mod select;
 mod shell_bridge;
+mod stt;
 
 // 日志读取与格式化已拆到 daemon_log。
 use alarm_worker::*;
@@ -48,6 +57,7 @@ use model_cmds::*;
 use pop_cmds::*;
 use select::*;
 use shell_bridge::*;
+use stt::*;
 #[cfg(test)]
 mod tests;
 
@@ -64,8 +74,8 @@ use repl::live_turn::{
 };
 use repl::remote::{run_remote_repl, try_run_remote_chat};
 use repl::tail::{
-    cursor_col_or, cursor_row_or, synchronized_terminal_update, LiveRawMode, LiveReplTail,
-    TerminalFrameLayout, TerminalFrameTracker,
+    cursor_col_or, cursor_row_or, synchronized_terminal_update, FrameScroll, LiveRawMode,
+    LiveReplTail, TerminalFrameLayout, TerminalFrameTracker,
 };
 use repl::wake::follow_wake_run;
 use repl::width::{truncate_visible_width, visible_width, wrap_visible_width};
@@ -172,8 +182,11 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
 
     // Captured before `cli.command` is moved out: one-shot entry points below
     // need them to pick the session their turn lands in.
-    let session_arg = cli.session.clone();
-    let continue_session = cli.continue_session;
+    let session_arg = cli.turn.session.clone();
+    let continue_session = cli.turn.continue_session;
+    let root_turn = cli.turn.clone();
+    let plain = cli.stdout;
+    let root_stdin = cli.stdin;
 
     match cli.command {
         Some(Command::AlarmWorker(args)) => run_alarm_worker(args),
@@ -194,18 +207,24 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
         }
         Some(Command::Tool(args)) => run_tool(&paths, mode, args).await,
         Some(Command::Ask(args)) => {
-            let session =
-                one_shot_session(&paths, session_arg.as_deref(), continue_session).await?;
-            run_chat_with_options(
+            let options = root_turn.merged(args.turn);
+            run_one_shot(
                 &paths,
+                options,
                 join_message(args.message),
-                None,
-                cli.stdout,
+                root_stdin || args.read_stdin,
+                plain,
                 mode,
-                session,
             )
             .await
         }
+        Some(Command::Stt) => {
+            let session =
+                one_shot_session(&paths, session_arg.as_deref(), continue_session).await?;
+            run_stt_once(&paths, cli.stdout, mode, session).await
+        }
+        Some(Command::Listen) => run_listen(&paths).await,
+        Some(Command::Voice(args)) => run_voice_command(&paths, args.command).await,
         Some(Command::Init) => run_init(&paths, InitKind::Explicit),
         Some(Command::Paths) => {
             paths.print();
@@ -254,19 +273,63 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
         Some(Command::RemoveShellHook) => remove_shell_hooks(&paths),
         Some(Command::History(args)) => run_history(&paths, args),
         Some(Command::Pop(args)) => {
+            if let Some(target) = args.session.as_deref().or(session_arg.as_deref()) {
+                let count = args.count.ok_or_else(|| {
+                    exit_code::usage_error(t(
+                        "--session pop needs a count",
+                        "按会话 pop 需要给数量",
+                    ))
+                })?;
+                return session_cmds::run_session_command(
+                    &paths,
+                    SessionCommand::Pop {
+                        target: target.to_string(),
+                        count,
+                    },
+                    plain,
+                )
+                .await;
+            }
             if ipc::daemon_info(&paths).await.is_some() {
                 run_pop_via_daemon(&paths, args).await
             } else {
                 run_pop(&paths, args)
             }
         }
+        Some(Command::Compact(args)) => match args.session.as_deref().or(session_arg.as_deref()) {
+            Some(target) => {
+                let entry = turn_request::resolve_managed_session(&paths, target).await?;
+                let name = entry.name.clone();
+                session_cmds::compact_session(
+                    &paths,
+                    crate::ipc::SessionRef::Id { id: entry.id },
+                    Some(&name),
+                    plain,
+                )
+                .await
+            }
+            None => {
+                session_cmds::compact_session(&paths, crate::ipc::SessionRef::Current, None, plain)
+                    .await
+            }
+        },
         Some(Command::Kb(args)) => run_kb(&paths, args).await,
+        Some(Command::Embed(args)) => run_embed(&paths, args).await,
         Some(Command::UpdateDefaultKb) => run_update_default_kb(&paths).await,
         Some(Command::Memory(args)) => run_memory(&paths, args),
         Some(Command::Skills(args)) => run_skills(&paths, args),
         Some(Command::ResetMemoryCli) => run_reset_memory_command(&paths).await,
-        Some(Command::Reset) => {
-            if ipc::daemon_info(&paths).await.is_some() {
+        Some(Command::Reset(args)) => {
+            if let Some(target) = args.session.as_deref().or(session_arg.as_deref()) {
+                let entry = turn_request::resolve_managed_session(&paths, target).await?;
+                send_ipc_admin(
+                    &paths,
+                    IpcCommand::ResetConversation {
+                        target: crate::ipc::SessionRef::Id { id: entry.id },
+                    },
+                )
+                .await?;
+            } else if ipc::daemon_info(&paths).await.is_some() {
                 send_ipc_admin(
                     &paths,
                     IpcCommand::ResetConversation {
@@ -283,6 +346,10 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
         Some(Command::Wipe(args)) => run_wipe(&paths, args.yes).await,
         Some(Command::ToolCallCmd(args)) => run_tool_call(&paths, args).await,
         Some(Command::McpServe) => run_mcp_serve(&paths).await,
+        Some(Command::Session(args)) => {
+            session_cmds::run_session_command(&paths, args.command, plain).await
+        }
+        Some(Command::Stdio) => stdio::run_stdio(&paths).await,
         Some(Command::Normal) => run_repl(&paths, AgentMode::Normal).await,
         Some(Command::Dev) => run_repl(&paths, AgentMode::Dev).await,
         Some(Command::Web(args)) => run_web(&paths, args).await,
@@ -320,12 +387,113 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                     ),
                 }
             } else {
-                let session =
-                    one_shot_session(&paths, session_arg.as_deref(), continue_session).await?;
-                run_chat_with_options(&paths, message, None, cli.stdout, mode, session).await
+                run_one_shot(&paths, root_turn, message, root_stdin, plain, mode).await
             }
         }
     }
+}
+
+/// 一次性回合的总入口(`miyu ask …` 与裸 `miyu "…"`)。
+///
+/// 没用到任何程序驱动特性时走原路(直连/阅后即焚/终端渲染),行为一字不改;
+/// 带了 `--create/--mode/--model/…` 或 JSON 输出时走新路:会话由
+/// `turn_request` 定,覆盖随 StartTurn 走,需要 daemon。
+async fn run_one_shot(
+    paths: &MiyuPaths,
+    options: TurnOptions,
+    message: String,
+    read_stdin: bool,
+    plain: bool,
+    mode: AgentMode,
+) -> Result<()> {
+    let message = if read_stdin {
+        append_stdin_to_eof(message)?
+    } else {
+        append_stdin_if_piped(message).await
+    };
+    let format = if plain {
+        OutputFormat::Text
+    } else {
+        options.output_format.unwrap_or_default()
+    };
+    let plain = plain || options.quiet;
+    let overrides = turn_request::build_overrides(paths, &options)?;
+    let programmatic = options.create
+        || options.mode.is_some()
+        || overrides.is_some()
+        || format != OutputFormat::Text
+        || !options.image.is_empty()
+        || options.cwd.is_some()
+        || options.timeout.is_some();
+    if !programmatic {
+        let session =
+            one_shot_session(paths, options.session.as_deref(), options.continue_session).await?;
+        return run_chat_with_options(paths, message, None, plain, mode, session, None).await;
+    }
+    if message.is_empty() {
+        return Err(exit_code::usage_error(t(
+            "a message is required",
+            "需要给一条消息",
+        )));
+    }
+    let session = turn_request::resolve_turn_session(paths, &options).await?;
+    let outcome = match format {
+        OutputFormat::Text => {
+            if let Some(cwd) = options.cwd.as_deref() {
+                std::env::set_current_dir(cwd).map_err(|error| {
+                    exit_code::usage_error(format!(
+                        "{}: {} ({error})",
+                        t("cannot enter --cwd", "进不去 --cwd 目录"),
+                        cwd.display()
+                    ))
+                })?;
+            }
+            let images = options
+                .image
+                .iter()
+                .map(|path| {
+                    Some(crate::clipboard::PastedImage::Path(
+                        path.to_string_lossy().into_owned(),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            let turn_session = match session.session_id.clone() {
+                Some(session_id) => TurnSession::Explicit(session_id),
+                None => TurnSession::Current,
+            };
+            repl::direct::run_chat_with_images_and_options(
+                paths,
+                message,
+                images,
+                plain,
+                mode,
+                turn_session,
+                overrides,
+            )
+            .await
+        }
+        OutputFormat::Json | OutputFormat::StreamJson => {
+            output::run_json_one_shot(
+                paths,
+                output::turn_client::TurnRequest {
+                    content: message,
+                    session_id: session.session_id.clone(),
+                    images: options.image.clone(),
+                    cwd: options.cwd.clone(),
+                    overrides,
+                    timeout: options.timeout.map(Duration::from_secs),
+                },
+                format,
+            )
+            .await
+        }
+    };
+    if session.ephemeral {
+        if let Some(session_id) = session.session_id.as_deref() {
+            discard_ephemeral_session(paths, session_id).await;
+        }
+    }
+    outcome
 }
 
 async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {

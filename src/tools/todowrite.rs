@@ -21,7 +21,10 @@ pub type TodoList = Arc<Mutex<Vec<Todo>>>;
 // 会话加载/回存,纯函数 todo_write/todo_update 与其测试原样保留。
 
 fn todos_path(paths: &MiyuPaths, session: &str) -> PathBuf {
-    paths.state_dir.join("todos").join(format!("{session}.json"))
+    paths
+        .state_dir
+        .join("todos")
+        .join(format!("{session}.json"))
 }
 
 /// 某个会话当前的待办清单。
@@ -89,19 +92,19 @@ fn run_scoped(
     paths: &MiyuPaths,
     args: Value,
     apply: fn(Value, TodoList) -> Result<String>,
-) -> Result<String> {
+) -> Result<(String, Vec<Todo>)> {
     let session = session_for_call()?;
     let todos: TodoList = Arc::new(Mutex::new(load_todos(paths, &session)));
     let output = apply(args, Arc::clone(&todos))?;
     let list = todos.lock().expect("todo state lock").clone();
     save_todos(paths, &session, &list)?;
-    Ok(output)
+    Ok((output, list))
 }
 
 /// todowrite + todoupdate 合并(08-17):同一份清单的整表替换与增量修改。
 /// 给了 updates 就走增量,给了 todos 就整表替换。
 pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
-    registry.register(ToolSpec::new(
+    registry.register(ToolSpec::new_with_progress(
         "todowrite",
         "Maintain the structured task list for the current session. Pass todos to create or replace the whole list; pass updates to apply small atomic changes (add, update, remove, clear) without resending everything. Exactly one of the two.",
         json!({
@@ -166,17 +169,28 @@ pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
             },
             "additionalProperties": false
         }),
-        move |args| {
+        move |args, progress| {
             let paths = paths.clone();
             async move {
-                if args.get("updates").is_some() {
-                    run_scoped(&paths, args, todo_update)
+                let apply = if args.get("updates").is_some() {
+                    todo_update
                 } else {
-                    run_scoped(&paths, args, todo_write)
-                }
+                    todo_write
+                };
+                let (output, list) = run_scoped(&paths, args, apply)?;
+                // 表格数据走 progress 侧信道给 REPL/WebUI 画,不再进模型字节
+                // (08-21 token-diet:整表回显是 65% 结构开销的纯浪费)。
+                progress.report(format!("__todo_table__{}", todo_table_payload(&list)));
+                Ok(output)
             }
         },
     ).writes());
+}
+
+/// REPL `write_todo_table` 与 WebUI 面板共用的表格载荷,形状与旧版工具输出
+/// 的 `todos` 字段一致,渲染端无需区分新旧。
+fn todo_table_payload(list: &[Todo]) -> String {
+    json!({ "todos": list }).to_string()
 }
 
 fn todo_write(args: Value, todos: TodoList) -> Result<String> {
@@ -215,33 +229,11 @@ fn todo_write(args: Value, todos: TodoList) -> Result<String> {
         });
     }
 
-    let pending_count = list
-        .iter()
-        .filter(|t| t.status != "completed" && t.status != "cancelled")
-        .count();
-
     let mut state = todos.lock().expect("todo state lock");
     *state = list.clone();
     drop(state);
 
-    let display: Vec<Value> = list
-        .iter()
-        .map(|t| {
-            json!({
-                "content": t.content,
-                "status": t.status,
-                "priority": t.priority,
-            })
-        })
-        .collect();
-
-    Ok(serde_json::to_string_pretty(&json!({
-        "ok": true,
-        "operation": "write",
-        "pending_count": pending_count,
-        "total_count": list.len(),
-        "todos": display,
-    }))?)
+    todo_output("write", &list)
 }
 
 fn todo_update(args: Value, todos: TodoList) -> Result<String> {
@@ -370,28 +362,31 @@ fn validate_priority(priority: &str) -> Result<()> {
     }
 }
 
+/// 给模型的返回体:一行文本确认。整表不回显——模型刚提交的清单它自己知道,
+/// 渲染端的表格另走 `__todo_table__` progress 与 `GET /api/sessions/{id}/todos`。
+/// 旧 JSON 形态仍被 REPL/WebUI 解析器兼容(历史回合逐字节回放)。
 fn todo_output(operation: &str, list: &[Todo]) -> Result<String> {
-    let pending_count = list
-        .iter()
-        .filter(|t| t.status != "completed" && t.status != "cancelled")
-        .count();
-    let display: Vec<Value> = list
-        .iter()
-        .map(|t| {
-            json!({
-                "content": t.content,
-                "status": t.status,
-                "priority": t.priority,
-            })
-        })
-        .collect();
-    Ok(serde_json::to_string_pretty(&json!({
-        "ok": true,
-        "operation": operation,
-        "pending_count": pending_count,
-        "total_count": list.len(),
-        "todos": display,
-    }))?)
+    let verb = if operation == "write" {
+        "replaced"
+    } else {
+        "updated"
+    };
+    let mut parts = Vec::new();
+    for status in ["in_progress", "pending", "completed", "cancelled"] {
+        let count = list.iter().filter(|t| t.status == status).count();
+        if count > 0 {
+            parts.push(format!("{count} {status}"));
+        }
+    }
+    let breakdown = if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" — {}", parts.join(", "))
+    };
+    Ok(format!(
+        "todo list {verb}: {} item(s){breakdown}",
+        list.len()
+    ))
 }
 
 #[cfg(test)]
@@ -412,10 +407,10 @@ mod tests {
             Arc::clone(&todos),
         )
         .unwrap();
-        let data: Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(data["ok"], true);
-        assert_eq!(data["total_count"], 3);
-        assert_eq!(data["pending_count"], 2);
+        assert_eq!(
+            result,
+            "todo list replaced: 3 item(s) — 1 in_progress, 1 pending, 1 completed"
+        );
         assert_eq!(todos.lock().unwrap().len(), 3);
     }
 
@@ -427,9 +422,7 @@ mod tests {
             priority: "low".into(),
         }]));
         let result = todo_write(json!({"todos": []}), Arc::clone(&todos)).unwrap();
-        let data: Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(data["total_count"], 0);
-        assert_eq!(data["pending_count"], 0);
+        assert_eq!(result, "todo list replaced: 0 item(s)");
         assert!(todos.lock().unwrap().is_empty());
     }
 
@@ -462,8 +455,10 @@ mod tests {
             Arc::clone(&todos),
         )
         .unwrap();
-        let data: Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(data["operation"], "update");
+        assert!(
+            result.starts_with("todo list updated: 2 item(s)"),
+            "{result}"
+        );
         let list = todos.lock().unwrap();
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].content, "task A");

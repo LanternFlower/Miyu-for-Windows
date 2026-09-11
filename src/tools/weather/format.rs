@@ -356,7 +356,10 @@ pub(in crate::tools::weather) fn format_elevation_result(
     }))?)
 }
 
-pub(in crate::tools::weather) fn value_at<T: Copy>(values: Option<&[T]>, index: usize) -> Option<T> {
+pub(in crate::tools::weather) fn value_at<T: Copy>(
+    values: Option<&[T]>,
+    index: usize,
+) -> Option<T> {
     values.and_then(|values| values.get(index).copied())
 }
 

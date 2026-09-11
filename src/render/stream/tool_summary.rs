@@ -89,6 +89,7 @@ impl StreamRenderer {
         }
         self.stop_waiting()?;
         self.tool_preparing_since = None;
+        self.reanchor_wait_timer();
         self.end_subagent_stream_line()?;
         let status = if ok { "ok" } else { "err" };
         let elapsed = self.finish_subagent_timer(name);
@@ -114,8 +115,13 @@ impl StreamRenderer {
         if name == "todowrite" && ok {
             self.release_transient_output()?;
             let stdout = &mut self.output;
-            if write_todo_table(stdout, output)? {
+            // 旧 JSON 输出(历史回放)在这里画表;新文本输出的表格已由
+            // __todo_table__ progress 画过,这里只收掉状态行不再重复展示。
+            let rendered = write_todo_table(stdout, output)?;
+            if rendered {
                 stdout.flush()?;
+            }
+            if rendered || output.trim_start().starts_with("todo list ") {
                 if self.tool_call_mode == ToolCallDisplayMode::Summary {
                     let stats = self.tool_stats_entry(name);
                     stats.ok += 1;
@@ -178,6 +184,16 @@ impl StreamRenderer {
             self.release_transient_output()?;
             let stdout = &mut self.output;
             if write_patch_result(stdout, json)? {
+                stdout.flush()?;
+            }
+            return Ok(());
+        }
+        // 08-21 token-diet:todowrite 不再向模型回显整表,表格数据改由
+        // progress 侧信道送达,载荷形状与旧工具输出一致。
+        if let Some(json) = message.strip_prefix("__todo_table__") {
+            self.release_transient_output()?;
+            let stdout = &mut self.output;
+            if write_todo_table(stdout, json)? {
                 stdout.flush()?;
             }
             return Ok(());
@@ -448,7 +464,12 @@ impl StreamRenderer {
     /// header carries [`wait_spinner::BLOCK_MARKER`] so the spinner animates
     /// it, and a settled tool freezes into its final `✓` stats in place. The
     /// committed variant (`live == false`) prefers `final_progress` with `✓`.
-    pub(crate) fn tool_block_lines(&self, name: &str, stats: &ToolStats, live: bool) -> Vec<String> {
+    pub(crate) fn tool_block_lines(
+        &self,
+        name: &str,
+        stats: &ToolStats,
+        live: bool,
+    ) -> Vec<String> {
         let display = self.display_tool_name(name);
         let mut header = tool_status_text(&display, stats, is_subagent_tool(name));
         if inline_tool_subject(name) {

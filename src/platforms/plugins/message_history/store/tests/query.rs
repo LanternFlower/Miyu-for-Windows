@@ -1,7 +1,7 @@
 //! 查询：最近、搜索、活跃度、分页。
 
-use crate::platforms::plugins::message_history::store::*;
 use super::shared::*;
+use crate::platforms::plugins::message_history::store::*;
 
 #[tokio::test]
 async fn activity_ranking_is_scoped_stable_and_counts_recalled_messages() {

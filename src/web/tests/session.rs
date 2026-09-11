@@ -59,6 +59,7 @@ fn persona_asset_cleanup_normalizes_managed_reference_paths() {
                 board_image_path: None,
                 board_title: None,
                 board_subtitle: None,
+                composer_placeholder: None,
                 starter_prompts: None,
                 original_name: None,
             }],
@@ -261,6 +262,7 @@ fn persona_file_mutations_include_avatar_sidecar() {
         board_image_path: None,
         board_title: None,
         board_subtitle: None,
+        composer_placeholder: None,
         starter_prompts: None,
         original_name: None,
     }];
@@ -288,6 +290,7 @@ fn persona_identity_uses_default_and_custom_values() {
     let default = persona_identity(&config, &prompts);
     assert_eq!(default.name, "Miyu");
     assert_eq!(default.avatar_url.as_deref(), Some("/assets/miyu-logo.png"));
+    assert_eq!(default.composer_placeholder, "给 Miyu 发消息");
 
     config.prompt.active_persona = "Alice.md".to_string();
     let prompts = PromptDocuments {
@@ -298,6 +301,7 @@ fn persona_identity_uses_default_and_custom_values() {
             board_image_path: None,
             board_title: None,
             board_subtitle: None,
+            composer_placeholder: None,
             starter_prompts: None,
             original_name: None,
         }],
@@ -306,6 +310,31 @@ fn persona_identity_uses_default_and_custom_values() {
     let custom = persona_identity(&config, &prompts);
     assert_eq!(custom.name, "Alice");
     assert_eq!(custom.avatar_url.as_deref(), Some("/api/persona/avatar"));
+    // 没配就跟着人格名走——此前这句写死在 index.html 里,改了人格名输入框
+    // 还留着 "给 Miyu 发消息"。
+    assert_eq!(custom.composer_placeholder, "给 Alice 发消息");
+
+    // 配了就用配的;空白串不算配置(与看板文案同一把尺)。
+    let with_placeholder = |value: Option<&str>| {
+        let prompts = PromptDocuments {
+            personas: vec![PromptDocument {
+                name: "Alice.md".to_string(),
+                content: "prompt".to_string(),
+                avatar_path: None,
+                board_image_path: None,
+                board_title: None,
+                board_subtitle: None,
+                composer_placeholder: value.map(str::to_string),
+                starter_prompts: None,
+                original_name: None,
+            }],
+            identities: Vec::new(),
+        };
+        persona_identity(&config, &prompts).composer_placeholder
+    };
+    assert_eq!(with_placeholder(Some("说点什么…")), "说点什么…");
+    assert_eq!(with_placeholder(Some("   ")), "给 Alice 发消息");
+    assert_eq!(with_placeholder(None), "给 Alice 发消息");
 }
 
 #[test]
@@ -461,6 +490,7 @@ fn web_persona_rename_updates_qq_routes_and_deletion_is_rejected() {
             multimodal_models: None,
             extra_prompt: String::new(),
             session_limits: None,
+            probability_reply: None,
         });
     let renamed: PromptDocuments = serde_json::from_value(json!({
         "personas": [{
@@ -497,6 +527,7 @@ fn web_persona_renames_use_the_original_reference_snapshot() {
         multimodal_models: None,
         extra_prompt: String::new(),
         session_limits: None,
+        probability_reply: None,
     };
     let mut config = AppConfig::default();
     config.platforms.qq.conversations = vec![route("1", "A.md"), route("2", "B.md")];
@@ -795,4 +826,140 @@ async fn cancelling_an_autonomous_round_disarms_the_goal() {
     // 目标本身还在，阶段不动：人可以 /goal resume 接着跑。
     let after = state.state_store.goal(&session_id).unwrap().unwrap();
     assert_eq!(after.phase, crate::state::GoalPhase::Active);
+}
+
+/// 工具桥寻址平台会话(08-26):没有活回合时照旧拒绝(桥不该在回合外碰平台
+/// 会话),回合在跑时放行——这是 claude-code 供应商在群聊里拿到平台工具的
+/// 唯一入口,实测此前 `tool-call --list` 一律报"找不到该会话"。
+#[test]
+fn tool_bridge_addresses_platform_sessions_only_during_a_live_turn() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = DaemonState::for_test(test_paths(temp.path()), 8300).unwrap();
+    let persona = active_persona_scope(&state);
+    let platform = state
+        .state_store
+        .create_session(&persona, "群会话", "user", None)
+        .unwrap();
+    state
+        .state_store
+        .bind_platform_session(
+            &PlatformSessionBindingKey {
+                platform: "onebot".to_string(),
+                account_id: "10000".to_string(),
+                conversation_kind: "group".to_string(),
+                conversation_id: "130515298".to_string(),
+                participant_id: None,
+                persona,
+            },
+            &platform.session_id,
+        )
+        .unwrap();
+    let target = ipc::SessionRef::Id {
+        id: platform.session_id.clone(),
+    };
+
+    assert!(
+        resolve_tool_bridge_session_ref(&state, &target).is_err(),
+        "回合外不应放行平台会话"
+    );
+
+    let (_temp2, context, _adapter) = crate::platforms::tests::shared::test_turn_context(true);
+    let context = std::sync::Arc::new(context);
+    let _live = crate::platforms::LiveTurnGuard::register(&platform.session_id, &context);
+    let resolved = resolve_tool_bridge_session_ref(&state, &target).expect("活回合应放行");
+    assert_eq!(resolved.session_id, platform.session_id);
+}
+
+/// 桥给平台会话的工具面必须与平台回合同源(08-26 审查抓到:桥原来发的是
+/// owner 面全量 registry,非管理员群友经它就能调 run_command / claude_code)。
+/// 退回 apply_platform_turn_scope 之前,这两条断言会拿到宿主工具而报红。
+#[test]
+fn tool_bridge_scopes_platform_tools_like_a_real_turn() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_paths(temp.path());
+    let mut config = AppConfig::default();
+    config.tools.enabled = true;
+    // 非管理员群友:受限底座,宿主工具一律没有。
+    let (_temp2, guest, _adapter) = crate::platforms::tests::shared::test_turn_context(false);
+    let guest = std::sync::Arc::new(guest);
+    assert!(!guest.host_tools_allowed());
+    let mut registry =
+        crate::tools::build_tool_registry(&config, &paths, AgentMode::Normal, false).unwrap();
+    assert!(registry.contains("run_command"), "底座本应有宿主工具");
+    crate::platforms::apply_platform_turn_scope(&mut registry, &config, &paths, &guest, None);
+    assert!(
+        !registry.contains("run_command"),
+        "非管理员会话不得有 run_command"
+    );
+    assert!(!registry.contains("edit"), "非管理员会话不得有写盘工具");
+
+    // 管理员会话:保留底座(claude_code 委托工具 08-21 已删除,收口函数里
+    // 那条 unregister 是它万一回归时的常备闸,当下无从断言)。
+    // 注意 test_turn_context 的入参是适配器的 fail_first,不是管理员标志——
+    // 管理员身份必须显式设(08-26:我第一版把它当管理员用,断言等于没测)。
+    let (_temp3, mut admin, _adapter2) = crate::platforms::tests::shared::test_turn_context(true);
+    admin.is_admin = true;
+    let admin = std::sync::Arc::new(admin);
+    assert!(admin.host_tools_allowed(), "管理员应放行宿主工具");
+    let mut registry =
+        crate::tools::build_tool_registry(&config, &paths, AgentMode::Normal, false).unwrap();
+    crate::platforms::apply_platform_turn_scope(&mut registry, &config, &paths, &admin, None);
+    assert!(registry.contains("run_command"), "管理员会话保留底座");
+
+    // 受限底座可由调用方复用(回合路径传缓存,不每轮重建):传进来的那份就是
+    // 最终工具面——两条路共用同一个收口函数,口径不会再各写各的。
+    let mut cached = crate::tools::restricted_platform_registry(&config, &paths);
+    cached.unregister("read_file");
+    let mut registry =
+        crate::tools::build_tool_registry(&config, &paths, AgentMode::Normal, false).unwrap();
+    crate::platforms::apply_platform_turn_scope(
+        &mut registry,
+        &config,
+        &paths,
+        &guest,
+        Some(&cached),
+    );
+    assert!(!registry.contains("read_file"), "应采用调用方给的受限底座");
+}
+
+/// 桥的工具面必须带上作用域看图(08-26 用户"图我看不了")。真实回合是在
+/// `agent/input.rs` 准备输入时注册 `vision_analyze` 的,桥另建工具面走不到
+/// 那里——于是 claude-code 供应商拿到的面里根本没有它,群上下文里的图只给了
+/// id 却没有任何手段去看。顺带钉住同一处的越权口子:受限底座注册的
+/// `generate_image` 参考图解析器不受限,作用域版本必须把它换掉。
+#[test]
+fn platform_tool_face_carries_scoped_vision() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_paths(temp.path());
+    let mut config = AppConfig::default();
+    config.tools.enabled = true;
+    config.plugins.vision.enabled = true;
+
+    let (_temp2, guest, _adapter) = crate::platforms::tests::shared::test_turn_context(false);
+    let guest = std::sync::Arc::new(guest);
+    assert!(!guest.host_tools_allowed());
+    // 本轮群里有一张可看的图。
+    guest.set_context_images(vec![crate::platforms::PlatformContextImageRef {
+        id: "context_image_1".to_string(),
+        message_id: "m1".to_string(),
+        image_index: 1,
+    }]);
+
+    let mut registry = crate::tools::restricted_platform_registry(&config, &paths);
+    assert!(
+        !registry.contains("vision_analyze"),
+        "受限底座本来就没有看图工具——这正是病灶"
+    );
+    crate::tools::vision::register_scoped_platform(
+        &mut registry,
+        config.clone(),
+        paths.clone(),
+        Vec::new(),
+        guest.context_images(),
+        guest.context_files(),
+        guest.clone(),
+    );
+    assert!(registry.contains("vision_analyze"), "桥的工具面必须能看图");
+    // 非管理员只认已入库的 context_image_N,拿不到宿主任意路径。
+    assert!(!guest.host_tools_allowed());
 }

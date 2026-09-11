@@ -195,7 +195,11 @@ pub fn register(registry: &mut ToolRegistry) {
 }
 
 fn divine(args: Value) -> anyhow::Result<String> {
-    match args.get("method").and_then(Value::as_str).unwrap_or_default() {
+    match args
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+    {
         "zhouyi" => Ok(choice(ZHOUYI_HEXAGRAMS).to_string()),
         "tarot" => {
             let card = choice(TAROT_CARDS);

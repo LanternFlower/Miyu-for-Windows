@@ -1,0 +1,1349 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# 显示名称：知乎搜索
+# Description: Search Zhihu, the Chinese Q&A platform, or read a question. A keyword searches; a Zhihu URL or numeric question id fetches that question with its top answers.
+# Timeout: 300
+# Group: research
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "query": {
+#       "type": "string",
+#       "description": "Keyword, or a Zhihu URL, or a bare numeric question id"
+#     },
+#     "limit": {
+#       "type": "integer",
+#       "description": "Search results (1-50, default 10); for a question, answers to fetch (1-20, default 5)"
+#     },
+#     "full": {
+#       "type": "boolean",
+#       "description": "Search: include bodies. Defaults to true when limit<=5. Set false to force summaries only"
+#     },
+#     "format": {
+#       "type": "string",
+#       "enum": [
+#         "md",
+#         "json"
+#       ],
+#       "description": "Output format, default md (compact and readable); json for field-by-field processing"
+#     },
+#     "type": {
+#       "type": "string",
+#       "enum": [
+#         "general",
+#         "answer",
+#         "article",
+#         "people",
+#         "video"
+#       ],
+#       "description": "Search scope, default general. Use people to find users"
+#     },
+#     "max_chars": {
+#       "type": "integer",
+#       "description": "Max characters per body. Default 8000 for a single item, 3000 for several"
+#     },
+#     "action": {
+#       "type": "string",
+#       "enum": [
+#         "search",
+#         "question",
+#         "answer",
+#         "article",
+#         "doctor"
+#       ],
+#       "description": "Usually omitted: the script infers it from query. Use only to force (e.g. search a link as a keyword) or for the doctor self-check"
+#     }
+#   },
+#   "required": [
+#     "query"
+#   ],
+#   "additionalProperties": false
+# }
+"""
+zhihu-search — 知乎检索 CLI
+
+知乎没有可用的匿名接口：web / 移动端 api.zhihu.com / 专栏 全部返回 403 code=40352
+并跳网易易盾验证页。境外 IP 尤其严。所以本脚本走"真实浏览器 + 持久化登录态"，
+让页面用它自己的签名(x-zse-93/96)发请求，我们只收 JSON —— 不复刻签名算法。
+
+只需要传一个 query：给关键词就搜索，给链接/数字就取内容，类型由 resolve() 自动判断。
+
+  zhihu-search "手冲咖啡"
+  zhihu-search https://www.zhihu.com/question/629151764
+  zhihu-search login | doctor | setup
+
+也是 Miyu script 工具：无参数且 stdin 非终端时读 JSON，最短为 {"query": "..."}。
+"""
+import argparse
+import html as _html
+import json
+import os
+import random
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import unicodedata
+import urllib.parse
+
+UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36")
+# 缓存根目录。`MIYU_SCRIPT_CACHE_DIR` 让 Miyu（或运维）把所有脚本的中间
+# 产物集中到一处；不设时退回 XDG 默认，脚本单独拿去用也不会往奇怪的地方写。
+DATA_DIR = os.path.join(
+    os.environ.get("MIYU_SCRIPT_CACHE_DIR")
+    or os.environ.get("XDG_CACHE_HOME")
+    or os.path.join(os.path.expanduser("~"), ".cache"),
+    "zhihu-search")
+DEFAULT_PROFILE = os.path.join(DATA_DIR, "profile")
+PROFILE_DIR = os.environ.get("ZH_PROFILE_DIR", DEFAULT_PROFILE)
+LEGACY_PROFILE = os.path.join(
+    os.path.expanduser("~"), ".local", "share", "zhihu-search", "profile")
+LOCK_WAIT = int(os.environ.get("ZH_LOCK_WAIT", "120"))  # 等 profile 锁的上限(秒)
+
+SEARCH_API = "/api/v4/search_v3"
+FEED_API = "/feeds"
+# 搜索类型 -> 知乎搜索页的 type 参数
+SEARCH_TYPE = {"general": "content", "answer": "answer",
+               "article": "article", "people": "people", "video": "zvideo"}
+
+
+# ---------------------------------------------------------------- 日志
+
+QUIET = False  # --json / stdin 模式下置 True: stdout 保持纯 JSON
+
+
+def log(msg):
+    if QUIET:
+        return
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
+
+
+class Spinner:
+    """阻塞等待时的秒数动画(stderr)，非 TTY 退化为单行提示。"""
+
+    def __init__(self, label):
+        self.label = label
+        self._stop = threading.Event()
+        self._t = None
+
+    def __enter__(self):
+        if QUIET:
+            return self
+        start = time.monotonic()
+        if not sys.stderr.isatty():
+            print(f"  … {self.label} ...", file=sys.stderr, flush=True)
+            return self
+
+        def run():
+            chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+            i = 0
+            while not self._stop.is_set():
+                el = int(time.monotonic() - start)
+                print(f"\r  {chars[i % len(chars)]} {self.label} {el}s",
+                      end="", file=sys.stderr, flush=True)
+                i += 1
+                self._stop.wait(0.2)
+            print(f"\r  ✓ {self.label} {int(time.monotonic() - start)}s",
+                  file=sys.stderr, flush=True)
+
+        self._t = threading.Thread(target=run, daemon=True)
+        self._t.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        if self._t:
+            self._t.join(timeout=0.5)
+
+
+class Blocked(RuntimeError):
+    """被风控/验证码拦截。"""
+
+
+class NotLoggedIn(RuntimeError):
+    """登录态缺失或失效。"""
+
+
+# ---------------------------------------------------------------- 环境
+
+def migrate_legacy_profile():
+    """把旧的 ~/.local/share 登录态搬到缓存目录。
+
+    只在用默认路径、且新位置还不存在时做一次 —— 否则用户得重过一遍易盾验证码
+    重新登录，那是这次搬家最不该付的代价。
+    """
+    if PROFILE_DIR != DEFAULT_PROFILE:
+        return
+    if os.path.isdir(DEFAULT_PROFILE) or not os.path.isdir(LEGACY_PROFILE):
+        return
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        shutil.move(LEGACY_PROFILE, DEFAULT_PROFILE)
+        log(f"登录态已从 {LEGACY_PROFILE} 迁移到 {DEFAULT_PROFILE}")
+        old_root = os.path.dirname(LEGACY_PROFILE)
+        stale = os.path.join(old_root, "profile.lock")
+        if os.path.isfile(stale):
+            os.remove(stale)  # 我们自己留下的空锁文件，可以删
+        try:
+            os.rmdir(old_root)  # 空了才删，里面还有别的东西就留着
+        except OSError:
+            pass
+    except Exception as e:
+        log(f"迁移旧登录态失败（不影响使用，重新 login 即可）：{e}")
+
+
+
+def find_system_chromium():
+    for name in ("google-chrome", "google-chrome-stable", "chromium",
+                 "chromium-browser", "microsoft-edge", "microsoft-edge-stable"):
+        p = shutil.which(name)
+        if p:
+            return name, p
+    return None, None
+
+
+def playwright_available():
+    try:
+        import playwright  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def chromium_bundled():
+    cache = os.path.expanduser("~/.cache/ms-playwright")
+    if not os.path.isdir(cache):
+        return False
+    # 光看目录名不够：playwright 升级后旧的 chromium-<build> 目录还在，但版本号
+    # 和新 playwright 期望的对不上，launch 会直接报 Executable doesn't exist。
+    # 所以必须确认可执行文件真的躺在那儿。
+    for d in os.listdir(cache):
+        if not d.startswith("chromium"):
+            continue
+        for rel in ("chrome-linux/chrome",
+                    "chrome-headless-shell-linux64/chrome-headless-shell",
+                    "chrome-mac/Chromium.app/Contents/MacOS/Chromium"):
+            if os.path.exists(os.path.join(cache, d, rel)):
+                return True
+    return False
+
+
+def launch_kwargs(headless=True):
+    kw = dict(headless=headless, args=[
+        "--no-sandbox", "--disable-blink-features=AutomationControlled"])
+    if shutil.which("google-chrome") or shutil.which("google-chrome-stable"):
+        kw["channel"] = "chrome"
+    elif shutil.which("microsoft-edge") or shutil.which("microsoft-edge-stable"):
+        kw["channel"] = "msedge"
+    elif chromium_bundled():
+        kw["channel"] = "chromium"
+    else:
+        _, sys_path = find_system_chromium()
+        if sys_path:
+            kw["executable_path"] = sys_path
+        else:
+            kw["channel"] = "chromium"
+    return kw
+
+
+# ---------------------------------------------------------------- 排版
+
+def dwidth(s):
+    """终端显示宽度。CJK 占 2 列，而 len() 只算 1 —— argparse 用的就是 len()，
+    所以带中文的帮助会对不齐、还会算错换行位置。自己排版就得自己量。"""
+    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in s)
+
+
+def row(left, right, col=18, indent=2):
+    """左列 + 对齐到 col 的右列。"""
+    pad = max(1, col - indent - dwidth(left))
+    return " " * indent + left + " " * pad + right
+
+
+# ---------------------------------------------------------------- 文本清洗
+
+_TAG = re.compile(r"<[^>]+>")
+_WS = re.compile(r"\n{3,}")
+
+
+def html_to_text(s, limit=None):
+    """知乎正文是 HTML。转成纯文本，保留段落，丢掉图片/公式的噪声。"""
+    if not s:
+        return ""
+    s = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", s)
+    s = re.sub(r"(?i)<br\s*/?>", "\n", s)
+    s = re.sub(r"(?i)</(p|div|li|h[1-6]|blockquote)>", "\n\n", s)
+    s = re.sub(r"(?i)<li[^>]*>", "· ", s)
+    # 公式用 alt 里的 tex 兜底
+    s = re.sub(r'(?i)<img[^>]*alt="([^"]*)"[^>]*eeimg[^>]*>', r" \1 ", s)
+    s = re.sub(r"(?i)<img[^>]*>", "", s)
+    s = _TAG.sub("", s)
+    s = _html.unescape(s)
+    s = "\n".join(line.strip() for line in s.split("\n"))
+    s = _WS.sub("\n\n", s).strip()
+    if limit and len(s) > limit:
+        s = s[:limit].rstrip() + "…"
+    return s
+
+
+def ts(v):
+    try:
+        return time.strftime("%Y-%m-%d", time.localtime(int(v))) if v else ""
+    except Exception:
+        return ""
+
+
+# ---------------------------------------------------------------- 引用解析
+
+def parse_ref(ref, kind):
+    """把 url 或裸 id 归一成 (canonical_url, id)。kind: answer|article|question"""
+    ref = str(ref).strip()
+    if ref.isdigit():
+        if kind == "answer":
+            return f"https://www.zhihu.com/answer/{ref}", ref
+        if kind == "article":
+            return f"https://zhuanlan.zhihu.com/p/{ref}", ref
+        return f"https://www.zhihu.com/question/{ref}", ref
+    u = urllib.parse.urlparse(ref if ref.startswith("http") else "https://" + ref)
+    path = u.path.rstrip("/")
+    m = re.search(r"/answer/(\d+)", path)
+    if m and kind == "answer":
+        return f"https://www.zhihu.com{path}", m.group(1)
+    m = re.search(r"/p/(\d+)", path)
+    if m and kind == "article":
+        return f"https://zhuanlan.zhihu.com/p/{m.group(1)}", m.group(1)
+    m = re.search(r"/question/(\d+)", path)
+    if m:
+        return f"https://www.zhihu.com/question/{m.group(1)}", m.group(1)
+    # 兜底：原样访问，让页面自己决定
+    return ref, path.split("/")[-1]
+
+
+# ---------------------------------------------------------------- 浏览器会话
+
+class Session:
+    """一个带持久化登录态的浏览器会话。
+
+    用 launch_persistent_context 而不是 storage_state 快照：知乎的 z_c0 / d_c0
+    会在会话里自己续期，导出再导入的 cookie 反而更容易被判失效。
+    """
+
+    def __init__(self, headless=True):
+        self.headless = headless
+        self._lockf = None
+        self._pw = None
+        self.ctx = None
+        self.page = None
+
+    def _acquire(self):
+        """独占 profile。持久化 profile 上有 Chrome 自己的文件锁，两个进程同时开
+        会撞出难懂的报错(或者静默复用同一个窗口)，不如在这里先排队。"""
+        import fcntl
+        os.makedirs(DATA_DIR, exist_ok=True)
+        self._lockf = open(os.path.join(DATA_DIR, "profile.lock"), "w")
+        deadline = time.monotonic() + LOCK_WAIT
+        while True:
+            try:
+                fcntl.flock(self._lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return
+            except OSError:
+                if time.monotonic() > deadline:
+                    raise RuntimeError(
+                        f"另一个 zhihu-search 正在占用浏览器 profile（等了 {LOCK_WAIT}s）。"
+                        "请等它跑完，或确认没有 login 窗口还开着。")
+                time.sleep(1)
+
+    def _release(self):
+        import fcntl
+        if getattr(self, "_lockf", None):
+            try:
+                fcntl.flock(self._lockf, fcntl.LOCK_UN)
+                self._lockf.close()
+            except Exception:
+                pass
+            self._lockf = None
+
+    def __enter__(self):
+        from playwright.sync_api import sync_playwright
+        os.makedirs(PROFILE_DIR, exist_ok=True)
+        self._acquire()
+        self._pw = sync_playwright().start()
+        kw = launch_kwargs(self.headless)
+        self.ctx = self._pw.chromium.launch_persistent_context(
+            user_data_dir=PROFILE_DIR,
+            user_agent=UA, locale="zh-CN", timezone_id="Asia/Shanghai",
+            viewport={"width": 1440, "height": 900}, **kw)
+        self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            if self.ctx:
+                self.ctx.close()
+        finally:
+            try:
+                if self._pw:
+                    self._pw.stop()
+            finally:
+                self._release()
+
+    # -------------------------------------------------- 状态
+
+    def cookies(self):
+        return {c["name"]: c["value"] for c in self.ctx.cookies()}
+
+    def logged_in(self):
+        """z_c0 是知乎的登录票据；没有它就是游客。"""
+        return bool(self.cookies().get("z_c0"))
+
+    def guard(self):
+        """检查当前页是否被顶到验证页 / 登录墙。"""
+        url = self.page.url or ""
+        try:
+            title = self.page.title()
+        except Exception:
+            title = ""
+        if "unhuman" in url or "安全验证" in title:
+            raise Blocked(
+                "被知乎风控拦截(网易易盾验证页)。境外 IP 下这很常见。"
+                f"请运行 `{login_command_hint('zhihu-search')}` 在有头窗口里手动过一次验证码。")
+        # 被顶到登录页 = 登录态失效，和风控是两回事，别混成一个提示
+        if "/signin" in url or not self.logged_in():
+            raise NotLoggedIn("未登录知乎或登录态已失效。请运行 `zhihu-search login`。")
+
+    def pause(self):
+        """请求之间留人类节奏。主号跑自动化时这一步比什么都重要。"""
+        time.sleep(random.uniform(1.5, 3.5))
+
+    # -------------------------------------------------- 采集
+
+    def initial_data(self):
+        """读 SSR 注入的 js-initialData —— 一次请求就能拿到问题/回答/文章正文。"""
+        try:
+            raw = self.page.evaluate(
+                "() => { const e = document.getElementById('js-initialData');"
+                " return e ? e.textContent : null; }")
+        except Exception:
+            return {}
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {}
+
+    def harvest(self, url, match, want, max_scrolls=6, settle_ms=2500):
+        """打开页面，让站点用它自己的签名去请求，我们只收 JSON 响应。
+
+        知乎的 x-zse-96 藏在 webpack chunk 里(没有小红书 window._webmsxyw 那种
+        全局入口)，头名还会在 93/96 与 83/86 之间切换。手搓请求跟版成本极高，
+        让页面自己发就完全绕开这件事，代价是慢一点、要靠滚动翻页。
+        """
+        payloads, errors = [], []
+
+        def on_resp(r):
+            if match not in r.url:
+                return
+            try:
+                body = r.json()
+            except Exception:
+                return
+            if isinstance(body, dict) and body.get("error"):
+                errors.append(str(body["error"].get("message") or body["error"]))
+            else:
+                payloads.append(body)
+
+        page = self.page
+        page.on("response", on_resp)
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(settle_ms)
+            self.guard()
+            init = self.initial_data()
+            for _ in range(max_scrolls):
+                if sum(len(p.get("data") or []) for p in payloads) >= want:
+                    break
+                seen = len(payloads)
+                page.mouse.wheel(0, 4000)
+                page.wait_for_timeout(settle_ms)
+                if len(payloads) == seen:  # 一轮没有新数据，多半到底了
+                    break
+        finally:
+            page.remove_listener("response", on_resp)
+
+        if not payloads and errors:
+            raise RuntimeError("；".join(errors[:2]))
+        return payloads, init
+
+
+# ---------------------------------------------------------------- 结构化提取
+
+def _author(obj):
+    a = obj.get("author") or {}
+    # 搜索结果会把命中词包成 <em>，作者名同样会被高亮，必须清掉
+    return {
+        "name": html_to_text(a.get("name", "")) or "匿名用户",
+        "headline": html_to_text(a.get("headline", "")),
+        "url": f"https://www.zhihu.com/people/{a['url_token']}" if a.get("url_token") else "",
+    }
+
+
+def slim_hit(obj, excerpt_len=180, full=False, content_chars=4000):
+    """把搜索结果里的一条压成紧凑结构。
+
+    默认只给摘要：一次 20 条正文会塞爆上下文。但要注意 —— 搜索接口的 `content`
+    字段返回的**就是完整正文**（已实测与单独取 answer 的全文逐字一致），所以
+    full=True 不产生任何额外请求，纯粹是要不要把它塞进上下文的取舍。
+    """
+    t = obj.get("type") or ""
+
+    def body():
+        return html_to_text(obj.get("content", ""), content_chars) if full else None
+    if t == "answer":
+        q = obj.get("question") or {}
+        qid, aid = q.get("id"), obj.get("id")
+        return {
+            "kind": "answer",
+            "title": html_to_text(q.get("name", "")),
+            "author": _author(obj)["name"],
+            "voteup": obj.get("voteup_count", 0),
+            "comments": obj.get("comment_count", 0),
+            "created": ts(obj.get("created_time")),
+            "excerpt": html_to_text(obj.get("excerpt") or obj.get("content", ""), excerpt_len),
+            "content": body(),
+            "url": f"https://www.zhihu.com/question/{qid}/answer/{aid}" if qid and aid else "",
+        }
+    if t == "article":
+        aid = obj.get("id")
+        return {
+            "kind": "article",
+            "title": html_to_text(obj.get("title", "")),
+            "author": _author(obj)["name"],
+            "voteup": obj.get("voteup_count", 0),
+            "comments": obj.get("comment_count", 0),
+            "created": ts(obj.get("created") or obj.get("created_time")),
+            "excerpt": html_to_text(obj.get("excerpt") or obj.get("content", ""), excerpt_len),
+            "content": body(),
+            "url": f"https://zhuanlan.zhihu.com/p/{aid}" if aid else "",
+        }
+    if t in ("zvideo", "video"):
+        return {
+            "kind": "video",
+            "title": html_to_text(obj.get("title", "")),
+            "author": _author(obj)["name"],
+            "voteup": obj.get("voteup_count", 0),
+            "created": ts(obj.get("created_at") or obj.get("published_at")),
+            "excerpt": html_to_text(obj.get("description", ""), excerpt_len),
+            "url": obj.get("video_url") or (
+                f"https://www.zhihu.com/zvideo/{obj.get('id')}" if obj.get("id") else ""),
+        }
+    if t in ("people", "user"):
+        return {
+            "kind": "people",
+            "title": html_to_text(obj.get("name", "")),
+            "author": html_to_text(obj.get("name", "")),
+            "excerpt": html_to_text(obj.get("headline", ""), excerpt_len),
+            "followers": obj.get("follower_count", 0),
+            "url": f"https://www.zhihu.com/people/{obj['url_token']}" if obj.get("url_token") else "",
+        }
+    if t == "topic":
+        return None  # 话题卡片对检索没价值
+    return None
+
+
+def hits_from_payloads(payloads, limit, excerpt_len=180, full=False, content_chars=4000):
+    out, seen = [], set()
+    for p in payloads:
+        for row in p.get("data") or []:
+            obj = row.get("object") or row
+            # 搜索接口把结果包在 object 里；有的行是 search_club / 广告位
+            if not isinstance(obj, dict):
+                continue
+            item = slim_hit(obj, excerpt_len, full, content_chars)
+            if not item or not item.get("url") or item["url"] in seen:
+                continue
+            seen.add(item["url"])
+            out.append(item)
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def entities(init):
+    return ((init.get("initialState") or {}).get("entities") or {})
+
+
+def _first(d):
+    return next(iter(d.values())) if isinstance(d, dict) and d else {}
+
+
+# ---------------------------------------------------------------- 操作
+
+def do_search(keyword, limit=20, kind="general", excerpt_len=180,
+              full=False, content_chars=4000):
+    """搜索：打开搜索页，收站点自己发出的 search_v3 响应，滚动翻页。"""
+    q = urllib.parse.quote(keyword)
+    t = SEARCH_TYPE.get(kind, "content")
+    url = f"https://www.zhihu.com/search?q={q}&type={t}"
+    with Session(headless=os.environ.get("ZH_HEADED") != "1") as s:
+        log(f"打开搜索页：「{keyword}」({kind})")
+        with Spinner("搜索中"):
+            payloads, init = s.harvest(url, SEARCH_API, want=limit,
+                                       max_scrolls=max(2, (limit // 10) + 1))
+    hits = hits_from_payloads(payloads, limit, excerpt_len, full, content_chars)
+    if not hits and not payloads:
+        raise RuntimeError("没有拿到搜索响应：页面可能被验证码拦截或知乎改版了。"
+                           "先跑 `zhihu-search status` 确认登录态。")
+    return {"keyword": keyword, "type": kind, "full": full,
+            "count": len(hits), "results": hits}
+
+
+def do_answer(ref, max_chars=8000):
+    """取单条回答全文。走 SSR 的 js-initialData，一次请求拿全。"""
+    url, aid = parse_ref(ref, "answer")
+    with Session(headless=os.environ.get("ZH_HEADED") != "1") as s:
+        log(f"打开回答：{url}")
+        s.page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        s.page.wait_for_timeout(2500)
+        s.guard()
+        init = s.initial_data()
+    ents = entities(init)
+    ans = (ents.get("answers") or {}).get(str(aid)) or _first(ents.get("answers") or {})
+    if not ans:
+        raise RuntimeError(f"取不到回答内容（可能已删除/仅作者可见）：{url}")
+    q = ans.get("question") or {}
+    return {
+        "kind": "answer",
+        "id": ans.get("id"),
+        "question": html_to_text(q.get("title") or q.get("name", "")),
+        "question_url": f"https://www.zhihu.com/question/{q.get('id')}" if q.get("id") else "",
+        "author": _author(ans),
+        "voteup": ans.get("voteupCount", ans.get("voteup_count", 0)),
+        "comments": ans.get("commentCount", ans.get("comment_count", 0)),
+        "created": ts(ans.get("createdTime") or ans.get("created_time")),
+        "updated": ts(ans.get("updatedTime") or ans.get("updated_time")),
+        "content": html_to_text(ans.get("content", ""), max_chars),
+        "url": url,
+    }
+
+
+def do_article(ref, max_chars=8000):
+    """取专栏文章全文。"""
+    url, pid = parse_ref(ref, "article")
+    with Session(headless=os.environ.get("ZH_HEADED") != "1") as s:
+        log(f"打开文章：{url}")
+        s.page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        s.page.wait_for_timeout(2500)
+        s.guard()
+        init = s.initial_data()
+    ents = entities(init)
+    art = (ents.get("articles") or {}).get(str(pid)) or _first(ents.get("articles") or {})
+    if not art:
+        raise RuntimeError(f"取不到文章内容（可能已删除/需付费）：{url}")
+    return {
+        "kind": "article",
+        "id": art.get("id"),
+        "title": html_to_text(art.get("title", "")),
+        "author": _author(art),
+        "voteup": art.get("voteupCount", art.get("voteup_count", 0)),
+        "comments": art.get("commentCount", art.get("comment_count", 0)),
+        "created": ts(art.get("created")),
+        "content": html_to_text(art.get("content", ""), max_chars),
+        "url": url,
+    }
+
+
+def do_question(ref, limit=5, max_chars=3000):
+    """取问题下的高赞回答。回答正文默认截断 —— 一次 5 条全文已经很占上下文。"""
+    url, qid = parse_ref(ref, "question")
+    with Session(headless=os.environ.get("ZH_HEADED") != "1") as s:
+        log(f"打开问题：{url}")
+        with Spinner("加载回答"):
+            payloads, init = s.harvest(url, FEED_API, want=limit,
+                                       max_scrolls=max(1, limit // 3))
+    ents = entities(init)
+    qobj = (ents.get("questions") or {}).get(str(qid)) or _first(ents.get("questions") or {})
+
+    answers, seen = [], set()
+    # 先吃 SSR 里已有的，再补 feeds 接口滚出来的
+    pool = list((ents.get("answers") or {}).values())
+    for p in payloads:
+        for row in p.get("data") or []:
+            tgt = row.get("target") or row
+            if isinstance(tgt, dict) and (tgt.get("type") == "answer" or "content" in tgt):
+                pool.append(tgt)
+    for a in pool:
+        aid = a.get("id")
+        if not aid or aid in seen:
+            continue
+        seen.add(aid)
+        answers.append({
+            "id": aid,
+            "author": _author(a)["name"],
+            "voteup": a.get("voteupCount", a.get("voteup_count", 0)),
+            "comments": a.get("commentCount", a.get("comment_count", 0)),
+            "created": ts(a.get("createdTime") or a.get("created_time")),
+            "content": html_to_text(a.get("content") or a.get("excerpt", ""), max_chars),
+            "url": f"https://www.zhihu.com/question/{qid}/answer/{aid}",
+        })
+    answers.sort(key=lambda x: x["voteup"] or 0, reverse=True)
+    answers = answers[:limit]
+    if not answers:
+        raise RuntimeError(f"没取到任何回答：{url}（可能是被折叠/需要登录/页面改版）")
+    return {
+        "kind": "question",
+        "id": qid,
+        "title": html_to_text((qobj or {}).get("title", "")),
+        "detail": html_to_text((qobj or {}).get("detail", ""), 1000),
+        "answer_count": (qobj or {}).get("answerCount", (qobj or {}).get("answer_count", 0)),
+        "follower_count": (qobj or {}).get("followerCount", (qobj or {}).get("follower_count", 0)),
+        "count": len(answers),
+        "answers": answers,
+        "url": url,
+    }
+
+
+def do_status():
+    with Session(headless=True) as s:
+        s.page.goto("https://www.zhihu.com/", wait_until="domcontentloaded", timeout=60000)
+        s.page.wait_for_timeout(2000)
+        blocked = "unhuman" in (s.page.url or "") or "安全验证" in (s.page.title() or "")
+        ck = s.cookies()
+        return {
+            "kind": "status",
+            "logged_in": bool(ck.get("z_c0")),
+            "blocked": blocked,
+            "has_d_c0": bool(ck.get("d_c0")),
+            "profile": PROFILE_DIR,
+            "hint": ("被风控拦截，运行 `zhihu-search login` 手动过验证码"
+                     if blocked else
+                     "" if ck.get("z_c0") else "未登录，运行 `zhihu-search login`"),
+        }
+
+
+LOGIN_STATUS_PATH = os.path.join(DATA_DIR, "login-status.json")
+
+def login_command_hint(tool):
+    """给出**能真正生效**的登录命令。
+
+    Miyu 调脚本时会设 MIYU_SCRIPT_CACHE_DIR(指向 ~/.miyu/cache),登录态落在
+    那儿。用户照着裸命令在终端跑,会登到 ~/.cache/<tool> 去——登了等于没登。
+    变量在场时把它带进命令里。
+    """
+    root = os.environ.get("MIYU_SCRIPT_CACHE_DIR")
+    if not root:
+        return f"{tool} login"
+    return f"MIYU_SCRIPT_CACHE_DIR={root} {tool} login"
+
+
+
+def _write_login_status(**fields):
+    """登录进度写文件，供 `login --check` 读。
+
+    不能让 check 去开浏览器查：登录窗口开着时 profile 被 flock 独占
+    (见 Session._acquire)，check 会一直等锁直到超时。
+    """
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        fields.setdefault("updated_at", int(time.time()))
+        with open(LOGIN_STATUS_PATH, "w") as f:
+            json.dump(fields, f)
+    except Exception:
+        pass
+
+
+def read_login_status():
+    try:
+        with open(LOGIN_STATUS_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {"state": "unknown"}
+
+
+def start_login(timeout=300):
+    """开一个后台进程去弹登录窗口，**立刻返回**。
+
+    调用方(AI 或人)拿到返回值就去提示用户过验证码，之后轮询
+    `login --check`。原来是单次阻塞调用等满 300 秒——正好顶到 Miyu 脚本工具
+    的超时上限(index.rs 的 .min(300))，一秒余量都没有，而且整轮对话被卡住。
+    """
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        raise RuntimeError("登录需要图形界面（当前没有 DISPLAY/WAYLAND_DISPLAY）。"
+                           "请在桌面会话里运行，或设置 DISPLAY 后重试。")
+    status = read_login_status()
+    if status.get("state") == "waiting" and time.time() - status.get("updated_at", 0) < timeout:
+        return {"state": "waiting", "message": "登录窗口已经开着了，去窗口里完成验证",
+                "hint": "完成后用 login --check 查状态"}
+    _write_login_status(state="waiting", message="正在打开登录窗口")
+    subprocess.Popen(
+        [sys.executable, os.path.abspath(__file__), "login", "--blocking",
+         "--timeout", str(timeout)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return {"state": "waiting",
+            "message": "浏览器窗口正在打开。请在窗口里完成安全验证并扫码/登录。",
+            "hint": f"完成后用 login --check 查状态（窗口最多等 {timeout} 秒）"}
+
+
+def do_login(timeout=300):
+    """有头窗口，人工过验证码 + 登录。登录态落在持久化 profile 里，只做一次。"""
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        raise RuntimeError("登录需要图形界面（当前没有 DISPLAY/WAYLAND_DISPLAY）。"
+                           "请在桌面会话里运行，或设置 DISPLAY 后重试。")
+    with Session(headless=False) as s:
+        s.page.goto("https://www.zhihu.com/signin", wait_until="domcontentloaded", timeout=60000)
+        print("\n浏览器窗口已打开，请在窗口里：", file=sys.stderr)
+        print("  1) 如出现「安全验证」，先手动完成滑块/点选验证码", file=sys.stderr)
+        print("  2) 扫码或用手机号登录", file=sys.stderr)
+        print(f"\n等待登录完成（最多 {timeout} 秒）…\n", file=sys.stderr)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if s.logged_in():
+                nick = ""
+                try:
+                    s.page.goto("https://www.zhihu.com/", wait_until="domcontentloaded",
+                                timeout=30000)
+                    s.page.wait_for_timeout(1500)
+                    ents = entities(s.initial_data())
+                    nick = (_first(ents.get("users") or {}) or {}).get("name", "")
+                except Exception:
+                    pass
+                print(f"[✓] 登录成功{f'：{nick}' if nick else ''}", file=sys.stderr)
+                print(f"    登录态已保存在 {PROFILE_DIR}", file=sys.stderr)
+                _write_login_status(state="done", logged_in=True, name=nick)
+                return {"logged_in": True, "name": nick, "profile": PROFILE_DIR}
+            time.sleep(2)
+    _write_login_status(state="timeout", logged_in=False,
+                        message="窗口等待超时，未完成登录")
+    raise RuntimeError("超时未完成登录")
+
+
+
+
+# ---------------------------------------------------------------- 诊断
+
+def diagnose(probe_network=True, blocked=None, logged_in=None):
+    """结构化环境诊断。
+
+    probe_network=False 时不开浏览器；此时如果调用方已经从异常类型知道了病因
+    （Blocked / NotLoggedIn），务必用 blocked= / logged_in= 传进来 —— 否则这两项
+    是 None，推断不出下一步，会得出「环境正常」这种没用的结论。
+    """
+    bundled = chromium_bundled()
+    sys_name, sys_path = find_system_chromium()
+    disp = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") or ""
+    d = {
+        "python": sys.version.split()[0],
+        "playwright": playwright_available(),
+        "chromium_bundled": bundled,
+        "chromium_system": sys_path or "",
+        "display": disp,
+        "profile_exists": os.path.isdir(PROFILE_DIR),
+        "profile": PROFILE_DIR,
+        "logged_in": logged_in,
+        "blocked": blocked,
+        "problems": [],
+        "next_step": "",
+    }
+    if not d["playwright"]:
+        d["problems"].append("playwright 未安装")
+    if not bundled and not sys_path:
+        d["problems"].append("没有可用浏览器（需 Chromium 系）")
+    # 浏览器都没有就别探网络了
+    if (probe_network and d["playwright"] and (bundled or sys_path)
+            and blocked is None and logged_in is None):
+        try:
+            st = do_status()
+            d["logged_in"] = st["logged_in"]
+            d["blocked"] = st["blocked"]
+        except Exception as e:
+            d["problems"].append(f"登录态探测失败：{e}")
+    if d["blocked"]:
+        d["problems"].append("当前被知乎风控拦截（网易易盾验证页）")
+    if d["logged_in"] is False:
+        d["problems"].append("未登录知乎")
+    if not d["profile_exists"]:
+        d["problems"].append("登录 profile 尚未创建")
+
+    # 只给一条最重要的下一步 —— 给模型一串并列建议它会挑错
+    if not d["playwright"] or (not bundled and not sys_path):
+        d["next_step"] = "运行 `zhihu-search setup` 安装依赖"
+    elif d["blocked"] or d["logged_in"] is False or not d["profile_exists"]:
+        d["next_step"] = ("在有图形界面的桌面会话里运行 `zhihu-search login`"
+                          + ("" if disp else "（当前无 DISPLAY，需要先接上图形界面）"))
+    elif d["problems"]:
+        d["next_step"] = "运行 `zhihu-search doctor` 查看详情"
+    else:
+        d["next_step"] = "环境正常；若仍失败，多半是知乎改版或临时限频，隔几分钟重试"
+    return d
+
+
+def _tick(v):
+    return "✅" if v else "❌"
+
+
+def diagnose_md(d):
+    L = [f"- python: `{d['python']}`",
+         f"- playwright: {_tick(d['playwright'])}",
+         f"- chromium(内置): {_tick(d['chromium_bundled'])}",
+         f"- chromium(系统): {_tick(d['chromium_system'])} {d['chromium_system']}".rstrip(),
+         f"- 图形界面(login 需要): {_tick(d['display'])} {d['display']}".rstrip(),
+         f"- 登录 profile: {_tick(d['profile_exists'])} `{d['profile']}`"]
+    if d["logged_in"] is not None:
+        L.append(f"- 登录态: {_tick(d['logged_in'])} {'已登录' if d['logged_in'] else '未登录'}")
+    if d["blocked"] is not None:
+        L.append(f"- 风控拦截: {_tick(not d['blocked'])} {'被拦' if d['blocked'] else '未被拦'}")
+    if d["problems"]:
+        L.append("")
+        L.append("**发现的问题**")
+        L += [f"- {p}" for p in d["problems"]]
+    L.append("")
+    L.append(f"**下一步**：{d['next_step']}")
+    return "\n".join(L)
+
+
+# ---------------------------------------------------------------- 输出（默认 Markdown）
+
+KIND_CN = {"answer": "回答", "article": "文章", "video": "视频",
+           "people": "用户", "question": "问题"}
+
+
+def _quote(text, limit=None):
+    """把正文变成 Markdown 引用块（用于摘要）。"""
+    t = html_to_text(text, limit) if text else ""
+    if not t:
+        return ""
+    return "\n".join("> " + line if line else ">" for line in t.split("\n"))
+
+
+def md_search(o):
+    L = [f"# 知乎搜索：{o['keyword']}",
+         "",
+         f"类型 `{o['type']}` · 共 {o['count']} 条"]
+    if o["count"] and not o.get("full"):
+        L.append("")
+        L.append("> 只含摘要。要正文：加 `full=true`（**不产生额外请求**），"
+                 "或把某条链接直接作为 `query` 再调一次。")
+    for i, r in enumerate(o["results"], 1):
+        L.append("")
+        L.append(f"### {i}. {r['title'] or '(无标题)'}")
+        meta = [f"`{KIND_CN.get(r['kind'], r['kind'])}`"]
+        if r.get("author"):
+            meta.append(r["author"])
+        if r.get("voteup"):
+            meta.append(f"赞同 {r['voteup']}")
+        if r.get("comments"):
+            meta.append(f"评论 {r['comments']}")
+        if r.get("followers") is not None and r["kind"] == "people":
+            meta.append(f"关注者 {r['followers']}")
+        if r.get("created"):
+            meta.append(r["created"])
+        L.append(" · ".join(meta))
+        L.append("")
+        L.append(r["url"])
+        if r.get("content"):
+            L.append("")
+            L.append(r["content"])
+        elif r.get("excerpt"):
+            L.append("")
+            L.append(_quote(r["excerpt"]))
+    if not o["count"]:
+        L += ["", "没有匹配结果。换个关键词，或把 `type` 从 `general` 改成 "
+                  "`answer` / `article` 试试。"]
+    return "\n".join(L)
+
+
+def md_answer(o):
+    a = o["author"]
+    who = a["name"] + (f"（{a['headline']}）" if a.get("headline") else "")
+    meta = [f"`回答`", who, f"赞同 {o['voteup']}", f"评论 {o['comments']}"]
+    if o.get("created"):
+        meta.append(o["created"])
+    return "\n".join([
+        f"# {o['question'] or '(无标题问题)'}",
+        "", " · ".join(meta),
+        "", f"回答链接：{o['url']}",
+        f"问题链接：{o['question_url']}" if o.get("question_url") else "",
+        "", "---", "", o["content"] or "_(正文为空)_",
+    ]).replace("\n\n\n", "\n\n")
+
+
+def md_article(o):
+    a = o["author"]
+    who = a["name"] + (f"（{a['headline']}）" if a.get("headline") else "")
+    meta = ["`专栏文章`", who, f"赞同 {o['voteup']}", f"评论 {o['comments']}"]
+    if o.get("created"):
+        meta.append(o["created"])
+    return "\n".join([
+        f"# {o['title'] or '(无标题)'}",
+        "", " · ".join(meta),
+        "", f"链接：{o['url']}",
+        "", "---", "", o["content"] or "_(正文为空)_",
+    ])
+
+
+def md_question(o):
+    L = [f"# {o['title'] or '(无标题问题)'}",
+         "",
+         f"`问题` · {o['answer_count']} 个回答 · {o['follower_count']} 人关注",
+         "", f"链接：{o['url']}"]
+    if o.get("detail"):
+        L += ["", "**问题描述**", "", _quote(o["detail"])]
+    L += ["", f"以下是按赞同排序的前 {o['count']} 条回答（正文可能被截断，"
+              f"要完整内容就把该条链接直接作为 `query` 再调一次）。"]
+    for i, a in enumerate(o["answers"], 1):
+        L += ["", "---", "",
+              f"## {i}. {a['author']}",
+              f"赞同 {a['voteup']} · 评论 {a['comments']}"
+              + (f" · {a['created']}" if a.get("created") else ""),
+              "", a["url"], "", a["content"] or "_(正文为空)_"]
+    return "\n".join(L)
+
+
+def md_status(o):
+    L = ["# zhihu-search 状态", "",
+         f"- 登录态: {_tick(o['logged_in'])} {'已登录' if o['logged_in'] else '未登录'}",
+         f"- 风控拦截: {_tick(not o['blocked'])} {'被拦' if o['blocked'] else '未被拦'}",
+         f"- profile: `{o['profile']}`"]
+    if o.get("hint"):
+        L += ["", f"**下一步**：{o['hint']}"]
+    return "\n".join(L)
+
+
+def to_md(o):
+    k = o.get("kind")
+    if k == "answer":
+        return md_answer(o)
+    if k == "article":
+        return md_article(o)
+    if k == "question":
+        return md_question(o)
+    if k == "status":
+        return md_status(o)
+    if k == "doctor":
+        return "# zhihu-search 环境自检\n\n" + diagnose_md(o["diagnosis"])
+    if "results" in o:
+        return md_search(o)
+    return "```json\n" + json.dumps(o, ensure_ascii=False, indent=1) + "\n```"
+
+
+def emit(o, fmt):
+    if fmt == "json":
+        print(json.dumps(o, ensure_ascii=False, indent=1))
+    else:
+        print(to_md(o))
+
+
+def emit_error(msg, fmt, diag=None, extra=None):
+    """失败时统一出口：错误 + 自动诊断 + 一条明确的下一步。"""
+    if diag is None:
+        diag = diagnose(probe_network=False)
+    if fmt == "json":
+        out = {"error": msg, "diagnosis": diag, "fix": diag["next_step"]}
+        if extra:
+            out.update(extra)
+        print(json.dumps(out, ensure_ascii=False, indent=1))
+    else:
+        print("\n".join([f"# 执行失败", "", msg, "",
+                         "## 自动诊断", "", diagnose_md(diag)]))
+
+
+# ---------------------------------------------------------------- doctor / setup
+
+def preflight():
+    problems = []
+    if not playwright_available():
+        problems.append("playwright 未安装 → 运行: zhihu-search setup "
+                        "(或 sudo pacman -S python-playwright)")
+    if not chromium_bundled() and not find_system_chromium()[0]:
+        problems.append("没有可用浏览器(需 Chromium 系) → 运行: zhihu-search setup "
+                        "(或 sudo pacman -S chromium)")
+    return (not problems), problems
+
+
+def setup():
+    ok = True
+    if not playwright_available():
+        print("[1/2] 安装 playwright (阿里云镜像)...")
+        cmds = [
+            [sys.executable, "-m", "pip", "install", "--user", "--break-system-packages",
+             "playwright", "-i", "https://mirrors.aliyun.com/pypi/simple/"],
+            [sys.executable, "-m", "pip", "install", "--user", "playwright",
+             "-i", "https://mirrors.aliyun.com/pypi/simple/"],
+            [sys.executable, "-m", "pip", "install", "--user", "--break-system-packages",
+             "playwright"],
+        ]
+        for c in cmds:
+            try:
+                if subprocess.run(c, capture_output=True, text=True, timeout=600).returncode == 0:
+                    break
+            except Exception:
+                continue
+        else:
+            print("  pip 安装失败, Arch 可用: sudo pacman -S python-playwright")
+            ok = False
+    if not chromium_bundled():
+        sys_name, _ = find_system_chromium()
+        if sys_name:
+            print(f"[2/2] 检测到系统浏览器 {sys_name}, 可复用, 跳过下载")
+        else:
+            print("[2/2] 下载 Chromium (约160MB, 国内走 npmmirror)...")
+            env = dict(os.environ)
+            env["PLAYWRIGHT_DOWNLOAD_HOST"] = "https://npmmirror.com/mirrors/playwright/"
+            r = subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"],
+                               env=env, capture_output=True, text=True, timeout=900)
+            if r.returncode != 0:
+                print(r.stderr[-500:])
+                print("  也可: sudo pacman -S chromium 然后复用系统浏览器")
+                ok = False
+    print("\n安装后复检:")
+    d = diagnose(probe_network=False)
+    print(diagnose_md(d))
+    print("\n完成 ✅" if ok and not d["problems"] else "\n仍有问题, 见上方「下一步」❌")
+
+
+# ---------------------------------------------------------------- 入口
+
+def resolve(query):
+    """猜 query 指向什么，省掉调用方自己分类内容类型这一步。
+
+    链接/纯数字 → 读取对应内容；其它 → 当关键词搜索。
+    """
+    q = (query or "").strip()
+    if not q:
+        return "search", q
+    if q.isdigit():
+        # 裸数字无法区分问题/回答/文章 id，按最常见的问题处理；要精确就传完整链接
+        return "question", q
+    if re.match(r"^(https?://)?([\w-]+\.)*zhihu\.com/", q):
+        path = urllib.parse.urlparse(q if q.startswith("http") else "https://" + q).path
+        if re.search(r"/answer/\d+", path):
+            return "answer", q       # /question/A/answer/B 也走这里，回答优先
+        if re.search(r"/p/\d+", path):
+            return "article", q
+        if re.search(r"/question/\d+", path):
+            return "question", q
+        raise RuntimeError(
+            f"认不出这个知乎链接指向什么：{q}\n"
+            "支持的形式：/question/<id>、/question/<id>/answer/<id>、/p/<id>")
+    return "search", q
+
+
+def run(query, req):
+    """所有调用的唯一入口。action 只在需要强制时给，平时靠 resolve 自动判断。"""
+    action = str(req.get("action") or "").strip()
+    if action in ("doctor", "status"):
+        return {"kind": "doctor", "diagnosis": diagnose()}
+    if action in ("", "auto"):
+        action, query = resolve(query)
+    elif action not in ("search", "question", "answer", "article"):
+        raise RuntimeError(f"未知 action：`{action}`（可选 search / question / answer / "
+                           "article / doctor，通常不用给）")
+
+    limit = req.get("limit")
+    max_chars = req.get("max_chars")
+
+    if action == "answer":
+        return do_answer(query, int(max_chars or 8000))
+    if action == "article":
+        return do_article(query, int(max_chars or 8000))
+    if action == "question":
+        n = max(1, min(int(limit or 5), 20))
+        return do_question(query, n, int(max_chars or (8000 if n == 1 else 3000)))
+
+    n = max(1, min(int(limit or 10), 50))
+    # 条数少时正文是白送的（搜索响应本就带全文），直接给；条数多才退回摘要省上下文
+    full = req.get("full")
+    full = (n <= 5) if full is None else bool(full)
+    return do_search(query, n, str(req.get("type") or "general"),
+                     full=full, content_chars=int(max_chars or 3000))
+
+
+def stdin_json_mode():
+    """Miyu 工具入口：无命令行参数且 stdin 为 JSON 时启用。
+    最简调用就是 {"query": "..."} —— 关键词就搜索，链接就取全文。
+    输出默认 Markdown；format=json 输出 JSON。"""
+    global QUIET
+    QUIET = True
+
+    raw = sys.stdin.read().strip()
+    fmt = "md"
+    if not raw:
+        emit_error('未收到输入：请通过 stdin 传入 JSON，如 {"query": "手冲咖啡"}', fmt)
+        sys.exit(1)
+    try:
+        req = json.loads(raw)
+    except Exception:
+        emit_error("stdin 不是有效 JSON", fmt)
+        sys.exit(1)
+
+    fmt = "json" if str(req.get("format") or "md").lower() == "json" else "md"
+    query = str(req.get("query") or req.get("keyword") or req.get("url") or "").strip()
+    if not query and str(req.get("action") or "") not in ("doctor", "status"):
+        emit_error("`query` 参数缺失", fmt)
+        sys.exit(1)
+
+    good, probs = preflight()
+    if not good:
+        emit_error("依赖未就绪：" + "；".join(probs), fmt)
+        sys.exit(1)
+    try:
+        emit(run(query, req), fmt)
+    except Blocked as e:
+        emit_error(str(e), fmt, diag=diagnose(False, blocked=True))
+        sys.exit(1)
+    except NotLoggedIn as e:
+        emit_error(str(e), fmt, diag=diagnose(False, logged_in=False))
+        sys.exit(1)
+    except RuntimeError as e:
+        emit_error(str(e), fmt)
+        sys.exit(1)
+    except Exception as e:
+        emit_error(f"执行失败：{type(e).__name__}: {e}", fmt)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------- 帮助
+
+USAGE = "用法: zhihu-search <关键词 | 知乎链接 | 数字>  [-n N] [--full] [--json]\n"
+
+
+def help_text():
+    L = ["zhihu-search — 知乎检索（需一次性登录）", "",
+         "  给关键词就搜索，给链接就取全文 —— 内容类型由脚本自动判断。", "",
+         "用法  zhihu-search <参数> [选项]"]
+    L += [row(a, b) for a, b in (
+        ("<关键词>", "搜索"),
+        ("<知乎链接>", "取回答 / 文章 / 问题的内容"),
+        ("<数字>", "按问题 id 取内容"),
+        ("login", "首次登录（开窗口，手动过验证码）"),
+        ("doctor", "环境自检，并给出下一步"),
+        ("setup", "安装缺失依赖"),
+    )]
+    L += ["", "常用选项"]
+    L += [row(a, b) for a, b in (
+        ("-n N", "条数：搜索结果默认 10，问题下的回答默认 5"),
+        ("--full", "搜索时连正文一起返回（-n≤5 时已默认开启）"),
+        ("--brief", "反之，只要摘要"),
+        ("--json", "输出 JSON，默认 Markdown"),
+    )]
+    L += ["", "进阶选项"]
+    L += [row(a, b) for a, b in (
+        ("--type TYPE", "搜索范围 general|answer|article|people|video"),
+        ("--max-chars N", "每条正文最大字数，默认单条 8000、多条 3000"),
+        ("--action ACT", "强制行为，通常不需要 —— 脚本按 query 自动判断"),
+        ("--format FMT", "md|json，--json 的完整写法"),
+    )]
+    L += ["", "例",
+          '  zhihu-search "手冲咖啡"',
+          '  zhihu-search "手冲咖啡" -n 5',
+          "  zhihu-search https://www.zhihu.com/question/629151764",
+          '  zhihu-search "咖啡师" --type people --json',
+          "",
+          "正文是免费的：知乎搜索接口本就返回完整正文，--full 不产生额外请求，",
+          "只是更占上下文，所以条数多时默认退回摘要。"]
+    return "\n".join(L)
+
+
+# ---------------------------------------------------------------- main
+
+def main():
+    global QUIET
+    migrate_legacy_profile()
+    # Miyu 工具模式: 无参数 + stdin 非终端 → 按 stdin JSON 处理
+    if len(sys.argv) == 1 and not sys.stdin.isatty():
+        stdin_json_mode()
+        return
+
+    ap = argparse.ArgumentParser(prog="zhihu-search", add_help=False)
+    ap.add_argument("-h", "--help", action="store_true")
+    ap.add_argument("query", nargs="?", default="")
+    ap.add_argument("-n", "--limit", type=int, default=None)
+    ap.add_argument("--full", dest="full", action="store_true", default=None)
+    ap.add_argument("--brief", dest="full", action="store_false")
+    ap.add_argument("--json", dest="as_json", action="store_true")
+    ap.add_argument("--type", default=None, choices=list(SEARCH_TYPE))
+    ap.add_argument("--max-chars", type=int, default=None)
+    ap.add_argument("--action", default=None,
+                    choices=["search", "question", "answer", "article", "doctor"])
+    ap.add_argument("--format", choices=("md", "json"), default="md")
+    # login 的三态开关。默认(都不给)= 开窗口就返回,不阻塞。
+    ap.add_argument("--check", action="store_true",
+                    help="配合 login:只查一次登录进度就返回")
+    ap.add_argument("--blocking", action="store_true",
+                    help="配合 login:留在前台等到登录完成(后台子进程自己用)")
+    ap.add_argument("--timeout", type=int, default=300,
+                    help="配合 login:窗口等待上限(秒)")
+    # 帮助自己渲染：argparse 用 len() 量宽度，中文会算成一半，
+    # 结果就是列对不齐 + 长行不换行。解析归它，排版归我们。
+    ap.format_usage = lambda: USAGE
+    ap.format_help = lambda: help_text()
+    args = ap.parse_args()
+    if args.help:
+        print(help_text())
+        return
+
+    fmt = "json" if args.as_json else args.format
+    if fmt == "json" and os.environ.get("ZH_VERBOSE") != "1":
+        QUIET = True
+
+    # 三个不查内容的动词，直接当 query 位置的关键字处理
+    verb = args.query.strip().lower()
+    if verb == "setup":
+        setup()
+        return
+    if not verb and not args.action:
+        ap.print_help()
+        sys.exit(2)
+
+    good, probs = preflight()
+    if not good:
+        emit_error("依赖未就绪：" + "；".join(probs), fmt)
+        sys.exit(1)
+
+    if verb == "login":
+        # 默认非阻塞:开窗口就返回,调用方轮询 --check。--blocking 是后台子进程
+        # 自己走的那一支(start_login 拉起来的),不给人用。
+        if args.blocking:
+            do_login(timeout=args.timeout)
+        elif args.check:
+            emit(read_login_status(), fmt)
+        else:
+            emit(start_login(timeout=args.timeout), fmt)
+        return
+    if verb in ("doctor", "status"):
+        emit({"kind": "doctor", "diagnosis": diagnose()}, fmt)
+        return
+
+    req = {"limit": args.limit, "full": args.full, "max_chars": args.max_chars,
+           "type": args.type, "action": args.action}
+    t0 = time.monotonic()
+    try:
+        out = run(args.query, req)
+    except Blocked as e:
+        emit_error(str(e), fmt, diag=diagnose(False, blocked=True))
+        sys.exit(1)
+    except NotLoggedIn as e:
+        emit_error(str(e), fmt, diag=diagnose(False, logged_in=False))
+        sys.exit(1)
+    except RuntimeError as e:
+        emit_error(str(e), fmt)
+        sys.exit(1)
+    log(f"完成, 用时 {int(time.monotonic() - t0)}s")
+    emit(out, fmt)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as e:
+        # 兜底：任何没被接住的异常也要给诊断，而不是甩一段 traceback
+        emit_error(f"{type(e).__name__}: {e}", "md")
+        sys.exit(1)

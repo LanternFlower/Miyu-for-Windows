@@ -165,3 +165,96 @@ pub(in crate::state) fn apply_v28_session_sort_key(conn: &Connection) -> Result<
     )?;
     Ok(())
 }
+
+/// v29: 用户附件可以落在磁盘上(`state/attachments/<id>/<name>`),
+/// `data` 列留空;同时放开 `kind` 让视频等任意二进制以 `file` 进来。
+///
+/// 两条都是 CHECK/NOT NULL 约束,SQLite 改不了,只能整表重建。行数据逐列
+/// 原样搬,旧的 BLOB 附件继续从 `data` 列读(读路径双兼容)。
+pub(in crate::state) fn apply_v29_attachment_files(conn: &Connection) -> Result<()> {
+    // 幂等:半途而废的库里新约束可能已经就位。
+    let already: bool = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM sqlite_master
+              WHERE type = 'table' AND name = 'user_attachments'
+                AND sql LIKE '%''file''%'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if already {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE user_attachments_v29 (
+            attachment_id TEXT PRIMARY KEY,
+            session_id    TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+            turn_id       TEXT REFERENCES turns(turn_id) ON DELETE CASCADE,
+            prompt_id     TEXT REFERENCES queued_prompts(prompt_id) ON DELETE CASCADE,
+            run_id        TEXT,
+            file_name     TEXT NOT NULL,
+            mime          TEXT NOT NULL,
+            kind          TEXT NOT NULL CHECK (kind IN ('image', 'text', 'file')),
+            size_bytes    INTEGER NOT NULL CHECK (size_bytes >= 0),
+            width         INTEGER NOT NULL DEFAULT 0,
+            height        INTEGER NOT NULL DEFAULT 0,
+            data          BLOB,
+            created_at    TEXT NOT NULL,
+            CHECK (
+                (turn_id IS NOT NULL) + (prompt_id IS NOT NULL) + (run_id IS NOT NULL) <= 1
+            )
+        );
+        INSERT INTO user_attachments_v29
+            (attachment_id, session_id, turn_id, prompt_id, run_id, file_name, mime,
+             kind, size_bytes, width, height, data, created_at)
+        SELECT attachment_id, session_id, turn_id, prompt_id, run_id, file_name, mime,
+               kind, size_bytes, width, height, data, created_at
+          FROM user_attachments;
+        DROP TABLE user_attachments;
+        ALTER TABLE user_attachments_v29 RENAME TO user_attachments;
+        CREATE INDEX idx_user_attachments_session
+            ON user_attachments(session_id, created_at, attachment_id);
+        CREATE INDEX idx_user_attachments_turn
+            ON user_attachments(turn_id, created_at, attachment_id);
+        CREATE INDEX idx_user_attachments_prompt
+            ON user_attachments(prompt_id, created_at, attachment_id);
+        CREATE INDEX idx_user_attachments_run ON user_attachments(run_id);",
+    )?;
+    Ok(())
+}
+
+/// v30: 回合内追加给模型看的媒体(工具让当前多模态模型直接看的图片/
+/// 视频、剪贴板图片、视觉旁路的描述文本),按 (turn, call) 落子表,历史
+/// 重放时紧跟对应 tool 消息逐字节回灌——不落库就等于下一回合模型"忘了"
+/// 这张图,且缓存前缀在此掰断(09-03)。
+pub(in crate::state) fn apply_v30_turn_inline_media(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS turn_inline_media (
+            media_id   INTEGER PRIMARY KEY,
+            turn_id    TEXT NOT NULL REFERENCES turns(turn_id) ON DELETE CASCADE,
+            call_id    TEXT NOT NULL,
+            seq        INTEGER NOT NULL,
+            kind       TEXT NOT NULL CHECK (kind IN ('image', 'video', 'text')),
+            mime       TEXT NOT NULL,
+            source     TEXT NOT NULL,
+            data       BLOB,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_turn_inline_media_turn
+            ON turn_inline_media(turn_id, call_id, seq);",
+    )?;
+    Ok(())
+}
+
+/// v31: followup(排队消息)随发的瞬态尾巴也要化石化。活体里 followup 正文
+/// 后面跟着 `<context-images>`/图片路径等提示块,回放只重建正文,两边字节
+/// 不同 ⇒ 缓存前缀在此掰断,CLI 中转线的续传链也在此失配、下一轮全量重放
+/// (09-04 codex 线实证)。存 JSON 数组的 ChatMessage,口径同 `turns.context_messages`。
+pub(in crate::state) fn apply_v31_queued_prompt_context_messages(conn: &Connection) -> Result<()> {
+    add_column_if_missing(
+        conn,
+        "queued_prompts",
+        "context_messages",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )
+}

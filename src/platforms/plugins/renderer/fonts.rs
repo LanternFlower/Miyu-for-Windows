@@ -25,7 +25,8 @@ pub(in crate::platforms::plugins::renderer) const CODE_FONT_FILE: &str =
 
 pub(in crate::platforms::plugins::renderer) const EMOJI_FONT_FILE: &str = "NotoColorEmoji.ttf";
 
-pub(in crate::platforms::plugins::renderer) const RENDERER_FONTS_ENV: &str = "MIYU_RENDERER_FONTS_DIR";
+pub(in crate::platforms::plugins::renderer) const RENDERER_FONTS_ENV: &str =
+    "MIYU_RENDERER_FONTS_DIR";
 
 pub(in crate::platforms::plugins::renderer) fn renderer_fonts_dir() -> Result<PathBuf> {
     let mut candidates = Vec::new();

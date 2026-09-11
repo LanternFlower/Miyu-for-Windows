@@ -1,7 +1,7 @@
 {
   "name": "trash_path",
   "display_name": "移入回收站",
-  "description": "Move files, directories, or symlinks to the system trash instead of deleting them permanently. When deleting multiple items, put all the paths into paths in a single call — calling once per item floods the screen.",
+  "description": "Move paths to the system Trash instead of deleting permanently. Pass all paths in one call.",
   "parameters": {
     "type": "object",
     "properties": {

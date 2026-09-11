@@ -71,7 +71,9 @@ pub(in crate::cli) struct LiveReplEditor {
     pub(in crate::cli) history: Vec<String>,
     pub(in crate::cli) history_index: usize,
     pub(in crate::cli) history_clean_index: Option<usize>,
-    pub(in crate::cli) is_pasted: bool,
+    /// 当前缓冲区里由**生粘贴**带进来的行数(折成占位符的不算)。输入区的
+    /// 整体折叠只在这种内容占满缓冲区时才发生,见 `repl_visible_input_lines`。
+    pub(in crate::cli) raw_pasted_lines: usize,
     pub(in crate::cli) pasted_images: Vec<Option<crate::clipboard::PastedImage>>,
     pub(in crate::cli) pasted_texts: Vec<Option<PastedText>>,
     pub(in crate::cli) escape_armed_until: Option<Instant>,
@@ -102,7 +104,7 @@ impl LiveReplEditor {
             history,
             history_index,
             history_clean_index: None,
-            is_pasted: false,
+            raw_pasted_lines: 0,
             pasted_images: Vec::new(),
             pasted_texts: Vec::new(),
             escape_armed_until: None,
@@ -114,7 +116,7 @@ impl LiveReplEditor {
         self.input.clear();
         self.cursor = 0;
         self.history_clean_index = None;
-        self.is_pasted = false;
+        self.raw_pasted_lines = 0;
         self.pasted_images.clear();
         self.pasted_texts.clear();
         self.escape_armed_until = None;
@@ -132,7 +134,7 @@ impl LiveReplEditor {
         self.input.clear();
         self.cursor = 0;
         self.history_clean_index = None;
-        self.is_pasted = false;
+        self.raw_pasted_lines = 0;
         self.pasted_texts.clear();
         Some(LiveSubmission {
             content,
@@ -179,14 +181,14 @@ impl LiveReplEditor {
                 return Ok(LiveEditorAction::None);
             }
             Event::Paste(text) => {
-                insert_pasted_text_at_cursor(
+                let raw_lines = insert_pasted_text_at_cursor(
                     &mut self.input,
                     &mut self.cursor,
                     text,
                     &mut self.pasted_texts,
                 );
                 self.history_clean_index = None;
-                self.is_pasted = true;
+                self.raw_pasted_lines = self.raw_pasted_lines.saturating_add(raw_lines);
                 return Ok(LiveEditorAction::Redraw);
             }
             Event::Key(KeyEvent {
@@ -263,7 +265,7 @@ impl LiveReplEditor {
                             .unwrap_or_default();
                         self.cursor = self.input.chars().count();
                         self.history_clean_index = Some(self.history_index);
-                        self.is_pasted = false;
+                        self.raw_pasted_lines = 0;
                         self.pasted_images.clear();
                         self.pasted_texts.clear();
                     } else {
@@ -287,7 +289,7 @@ impl LiveReplEditor {
                             self.cursor = 0;
                             self.history_clean_index = None;
                         }
-                        self.is_pasted = false;
+                        self.raw_pasted_lines = 0;
                         self.pasted_images.clear();
                         self.pasted_texts.clear();
                     } else {
@@ -298,7 +300,7 @@ impl LiveReplEditor {
                     // Shift+Enter 与 Ctrl+J 相同：在光标处插入换行，不提交
                     insert_newline_at_cursor(&mut self.input, &mut self.cursor);
                     self.history_clean_index = None;
-                    self.is_pasted = false;
+                    self.raw_pasted_lines = 0;
                 }
                 KeyCode::Enter => {
                     return Ok(self
@@ -309,7 +311,7 @@ impl LiveReplEditor {
                 KeyCode::Char('j') if modifiers.contains(KeyModifiers::CONTROL) => {
                     insert_newline_at_cursor(&mut self.input, &mut self.cursor);
                     self.history_clean_index = None;
-                    self.is_pasted = false;
+                    self.raw_pasted_lines = 0;
                 }
                 KeyCode::Char('c')
                     if modifiers.contains(KeyModifiers::CONTROL)
@@ -333,7 +335,7 @@ impl LiveReplEditor {
                         &mut self.pasted_texts,
                     );
                     self.history_clean_index = None;
-                    self.is_pasted = false;
+                    self.raw_pasted_lines = 0;
                 }
                 KeyCode::Backspace => {
                     if self.cursor > 0 {
@@ -354,7 +356,7 @@ impl LiveReplEditor {
                         }
                         self.history_clean_index = None;
                     }
-                    self.is_pasted = false;
+                    self.raw_pasted_lines = 0;
                 }
                 KeyCode::Delete => {
                     if let Some((start, end)) =
@@ -372,7 +374,7 @@ impl LiveReplEditor {
                         remove_char_at_cursor(&mut self.input, self.cursor);
                     }
                     self.history_clean_index = None;
-                    self.is_pasted = false;
+                    self.raw_pasted_lines = 0;
                 }
                 KeyCode::Char('c' | 'C')
                     if modifiers.contains(KeyModifiers::CONTROL)
@@ -398,7 +400,7 @@ impl LiveReplEditor {
                         insert_char_at_cursor(&mut self.input, &mut self.cursor, ch);
                         self.history_clean_index = None;
                     }
-                    self.is_pasted = false;
+                    self.raw_pasted_lines = 0;
                 }
                 _ => return Ok(LiveEditorAction::None),
             },
@@ -411,49 +413,39 @@ impl LiveReplEditor {
         match crate::clipboard::read_clipboard() {
             Ok(crate::clipboard::ClipboardContent::Image(image)) => {
                 let index = self.pasted_images.len() + 1;
-                let placeholder = match image.write_temp_file(&paths.cache_dir, index) {
-                    Ok(path) => {
-                        let filename = path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("image");
-                        format!("[Image {index}: {filename}]")
-                    }
-                    Err(_) => format!("[Image {index}]"),
-                };
+                // 占位符只认序号,文件名不进输入框(模型侧路径另拼)。
+                let _ = image.write_temp_file(&paths.cache_dir, index);
+                let placeholder = format!("[Image {index}]");
                 insert_str_at_cursor(&mut self.input, &mut self.cursor, &placeholder);
                 self.pasted_images
                     .push(Some(crate::clipboard::PastedImage::Binary(image)));
-                self.is_pasted = false;
+                self.raw_pasted_lines = 0;
             }
-            Ok(crate::clipboard::ClipboardContent::ImagePath(path)) => {
+            Ok(crate::clipboard::ClipboardContent::MediaPath(path)) => {
                 let index = self.pasted_images.len() + 1;
-                let filename = std::path::Path::new(&path)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("image");
+                let label = media_placeholder_label(&path);
                 insert_str_at_cursor(
                     &mut self.input,
                     &mut self.cursor,
-                    &format!("[Image {index}: {filename}]"),
+                    &format!("[{label} {index}]"),
                 );
                 self.pasted_images
                     .push(Some(crate::clipboard::PastedImage::Path(path)));
-                self.is_pasted = false;
+                self.raw_pasted_lines = 0;
             }
             Ok(crate::clipboard::ClipboardContent::TextPath(path)) => {
                 insert_str_at_cursor(&mut self.input, &mut self.cursor, &path);
-                self.is_pasted = false;
+                self.raw_pasted_lines = 0;
             }
             _ => {
                 if let Ok(Some(text)) = crate::clipboard::read_clipboard_text() {
-                    insert_pasted_text_at_cursor(
+                    let raw_lines = insert_pasted_text_at_cursor(
                         &mut self.input,
                         &mut self.cursor,
                         text,
                         &mut self.pasted_texts,
                     );
-                    self.is_pasted = true;
+                    self.raw_pasted_lines = self.raw_pasted_lines.saturating_add(raw_lines);
                 }
             }
         }
@@ -464,14 +456,14 @@ impl LiveReplEditor {
 
 pub(in crate::cli) fn repl_input_rendered_rows(
     input: &str,
-    is_pasted: bool,
+    raw_pasted_lines: usize,
     show_shortcut_hint: bool,
     cols: usize,
 ) -> u16 {
     let suggestions = repl_command_suggestions(input);
     let lines = repl_input_lines(input);
     let display_lines =
-        repl_visible_input_lines("  ", &lines, REPL_MAX_VISIBLE_INPUT_ROWS, is_pasted);
+        repl_visible_input_lines("  ", &lines, REPL_MAX_VISIBLE_INPUT_ROWS, raw_pasted_lines);
     let input_rows = repl_wrapped_input_rows_for_cols("  ", &display_lines, cols)
         .len()
         .max(1)

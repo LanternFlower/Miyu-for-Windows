@@ -29,9 +29,7 @@ impl Agent {
         if matches!(
             crate::tools::workspace::current_turn_origin(),
             crate::tools::workspace::TurnOrigin::Human
-        ) {
-            self.repeat_chain.reset();
-        }
+        ) {}
         let prepared = self.prepare_user_input(input, images).await?;
         let input = prepared.content.clone();
         let turn_id = format!(
@@ -101,7 +99,8 @@ impl Agent {
                 });
         if let Some(mut association) = self
             .memory
-            .association(&input, association_exclusion.as_ref())?
+            .association_with_semantic(&input, association_exclusion.as_ref())
+            .await?
         {
             if association.organization_due {
                 self.wake_memory_organizer();
@@ -205,6 +204,7 @@ impl Agent {
                 source: self.usage_source(),
                 provider: result.provider_id.as_deref(),
                 model: result.model.as_deref(),
+                kind: None,
             };
             self.state.add_usage(&usage, meta)?;
         }

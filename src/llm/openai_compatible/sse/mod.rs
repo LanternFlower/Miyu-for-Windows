@@ -19,11 +19,15 @@ pub(in crate::llm::openai_compatible) use responses::*;
 
 use crate::llm::openai_compatible::*;
 
-pub(in crate::llm::openai_compatible) fn clean_response_content(content: String) -> (String, Option<String>) {
+pub(in crate::llm::openai_compatible) fn clean_response_content(
+    content: String,
+) -> (String, Option<String>) {
     split_tagged_reasoning(clean_plain_text(content))
 }
 
-pub(in crate::llm::openai_compatible) fn split_tagged_reasoning(content: String) -> (String, Option<String>) {
+pub(in crate::llm::openai_compatible) fn split_tagged_reasoning(
+    content: String,
+) -> (String, Option<String>) {
     match split_tag_pair(content, "think").or_else(|content| split_tag_pair(content, "thinking")) {
         Ok(result) => result,
         Err(content) => (content, None),
@@ -218,7 +222,9 @@ where
     Ok(Some(false))
 }
 
-pub(in crate::llm::openai_compatible) fn delta_reasoning_text(delta: &ChatChoiceMessage) -> Option<String> {
+pub(in crate::llm::openai_compatible) fn delta_reasoning_text(
+    delta: &ChatChoiceMessage,
+) -> Option<String> {
     delta
         .reasoning_content
         .clone()
@@ -229,7 +235,9 @@ pub(in crate::llm::openai_compatible) fn delta_reasoning_text(delta: &ChatChoice
         .or_else(|| reasoning_details_text(delta.reasoning_details.as_ref()))
 }
 
-pub(in crate::llm::openai_compatible) fn reasoning_details_text(value: Option<&serde_json::Value>) -> Option<String> {
+pub(in crate::llm::openai_compatible) fn reasoning_details_text(
+    value: Option<&serde_json::Value>,
+) -> Option<String> {
     let value = value?;
     if let Some(text) = value.as_str() {
         return Some(text.to_string());

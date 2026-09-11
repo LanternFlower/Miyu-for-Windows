@@ -1,7 +1,7 @@
 {
   "name": "check_os_info",
   "display_name": "查看系统信息",
-  "description": "View read-only basic system information.",
+  "description": "Check read-only basic system information.",
   "parameters": {
     "type": "object",
     "properties": {}

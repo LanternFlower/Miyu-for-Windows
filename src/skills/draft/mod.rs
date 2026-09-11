@@ -546,7 +546,11 @@ pub(crate) struct PackageStats {
     pub(crate) bytes: u64,
 }
 
-pub(crate) fn validate_package_tree(path: &Path, depth: usize, stats: &mut PackageStats) -> Result<()> {
+pub(crate) fn validate_package_tree(
+    path: &Path,
+    depth: usize,
+    stats: &mut PackageStats,
+) -> Result<()> {
     if depth > MAX_SKILL_PACKAGE_DEPTH {
         bail!("skill package exceeds the directory depth limit");
     }

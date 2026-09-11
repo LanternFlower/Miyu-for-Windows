@@ -6,7 +6,11 @@
 
 use crate::cli::*;
 
-pub(in crate::cli) fn fuzzy_matches(matcher: &SkimMatcherV2, items: &[String], query: &str) -> Vec<(i64, usize)> {
+pub(in crate::cli) fn fuzzy_matches(
+    matcher: &SkimMatcherV2,
+    items: &[String],
+    query: &str,
+) -> Vec<(i64, usize)> {
     let mut matches = items
         .iter()
         .enumerate()
@@ -109,7 +113,12 @@ pub(in crate::cli) fn inline_fuzzy_header(query: &str, width: usize) -> String {
     format!("\x1b[1m{}\x1b[0m", truncate_visible_width(&line, width))
 }
 
-pub(in crate::cli) fn inline_fuzzy_item_line(item: &str, selected: bool, active: bool, width: usize) -> String {
+pub(in crate::cli) fn inline_fuzzy_item_line(
+    item: &str,
+    selected: bool,
+    active: bool,
+    width: usize,
+) -> String {
     let marker = if active { "[*]" } else { "[ ]" };
     let line = if selected {
         format!("› {marker} {item}")
@@ -137,7 +146,11 @@ pub(in crate::cli) fn inline_fuzzy_help_line(width: usize) -> String {
     format!("\x1b[2m{}\x1b[0m", truncate_visible_width(line, width))
 }
 
-pub(in crate::cli) fn clear_inline_fuzzy(stdout: &mut io::Stdout, anchor_y: u16, lines: u16) -> Result<()> {
+pub(in crate::cli) fn clear_inline_fuzzy(
+    stdout: &mut io::Stdout,
+    anchor_y: u16,
+    lines: u16,
+) -> Result<()> {
     for row in 0..lines {
         queue!(
             stdout,
@@ -256,7 +269,10 @@ pub(in crate::cli) fn inline_single_confirm_header(label: &str, width: usize) ->
     } else {
         format!("delete \"{label}\"? y/N")
     };
-    format!("\x1b[1m\x1b[31m{}\x1b[0m", truncate_visible_width(&line, width))
+    format!(
+        "\x1b[1m\x1b[31m{}\x1b[0m",
+        truncate_visible_width(&line, width)
+    )
 }
 
 pub(in crate::cli) fn inline_single_help_line(width: usize, deletable: bool) -> String {
@@ -295,7 +311,7 @@ pub(in crate::cli) struct InlineRawMode {
 impl InlineRawMode {
     pub(in crate::cli) fn start() -> Result<Self> {
         terminal::enable_raw_mode()?;
-    spawn_hangup_watchdog();
+        spawn_hangup_watchdog();
         Ok(Self {
             stdout: io::stdout(),
         })

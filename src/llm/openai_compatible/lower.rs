@@ -21,7 +21,9 @@ pub(in crate::llm::openai_compatible) fn prepare_chat_messages_for_provider(
     messages
 }
 
-pub(in crate::llm::openai_compatible) fn taotoken_glm_chat_template_kwargs(provider: &ProviderConfig) -> Option<ChatTemplateKwargs> {
+pub(in crate::llm::openai_compatible) fn taotoken_glm_chat_template_kwargs(
+    provider: &ProviderConfig,
+) -> Option<ChatTemplateKwargs> {
     let base_url = provider.base_url.to_ascii_lowercase();
     let model = provider.default_model.to_ascii_lowercase();
     if base_url.contains("taotoken.net") && model.starts_with("glm") {
@@ -33,7 +35,9 @@ pub(in crate::llm::openai_compatible) fn taotoken_glm_chat_template_kwargs(provi
     }
 }
 
-pub(in crate::llm::openai_compatible) fn lower_responses_messages(messages: Vec<ChatMessage>) -> Vec<Value> {
+pub(in crate::llm::openai_compatible) fn lower_responses_messages(
+    messages: Vec<ChatMessage>,
+) -> Vec<Value> {
     messages
         .into_iter()
         .flat_map(|message| match message.role.as_str() {
@@ -46,7 +50,9 @@ pub(in crate::llm::openai_compatible) fn lower_responses_messages(messages: Vec<
         .collect()
 }
 
-pub(in crate::llm::openai_compatible) fn lower_responses_assistant_message(message: ChatMessage) -> Vec<Value> {
+pub(in crate::llm::openai_compatible) fn lower_responses_assistant_message(
+    message: ChatMessage,
+) -> Vec<Value> {
     let mut items = Vec::new();
     let text = chat_content_text(message.content);
     if !text.trim().is_empty() {
@@ -65,7 +71,9 @@ pub(in crate::llm::openai_compatible) fn lower_responses_assistant_message(messa
     items
 }
 
-pub(in crate::llm::openai_compatible) fn lower_responses_user_content(content: Option<crate::llm::ChatContent>) -> Vec<Value> {
+pub(in crate::llm::openai_compatible) fn lower_responses_user_content(
+    content: Option<crate::llm::ChatContent>,
+) -> Vec<Value> {
     match content {
         Some(crate::llm::ChatContent::Parts(parts)) => parts
             .into_iter()
@@ -76,6 +84,14 @@ pub(in crate::llm::openai_compatible) fn lower_responses_user_content(content: O
                 crate::llm::ChatContentPart::ImageUrl { image_url } => {
                     json!({"type": "input_image", "image_url": image_url.url})
                 }
+                crate::llm::ChatContentPart::VideoUrl { .. } => {
+                    json!({"type": "input_text", "text": "[video input omitted: this provider protocol has no video support]"})
+                }
+                // Responses 的 PDF 块:`input_file` + `filename` + `file_data`
+                // (data URL)。跟 chat completions 是两个字段名,不能照搬。
+                crate::llm::ChatContentPart::File { file } => {
+                    json!({"type": "input_file", "filename": file.filename, "file_data": file.file_data})
+                }
             })
             .collect(),
         Some(crate::llm::ChatContent::Text(text)) => vec![json!({"type": "input_text", "text": text})],
@@ -83,14 +99,18 @@ pub(in crate::llm::openai_compatible) fn lower_responses_user_content(content: O
     }
 }
 
-pub(in crate::llm::openai_compatible) fn chat_content_text(content: Option<crate::llm::ChatContent>) -> String {
+pub(in crate::llm::openai_compatible) fn chat_content_text(
+    content: Option<crate::llm::ChatContent>,
+) -> String {
     match content {
         Some(crate::llm::ChatContent::Text(text)) => text,
         Some(crate::llm::ChatContent::Parts(parts)) => parts
             .into_iter()
             .filter_map(|part| match part {
                 crate::llm::ChatContentPart::Text { text } => Some(text),
-                crate::llm::ChatContentPart::ImageUrl { .. } => None,
+                crate::llm::ChatContentPart::ImageUrl { .. }
+                | crate::llm::ChatContentPart::VideoUrl { .. }
+                | crate::llm::ChatContentPart::File { .. } => None,
             })
             .collect::<Vec<_>>()
             .join(""),
@@ -98,7 +118,26 @@ pub(in crate::llm::openai_compatible) fn chat_content_text(content: Option<crate
     }
 }
 
-pub(in crate::llm::openai_compatible) fn lower_anthropic_system(messages: &[ChatMessage]) -> Option<String> {
+pub(in crate::llm::openai_compatible) fn lower_responses_tools(
+    tools: Vec<ToolDefinition>,
+) -> Vec<Value> {
+    tools
+        .into_iter()
+        .map(|tool| {
+            json!({
+                "type": "function",
+                "name": tool.function.name,
+                "description": tool.function.description,
+                "parameters": openai_tool_input_schema(tool.function.parameters),
+                "strict": false,
+            })
+        })
+        .collect()
+}
+
+pub(in crate::llm::openai_compatible) fn lower_anthropic_system(
+    messages: &[ChatMessage],
+) -> Option<String> {
     messages
         .iter()
         .take_while(|message| message.role == "system")
@@ -111,7 +150,9 @@ pub(in crate::llm::openai_compatible) fn lower_anthropic_system(messages: &[Chat
         .into_non_empty()
 }
 
-pub(in crate::llm::openai_compatible) fn lower_anthropic_messages(messages: Vec<ChatMessage>) -> Vec<AnthropicMessage> {
+pub(in crate::llm::openai_compatible) fn lower_anthropic_messages(
+    messages: Vec<ChatMessage>,
+) -> Vec<AnthropicMessage> {
     let mut output = Vec::new();
     let mut skipped_initial_system = true;
     for message in messages {
@@ -152,17 +193,39 @@ pub(in crate::llm::openai_compatible) fn lower_anthropic_messages(messages: Vec<
     output
 }
 
-pub(in crate::llm::openai_compatible) fn lower_anthropic_user_content(content: Option<crate::llm::ChatContent>) -> Vec<AnthropicContentBlock> {
+pub(in crate::llm::openai_compatible) fn lower_anthropic_user_content(
+    content: Option<crate::llm::ChatContent>,
+) -> Vec<AnthropicContentBlock> {
     match content {
-        Some(crate::llm::ChatContent::Parts(parts)) => parts
-            .into_iter()
-            .filter_map(|part| match part {
-                crate::llm::ChatContentPart::Text { text } => Some(AnthropicContentBlock::Text { text }),
-                crate::llm::ChatContentPart::ImageUrl { image_url } => {
-                    lower_anthropic_image_url(&image_url.url)
-                }
-            })
-            .collect(),
+        Some(crate::llm::ChatContent::Parts(parts)) => {
+            let mut blocks: Vec<AnthropicContentBlock> = parts
+                .into_iter()
+                .filter_map(|part| match part {
+                    crate::llm::ChatContentPart::Text { text } => {
+                        Some(AnthropicContentBlock::Text { text })
+                    }
+                    crate::llm::ChatContentPart::ImageUrl { image_url } => {
+                        lower_anthropic_image_url(&image_url.url)
+                    }
+                    crate::llm::ChatContentPart::VideoUrl { .. } => {
+                        Some(AnthropicContentBlock::Text {
+                            text:
+                                "[video input omitted: this provider protocol has no video support]"
+                                    .to_string(),
+                        })
+                    }
+                    crate::llm::ChatContentPart::File { file } => {
+                        lower_anthropic_document(&file.file_data)
+                    }
+                })
+                .collect();
+            // Anthropic 规定 document 块摆在文本块**之前**,而 Miyu 组装 parts
+            // 时正文在最前(图/视频/PDF 依次追加)。稳定分区把 document 提上来,
+            // 同类块之间的原有次序不动——这一层是字节纯度的一部分,排序不确定
+            // 就等于每轮换一份前缀。
+            blocks.sort_by_key(|block| !matches!(block, AnthropicContentBlock::Document { .. }));
+            blocks
+        }
         Some(crate::llm::ChatContent::Text(text)) => vec![AnthropicContentBlock::Text { text }],
         None => vec![AnthropicContentBlock::Text {
             text: String::new(),
@@ -170,7 +233,9 @@ pub(in crate::llm::openai_compatible) fn lower_anthropic_user_content(content: O
     }
 }
 
-pub(in crate::llm::openai_compatible) fn lower_anthropic_image_url(url: &str) -> Option<AnthropicContentBlock> {
+pub(in crate::llm::openai_compatible) fn lower_anthropic_image_url(
+    url: &str,
+) -> Option<AnthropicContentBlock> {
     if url.starts_with("http://") || url.starts_with("https://") {
         return Some(AnthropicContentBlock::Image {
             source: AnthropicImageSource::Url {
@@ -188,7 +253,32 @@ pub(in crate::llm::openai_compatible) fn lower_anthropic_image_url(url: &str) ->
     })
 }
 
-pub(in crate::llm::openai_compatible) fn lower_anthropic_assistant_content(message: ChatMessage) -> Vec<AnthropicContentBlock> {
+/// PDF → Anthropic `document` 块。`source` 与 image 同构,所以复用同一个
+/// 拆解:`data:<media_type>;base64,<data>` 或直接 URL。拆不开就整块丢掉——
+/// 发一个残缺的 source 只会换来 400。
+pub(in crate::llm::openai_compatible) fn lower_anthropic_document(
+    url: &str,
+) -> Option<AnthropicContentBlock> {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return Some(AnthropicContentBlock::Document {
+            source: AnthropicImageSource::Url {
+                url: url.to_string(),
+            },
+        });
+    }
+    let data = url.strip_prefix("data:")?;
+    let (media_type, base64) = data.split_once(";base64,")?;
+    Some(AnthropicContentBlock::Document {
+        source: AnthropicImageSource::Base64 {
+            media_type: media_type.to_string(),
+            data: base64.to_string(),
+        },
+    })
+}
+
+pub(in crate::llm::openai_compatible) fn lower_anthropic_assistant_content(
+    message: ChatMessage,
+) -> Vec<AnthropicContentBlock> {
     let mut content = Vec::new();
     let has_tool_calls = message
         .tool_calls
@@ -231,7 +321,9 @@ pub(in crate::llm::openai_compatible) fn lower_anthropic_assistant_content(messa
     content
 }
 
-pub(in crate::llm::openai_compatible) fn lower_anthropic_tools(tools: Vec<ToolDefinition>) -> Vec<AnthropicTool> {
+pub(in crate::llm::openai_compatible) fn lower_anthropic_tools(
+    tools: Vec<ToolDefinition>,
+) -> Vec<AnthropicTool> {
     tools
         .into_iter()
         .map(|tool| AnthropicTool {
@@ -261,14 +353,18 @@ impl IntoNonEmpty for String {
     }
 }
 
-pub(in crate::llm::openai_compatible) fn chat_content_text_ref(content: Option<&crate::llm::ChatContent>) -> String {
+pub(in crate::llm::openai_compatible) fn chat_content_text_ref(
+    content: Option<&crate::llm::ChatContent>,
+) -> String {
     match content {
         Some(crate::llm::ChatContent::Text(text)) => text.clone(),
         Some(crate::llm::ChatContent::Parts(parts)) => parts
             .iter()
             .filter_map(|part| match part {
                 crate::llm::ChatContentPart::Text { text } => Some(text.clone()),
-                crate::llm::ChatContentPart::ImageUrl { .. } => None,
+                crate::llm::ChatContentPart::ImageUrl { .. }
+                | crate::llm::ChatContentPart::VideoUrl { .. }
+                | crate::llm::ChatContentPart::File { .. } => None,
             })
             .collect::<Vec<_>>()
             .join(""),
@@ -347,7 +443,9 @@ pub(in crate::llm::openai_compatible) fn remove_null_any_of(value: Value) -> Val
 }
 
 /// Anthropic stop_reason → OpenAI 风格 finish_reason(消费方按后者判断)。
-pub(in crate::llm::openai_compatible) fn map_anthropic_stop_reason(stop_reason: Option<String>) -> Option<String> {
+pub(in crate::llm::openai_compatible) fn map_anthropic_stop_reason(
+    stop_reason: Option<String>,
+) -> Option<String> {
     stop_reason.map(|reason| {
         match reason.as_str() {
             "max_tokens" => "length",

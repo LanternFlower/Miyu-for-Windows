@@ -1,7 +1,7 @@
 {
   "name": "read_clipboard",
   "display_name": "读取剪贴板",
-  "description": "Read the current Linux clipboard.",
+  "description": "Read the current clipboard.",
   "parameters": {
     "type": "object",
     "properties": {

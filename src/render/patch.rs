@@ -5,7 +5,11 @@
 
 use crate::render::*;
 
-pub(crate) fn write_tool_payload(stdout: &mut impl Write, label: &str, payload: &str) -> Result<()> {
+pub(crate) fn write_tool_payload(
+    stdout: &mut impl Write,
+    label: &str,
+    payload: &str,
+) -> Result<()> {
     let formatted = format_tool_payload(payload);
     writeln!(stdout, "\x1b[2m{label}:\x1b[0m")?;
     for line in formatted.lines() {
@@ -52,9 +56,7 @@ pub(crate) fn render_patch_diff(path: &str, diff: &str) -> String {
     } else {
         t("Modified", "已修改")
     };
-    output.push_str(&format!(
-        "\x1b[2m{label}  \x1b[38;5;250m{path}\x1b[0m\n\n"
-    ));
+    output.push_str(&format!("\x1b[2m{label}  \x1b[38;5;250m{path}\x1b[0m\n\n"));
 
     let terminal_width = terminal::size()
         .map(|(width, _)| usize::from(width))

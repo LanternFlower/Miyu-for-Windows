@@ -1,7 +1,7 @@
 {
   "name": "query_deepseek_status",
   "display_name": "查询 DeepSeek 状态",
-  "description": "Query DeepSeek service status from the official status page.",
+  "description": "Query DeepSeek service status.",
   "parameters": {
     "type": "object",
     "properties": {

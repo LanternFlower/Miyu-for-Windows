@@ -1,7 +1,7 @@
 {
   "name": "search_evicted_context",
   "display_name": "搜索旧上下文",
-  "description": "Search conversation turns that were evicted to cache due to context length limits. Use when the context is clearly missing earlier discussion.",
+  "description": "Search conversation turns evicted from the context window. Use when earlier discussion is clearly missing.",
   "parameters": {
     "type": "object",
     "properties": {

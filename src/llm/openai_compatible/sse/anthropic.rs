@@ -7,8 +7,8 @@
 //! 用量分两次到达（开始时有 input、结束时有 output），`merge_anthropic_usage`
 //! 负责合并。
 
-use crate::llm::openai_compatible::*;
 use crate::llm::openai_compatible::sse::*;
+use crate::llm::openai_compatible::*;
 
 #[derive(Default)]
 pub(in crate::llm::openai_compatible) struct AnthropicStreamState {
@@ -237,7 +237,10 @@ where
     Ok(false)
 }
 
-pub(in crate::llm::openai_compatible) fn flush_anthropic_state<F>(state: &mut AnthropicStreamState, on_chunk: &mut F) -> Result<()>
+pub(in crate::llm::openai_compatible) fn flush_anthropic_state<F>(
+    state: &mut AnthropicStreamState,
+    on_chunk: &mut F,
+) -> Result<()>
 where
     F: FnMut(ChatStreamChunk) -> Result<()>,
 {
@@ -264,7 +267,10 @@ where
     )
 }
 
-pub(in crate::llm::openai_compatible) fn merge_anthropic_usage(current: &mut Option<Usage>, usage: AnthropicUsage) {
+pub(in crate::llm::openai_compatible) fn merge_anthropic_usage(
+    current: &mut Option<Usage>,
+    usage: AnthropicUsage,
+) {
     let previous = current.take().unwrap_or_default();
     let cache_read = usage
         .cache_read_input_tokens

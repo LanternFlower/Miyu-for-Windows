@@ -24,7 +24,10 @@ pub(in crate::tools::deep_research) struct Reference {
     pub(crate) snippet: String,
 }
 
-pub(in crate::tools::deep_research) fn register_reference_tools(registry: &mut ToolRegistry, state: Arc<Mutex<ResearchState>>) {
+pub(in crate::tools::deep_research) fn register_reference_tools(
+    registry: &mut ToolRegistry,
+    state: Arc<Mutex<ResearchState>>,
+) {
     let title_state = Arc::clone(&state);
     registry.register(ToolSpec::new(
         "register_deep_research_topic_title",
@@ -83,13 +86,18 @@ pub(in crate::tools::deep_research) fn register_reference_tools(registry: &mut T
     ));
 }
 
-pub(in crate::tools::deep_research) fn reference_registry_json(state: &Arc<Mutex<ResearchState>>) -> Result<String> {
+pub(in crate::tools::deep_research) fn reference_registry_json(
+    state: &Arc<Mutex<ResearchState>>,
+) -> Result<String> {
     let state = state.lock().expect("deep research state lock");
     let refs = state.references.iter().map(|item| json!({"ref": item.marker, "type": item.kind, "title": item.title, "url": item.url, "path": item.path, "snippet": item.snippet})).collect::<Vec<_>>();
     Ok(serde_json::to_string_pretty(&refs)?)
 }
 
-pub(in crate::tools::deep_research) fn normalize_final_answer(draft: &str, state: &Arc<Mutex<ResearchState>>) -> Result<String> {
+pub(in crate::tools::deep_research) fn normalize_final_answer(
+    draft: &str,
+    state: &Arc<Mutex<ResearchState>>,
+) -> Result<String> {
     let diagnostics = reference_diagnostics(draft, state);
     let mut answer = strip_reference_section(draft).trim().to_string();
     if !diagnostics.is_empty() {
@@ -117,7 +125,10 @@ pub(in crate::tools::deep_research) fn normalize_final_answer(draft: &str, state
     Ok(answer)
 }
 
-pub(in crate::tools::deep_research) fn reference_diagnostics(draft: &str, state: &Arc<Mutex<ResearchState>>) -> Vec<String> {
+pub(in crate::tools::deep_research) fn reference_diagnostics(
+    draft: &str,
+    state: &Arc<Mutex<ResearchState>>,
+) -> Vec<String> {
     let state = state.lock().expect("deep research state lock");
     let known = state
         .references
@@ -195,7 +206,9 @@ pub(in crate::tools::deep_research) fn write_report(
     Ok(path)
 }
 
-pub(in crate::tools::deep_research) fn public_sources(state: &Arc<Mutex<ResearchState>>) -> Vec<Value> {
+pub(in crate::tools::deep_research) fn public_sources(
+    state: &Arc<Mutex<ResearchState>>,
+) -> Vec<Value> {
     let state = state.lock().expect("deep research state lock");
     state.references.iter().map(|item| json!({"ref": item.marker, "type": item.kind, "title": item.title, "url": item.url, "path": item.path})).collect()
 }

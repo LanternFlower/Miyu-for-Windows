@@ -1,7 +1,7 @@
 //! 插件设置的默认值、校验与迁移。
 
-use crate::config::*;
 use super::shared::*;
+use crate::config::*;
 
 #[test]
 fn legacy_real_context_history_limits_move_to_message_history() {
@@ -48,7 +48,13 @@ fn real_context_defaults_match_the_deployed_contract() {
     assert!(settings.active_reply_enable);
     assert!(settings.judge_include_persona);
     assert!(settings.judge_persona_prompt.is_empty());
-    assert!(settings.text_models.is_none());
+    // The judge runs on every group message: it ships on the lite tier and
+    // affection follows the judge unless told otherwise.
+    assert_eq!(
+        settings.text_models.tier_ref(),
+        Some(crate::config::ModelTier::Lite)
+    );
+    assert!(settings.affection_text_models.is_inherit());
     assert_eq!(settings.active_judge_probability, 0.05);
     assert_eq!(settings.reply_threshold, 0.8);
     assert_eq!(settings.judge_timeout_seconds, 60);
@@ -178,7 +184,7 @@ fn real_context_legacy_settings_migrate_and_deprecated_keys_are_removed() {
     assert!(settings.takeover_direct_trigger_enable);
     assert_eq!(settings.takeover_direct_trigger_boost_score, 0.4);
     assert_eq!(
-        settings.text_models.as_ref().unwrap()[0].provider_id,
+        settings.text_models.explicit_models().unwrap()[0].provider_id,
         "judge"
     );
 
@@ -199,8 +205,7 @@ fn real_context_legacy_settings_migrate_and_deprecated_keys_are_removed() {
 #[test]
 fn real_context_judge_persona_prompt_normalizes_validates_and_roundtrips() {
     let legacy =
-        RealContextPluginSettings::from_instance(&PlatformPluginInstanceConfig::default())
-            .unwrap();
+        RealContextPluginSettings::from_instance(&PlatformPluginInstanceConfig::default()).unwrap();
     assert!(legacy.judge_persona_prompt.is_empty());
 
     let mut settings = RealContextPluginSettings {
@@ -270,7 +275,7 @@ fn real_context_plugin_rejects_invalid_types_ranges_and_models() {
     assert!(config.validate().is_err());
 
     let mut settings = RealContextPluginSettings {
-        text_models: Some(vec![ActiveProviderModelConfig {
+        text_models: crate::config::ModelPoolRef::models(vec![ActiveProviderModelConfig {
             provider_id: config.providers[0].id.clone(),
             model: "missing".to_string(),
         }]),
@@ -285,7 +290,7 @@ fn real_context_plugin_rejects_invalid_types_ranges_and_models() {
         .insert(REAL_CONTEXT_PLUGIN_ID.to_string(), instance);
     assert!(config.validate().is_err());
 
-    settings.text_models.as_mut().unwrap()[0].model = "text-only".to_string();
+    settings.text_models.explicit_models_mut().unwrap()[0].model = "text-only".to_string();
     merge_real_context_settings(
         config
             .platforms

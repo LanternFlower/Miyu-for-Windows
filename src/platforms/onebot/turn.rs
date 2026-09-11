@@ -91,13 +91,10 @@ pub(crate) async fn wake_conversation_for_job(
     let profile = crate::platforms::TurnProfile {
         active_persona: Some(context.config.prompt.active_persona.clone()),
         text_models: context.config.active_provider_models.clone(),
-        multimodal_models: context
-            .config
-            .qq_multimodal_model_pool(
-                conversation_kind_enum,
-                &context.conversation.conversation_id,
-            )
-            .map(<[_]>::to_vec),
+        multimodal_models: context.config.qq_multimodal_model_pool(
+            conversation_kind_enum,
+            &context.conversation.conversation_id,
+        ),
         system_context: prepared.system_context,
         turn_system_context,
         memory_content: Some(prepared.memory_content),
@@ -502,6 +499,9 @@ pub(in crate::platforms::onebot) async fn build_and_run_turn(
     }
     let mut prepared = context.prepare_turn(content).await;
     prepared.context_files.extend(current_files);
+    // 历史里的 + 当前消息里的文件/视频引用一起登记,供看图工具(含 MCP 桥
+    // 另建的工具面)按 id 懒下载(09-04)。
+    context.set_context_files(prepared.context_files.clone());
     let content = prepared.content;
     let group_name = context
         .inbound_event()
@@ -527,15 +527,44 @@ pub(in crate::platforms::onebot) async fn build_and_run_turn(
         context.inbound_event(),
         group_name,
     )];
+    // 并发回合的事实注入(08-25 拯救者重复答题取证):历史块里"@我却无人
+    // 应答"的消息是跨线代答的最强诱饵——告知那条已有回合在处理,诱饵即拆。
+    // 瞬态尾巴通道,化石化为当时事实,不掰前缀。
+    {
+        let current_id = context
+            .inbound_event()
+            .map(|event| event.message_id.as_str())
+            .unwrap_or("");
+        let inflight = crate::platforms::inflight::other_inflight_messages(
+            &context.conversation.scope_key(),
+            current_id,
+        );
+        if !inflight.is_empty() {
+            let ids = inflight
+                .iter()
+                .map(|id| format!("msg={id}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            turn_system_context.push(format!(
+                "<qq-inflight>Replies to these recorded messages are already in progress in parallel turns: {ids}. Do not answer them here; they are not abandoned.</qq-inflight>"
+            ));
+        }
+    }
     turn_system_context.extend(prepared.turn_system_context);
     let mut system_context = vec![
         qq_identity_policy(context.conversation.kind),
         qq_history_format(context.config.platforms.qq.user_identification),
-        "<qq-context-images>If a <context-images> block appears in this turn, it lists IDs of historical images from earlier group-chat records that can be viewed on demand. You have not seen the actual content of these images; only when the answer truly depends on an image, call vision_analyze with the corresponding ID as the image argument. Never guess image content from the placeholders.</qq-context-images>".to_string(),
+        "<qq-context-images>A <context-images> block lists IDs of images sent earlier in this conversation, viewable on demand. You have not seen their content. Call vision_analyze with an ID only when the answer truly depends on the image; never guess image content from placeholders.</qq-context-images>".to_string(),
         // reply_to 语义:被引消息是旧消息、作者是 reply_to 里的人、不是说给
         // 你的话——不解释这三点,模型会把引用内容当成当前对话里别人对它说
         // 的新话(用户 08-20 实测点名)。会话级常量,不掰缓存。
-        "<qq-reply-format>When message.reply_to appears in <qq-request-context>, the current sender is quoting that earlier message as conversational context. reply_to.text was written at an earlier time by the user identified in reply_to (sender_principal / sender_display_name), not by the current sender; it is not addressed to you and is not part of the current message. Only the text outside reply_to is what the current sender is saying now.</qq-reply-format>".to_string(),
+        // 回复定向(08-23 实锤:被"现在咋这么慢"触发的回合开场去研究历史里的
+        // AUR 话题)。这条曾内联在本轮消息块里,因随化石重放造成跨轮语义错乱
+        // 而被删——放 system 常量既不化石也不掰缓存,是它唯一正确的位置。
+        "<qq-reply-target>Answer the messages under [New messages received this turn]. They directly continue [Prior group chat records] in chronological order and are the latest words in this conversation. The records are read-only background you have already seen; never answer a recorded message here, even one that mentions you — it is handled by its own turn. When the new message itself has little content, respond to it briefly in character instead of substituting a recorded question.</qq-reply-target>".to_string(),
+        // 08-21 文风批:精简 ~25%,三个语义点(旧消息/作者是 reply_to 里的人/
+        // 不是说给你的)一个不丢。
+        "<qq-reply-format>A `quoted earlier message` line (and message.reply_to in <qq-request-context>) is old content written earlier by the user named there, not by the current sender. It is background the sender points at, not part of what they say now and not addressed to you. Only the text on the message line itself is the current sender's own words.</qq-reply-format>".to_string(),
     ];
     if let Some(prompt) = route
         .map(|route| route.extra_prompt.trim())
@@ -551,8 +580,7 @@ pub(in crate::platforms::onebot) async fn build_and_run_turn(
         text_models: context.config.active_provider_models.clone(),
         multimodal_models: context
             .config
-            .qq_multimodal_model_pool(conversation_kind, &context.conversation.conversation_id)
-            .map(<[_]>::to_vec),
+            .qq_multimodal_model_pool(conversation_kind, &context.conversation.conversation_id),
         system_context,
         turn_system_context,
         memory_content: Some(prepared.memory_content),

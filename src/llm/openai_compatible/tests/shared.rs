@@ -65,15 +65,8 @@ pub(super) async fn write_truncated_sse_response(stream: &mut tokio::net::TcpStr
 }
 
 pub(super) async fn read_http_headers(stream: &mut tokio::net::TcpStream) {
-    let mut request = Vec::new();
-    let mut byte = [0u8; 1];
-    while !request.ends_with(b"\r\n\r\n") {
-        let read = stream.read(&mut byte).await.unwrap();
-        assert_ne!(read, 0, "connection closed before request headers");
-        request.push(byte[0]);
-    }
-    let headers = String::from_utf8_lossy(&request);
-    let content_length = headers.lines().find_map(|line| {
+    let head = read_http_request_head(stream).await;
+    let content_length = head.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
         name.eq_ignore_ascii_case("content-length")
             .then(|| value.trim().parse::<usize>().ok())
@@ -90,6 +83,18 @@ pub(super) async fn read_http_headers(stream: &mut tokio::net::TcpStream) {
     }
 }
 
+/// 同 `read_http_headers`,但把请求头原文交回来——要断言发了哪些头的测试用。
+pub(super) async fn read_http_request_head(stream: &mut tokio::net::TcpStream) -> String {
+    let mut request = Vec::new();
+    let mut byte = [0u8; 1];
+    while !request.ends_with(b"\r\n\r\n") {
+        let read = stream.read(&mut byte).await.unwrap();
+        assert_ne!(read, 0, "connection closed before request headers");
+        request.push(byte[0]);
+    }
+    String::from_utf8_lossy(&request).to_string()
+}
+
 pub(super) async fn write_http_sse_response(stream: &mut tokio::net::TcpStream, body: &str) {
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -103,8 +108,8 @@ pub(super) async fn write_http_sse_response(stream: &mut tokio::net::TcpStream, 
 /// The listener is bound before the task is spawned: `#[tokio::test]` runs
 /// a current-thread runtime, so handing the address back over a blocking
 /// channel would deadlock the only thread that could serve it.
-pub(super) async fn spawn_rate_limited_endpoint() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>)
-{
+pub(super) async fn spawn_rate_limited_endpoint(
+) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/v1", listener.local_addr().unwrap());
     let hits = Arc::new(AtomicUsize::new(0));
@@ -160,7 +165,10 @@ pub(super) fn client_over(endpoints: Vec<LlmEndpoint>) -> OpenAiCompatibleClient
         max_tokens_override: None,
         request_scope: "chat",
         claude_code: None,
+        antigravity: None,
+        codex: None,
         claude_code_dev_mode: false,
+        zen_session: None,
         continuation_health: ResponsesContinuationHealth::detached(),
     }
 }
@@ -186,7 +194,10 @@ pub(super) fn test_client(provider: ProviderConfig) -> OpenAiCompatibleClient {
         max_tokens_override: None,
         request_scope: "chat",
         claude_code: None,
+        antigravity: None,
+        codex: None,
         claude_code_dev_mode: false,
+        zen_session: None,
         continuation_health: ResponsesContinuationHealth::detached(),
     }
 }
@@ -218,9 +229,12 @@ pub(super) fn test_provider(id: &str, base_url: &str) -> ProviderConfig {
         protocol: "auto".to_string(),
         api_key: None,
         models: Vec::new(),
+        custom_models: Vec::new(),
         model_context_window: std::collections::HashMap::new(),
         model_temperature: std::collections::HashMap::new(),
+        model_tools_loading_mode: std::collections::HashMap::new(),
         model_modalities: std::collections::HashMap::new(),
+        tool_result_media: None,
         model_costs: std::collections::HashMap::new(),
         default_model: String::new(),
         timeout_seconds: 60,

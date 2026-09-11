@@ -409,6 +409,28 @@ fn private_message_info_uses_target_peer_and_sender_fallbacks() {
     )
     .unwrap();
     assert_eq!(received.conversation_id.as_deref(), Some("20000"));
+
+    // 用户发来的消息:`get_msg` 回来的 target_id 是**收件人**,也就是机器人
+    // 自己。原来不过滤就直接采信,会话 id 成了自己的号,`adapter.rs` 的归属
+    // 校验判成"属于另一个会话",vision_analyze 取历史图必失败
+    // (08-30 测具实测)。私聊的会话 id 永远是对方。
+    let inbound_with_self_target = parse_message_info(
+        &json!({
+            "message_type": "private",
+            "message_id": 3,
+            "target_id": 10000,
+            "user_id": 20000,
+            "sender": { "user_id": 20000, "nickname": "user" },
+            "message": [{ "type": "text", "data": { "text": "hi" } }],
+        }),
+        10000,
+    )
+    .unwrap();
+    assert_eq!(
+        inbound_with_self_target.conversation_id.as_deref(),
+        Some("20000"),
+        "私聊会话 id 必须是对方,不能是自己"
+    );
 }
 
 #[tokio::test]

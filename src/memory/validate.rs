@@ -304,7 +304,10 @@ pub(crate) fn validate_memory_subjects(
     Ok(())
 }
 
-pub(crate) fn knowledge_ownership(batch: &OrganizationBatch, action: &KnowledgeAction) -> MemoryOwnership {
+pub(crate) fn knowledge_ownership(
+    batch: &OrganizationBatch,
+    action: &KnowledgeAction,
+) -> MemoryOwnership {
     if let Some(target) = action.target_id.and_then(|target| {
         batch
             .existing

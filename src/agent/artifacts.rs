@@ -88,7 +88,9 @@ pub(in crate::agent) fn chat_message_text(message: &ChatMessage) -> Option<Strin
                 .iter()
                 .filter_map(|part| match part {
                     ChatContentPart::Text { text } => Some(text.as_str()),
-                    ChatContentPart::ImageUrl { .. } => None,
+                    ChatContentPart::ImageUrl { .. }
+                    | ChatContentPart::VideoUrl { .. }
+                    | ChatContentPart::File { .. } => None,
                 })
                 .collect::<Vec<_>>()
                 .join("\n"),
@@ -106,7 +108,9 @@ pub(in crate::agent) fn artifact_candidate_paths(tool_name: &str, output: &str) 
             .and_then(Value::as_str)
             .into_iter()
             .collect::<Vec<_>>(),
-        "apply_patch" => payload
+        // "edit" 是 apply_patch 的统一化新名(08-21);artifact:/kb: 命名空间
+        // 的输出路径带前缀,过不了下面的扩展名/存在性检查,天然不会误发布。
+        "edit" | "apply_patch" => payload
             .get("files")
             .and_then(Value::as_array)
             .into_iter()
@@ -125,7 +129,9 @@ pub(in crate::agent) fn artifact_candidate_paths(tool_name: &str, output: &str) 
 
 pub(in crate::agent) fn resolve_tool_output_path(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+        if let Some(home) =
+            crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
+        {
             return home.join(rest);
         }
     }

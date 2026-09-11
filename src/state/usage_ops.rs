@@ -56,6 +56,17 @@ impl StateStore {
         }
     }
 
+    /// 清空逐次调用明细(usage-history.jsonl)。累计正账 usage.json 不动——
+    /// 那是"一生用了多少"的唯一来源,统计页要的只是明细派生的图表与记录。
+    pub fn clear_usage_history(&self) -> Result<()> {
+        let path = self.usage_history_file();
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("clearing usage history {}", path.display()))?;
+        }
+        Ok(())
+    }
+
     pub fn usage_history_file(&self) -> PathBuf {
         self.state_dir.join("usage-history.jsonl")
     }
@@ -87,7 +98,9 @@ impl StateStore {
                 let price = crate::models_cache::pricing_resolver(config);
                 usage::usage_details(&self.usage_history_file(), limit, src, model, &price)
             }
-            None => usage::usage_details(&self.usage_history_file(), limit, src, model, &|_, _| None),
+            None => {
+                usage::usage_details(&self.usage_history_file(), limit, src, model, &|_, _| None)
+            }
         }
     }
 

@@ -1,10 +1,9 @@
 //! pop 命令与它的选择菜单。
 
 // 被测的东西散在 cli::mod 与 repl 的兄弟模块里，这里全都要够到。
+use super::shared::*;
 use crate::cli::repl::width::*;
 use crate::cli::*;
-use super::shared::*;
-
 
 #[test]
 fn repl_pop_accepts_zero_or_one_positive_integer() {

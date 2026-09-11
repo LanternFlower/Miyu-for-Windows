@@ -1,7 +1,7 @@
 {
   "name": "ask_question",
   "display_name": "询问用户",
-  "description": "Ask the user structured questions and wait for answers before continuing.\nAsk the user structured questions during the current reply and continue only after they answer. Use only when you genuinely need the user's preference, a clarification, or a decision. A single call may contain multiple questions; options should be mutually exclusive, concise, and carry helpful descriptions. Do not add an \"Other\" option — the UI provides a custom-answer input by default. Put the recommended option first and mark it \"(recommended)\" in its label.",
+  "description": "Ask the user structured questions and wait for answers before continuing. One call may carry several questions. Keep options concise with helpful descriptions. Do not add an \"other\" option; the UI provides a custom answer box. Put the recommended option first and mark its label with \"(recommended)\".",
   "parameters": {
     "type": "object",
     "properties": {

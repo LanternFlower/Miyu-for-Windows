@@ -12,6 +12,8 @@ pub(in crate::web) enum TurnTaskInput {
         display_content: String,
         attachment_run_id: Option<String>,
         images: Vec<Option<ImageAttachment>>,
+        /// 程序驱动 CLI 的「仅本回合」覆盖,见 `TurnOverrides`。
+        overrides: Option<Box<crate::ipc::TurnOverrides>>,
     },
     Redo {
         candidate: crate::state::RedoCandidate,
@@ -164,6 +166,36 @@ async fn run_turn_task_inner(
             ),
         }
     }
+    // 程序驱动 CLI 的「仅本回合」覆盖。模型池改的是这份私有 config(与会话
+    // 覆盖同路,取值有限,TurnResourceCache 扛得住);其余项走 Agent 字段,
+    // 在下面的 setup 闭包里套。模型对不上不静默退回全局池——后端调用方
+    // 指名要某个模型,换一个悄悄跑完比报错更糟。
+    let overrides = match &input {
+        TurnTaskInput::Create { overrides, .. } => overrides.as_deref().cloned(),
+        TurnTaskInput::Redo { .. } => None,
+    };
+    let mut override_error = None;
+    if let Some(models) = overrides
+        .as_ref()
+        .filter(|overrides| !overrides.models.is_empty())
+        .map(|overrides| overrides.models.clone())
+    {
+        match config.usable_model_override(models.clone()) {
+            Some(usable) if usable.len() == models.len() => {
+                config.active_provider_models = Some(usable);
+            }
+            _ => {
+                let labels = models
+                    .iter()
+                    .map(|model| format!("{}/{}", model.provider_id, model.model))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                override_error = Some(anyhow::anyhow!(
+                    "turn model override is not configured: {labels}"
+                ));
+            }
+        }
+    }
     let manager = &manager;
     let events = &events;
     let questions = &questions;
@@ -192,6 +224,9 @@ async fn run_turn_task_inner(
         turn_engine.set(TurnEngineState::INITIALIZING);
     }
     let setup = (|| -> Result<(Agent, AgentTurnControl)> {
+        if let Some(error) = override_error.take() {
+            return Err(error);
+        }
         let platform_context = profile
             .as_ref()
             .and_then(|profile| profile.platform.as_deref());
@@ -200,34 +235,26 @@ async fn run_turn_task_inner(
             .lock()
             .map_err(|_| anyhow::anyhow!("turn resource cache is poisoned"))?
             .get_or_build(&config, &paths)?;
-        let restricted = platform_context.is_some_and(|context| !context.host_tools_allowed());
-        let mut normal_tools = if restricted {
-            resources.restricted_tools.clone()
-        } else {
-            resources.normal_tools.clone()
-        };
-        let mut dev_tools = if restricted {
-            resources.restricted_tools.clone()
-        } else {
-            resources.dev_tools.clone()
-        };
-        if !restricted {
-            if let Some(context) = platform_context {
-                tools::rescope_platform_memory_tools(
-                    &mut normal_tools,
-                    &config,
-                    &paths,
-                    context,
-                    false,
-                );
-            }
-        }
-        if platform_context.is_some() {
-            // claude_code 只属于本机 owner 面(§09):host_tools_allowed 的
-            // 平台管理员会话复用 normal/dev 底座,也一并摘掉——订阅额度和
-            // 本机代理权限不跟平台身份走。
-            normal_tools.unregister("claude_code");
-            dev_tools.unregister("claude_code");
+        let mut normal_tools = resources.normal_tools.clone();
+        let mut dev_tools = resources.dev_tools.clone();
+        // 平台回合的工具面收口在 tools::apply_platform_turn_scope,与 MCP 桥
+        // (web/session_cmds.rs)共用同一份规则——两边各写一遍正是 08-26 审查
+        // 抓到的权限绕过成因。受限底座沿用缓存,不每轮重建。
+        if let Some(context) = platform_context {
+            platforms::apply_platform_turn_scope(
+                &mut normal_tools,
+                &config,
+                &paths,
+                context,
+                Some(&resources.restricted_tools),
+            );
+            platforms::apply_platform_turn_scope(
+                &mut dev_tools,
+                &config,
+                &paths,
+                context,
+                Some(&resources.restricted_tools),
+            );
         }
         if local_webui && config.tools.enabled {
             tools::register_webui_artifact_tools(&mut normal_tools, &paths, &session_id);
@@ -252,6 +279,18 @@ async fn run_turn_task_inner(
             {
                 platforms::register_platform_tools(&mut normal_tools, context.clone());
                 platforms::register_platform_tools(&mut dev_tools, context);
+            }
+        }
+        // 回合级工具面裁剪放在所有注册之后:两张表同裁,中途切模式白名单
+        // 才不失效(AgentTurnControl 拿的也是这两张表)。
+        if let Some(overrides) = overrides.as_ref() {
+            if overrides.memory_writes == Some(false) {
+                normal_tools.unregister("remember_fact");
+                dev_tools.unregister("remember_fact");
+            }
+            if let Some(allow) = overrides.tool_allowlist.as_deref() {
+                normal_tools.retain_named(allow);
+                dev_tools.retain_named(allow);
             }
         }
         let active_tools = match mode {
@@ -307,6 +346,18 @@ async fn run_turn_task_inner(
                     .to_string(),
             );
         }
+        // 宿主追加指令进 system 侧(每请求新组装、不化石,AGENTS.md §1.4);
+        // 宿主每回合传同一段时前缀逐字节稳定。
+        if let Some(prompt) = overrides
+            .as_ref()
+            .and_then(|overrides| overrides.append_system_prompt.as_deref())
+            .map(str::trim)
+            .filter(|prompt| !prompt.is_empty())
+        {
+            runtime_system_context.push(format!(
+                "<host-instructions>\n{prompt}\n</host-instructions>"
+            ));
+        }
         if !runtime_system_context.is_empty() {
             agent.set_runtime_system_context(runtime_system_context)?;
         }
@@ -356,8 +407,24 @@ async fn run_turn_task_inner(
                 agent.set_platform_context_files(context, profile.context_files.to_vec());
             }
         }
+        // 回合级覆盖在平台 profile 之后套,覆盖赢。
+        let mut memory_writes_disabled = false;
+        if let Some(overrides) = overrides.as_ref() {
+            if let Some(prompt) = overrides.system_prompt.clone() {
+                agent.set_system_prompt_override(prompt);
+            }
+            if let Some(window) = overrides.context_window {
+                agent.set_context_window_override(window);
+            }
+            if overrides.memory_writes == Some(false) {
+                agent.set_memory_writes_enabled(false);
+                memory_writes_disabled = true;
+            }
+        }
         if let Some(organizer) = memory_organizer.clone() {
-            agent.set_memory_organizer(organizer);
+            if !memory_writes_disabled {
+                agent.set_memory_organizer(organizer);
+            }
         }
         agent.prepare_for_turn()?;
         let mut control = AgentTurnControl::new(mode, normal_tools, dev_tools);
@@ -379,6 +446,14 @@ async fn run_turn_task_inner(
         }
         Ok((agent, control))
     })();
+    // 平台回合期间把上下文登记下来:MCP 桥(claude-code 供应商唯一的工具
+    // 通道)回来问工具时靠它拿到平台工具,见 live_turns 模块头。**必须绑在
+    // 回合任务体上**——绑在上面的 setup 闭包里会随闭包返回立刻掉落,整轮
+    // 都登记不上(08-26 审查抓到,正是"群里调不到管理工具"的真身)。
+    let _live_turn = profile
+        .as_ref()
+        .and_then(|profile| profile.platform.as_ref())
+        .map(|context| platforms::LiveTurnGuard::register(&session_id, context));
     let (mut agent, control) = match setup {
         Ok(setup) => {
             turn_engine.set(TurnEngineState::READY);
@@ -789,6 +864,8 @@ pub(in crate::web) fn publish_completed(
         json!({
             "run_id": run_id,
             "session_id": session_id,
+            // 最终正文随终态一起发:程序驱动的客户端不用再靠 delta 累加。
+            "content": result.content,
             "usage": result.usage,
             "usage_estimated": result.usage_estimated,
             "provider_id": result.provider_id,

@@ -69,8 +69,13 @@ pub(in crate::config_tui) fn platform_model_route_label(route: &PlatformModelRou
         t("set", "已设置")
     };
     let persona = platform_persona_summary(&route.persona);
+    let probability = match route.probability_reply {
+        Some(false) => format!(" · {}", t("random reply:off", "概率主动回复:关")),
+        Some(true) => format!(" · {}", t("random reply:on", "概率主动回复:开")),
+        None => String::new(),
+    };
     format!(
-        "{kind} {} · {}:{persona} · {}:{text} {}:{multimodal} · {}:{prompt}",
+        "{kind} {} · {}:{persona} · {}:{text} {}:{multimodal} · {}:{prompt}{probability}",
         route.conversation.id,
         t("persona", "人格"),
         t("text", "文本"),
@@ -99,6 +104,7 @@ pub(in crate::config_tui) fn edit_platform_model_route(
             multimodal_models: None,
             extra_prompt: String::new(),
             session_limits: None,
+            probability_reply: None,
         });
     let mut selected = 0usize;
     loop {
@@ -148,6 +154,11 @@ pub(in crate::config_tui) fn edit_platform_model_route(
                     .session_limits
                     .map(session_limits_label)
                     .unwrap_or_else(|| t("inherit", "继承").to_string())
+            ),
+            format!(
+                "{}: {}",
+                t("Random active replies", "概率主动回复"),
+                probability_reply_label(route.probability_reply)
             ),
         ];
         draw_menu(
@@ -235,10 +246,41 @@ pub(in crate::config_tui) fn edit_platform_model_route(
                         route.session_limits = None;
                     }
                 }
+                7 => {
+                    let choices = [
+                        probability_reply_label(None).to_string(),
+                        probability_reply_label(Some(true)).to_string(),
+                        probability_reply_label(Some(false)).to_string(),
+                    ];
+                    let current = probability_reply_label(route.probability_reply);
+                    let picked = select_choice(
+                        stdout,
+                        t(" RANDOM ACTIVE REPLIES ", " 概率主动回复 "),
+                        current,
+                        &choices,
+                        "",
+                        true,
+                    )?;
+                    route.probability_reply = if picked == choices[1] {
+                        Some(true)
+                    } else if picked == choices[2] {
+                        Some(false)
+                    } else {
+                        None
+                    };
+                }
                 _ => {}
             },
             _ => {}
         }
+    }
+}
+
+fn probability_reply_label(value: Option<bool>) -> &'static str {
+    match value {
+        None => t("inherit plugin setting", "继承插件设置"),
+        Some(true) => t("on", "开"),
+        Some(false) => t("off (no random sampling)", "关(不做概率抽样)"),
     }
 }
 
@@ -333,13 +375,6 @@ pub(in crate::config_tui) fn route_pool_summary(
             format!("{} / {}", entries[0].provider_id, entries[0].model)
         }
         Some(entries) => format!("{} {}", entries.len(), t("models", "个模型")),
-    }
-}
-
-pub(in crate::config_tui) fn qq_pool_summary(pool: Option<&[ActiveProviderModelConfig]>) -> String {
-    match pool {
-        None | Some([]) => t("inherit global", "继承全局").to_string(),
-        Some(entries) => route_pool_summary(Some(entries), PlatformModelPoolInheritance::Platform),
     }
 }
 
@@ -443,56 +478,4 @@ pub(in crate::config_tui) fn select_platform_route_models(
             _ => {}
         }
     }
-}
-
-pub(in crate::config_tui) fn select_qq_model_pool(
-    stdout: &mut io::Stdout,
-    config: &mut AppConfig,
-    multimodal: bool,
-) -> Result<()> {
-    let choices = if multimodal {
-        config.multimodal_provider_model_choices()
-    } else {
-        config.text_provider_model_choices()
-    };
-    let title = if multimodal {
-        t(" QQ MULTIMODAL MODELS ", " QQ 多模态模型 ")
-    } else {
-        t(" QQ TEXT MODELS ", " QQ 文本模型 ")
-    };
-    let inherit = if multimodal {
-        t(
-            "Inherit global multimodal model pool",
-            "继承全局多模态模型池",
-        )
-    } else {
-        t("Inherit global model pool", "继承全局模型池")
-    };
-    select_model_pool(
-        stdout,
-        choices,
-        if multimodal {
-            &mut config.platforms.qq.multimodal_models
-        } else {
-            &mut config.platforms.qq.text_models
-        },
-        multimodal,
-        title,
-        inherit,
-    )
-}
-
-pub(in crate::config_tui) fn select_non_whitelist_model_pool(
-    stdout: &mut io::Stdout,
-    config: &mut AppConfig,
-) -> Result<()> {
-    let choices = config.text_provider_model_choices();
-    select_model_pool(
-        stdout,
-        choices,
-        &mut config.platforms.qq.non_whitelist_text_models,
-        false,
-        t(" NON-WHITELIST TEXT MODELS ", " 非白名单模型池 "),
-        t("Inherit QQ platform model pool", "继承 QQ 平台模型池"),
-    )
 }

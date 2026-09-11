@@ -90,7 +90,10 @@ async fn response_header_timeout_fails_over_to_the_next_endpoint() {
         request_scope: "chat",
         continuation_health: ResponsesContinuationHealth::detached(),
         claude_code: None,
+        antigravity: None,
+        codex: None,
         claude_code_dev_mode: false,
+        zen_session: None,
     };
 
     let result = client
@@ -524,7 +527,10 @@ async fn endpoint_failover_resets_partial_reasoning_before_retry() {
         max_tokens_override: None,
         request_scope: "chat",
         claude_code: None,
+        antigravity: None,
+        codex: None,
         claude_code_dev_mode: false,
+        zen_session: None,
         continuation_health: ResponsesContinuationHealth::detached(),
     };
     let mut chunks = Vec::new();
@@ -612,7 +618,10 @@ async fn buffered_completion_fails_over_after_partial_content() {
         max_tokens_override: None,
         request_scope: "chat",
         claude_code: None,
+        antigravity: None,
+        codex: None,
         claude_code_dev_mode: false,
+        zen_session: None,
         continuation_health: ResponsesContinuationHealth::detached(),
     };
 

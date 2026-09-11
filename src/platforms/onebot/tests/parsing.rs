@@ -1,7 +1,7 @@
 //! 入站消息解析与各类上限。
 
-use crate::platforms::onebot::*;
 use super::shared::*;
+use crate::platforms::onebot::*;
 
 #[test]
 fn parses_segment_arrays_with_mixed_content() {
@@ -17,9 +17,7 @@ fn parses_segment_arrays_with_mixed_content() {
     assert!(parsed.at_self);
     assert_eq!(parsed.text, " 你好");
     assert_eq!(parsed.images.len(), 2);
-    assert!(
-        matches!(&parsed.images[0], MediaRef::Url(url) if url == "https://img.example/x.jpg")
-    );
+    assert!(matches!(&parsed.images[0], MediaRef::Url(url) if url == "https://img.example/x.jpg"));
     assert!(matches!(&parsed.images[1], MediaRef::Bytes(bytes) if bytes == b"hi"));
     assert_eq!(parsed.files.len(), 1);
     assert_eq!(parsed.files[0].name, "报告.pdf");
@@ -193,6 +191,54 @@ async fn prepared_images_become_binary_attachments_and_deduplicate_content() {
         &prepared.attachments[1],
         Some(ImageAttachment::Binary { mime, .. }) if mime == "image/jpeg"
     ));
+}
+
+/// 视频段(NapCat: file/url/file_id/file_size)要像文件一样进 `files`,否则当轮
+/// 正文里没有 id,模型不知道有段视频可看(09-04「miyu 看不了别人发的视频」)。
+#[test]
+fn video_segments_become_lazy_file_refs() {
+    let message = json!([
+        { "type": "video", "data": {
+            "file": "a1b2c3.mp4",
+            "url": "https://multimedia.nt.qq.com.cn/download?x=1",
+            "file_id": "vid-1",
+            "file_size": "123456"
+        } },
+        { "type": "video", "data": { "file": "noext", "file_id": "vid-2" } },
+        { "type": "video", "data": { "file": "orphan.mp4" } },
+    ]);
+    let parsed = parse_message(Some(&message), None, 10001);
+    assert_eq!(
+        parsed.files.len(),
+        2,
+        "没有 id 也没有 url 的视频无法下载,不进 files"
+    );
+    assert_eq!(parsed.files[0].name, "a1b2c3.mp4");
+    assert_eq!(parsed.files[0].file_id.as_deref(), Some("vid-1"));
+    assert_eq!(
+        parsed.files[0].url.as_deref(),
+        Some("https://multimedia.nt.qq.com.cn/download?x=1")
+    );
+    assert_eq!(
+        parsed.files[1].name, "noext.mp4",
+        "无扩展名补 .mp4,下游靠扩展名认视频"
+    );
+    assert_eq!(parsed.media.len(), 3);
+    assert!(parsed
+        .media
+        .iter()
+        .all(|media| media.kind == PlatformMediaKind::Video));
+    assert_eq!(parsed.media[0].name.as_deref(), Some("a1b2c3.mp4"));
+
+    let (text, refs) = inbound_file_placeholders("77", &parsed.files);
+    assert!(
+        text.contains("[视频 id=file_77_1, label=a1b2c3.mp4]")
+            || text.contains("[video id=file_77_1, label=a1b2c3.mp4]"),
+        "{text}"
+    );
+    assert_eq!(refs.len(), 2);
+    assert_eq!(refs[0].file_id, "vid-1");
+    assert_eq!(refs[1].id, "file_77_2");
 }
 
 #[test]

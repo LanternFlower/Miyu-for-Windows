@@ -1,8 +1,8 @@
 //! OpenAI Responses 协议的流式与续接。
 
+use super::shared::*;
 use crate::llm::openai_compatible::*;
 use tokio::net::TcpListener;
-use super::shared::*;
 
 #[test]
 fn openai_gpt5_uses_responses_api() {
@@ -589,7 +589,10 @@ async fn responses_continuation_is_pinned_to_its_original_endpoint() {
         max_tokens_override: None,
         request_scope: "chat",
         claude_code: None,
+        antigravity: None,
+        codex: None,
         claude_code_dev_mode: false,
+        zen_session: None,
         continuation_health: ResponsesContinuationHealth::detached(),
     };
     let initial_result = initial_client
@@ -627,7 +630,10 @@ async fn responses_continuation_is_pinned_to_its_original_endpoint() {
         max_tokens_override: None,
         request_scope: "chat",
         claude_code: None,
+        antigravity: None,
+        codex: None,
         claude_code_dev_mode: false,
+        zen_session: None,
         continuation_health: ResponsesContinuationHealth::detached(),
     };
 

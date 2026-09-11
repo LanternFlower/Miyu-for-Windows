@@ -381,17 +381,25 @@ mod tests {
             "start_time": "2026-08-06T10:00:00+09:00",
             "end_time": "2026-08-06"
         });
-        let start = optional_time_bound(&args, "start_time", false).unwrap().unwrap();
+        let start = optional_time_bound(&args, "start_time", false)
+            .unwrap()
+            .unwrap();
         assert!(start.ends_with("+00:00"), "{start}");
         assert!(start.starts_with("2026-08-06T01:00:00"), "{start}");
 
-        let end = optional_time_bound(&args, "end_time", true).unwrap().unwrap();
+        let end = optional_time_bound(&args, "end_time", true)
+            .unwrap()
+            .unwrap();
         assert!(end.ends_with("+00:00"), "{end}");
 
         // Absent and blank both mean "no bound".
-        assert!(optional_time_bound(&args, "missing", false).unwrap().is_none());
+        assert!(optional_time_bound(&args, "missing", false)
+            .unwrap()
+            .is_none());
         let blank = serde_json::json!({ "start_time": "   " });
-        assert!(optional_time_bound(&blank, "start_time", false).unwrap().is_none());
+        assert!(optional_time_bound(&blank, "start_time", false)
+            .unwrap()
+            .is_none());
         // Garbage is refused rather than silently ignored.
         let bad = serde_json::json!({ "start_time": "上周三" });
         assert!(optional_time_bound(&bad, "start_time", false).is_err());

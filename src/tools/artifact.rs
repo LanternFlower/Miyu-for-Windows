@@ -2,18 +2,18 @@ use super::{ToolProgress, ToolRegistry, ToolSpec};
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
+#[cfg(test)]
 use std::io::Write;
 use std::path::PathBuf;
 use std::path::{Component, Path};
 
 pub(super) const MAX_ARTIFACT_BYTES: usize = 20 * 1024 * 1024;
 
+// 08-21 二次裁定:Artifact 写入独立成 `artifact` 补丁工具(域名即广告),
+// 读取走 read 的 artifact: 前缀;发布仍是 present_artifact。
 pub fn register_webui(registry: &mut ToolRegistry, paths: &MiyuPaths, session_id: &str) {
-    let root = paths.data_dir.join("artifacts");
-    register_create(registry, root.clone(), session_id);
     register_present(registry);
-    register_read(registry, root.clone(), session_id);
-    super::apply_patch::register_artifact(registry, root, session_id);
+    super::apply_patch::register_artifact(registry, paths.data_dir.join("artifacts"), session_id);
 }
 
 pub fn managed_manifest(paths: &MiyuPaths, session_id: &str) -> Result<String> {
@@ -69,61 +69,6 @@ fn register_present(registry: &mut ToolRegistry) {
     ).presentation());
 }
 
-fn register_create(registry: &mut ToolRegistry, root: PathBuf, session_id: &str) {
-    let session_id = session_id.to_string();
-    registry.register(ToolSpec::new_with_progress(
-        "create_artifact",
-        "Create or update a completed deliverable in Miyu's managed Artifact workspace and display it in the WebUI. Use this for reports, documents, standalone code, HTML, JSON, CSV, and other files the user should inspect. Do not use it for routine project source edits.",
-        json!({
-            "type": "object",
-            "properties": {
-                "filename": {
-                    "type": "string",
-                    "description": "File name including an appropriate extension. Directory components are not allowed."
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Complete file content."
-                },
-                "title": {
-                    "type": "string",
-                    "description": "Optional display title."
-                }
-            },
-            "required": ["filename", "content"],
-            "additionalProperties": false
-        }),
-        move |args, progress| {
-            let root = root.clone();
-            let session_id = session_id.clone();
-            async move { create_artifact(args, progress, &root, &session_id) }
-        },
-    ).presentation());
-}
-
-fn register_read(registry: &mut ToolRegistry, root: PathBuf, session_id: &str) {
-    let read_session = session_id.to_string();
-    registry.register(ToolSpec::new(
-        "read_artifact",
-        "Read an existing file from the current WebUI Artifact workspace. Use the filename from the Artifact list; do not search the filesystem with glob.",
-        json!({
-            "type": "object",
-            "properties": {
-                "filename": {"type": "string", "description": "Managed Artifact file name."},
-                "offset": {"type": "integer", "description": "1-based line offset."},
-                "limit": {"type": "integer", "description": "Maximum lines to read."}
-            },
-            "required": ["filename"],
-            "additionalProperties": false
-        }),
-        move |args| {
-            let root = root.clone();
-            let session_id = read_session.clone();
-            async move { read_artifact(args, &root, &session_id) }
-        },
-    ).presentation());
-}
-
 fn present_artifact(args: Value, progress: ToolProgress) -> Result<String> {
     let raw_path = args
         .get("path")
@@ -159,6 +104,9 @@ fn present_artifact(args: Value, progress: ToolProgress) -> Result<String> {
     }))?)
 }
 
+// Edit/Read 统一后生产路径走 edit 的 artifact: 命名空间;本函数仅测试
+// 保留(路径逃逸/权限语义的回归靠它,底层 managed_file_path 与生产共享)。
+#[cfg(test)]
 fn create_artifact(
     args: Value,
     progress: ToolProgress,
@@ -214,6 +162,7 @@ fn create_artifact(
     }))?)
 }
 
+#[cfg(test)]
 fn read_artifact(args: Value, root: &Path, session_id: &str) -> Result<String> {
     let filename = required_filename(&args)?;
     let path = managed_file_path(root, session_id, filename)?;
@@ -222,6 +171,7 @@ fn read_artifact(args: Value, root: &Path, session_id: &str) -> Result<String> {
     super::default_tools::read_file(scoped)
 }
 
+#[cfg(test)]
 fn required_filename(args: &Value) -> Result<&str> {
     let filename = args
         .get("filename")
@@ -232,7 +182,11 @@ fn required_filename(args: &Value) -> Result<&str> {
     Ok(filename)
 }
 
-fn managed_file_path(root: &Path, session_id: &str, filename: &str) -> Result<PathBuf> {
+pub(in crate::tools) fn managed_file_path(
+    root: &Path,
+    session_id: &str,
+    filename: &str,
+) -> Result<PathBuf> {
     validate_session_id(session_id)?;
     let session_dir = root.join(session_id);
     let session_canonical = session_dir.canonicalize().with_context(|| {
@@ -289,7 +243,9 @@ fn ensure_private_dir(path: &Path) -> Result<()> {
 
 fn expand_path(value: &str) -> PathBuf {
     if let Some(rest) = value.strip_prefix("~/") {
-        if let Some(home) = crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+        if let Some(home) =
+            crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
+        {
             return home.join(rest);
         }
     }

@@ -1,7 +1,7 @@
 {
   "name": "get_weather",
   "display_name": "天气查询",
-  "description": "Weather data query. query_type defaults to forecast; supports forecast (current weather and forecast), air_quality, historical, marine, climate, and elevation. location is required: pass a city, place name, postal code, or airport code. Do not guess; ask the user when the location is missing.",
+  "description": "Weather lookup. Pass a city, place name, postal code, or airport code. Ask the user when the location is missing.",
   "parameters": {
     "type": "object",
     "properties": {

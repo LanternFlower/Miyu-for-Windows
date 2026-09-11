@@ -1,7 +1,7 @@
 {
   "name": "check_issue",
   "display_name": "检查问题",
-  "description": "Collect read-only diagnostic evidence for a concrete local issue.\nThis tool gathers facts only; it does not diagnose, rank root causes, or recommend fixes.",
+  "description": "Collect read-only diagnostic evidence for a concrete local problem. Facts only: no diagnosis, no root-causing, no fix recommendations.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -55,10 +55,6 @@
       "allow_launch_probe": {
         "type": "boolean",
         "description": "For app/input_method evidence only: explicitly allow launching target to sample runtime facts. Defaults to false."
-      },
-      "launch_timeout_seconds": {
-        "type": "integer",
-        "description": "Seconds to wait after launch probe before sampling pids. Defaults to 3, max 15."
       }
     },
     "required": []

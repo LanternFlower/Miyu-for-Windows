@@ -131,6 +131,24 @@ pub(in crate::web) async fn handle_ipc_connection(
         IpcCommand::FollowRun { run_id } => {
             follow_run(&state, &mut stream, run_id).await?;
         }
+        IpcCommand::VoiceAttach => {
+            voice_bridge::handle_voice_attach(&state, &mut stream).await?;
+        }
+        IpcCommand::StartDictation => {
+            voice_bridge::handle_start_dictation(&state, &mut stream).await?;
+        }
+        IpcCommand::VoiceStatus => {
+            voice_bridge::handle_voice_status(&state, &mut stream).await?;
+        }
+        IpcCommand::VoiceListen => {
+            voice_bridge::handle_voice_listen(&state, &mut stream).await?;
+        }
+        IpcCommand::VoiceSpeak { text, tts } => {
+            voice_bridge::handle_voice_speak(&state, &mut stream, text, tts).await?;
+        }
+        IpcCommand::VoiceReset => {
+            voice_bridge::handle_voice_reset(&state, &mut stream).await?;
+        }
         IpcCommand::StopSessionJobs { session_id } => {
             let stopped = tools::jobs::stop_session_jobs(&session_id).await;
             state
@@ -194,9 +212,27 @@ pub(in crate::web) async fn handle_ipc_connection(
             let target = ipc::SessionRef::Id { id: session_id };
             let session_id = match resolve_available_local_session_ref(&state, &target) {
                 Ok(record) => record.session_id,
-                Err(_) => store
-                    .new_repl_session(&persona)
-                    .map_err(|error| anyhow::anyhow!(safe_error_message(&error)))?,
+                Err(reason) => {
+                    // 这条分支会把车道指针换成一条**新建的空会话**,于是重进
+                    // REPL 时没有历史可放、上键调不出输入记录(输入历史按会话
+                    // id 分文件)、`/undo` 也没得撤销——用户 08-26 报的 dev 三
+                    // 连全出自这里。原先丢掉了失败原因,只能靠翻库反推;把它
+                    // 打出来,一次就能定论。
+                    tracing::info!(
+                        target: "miyu::qq",
+                        %persona,
+                        target = ?target,
+                        %reason,
+                        "{}",
+                        t(
+                            "REPL session pointer could not be resolved; starting a fresh session",
+                            "REPL 会话指针解析失败,改用新建会话"
+                        )
+                    );
+                    store
+                        .new_repl_session(&persona)
+                        .map_err(|error| anyhow::anyhow!(safe_error_message(&error)))?
+                }
             };
             let _ = store.set_repl_session(&persona, &session_id);
             ipc::send(
@@ -305,6 +341,8 @@ pub(in crate::web) async fn handle_ipc_connection(
             match receiver.await {
                 Ok(Ok(())) => {
                     qq_listener.commit();
+                    let next_voice = state.manager.lock().unwrap().config.voice.clone();
+                    voice_bridge::on_config_reload(&state, &current_config.voice, &next_voice);
                     match session_state(&state.manager, &state.state_store) {
                         Ok(session) => {
                             ipc::send(
@@ -506,16 +544,35 @@ pub(in crate::web) async fn handle_ipc_connection(
             reserve_admin_for_session(&state.manager, &session_id)
                 .map_err(|error| anyhow::anyhow!(error.message))?;
             let (reply, receiver) = oneshot::channel();
+            let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
             if state
                 .actor_tx
                 .send(ActorCommand::Compact {
                     session_id: session_id.clone(),
+                    events: Some(events_tx),
                     reply,
                 })
                 .is_err()
             {
                 release_admin(&state.manager);
                 anyhow::bail!("Miyu core worker is unavailable");
+            }
+            // 摘要边生成边转发。actor 那头在回复之前就把 sender 丢了,所以
+            // `recv()` 收到 None 即"事件已发完",不用和 oneshot 抢 select,
+            // 也就不会出现"先拿到结果、尾巴几个 chunk 掉地上"。事件 id 对
+            // 这条路没有意义(客户端按 kind 分流),从 0 递增即可。
+            let mut event_id = 0u64;
+            while let Some((kind, data)) = events_rx.recv().await {
+                event_id += 1;
+                ipc::send(
+                    &mut stream,
+                    &IpcFrame::Event {
+                        id: event_id,
+                        kind,
+                        data,
+                    },
+                )
+                .await?;
             }
             match receiver.await {
                 Ok(Ok(data)) => {
@@ -544,6 +601,7 @@ pub(in crate::web) async fn handle_ipc_connection(
             cwd,
             session_id,
             origin_tty,
+            overrides,
         } => {
             handle_ipc_turn(
                 &state,
@@ -554,6 +612,7 @@ pub(in crate::web) async fn handle_ipc_connection(
                 cwd,
                 session_id,
                 origin_tty,
+                overrides,
             )
             .await?;
         }
@@ -738,6 +797,7 @@ pub(in crate::web) async fn handle_ipc_turn(
     cwd: Option<std::path::PathBuf>,
     session_id: Option<String>,
     origin_tty: Option<crate::ipc::OriginTty>,
+    overrides: Option<crate::ipc::TurnOverrides>,
 ) -> Result<()> {
     let content = match validate_content(content) {
         Ok(content) => content,
@@ -815,9 +875,12 @@ pub(in crate::web) async fn handle_ipc_turn(
             mode,
             images,
             cwd,
-            origin_tty,
+            origin_tty: origin_tty.map(Box::new),
             audience: PromptAudience::Owner,
             profile: None,
+            overrides: overrides
+                .filter(|overrides| !overrides.is_empty())
+                .map(Box::new),
             cancel: cancel_rx,
             turn_origin: Box::new(crate::tools::workspace::TurnOrigin::Human),
         })
@@ -856,9 +919,34 @@ pub(in crate::web) async fn handle_ipc_turn(
             }
         };
         if record.kind == "resync_required" {
+            // 共享事件广播缓冲(4096 条/4MB)被**别的会话**的密集事件冲爆、本
+            // 连接一时落后时,replay 会返回 resync。以前这里直接给前端发
+            // 「the turn was cancelled」并断流——可本连接的回合仍在 daemon 里
+            // 好好跑着,于是并发的另一个会话被误报「已取消」(09-01 跨会话
+            // 误取消根因:两个会话并行,一个刷屏把另一个的事件挤出缓冲)。
+            //
+            // 正确做法:从最新事件处**续流**,不谎报取消。丢失的中间 chunk
+            // 不再渲染(前端可能有一小段空白),但回合正常收尾,run.completed
+            // 照常到达。只有回合确已结束(连终态事件都被挤掉)时才收尾——
+            // 且发的是「刷新可见」而非「已取消」,前端据此重取最终状态。
+            last_id = serde_json::from_str::<Value>(&record.data)
+                .ok()
+                .and_then(|data| data.get("latest_event_id").and_then(Value::as_u64))
+                .unwrap_or(last_id);
+            let still_running = state
+                .manager
+                .lock()
+                .unwrap()
+                .active_runs
+                .contains_key(&run_id);
+            if still_running {
+                continue;
+            }
             ipc::send(
                 stream,
-                &IpcFrame::error("Miyu core event history was exhausted; the turn was cancelled"),
+                &IpcFrame::error(
+                    "Miyu core event history was exhausted; the reply already finished — refresh to see it",
+                ),
             )
             .await?;
             break;

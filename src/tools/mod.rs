@@ -9,14 +9,12 @@ mod ask_question;
 mod awacy_query;
 mod calculator;
 mod caniplayonlinux_query;
-mod claude_code;
 mod clipboard;
 mod deep_research;
 mod deepseek_status;
 mod default_tools;
 pub(crate) use default_tools::TOOL_SUMMARY_PREFIX;
 mod diagnostics;
-mod edit_replace;
 mod exchange_rate;
 mod fcitx_wiki;
 pub mod goal;
@@ -34,14 +32,16 @@ mod memory;
 mod moegirl;
 mod package_advisor;
 mod patch_preview;
+pub(crate) mod platform_outreach;
 mod protondb_query;
 mod registry;
-pub(crate) mod repeat_reminder;
 mod scripts;
 mod skills;
 mod subagent_runner;
 mod task;
 mod todowrite;
+pub(crate) mod voice_chat;
+pub(crate) mod voice_speak;
 pub(crate) use todowrite::{clear_session_todos, session_todos};
 pub mod tool_descriptions;
 pub(crate) mod usage_query;
@@ -50,7 +50,6 @@ mod weather;
 mod web;
 mod web_images;
 pub mod workspace;
-mod write;
 mod xuanxue;
 
 use crate::agent::AgentMode;
@@ -65,7 +64,11 @@ pub use registry::{
     empty_parameters, CommandOutputStream, GuardCtx, ToolFuture, ToolGuard, ToolPermission,
     ToolProgress, ToolProgressEvent, ToolRegistry, ToolSpec,
 };
-pub(crate) use scripts::rescan_scripts;
+pub(crate) use scripts::{
+    apply_script_refresh, prepare_script_refresh, scripts_dashboard_delete,
+    scripts_dashboard_disable, scripts_dashboard_enable, scripts_dashboard_overview,
+    scripts_dashboard_register, scripts_dashboard_source,
+};
 pub(crate) use skills::{apply_skill_refresh, prepare_skill_refresh};
 pub use skills::{register_authoring as register_skill_authoring, register_skills};
 
@@ -188,19 +191,29 @@ fn readable_load_target_name(name: &str) -> String {
 /// already get their own timed block.
 pub fn preparing_phase(name: &str) -> Option<&'static str> {
     Some(match name {
-        "apply_patch"
+        "edit"
+        | "artifact"
+        | "kb"
+        | "apply_patch"
         | "apply_artifact_patch"
         | "create_artifact"
         | "write_file"
         | "edit_file"
         | "edit_string" => t("Preparing edit", "准备编辑"),
         "run_command" => t("Preparing command", "准备执行"),
+        // claude 原生工具(claude-code 中转,原名不剥):同一张表,否则中转
+        // 线的 RemoteToolPreparing 只剩批量兜底。
+        "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => t("Preparing edit", "准备编辑"),
+        "Bash" => t("Preparing command", "准备执行"),
+        "Task" | "Agent" => t("Preparing task", "准备任务"),
+        "TodoWrite" => t("Preparing list", "准备清单"),
+        "AskUserQuestion" => t("Preparing question", "准备问题"),
         // 批量删的参数是一整串路径,条数一多就是几百字节,正好落在
         // 「工具名已解码、参数还在流」的那个窗口里。
         "trash_path" => t("Preparing delete", "准备删除"),
         // A subagent brief is long, and its own timed block only appears once
         // the arguments have all arrived.
-        "task" | "deep_research" | "claude_code" => t("Preparing task", "准备任务"),
+        "task" | "deep_research" => t("Preparing task", "准备任务"),
         "ask_question" => t("Preparing question", "准备问题"),
         // 整张清单都在参数里,条目一多就是几百字节,和批量删是同一个窗口。
         "todowrite" => t("Preparing list", "准备清单"),
@@ -221,15 +234,15 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
     Some(match name {
         "run_command" => t("Run command", "运行命令"),
         "job" => t("Background jobs", "后台任务"),
-        "apply_patch" => t("Edit files", "编辑文件"),
-        "apply_artifact_patch" => t("Edit preview file", "修改预览文件"),
+        "edit" | "apply_patch" => t("Edit files", "编辑文件"),
+        "kb" => t("Edit knowledge base", "编辑知识库"),
+        "artifact" | "apply_artifact_patch" => t("Edit preview file", "修改预览文件"),
         "create_artifact" => t("Create preview file", "创建预览文件"),
         "read_artifact" => t("Read preview file", "读取预览文件"),
         "present_artifact" => t("Preview file", "预览文件"),
         "ask_question" => t("Ask user", "询问用户"),
         "task" => t("Subagent", "子代理"),
-        "claude_code" => t("Claude Code", "Claude Code"),
-        "read_file" => t("Read file", "读取文件"),
+        "read" | "read_file" => t("Read file", "读取文件"),
         "write_file" => t("Write file", "写入文件"),
         "edit_file" => t("Edit file", "编辑文件"),
         "edit_string" => t("Edit string", "字符串编辑"),
@@ -247,11 +260,16 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "web_fetch" => t("Fetch webpage", "读取网页"),
         "fcitx5_input_method_wiki_qurey" => t("Query Fcitx5 Wiki", "查询 Fcitx5 Wiki"),
         "search_web_images" => t("Search images", "搜索图片"),
-        "analyze_image" | "vision_analyze" => t("Analyze image", "分析图片"),
+        "share_file" => t("Share file", "分享文件"),
+        "analyze_image" | "vision_analyze" => t("Visual analysis", "视觉分析"),
         "print_image" => t("Display image", "显示图片"),
         "generate_image" => t("Generate image", "生成图片"),
         "use_meme" => t("Meme", "表情包"),
         "manage_meme" => t("Manage memes", "管理表情包"),
+        "end_voice_chat" => t("End voice chat", "结束语音对话"),
+        "speak" => t("Speak", "说话"),
+        "send_qq_message" => t("Send to QQ", "发送到 QQ"),
+        "send_voice_message" => t("Send voice message", "发送语音"),
         "deep_research" => t("Deep research", "深度研究"),
         "upload_knowledge_base_file" | "upload_text_to_knowledge_base" => {
             t("Import knowledge base", "导入知识库")
@@ -284,6 +302,10 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "weather" | "get_weather" => t("Weather", "天气查询"),
         "game_compat" => t("Game compatibility", "游戏兼容性"),
         "divine" => t("Divination", "占卜"),
+        "divine:zhouyi" => t("I Ching", "六十四卦"),
+        "divine:tarot" => t("Tarot", "塔罗牌"),
+        "divine:fortune" => t("Fortune", "吉凶占"),
+        "divine:dice" => t("Dice roll", "掷骰子"),
         "load_skill" => t("Load skill", "加载技能"),
         "manage_skill" => t("Manage skills", "管理技能"),
         "load_tools" => t("Load", "加载"),
@@ -381,7 +403,12 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.set_default_timeout_secs(config.tools.default_timeout_secs);
     install_builtin_guards(&mut registry, config);
-    default_tools::register(&mut registry, config.skills.allow_command_execution);
+    default_tools::register(
+        &mut registry,
+        config.skills.allow_command_execution,
+        config,
+        paths,
+    );
     jobs::register_management(&mut registry);
     usage_query::register(
         &mut registry,
@@ -426,6 +453,21 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     if config.plugins.memes.enabled {
         memes::register(&mut registry, config.clone(), paths.clone());
     }
+    if config.voice.enabled {
+        voice_chat::register(&mut registry);
+    }
+    if config.voice.tts.is_active() {
+        voice_speak::register(&mut registry);
+    }
+    // 本地会话专属:平台会话有 send_message_to_user,不在 restricted 注册表里重复。
+    // 只在 QQ 的 ws 已连上时注册(TurnResources 的缓存键带了连接位,连上/掉线
+    // 会各自重建一份)。
+    if config.platforms.terminal_outreach
+        && config.platforms.qq.enabled
+        && platform_outreach::qq_connected()
+    {
+        platform_outreach::register(&mut registry, config);
+    }
     if config.plugins.web.enabled {
         web::register(&mut registry, config.plugins.web.clone());
     }
@@ -454,20 +496,17 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     if config.memory_config().enabled {
         memory::register(&mut registry, config.clone(), paths.clone());
     }
-    // 只进本机 owner 底座;平台受限表不注册,turn 装配层对复用 normal 底座
-    // 的平台管理员会话再摘一次(§09)。
-    if config.claude_code_enabled() {
-        claude_code::register(&mut registry, config.plugins.claude_code.clone(), paths.clone());
-    }
+    // claude_code 委托工具已移除(08-21 用户裁定);中转供应商那条线不受影响。
     let task_tools = registry.clone();
     task::register(&mut registry, config.clone(), paths.clone(), task_tools);
-    scripts::register(&mut registry, paths);
+    scripts::register(&mut registry, config, paths);
     if config.mcp.enabled {
         mcp::register(&mut registry, config.clone());
     }
-    if uses_load_tools(&config.tools.loading_mode) {
-        load_tools::register(&mut registry);
-    }
+    // load_tools 常驻注册(09-01):full 模式下调用它无害(返回契约文本),
+    // 而会话中途从需加载模型切到完整模型时,历史里的 load_tools 调用记录
+    // 必须仍然可执行,否则模型模仿历史会撞未知工具。
+    load_tools::register(&mut registry);
     registry
 }
 
@@ -532,22 +571,59 @@ pub(crate) fn rescope_platform_memory_tools(
     }
 }
 
-pub fn is_hybrid_loading_mode(mode: &str) -> bool {
-    matches!(mode.trim(), "hybrid" | "lazy")
-}
-
 /// Stub loading mode (v7 §八点七): every lazy tool stays registered as a
 /// permanently visible stub (real name + one-line summary + permissive
 /// parameter shell), so the provider-visible tools array is byte-constant for
 /// the whole session; full contracts are fetched on demand through
 /// `load_tools` as a tool result that rides the conversation tail.
+///
+/// "hybrid"/"lazy"(按已加载集合增长声明数组的旧档)09-01 删除,历史配置值
+/// 按「需加载」处理——它们同属懒加载家族,悄悄升成 full 会让旧配置的工具面
+/// 字节数翻好几倍。
 pub fn is_stub_loading_mode(mode: &str) -> bool {
-    mode.trim() == "stub"
+    matches!(mode.trim(), "stub" | "hybrid" | "lazy")
 }
 
-/// Modes that need the `load_tools` catalog tool registered.
-pub fn uses_load_tools(mode: &str) -> bool {
-    is_hybrid_loading_mode(mode) || is_stub_loading_mode(mode)
+/// 本次请求的有效工具加载模式,按候选模型池解析。
+///
+/// 单成员规则:模型级覆盖(`provider.model_tools_loading_mode`)优先,缺项回退
+/// 全局 `tools.loading_mode`。池级规则:任一成员要求 full 则整池 full——
+/// 一次请求只有一张工具面,而命中主回合池里哪个模型(以及故障转移换给谁)是
+/// 发送时才决定的,这张脸必须让池里任何成员都能用;full 全兼容,stub 只是省
+/// token 的优化,「就高不就低」恒安全。
+///
+/// 只看**主回合池** `active_provider_models`——工具面是给主回合用的。多模态池
+/// (`active_multimodal_provider_models`)只喂看图子分析(describe.rs),从不处理
+/// 带工具的主回合;09-01 起初误把它并进候选,导致文本池是 opus(stub)、多模态池
+/// 里配了 full 的 glm 时,每个 opus 回合都被拖成 full(用户实测暴露)。
+///
+/// 背景(09-01):约束解码型供应商(实测 bigmodel glm-5.3-flash)把工具参数
+/// 生成硬限制在声明 schema 内,空壳 stub 让它永远只能发 `{}`,契约文本在
+/// 对话里也救不回(裸 API 8/8 复现)。给这类模型配模型级 full,其余照旧 stub。
+pub fn effective_tools_loading_mode(config: &AppConfig) -> String {
+    let canonical = |mode: &str| {
+        if mode.trim() == "full" {
+            "full"
+        } else {
+            "stub"
+        }
+    };
+    let global = canonical(&config.tools.loading_mode);
+    let mut any = false;
+    for entry in config.active_provider_models.iter().flatten() {
+        any = true;
+        let mode = config
+            .providers
+            .iter()
+            .find(|provider| provider.id == entry.provider_id)
+            .and_then(|provider| provider.model_tools_loading_mode.get(&entry.model))
+            .map(|mode| canonical(mode))
+            .unwrap_or(global);
+        if mode == "full" {
+            return "full".to_string();
+        }
+    }
+    if any { "stub" } else { global }.to_string()
 }
 
 /// Build/Dev 模式工具目录:极简开发形态,"模型可见表面积最小化"。
@@ -585,18 +661,24 @@ pub fn dev_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
         // 与默认人格的记忆互不可见(验收问题一:开发模式也要有记忆)。
         memory::register(&mut registry, config.dev_scoped(), paths.clone());
     }
-    // dev 本来就只有 owner 面,照常随插件开关注册(§09)。
-    if config.claude_code_enabled() {
-        claude_code::register(&mut registry, config.plugins.claude_code.clone(), paths.clone());
-    }
     let task_tools = registry.clone();
     task::register(&mut registry, config.clone(), paths.clone(), task_tools);
     if config.mcp.enabled {
         mcp::register(&mut registry, config.clone());
     }
-    if uses_load_tools(&config.tools.loading_mode) {
-        load_tools::register(&mut registry);
+    // 写代码时「跑完把结果发我手机」是真需求(09-05 用户拍板):dev 也给
+    // send_qq_message,条件与 normal 一致(终端外发开着、QQ 连着)。speak
+    // 不给——dev 提示词极简、没有语音协议,编码回合里开口念代码只是噪音。
+    if config.platforms.terminal_outreach
+        && config.platforms.qq.enabled
+        && platform_outreach::qq_connected()
+    {
+        platform_outreach::register(&mut registry, config);
     }
+    // load_tools 常驻注册(09-01):full 模式下调用它无害(返回契约文本),
+    // 而会话中途从需加载模型切到完整模型时,历史里的 load_tools 调用记录
+    // 必须仍然可执行,否则模型模仿历史会撞未知工具。
+    load_tools::register(&mut registry);
     registry
 }
 
@@ -640,9 +722,10 @@ pub fn restricted_platform_registry(config: &AppConfig, paths: &MiyuPaths) -> To
             tracing::warn!(error = %error, "failed to register skills for restricted platform registry");
         }
     }
-    if uses_load_tools(&config.tools.loading_mode) {
-        load_tools::register(&mut registry);
-    }
+    // load_tools 常驻注册(09-01):full 模式下调用它无害(返回契约文本),
+    // 而会话中途从需加载模型切到完整模型时,历史里的 load_tools 调用记录
+    // 必须仍然可执行,否则模型模仿历史会撞未知工具。
+    load_tools::register(&mut registry);
     registry
 }
 
@@ -694,6 +777,46 @@ pub(crate) fn build_tool_registry(
 mod tests {
     use super::*;
 
+    /// 内置工具 schema 的 token 预算:每件工具的 description + parameters 折成的
+    /// token 数封顶。这份东西每轮都进上下文(full 模式)或按需拉入(stub),膨胀
+    /// 是慢性的、靠肉眼发现不了。超线的名字连同前十名一起打出来,好知道该修谁。
+    /// 内置脚本不在此列:脚本按「一个脚本包办所有事」设计,参数面大是本分
+    /// (用户 09-03 裁定),不拿这条预算约束它们。
+    #[test]
+    fn tool_schemas_stay_within_the_token_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let mut config = crate::config::AppConfig::default();
+        config.plugins.web.enabled = true;
+        config.skills.allow_command_execution = true;
+        let registry = builtin_registry(&config, &paths);
+        let cost = |description: &str, parameters: &serde_json::Value| {
+            crate::token_estimate::estimate_tokens(description)
+                + crate::token_estimate::estimate_tokens(&parameters.to_string())
+        };
+        let mut rows: Vec<(String, usize)> = registry
+            .tool_names()
+            .iter()
+            .filter_map(|name| registry.get(name))
+            .map(|spec| (spec.name.clone(), cost(&spec.description, &spec.parameters)))
+            .collect();
+        rows.sort_by(|a, b| b.1.cmp(&a.1));
+        let top: Vec<String> = rows
+            .iter()
+            .take(10)
+            .map(|(n, t)| format!("{n}={t}"))
+            .collect();
+        println!("schema token top10: {}", top.join(" "));
+        // 600 = 现状最重的 task(332)留将近一倍头:新工具照这个体量写,别更肥。
+        const BUDGET: usize = 600;
+        let over: Vec<&(String, usize)> =
+            rows.iter().filter(|(_, tokens)| *tokens > BUDGET).collect();
+        assert!(
+            over.is_empty(),
+            "这些工具的 schema 超过 {BUDGET} token 预算:{over:?};当前前十:{top:?}"
+        );
+    }
+
     /// 数组参数要容忍模型真会传的形状。线上实测:mimo-v2.5 把
     /// `reference_images` 传成了 `"[\"/path.png\"]"`——一个被 JSON 编码成
     /// 字符串的数组。只认真数组会让 job_ids / user_ids / tags / groups 这类
@@ -718,6 +841,68 @@ mod tests {
             string_list(Some(&json!("[not json"))),
             vec!["[not json".to_string()]
         );
+    }
+
+    /// 有效加载模式按候选池取最保守:任一成员要 full 则整池 full——一次请求
+    /// 只有一张工具面,命中与故障转移都在发送时才定,这张脸必须全员可用。
+    /// 约束解码型模型(实测 bigmodel glm-5.3-flash)吃不下空壳 stub,是模型级
+    /// full 覆盖存在的理由(09-01)。
+    #[test]
+    fn effective_loading_mode_takes_the_most_conservative_pool_member() {
+        use crate::config::ActiveProviderModelConfig;
+        let mut config = AppConfig::default();
+        config.tools.loading_mode = "stub".to_string();
+        let provider_id = config.providers[0].id.clone();
+        let pick = |model: &str| ActiveProviderModelConfig {
+            provider_id: provider_id.clone(),
+            model: model.to_string(),
+        };
+
+        // 空池回退全局。
+        config.active_provider_models = None;
+        assert_eq!(effective_tools_loading_mode(&config), "stub");
+
+        // 全员跟随全局(需加载)。
+        config.active_provider_models = Some(vec![pick("lenient-a"), pick("lenient-b")]);
+        assert_eq!(effective_tools_loading_mode(&config), "stub");
+
+        // 混进一个模型级 full,整池升 full。
+        config.providers[0]
+            .model_tools_loading_mode
+            .insert("locked".to_string(), "full".to_string());
+        config
+            .active_provider_models
+            .as_mut()
+            .unwrap()
+            .push(pick("locked"));
+        assert_eq!(effective_tools_loading_mode(&config), "full");
+
+        // 回归(09-01 用户暴露):多模态池【不】参与——它只喂看图子分析,不处理
+        // 带工具的主回合。文本池全需加载、多模态池里配了 full 的模型时,主回合
+        // 仍是需加载,不被拖成 full。
+        config.active_provider_models = Some(vec![pick("lenient-a")]);
+        config.active_multimodal_provider_models = Some(vec![pick("locked")]);
+        assert_eq!(
+            effective_tools_loading_mode(&config),
+            "stub",
+            "多模态池不该把文本主回合拖成 full"
+        );
+        config.active_multimodal_provider_models = None;
+
+        // 模型级覆盖压过全局:全局 full,钉死的单模型显式需加载 → stub。
+        config.tools.loading_mode = "full".to_string();
+        config.providers[0]
+            .model_tools_loading_mode
+            .insert("thrifty".to_string(), "stub".to_string());
+        config.active_provider_models = Some(vec![pick("thrifty")]);
+        assert_eq!(effective_tools_loading_mode(&config), "stub");
+
+        // 已删档的 hybrid/lazy 旧值按需加载处理,不悄悄升 full。
+        config.tools.loading_mode = "hybrid".to_string();
+        config.active_provider_models = Some(vec![pick("lenient-a")]);
+        assert_eq!(effective_tools_loading_mode(&config), "stub");
+        assert!(is_stub_loading_mode("hybrid"));
+        assert!(is_stub_loading_mode("lazy"));
     }
 
     /// 回归:dev 模式要有看图(vision_analyze),且随 vision 插件开关走。
@@ -792,6 +977,37 @@ mod tests {
         );
         // Arguments arrive in one chunk: a hint would only flicker.
         for name in ["read_file", "grep", "list_directory"] {
+            assert_eq!(preparing_phase(name), None, "{name}");
+        }
+    }
+
+    /// claude-code 中转线的原生工具名(不剥前缀)也要有提示词,否则那条线
+    /// 只剩批量兜底的「准备工具」。
+    #[test]
+    fn preparing_phase_covers_claude_native_tools() {
+        for name in ["Edit", "Write", "MultiEdit", "NotebookEdit"] {
+            assert_eq!(
+                preparing_phase(name),
+                Some(crate::i18n::text("Preparing edit", "准备编辑")),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            preparing_phase("Bash"),
+            Some(crate::i18n::text("Preparing command", "准备执行"))
+        );
+        for name in ["Task", "Agent"] {
+            assert_eq!(
+                preparing_phase(name),
+                Some(crate::i18n::text("Preparing task", "准备任务")),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            preparing_phase("TodoWrite"),
+            Some(crate::i18n::text("Preparing list", "准备清单"))
+        );
+        for name in ["Read", "Glob", "Grep", "WebFetch"] {
             assert_eq!(preparing_phase(name), None, "{name}");
         }
     }
@@ -985,29 +1201,22 @@ mod tests {
         let paths = test_paths(temp.path());
         let config = AppConfig::default();
         let mut registry = builtin_registry(&config, &paths);
-        assert!(!registry.contains("create_artifact"));
         assert!(!registry.contains("present_artifact"));
 
+        // Edit/Read 统一后 WebUI 附加的只剩发布动作;创建/读取/打补丁走
+        // edit/read 的 artifact: 命名空间。
         register_webui_artifact_tools(&mut registry, &paths, "sess_webui");
-        for name in [
-            "create_artifact",
-            "read_artifact",
-            "apply_artifact_patch",
-            "present_artifact",
-        ] {
-            assert_eq!(
-                registry.permission(name).unwrap(),
-                ToolPermission::Presentation,
-                "{name}"
-            );
-        }
+        assert_eq!(
+            registry.permission("present_artifact").unwrap(),
+            ToolPermission::Presentation,
+        );
         let definitions = registry.definitions();
         assert!(definitions
             .iter()
-            .any(|definition| definition.function.name == "create_artifact"));
-        assert!(definitions
-            .iter()
             .any(|definition| definition.function.name == "present_artifact"));
+        assert!(!definitions
+            .iter()
+            .any(|definition| definition.function.name == "create_artifact"));
     }
 
     #[tokio::test]
@@ -1020,9 +1229,11 @@ mod tests {
             .call("load_tools", r#"{"names":["group:divination"]}"#)
             .await
             .unwrap();
-        let value: serde_json::Value = serde_json::from_str(&output).unwrap();
-        let loaded = value["loaded_tools"].as_array().unwrap();
-        assert!(loaded.iter().any(|name| name == "divine"));
+        let loaded = output
+            .lines()
+            .find_map(|line| line.strip_prefix("loaded_tools:"))
+            .expect("loaded_tools line");
+        assert!(loaded.split(',').any(|name| name.trim() == "divine"));
     }
 }
 
@@ -1053,31 +1264,95 @@ mod tier_schema_probe {
         assert!(!task.function.description.contains("cheap=["));
     }
 
-    /// The description suffix lists the concrete models per tier pool.
+    /// The description is constant bytes: configuring tier pools must not
+    /// change it (a config-derived suffix would re-key the prompt cache on
+    /// every pool edit), and the tier enum carries the four current names.
     #[test]
-    fn task_description_lists_configured_tier_models() {
-        let mut config = crate::config::AppConfig::default();
-        let provider_id = config.providers[0].id.clone();
-        config.providers[0].models.push("mini-a".to_string());
-        config.providers[0].models.push("mini-b".to_string());
-        config
-            .toggle_subagent_tier_model(crate::config::ModelTier::Cheap, &provider_id, "mini-a")
-            .unwrap();
-        config
-            .toggle_subagent_tier_model(crate::config::ModelTier::Balanced, &provider_id, "mini-a")
-            .unwrap();
-        config
-            .toggle_subagent_tier_model(crate::config::ModelTier::Balanced, &provider_id, "mini-b")
-            .unwrap();
+    fn task_description_is_constant_and_lists_the_four_tiers() {
         let paths = crate::paths::MiyuPaths::new().unwrap();
-        let registry = super::builtin_registry(&config, &paths);
-        let defs = registry.definitions();
-        let task = defs.iter().find(|d| d.function.name == "task").unwrap();
-        assert!(task.function.description.contains("cheap=[mini-a]"));
-        assert!(task
-            .function
-            .description
-            .contains("balanced=[mini-a, mini-b]"));
-        assert!(task.function.description.contains("strong=["));
+        let bare = crate::config::AppConfig::default();
+        let bare_task = super::builtin_registry(&bare, &paths)
+            .definitions()
+            .into_iter()
+            .find(|d| d.function.name == "task")
+            .unwrap();
+
+        let mut config = crate::config::AppConfig::default();
+        let provider_id = config.active_provider.clone();
+        let provider = config
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == provider_id)
+            .unwrap();
+        provider.models.push("mini-a".to_string());
+        config
+            .toggle_tier_model(crate::config::ModelTier::Cheap, &provider_id, "mini-a")
+            .unwrap();
+        let task = super::builtin_registry(&config, &paths)
+            .definitions()
+            .into_iter()
+            .find(|d| d.function.name == "task")
+            .unwrap();
+        assert_eq!(task.function.description, bare_task.function.description);
+        assert!(!task.function.description.contains("cheap=["));
+        let schema = serde_json::to_string(&task.function.parameters).unwrap();
+        for tier in ["lite", "cheap", "standard", "flagship"] {
+            assert!(schema.contains(&format!("\"{tier}\"")), "{schema}");
+        }
+        assert!(
+            !schema.contains("balanced") && !schema.contains("strong"),
+            "{schema}"
+        );
+    }
+
+    /// 量尺：`cargo test --lib token_diet_baseline -- --ignored --nocapture`
+    ///
+    /// token 瘦身专项的基线：三套 registry 在 stub（默认发送形态）与 full
+    /// （懒加载展开上限）两种形态下，发给 LLM 的 tools 数组的真实 o200k
+    /// token 数，附逐工具排行。默认 AppConfig，不含平台插件回合注册的工具。
+    #[test]
+    #[ignore]
+    fn token_diet_baseline_probe() {
+        use crate::tools::tests::test_paths;
+        use crate::tools::{
+            builtin_registry, dev_registry, restricted_platform_registry, AppConfig,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let config = AppConfig::default();
+        for (label, registry) in [
+            ("normal", builtin_registry(&config, &paths)),
+            ("dev", dev_registry(&config, &paths)),
+            ("restricted", restricted_platform_registry(&config, &paths)),
+        ] {
+            for (variant, defs) in [
+                ("stub", registry.stub_definitions()),
+                ("full", registry.definitions()),
+            ] {
+                let whole = serde_json::to_string(&defs).unwrap();
+                let tokens = crate::token_counter::count(&whole);
+                eprintln!(
+                    "[{label}/{variant}] tools={} bytes={} tokens={}",
+                    defs.len(),
+                    whole.len(),
+                    tokens
+                );
+                let mut rows: Vec<(String, usize, usize)> = defs
+                    .iter()
+                    .map(|d| {
+                        let s = serde_json::to_string(d).unwrap();
+                        (
+                            d.function.name.clone(),
+                            s.len(),
+                            crate::token_counter::count(&s),
+                        )
+                    })
+                    .collect();
+                rows.sort_by_key(|r| std::cmp::Reverse(r.2));
+                for (name, bytes, toks) in rows {
+                    eprintln!("  {toks:>6} tok {bytes:>6} B  {name}");
+                }
+            }
+        }
     }
 }

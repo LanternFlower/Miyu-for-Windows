@@ -52,34 +52,34 @@ pub struct PluginsConfig {
     pub file_sharing: FileSharingPluginConfig,
     #[serde(default)]
     pub claude_code: ClaudeCodePluginConfig,
+    #[serde(default)]
+    pub antigravity: AntigravityPluginConfig,
+    #[serde(default)]
+    pub codex: CodexPluginConfig,
 }
 
-/// 本机 Claude Code CLI 接入：`claude_code` 委托工具与 `claude-code` 供应商
-/// 协议共用这份配置。CLI 用用户既有的订阅登录态，Miyu 不经手任何凭据。
+/// 本机 Claude Code CLI 接入:`claude-code` 供应商协议的运行参数。CLI 用
+/// 用户既有的订阅登录态,Miyu 不经手任何凭据。(早期还有一件 `claude_code`
+/// 委托工具共用这份配置,08-21 已删;它专用的 timeout/max_output 字段随之
+/// 退役,存量配置里的同名键会被忽略。)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaudeCodePluginConfig {
     /// 空 = 从 PATH 解析 `claude`。
     #[serde(default)]
     pub binary: String,
-    /// --permission-mode:`claude_code` 委托工具与原生工具中转共用。
-    /// 无头模式没有交互审批,默认 bypassPermissions 让 Bash 可用;改
-    /// acceptEdits 则只自动放行文件编辑、命令被拒。
+    /// 原生工具开启时的 --permission-mode。无头模式没有交互审批,默认
+    /// bypassPermissions 让 Bash 可用;改 acceptEdits 则只自动放行文件编辑、
+    /// 命令被拒。
     #[serde(default = "default_claude_code_permission_mode")]
     pub permission_mode: String,
-    /// `claude_code` 委托工具的总超时（秒）。
-    #[serde(default = "default_claude_code_timeout_seconds")]
-    pub timeout_seconds: u64,
-    /// `claude_code` 委托工具的 stdout 截断上限（字节）。
-    #[serde(default = "default_claude_code_max_output_bytes")]
-    pub max_output_bytes: u64,
     /// 哪些模式的会话让 claude 用自带原生工具(Bash/Edit/Read…):
     /// off/dev/normal/all。原生工具在 claude 训练分布内,编码能力最强;
     /// 经桥的 Miyu 工具反正不走 Miyu 渲染管线,所以默认 all。
     #[serde(default = "default_claude_code_native_tools")]
     pub native_tools: String,
     /// 哪些模式的会话把 Miyu 工具经 MCP 桥挂给 claude(记忆/生图/表情包等
-    /// claude 没有的能力):off/dev/normal/all,默认 normal(dev 走原生工具
-    /// 的极简形态)。两套同开时与原生重复的 Miyu 工具被剔除,原生优先。
+    /// claude 没有的能力):off/dev/normal/all,默认 all。两套同开时与原生
+    /// 重复的 Miyu 工具被剔除,原生优先。
     #[serde(default = "default_claude_code_miyu_tools")]
     pub miyu_tools: String,
     /// 供应商中转模式的流空闲看门狗（秒）：这么久没有任何输出就杀进程。
@@ -96,12 +96,95 @@ impl Default for ClaudeCodePluginConfig {
         Self {
             binary: String::new(),
             permission_mode: default_claude_code_permission_mode(),
-            timeout_seconds: default_claude_code_timeout_seconds(),
-            max_output_bytes: default_claude_code_max_output_bytes(),
             native_tools: default_claude_code_native_tools(),
             miyu_tools: default_claude_code_miyu_tools(),
             idle_timeout_seconds: default_claude_code_idle_timeout_seconds(),
             prefer_subscription: true,
+        }
+    }
+}
+
+/// 本机 Antigravity CLI(`agy`)接入:`antigravity` 供应商协议的运行参数。
+/// CLI 用用户既有的 Google 登录态,Miyu 不经手任何凭据。与 claude-code 的
+/// 差异:人格经全局自定义代理文件(`~/.gemini/config/agents/miyu/agent.md`)
+/// 替换默认提示词,Miyu 工具经全局 mcp_config.json 的 `miyu` 条目挂桥。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AntigravityPluginConfig {
+    /// 空 = 从 PATH 解析 `agy`。
+    #[serde(default)]
+    pub binary: String,
+    /// 哪些模式的会话让 agy 用自带原生工具(run_command/view_file/…):
+    /// off/dev/normal/all。原生工具吃订阅额度,默认 all。
+    #[serde(default = "default_antigravity_native_tools")]
+    pub native_tools: String,
+    /// 哪些模式的会话把 Miyu 工具经 MCP 桥挂给 agy:off/dev/normal/all。
+    /// 两套同开时与原生重复的 Miyu 工具被剔除,原生优先。
+    #[serde(default = "default_antigravity_miyu_tools")]
+    pub miyu_tools: String,
+    /// 桥上的 Miyu 工具按 eager 注册(以 `mcp_miyu_<name>` 原生名直接可调,
+    /// schema 进系统提示词);关掉则走 agy 的懒加载(模型先读 schema 文件再经
+    /// `call_mcp_tool` 调用,省 token 但每件工具多一跳)。
+    #[serde(default = "default_true")]
+    pub miyu_tools_eager: bool,
+    /// 流空闲看门狗(秒):这么久没有任何输出就杀进程。
+    #[serde(default = "default_antigravity_idle_timeout_seconds")]
+    pub idle_timeout_seconds: u64,
+    /// agy 自己的 `--print-timeout`(秒):整轮上限。默认 5 分钟不够跑长命令,
+    /// 这里给 24 小时,真正的活性判定交给看门狗。
+    #[serde(default = "default_antigravity_print_timeout_seconds")]
+    pub print_timeout_seconds: u64,
+}
+
+impl Default for AntigravityPluginConfig {
+    fn default() -> Self {
+        Self {
+            binary: String::new(),
+            native_tools: default_antigravity_native_tools(),
+            miyu_tools: default_antigravity_miyu_tools(),
+            miyu_tools_eager: true,
+            idle_timeout_seconds: default_antigravity_idle_timeout_seconds(),
+            print_timeout_seconds: default_antigravity_print_timeout_seconds(),
+        }
+    }
+}
+
+/// 本机 OpenAI Codex CLI 接入:`codex` 供应商协议的运行参数。CLI 用用户既有
+/// 的 ChatGPT 登录态,Miyu 不经手凭据。所有配置逐进程经 `-c` 注入,不碰用户
+/// 的 ~/.codex/config.toml。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexPluginConfig {
+    /// 空 = 从 PATH 解析 `codex`。
+    #[serde(default)]
+    pub binary: String,
+    /// 哪些模式的会话让 codex 用自带原生工具(shell/apply_patch/web_search):
+    /// off/dev/normal/all,默认 all。
+    #[serde(default = "default_codex_native_tools")]
+    pub native_tools: String,
+    /// 哪些模式的会话把 Miyu 工具经 MCP 桥挂给 codex:off/dev/normal/all。
+    #[serde(default = "default_codex_miyu_tools")]
+    pub miyu_tools: String,
+    /// codex 沙箱:danger-full-access(默认,与另两条线的全放行同义)/
+    /// workspace-write / read-only。
+    #[serde(default = "default_codex_sandbox_mode")]
+    pub sandbox_mode: String,
+    /// 不加载用户自己的 ~/.codex/config.toml(登录态照常):默认开,免得用户
+    /// 的 MCP 服务器/规则混进中转工具面。
+    #[serde(default = "default_true")]
+    pub ignore_user_config: bool,
+    /// 流空闲看门狗(秒)。
+    #[serde(default = "default_codex_idle_timeout_seconds")]
+    pub idle_timeout_seconds: u64,
+}
+
+impl Default for CodexPluginConfig {
+    fn default() -> Self {
+        Self {
+            binary: String::new(),
+            native_tools: default_codex_native_tools(),
+            miyu_tools: default_codex_miyu_tools(),
+            sandbox_mode: default_codex_sandbox_mode(),
+            ignore_user_config: true,
+            idle_timeout_seconds: default_codex_idle_timeout_seconds(),
         }
     }
 }
@@ -202,6 +285,12 @@ pub struct VisionPluginConfig {
     pub vision_provider_id: String,
     #[serde(default)]
     pub vision_model: String,
+    /// 视频分析的显式路由(08-22)。留空=自动挑 models.dev 标了 video 输入
+    /// 能力的启用模型;两项须同时配置才生效。
+    #[serde(default)]
+    pub video_provider_id: String,
+    #[serde(default)]
+    pub video_model: String,
     #[serde(default = "default_vision_response_header_timeout")]
     pub response_header_timeout_seconds: u64,
     #[serde(default = "default_vision_stream_idle_timeout")]
@@ -494,6 +583,8 @@ impl Default for PluginsConfig {
             api_quota: ApiQuotaPluginConfig::default(),
             memory: MemoryConfig::default(),
             claude_code: ClaudeCodePluginConfig::default(),
+            antigravity: AntigravityPluginConfig::default(),
+            codex: CodexPluginConfig::default(),
         }
     }
 }
@@ -581,6 +672,8 @@ impl Default for VisionPluginConfig {
             prefer_current_multimodal_model: default_true(),
             vision_provider_id: String::new(),
             vision_model: String::new(),
+            video_provider_id: String::new(),
+            video_model: String::new(),
             response_header_timeout_seconds: default_vision_response_header_timeout(),
             stream_idle_timeout_seconds: default_vision_stream_idle_timeout(),
             image_timeout_seconds: default_vision_image_timeout(),
@@ -673,7 +766,7 @@ impl Default for KnowledgeBasePluginConfig {
             allowed_extensions: default_kb_allowed_extensions(),
             allowed_filenames: default_kb_allowed_filenames(),
             upload_tool_enabled: default_true(),
-            embedding_enabled: false,
+            embedding_enabled: true,
             embedding_provider_id: String::new(),
             embedding_model: String::new(),
             semantic_chunk_chars: default_kb_semantic_chunk_chars(),
@@ -706,7 +799,10 @@ impl Default for DiagnosticsPluginConfig {
     }
 }
 
-pub(crate) fn validate_api_quota_accounts(provider: &str, config: &ApiQuotaProviderConfig) -> Result<()> {
+pub(crate) fn validate_api_quota_accounts(
+    provider: &str,
+    config: &ApiQuotaProviderConfig,
+) -> Result<()> {
     if !config.api_key.trim().is_empty() && !config.accounts.is_empty() {
         bail!("plugins.api_quota.{provider} legacy api_key could not be migrated");
     }

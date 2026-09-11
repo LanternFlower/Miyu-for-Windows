@@ -1,16 +1,25 @@
+mod antigravity_form;
 mod claude_code_form;
+mod cli_catalog;
+mod codex_form;
 mod personas;
 mod platforms;
 mod plugin_settings;
 mod plugins;
 mod providers;
 mod quota;
+pub(crate) use cli_catalog::builtin_cli_binary;
+pub(crate) use providers::fetch_models;
 mod real_context;
 mod scheduled_messages;
 mod settings;
+mod tiers;
 mod undo;
+mod voice;
 mod widgets;
+use antigravity_form::*;
 use claude_code_form::*;
+use codex_form::*;
 use personas::*;
 use platforms::*;
 use plugin_settings::*;
@@ -20,7 +29,9 @@ use quota::*;
 use real_context::*;
 use scheduled_messages::*;
 use settings::*;
+use tiers::*;
 use undo::*;
+use voice::*;
 use widgets::*;
 
 use crate::config::{
@@ -121,12 +132,12 @@ fn run_main_menu(
             t("Providers and models", "供应商和模型").to_string(),
             format!(
                 "{} ({}: {active})",
-                t("Configure text model", "配置文本模型"),
+                t("Configure global text models", "配置全局文本模型"),
                 t("Current", "当前")
             ),
             format!(
                 "{} ({}: {multimodal})",
-                t("Configure multimodal model", "配置多模态模型"),
+                t("Configure global multimodal models", "配置全局多模态模型"),
                 t("Current", "当前")
             ),
             format!(
@@ -135,11 +146,7 @@ fn run_main_menu(
                 t("Current", "当前"),
                 embedding_model_label(config)
             ),
-            format!(
-                "{} ({})",
-                t("Configure subagent tier pools", "配置子代理档位池"),
-                subagent_tiers_label(config)
-            ),
+            t("Configure tiered model pools", "配置分级模型池").to_string(),
             t("Plugins", "插件配置").to_string(),
             t("Custom prompts", "自定义提示词").to_string(),
             format!(
@@ -148,6 +155,21 @@ fn run_main_menu(
                 platforms_label(config)
             ),
             t("Global settings", "全局参数设置").to_string(),
+            format!(
+                "{} ({}: {} · TTS: {})",
+                t("Voice", "语音功能"),
+                t("wake", "唤醒"),
+                if config.voice.enabled {
+                    t("on", "开")
+                } else {
+                    t("off", "关")
+                },
+                if config.voice.tts.enabled {
+                    t("on", "开")
+                } else {
+                    t("off", "关")
+                },
+            ),
             t("Save and exit", "保存并退出").to_string(),
         ];
         draw_menu(
@@ -189,12 +211,13 @@ fn run_main_menu(
                     1 => select_active_provider(stdout, config),
                     2 => select_active_multimodal_provider(stdout, config),
                     3 => edit_embedding_model(stdout, config),
-                    4 => select_subagent_tiers(stdout, config),
+                    4 => select_model_tiers(stdout, config),
                     5 => edit_plugins(stdout, config),
                     6 => edit_custom_prompts(stdout, paths, config),
                     7 => select_platforms(stdout, paths, config),
                     8 => edit_settings(stdout, config),
-                    9 => match config.save(paths) {
+                    9 => edit_voice(stdout, paths, config),
+                    10 => match config.save(paths) {
                         Ok(()) => {
                             thinking_variants.save(paths)?;
                             return Ok(true);
@@ -269,6 +292,11 @@ impl<'a> ProviderBrowser<'a> {
                     }
                     KeyCode::Char('r') => self.refresh_models(),
                     KeyCode::Char('a') => self.add_provider(stdout)?,
+                    KeyCode::Char('n') => self.add_custom_model(stdout)?,
+                    // 模型列的 d 是"删这一行",不是"删供应商":列表几百行、
+                    // 自定义模型只在最上面几行,同一个键按行改语义会让人在
+                    // 光标差一行时删掉整个供应商。删供应商去左边两列。
+                    KeyCode::Char('d') if self.active_col == 2 => self.delete_custom_model(),
                     KeyCode::Char('d') => self.delete_provider(),
                     KeyCode::Char('u') => self.undo_delete(),
                     KeyCode::Tab if self.active_col == 2 => self.toggle_model_activation(),
@@ -366,12 +394,14 @@ impl<'a> ProviderBrowser<'a> {
         self.fetch_seq += 1;
         if let Some(provider) = self.config.providers.get(self.provider_idx).cloned() {
             let seq = self.fetch_seq;
+            let cli_binary = cli_catalog::builtin_cli_binary(&self.config, &provider);
             let (tx, rx) = mpsc::channel();
             self.fetch_rx = Some(rx);
             self.loading = true;
             self.status = t("Fetching model list...", "正在获取模型列表...").to_string();
             std::thread::spawn(move || {
-                let result = fetch_models(&provider).map_err(|err| err.to_string());
+                let result =
+                    fetch_models(&provider, cli_binary.as_deref()).map_err(|err| err.to_string());
                 let _ = tx.send((seq, result));
             });
         } else {
@@ -419,34 +449,17 @@ impl<'a> ProviderBrowser<'a> {
         self.rebuild_models();
     }
 
+    /// 该供应商手填的模型名。
+    fn custom_models(&self) -> Vec<String> {
+        self.config
+            .providers
+            .get(self.provider_idx)
+            .map(|provider| provider.custom_models.clone())
+            .unwrap_or_default()
+    }
+
     fn rebuild_models(&mut self) {
-        let filter = self.filter.to_ascii_lowercase();
-        let mut grouped: BTreeMap<String, Vec<ModelEntry>> = BTreeMap::new();
-        for model in &self.raw_models {
-            if !filter.is_empty() && !model.to_ascii_lowercase().contains(&filter) {
-                continue;
-            }
-            let org = model
-                .split_once('/')
-                .map(|(org, _)| org)
-                .unwrap_or("All")
-                .to_string();
-            let name = model
-                .split_once('/')
-                .map(|(_, name)| name)
-                .unwrap_or(model)
-                .to_string();
-            grouped
-                .entry("All".to_string())
-                .or_default()
-                .push(ModelEntry::new(model, model));
-            if org != "All" {
-                grouped
-                    .entry(org)
-                    .or_default()
-                    .push(ModelEntry::new(&name, model));
-            }
-        }
+        let mut grouped = group_models(&self.custom_models(), &self.raw_models, &self.filter);
         self.orgs = grouped.keys().cloned().collect();
         if self.orgs.is_empty() {
             self.orgs.push("All".to_string());
@@ -467,6 +480,107 @@ impl<'a> ProviderBrowser<'a> {
         Ok(())
     }
 
+    /// 手填一个模型名。供应商的 `/models` 目录是它自己报的,内测模型不在
+    /// 里面,只能这样进来。加完就激活——名字是用户特意打进来的,再让他按
+    /// 一次 Tab 是白问一句;不想要了 Tab 取消,条目仍留在列表顶端。
+    fn add_custom_model(&mut self, stdout: &mut io::Stdout) -> Result<()> {
+        if self.config.providers.get(self.provider_idx).is_none() {
+            return Ok(());
+        }
+        let mut fields = vec![Field::new(t("Model name", "模型名"), String::new())];
+        if !run_form_editing(
+            stdout,
+            t(" ADD CUSTOM MODEL ", " 添加自定义模型 "),
+            &mut fields,
+        )? {
+            return Ok(());
+        }
+        let name = fields[0].value.trim().to_string();
+        if name.is_empty() {
+            return Ok(());
+        }
+        // 先记快照再插:名字重不重复的判据只有 `insert_custom_model` 一份,
+        // 没插成就把这一步快照丢掉,撤销栈里不留空步。
+        self.undo.record(self.config);
+        let added = insert_custom_model(self.config, self.provider_idx, &self.raw_models, &name);
+        if added {
+            if let Some(provider) = self.config.providers.get_mut(self.provider_idx) {
+                auto_configure_model_tags(self.paths, provider, &name);
+            }
+        } else {
+            self.undo.undo(self.config);
+        }
+        self.status = if added {
+            if is_zh() {
+                format!("已添加并激活自定义模型: {name}")
+            } else {
+                format!("Added and activated custom model: {name}")
+            }
+        } else if is_zh() {
+            format!("模型已在列表中: {name}")
+        } else {
+            format!("Model is already listed: {name}")
+        };
+        self.reveal_model(&name);
+        Ok(())
+    }
+
+    /// 把光标移到这个模型上。过滤词或组织栏把它挡住了就先让开——刚加完
+    /// 却看不见,用户没法判断到底加上没有。
+    fn reveal_model(&mut self, full: &str) {
+        if !self.filter.is_empty()
+            && !full
+                .to_ascii_lowercase()
+                .contains(&self.filter.to_ascii_lowercase())
+        {
+            self.filter.clear();
+        }
+        self.rebuild_models();
+        if self.models.iter().all(|model| model.full != full) {
+            // 每个模型都会进 "All" 组,所以那一组一定找得到。
+            if let Some(index) = self.orgs.iter().position(|org| org == "All") {
+                self.org_idx = index;
+                self.org_scroll =
+                    column_scroll(self.org_idx, self.org_scroll, column_visible_rows());
+                self.rebuild_models();
+            }
+        }
+        if let Some(index) = self.models.iter().position(|model| model.full == full) {
+            self.active_col = 2;
+            self.model_idx = index;
+            self.model_scroll =
+                column_scroll(self.model_idx, self.model_scroll, column_visible_rows());
+        }
+    }
+
+    /// 删掉光标所在的自定义模型:清掉手填清单、激活状态与各处池子引用。
+    /// 拉取来的模型删不掉——它是供应商目录的内容,这里只是显示。
+    fn delete_custom_model(&mut self) {
+        let Some(model) = self
+            .models
+            .get(self.model_idx)
+            .map(|entry| entry.full.clone())
+        else {
+            return;
+        };
+        self.undo.record(self.config);
+        if !remove_custom_model(self.config, self.provider_idx, &model) {
+            self.undo.undo(self.config);
+            self.status = t(
+                "Only manually added models can be deleted here; delete a provider from the provider column.",
+                "这里只能删手动添加的模型;删供应商请到供应商列。",
+            )
+            .to_string();
+            return;
+        }
+        self.status = if is_zh() {
+            format!("已删除自定义模型: {model}")
+        } else {
+            format!("Deleted custom model: {model}")
+        };
+        self.rebuild_models();
+    }
+
     fn delete_provider(&mut self) {
         if self.config.providers.is_empty() {
             return;
@@ -475,13 +589,13 @@ impl<'a> ProviderBrowser<'a> {
             .config
             .providers
             .get(self.provider_idx)
-            .is_some_and(ProviderConfig::is_claude_code)
+            .is_some_and(ProviderConfig::is_builtin_cli_provider)
         {
             // 内置供应商删了下次加载也会被重新注入,徒增困惑;要停用走编辑
             // 表单里的启用开关。
             self.status = t(
-                "Claude Code is built in and cannot be deleted; disable it in its edit form instead.",
-                "Claude Code 是内置供应商,不可删除;要停用请在编辑表单里关掉启用开关。",
+                "This built-in CLI provider cannot be deleted; disable it in its edit form instead.",
+                "内置 CLI 供应商不可删除;要停用请在编辑表单里关掉启用开关。",
             )
             .to_string();
             return;
@@ -518,6 +632,14 @@ impl<'a> ProviderBrowser<'a> {
                             provider,
                             &mut self.config.plugins.claude_code,
                         )?
+                    } else if provider.is_antigravity() {
+                        edit_antigravity_provider_form(
+                            stdout,
+                            provider,
+                            &mut self.config.plugins.antigravity,
+                        )?
+                    } else if provider.is_codex() {
+                        edit_codex_provider_form(stdout, provider, &mut self.config.plugins.codex)?
                     } else {
                         edit_provider_form(stdout, provider)?
                     };
@@ -544,7 +666,13 @@ impl<'a> ProviderBrowser<'a> {
                         auto_configure_model_tags(self.paths, provider, &model.full);
                     }
                     if let Some(provider) = self.config.providers.get_mut(self.provider_idx) {
-                        if edit_model_form(stdout, provider, &model.full, self.thinking_variants)? {
+                        if edit_model_form(
+                            stdout,
+                            self.paths,
+                            provider,
+                            &model.full,
+                            self.thinking_variants,
+                        )? {
                             self.config.active_provider = provider.id.clone();
                             model_updated = true;
                             self.status = if is_zh() {
@@ -632,7 +760,11 @@ impl<'a> ProviderBrowser<'a> {
                 } else {
                     // 目前只有内置 Claude Code 会处于未启用态,标出来免得
                     // 用户找不到"为什么模型列表里没有它"。
-                    format!("  {}{}", provider.display_name, t(" (disabled)", "(未启用)"))
+                    format!(
+                        "  {}{}",
+                        provider.display_name,
+                        t(" (disabled)", "(未启用)")
+                    )
                 }
             })
             .collect::<Vec<_>>();
@@ -640,13 +772,30 @@ impl<'a> ProviderBrowser<'a> {
             .models
             .iter()
             .map(|model| {
-                let active = self
-                    .config
-                    .providers
-                    .get(self.provider_idx)
+                let provider = self.config.providers.get(self.provider_idx);
+                let active = provider
                     .map(|provider| provider.models.iter().any(|item| item == &model.full))
                     .unwrap_or(false);
-                format!("{} {}", if active { "[*]" } else { "[ ]" }, model.name)
+                // 标出手填的:只有它们能在这一列删掉,不标就看不出哪几行的 d
+                // 是活的。
+                let custom = provider
+                    .map(|provider| {
+                        provider
+                            .custom_models
+                            .iter()
+                            .any(|item| item == &model.full)
+                    })
+                    .unwrap_or(false);
+                format!(
+                    "{} {}{}",
+                    if active { "[*]" } else { "[ ]" },
+                    model.name,
+                    if custom {
+                        t(" (custom)", "(自定义)")
+                    } else {
+                        ""
+                    }
+                )
             })
             .collect::<Vec<_>>();
         let orgs = self
@@ -712,14 +861,21 @@ impl<'a> ProviderBrowser<'a> {
                 format!("Search: {}_  [Enter]confirm [Esc]cancel", self.filter)
             }
         } else {
-            format!(
-                "{}{}",
+            // 按列列键位。一行列全部就得截断,而被截掉的总是排在末尾的
+            // `[q]返回`——最该让人看见的那个。Enter / d 本来就按列改语义,
+            // 分开写反而说得更准。
+            let keys = if self.active_col == 2 {
                 t(
-                    "[h/l]column [j/k]move [Tab]activate model [Enter]model settings [/]search [r]refresh [a]add [d]delete [q]back",
-                    "[h/l]切栏 [j/k]移动 [Tab]激活模型 [Enter]模型设置 [/]搜索 [r]刷新 [a]添加 [d]删除 [q]返回",
-                ),
-                self.undo.hint()
-            )
+                    "[h/l]column [j/k]move [Tab]activate [Enter]edit [n]add model [d]delete custom [/]search [r]refresh [q]back",
+                    "[h/l]切栏 [j/k]移动 [Tab]激活 [Enter]模型设置 [n]添加模型 [d]删除自定义 [/]搜索 [r]刷新 [q]返回",
+                )
+            } else {
+                t(
+                    "[h/l]column [j/k]move [Enter]edit [n]add model [a]add provider [d]delete [/]search [r]refresh [q]back",
+                    "[h/l]切栏 [j/k]移动 [Enter]编辑 [n]添加模型 [a]添加供应商 [d]删除供应商 [/]搜索 [r]刷新 [q]返回",
+                )
+            };
+            format!("{keys}{}", self.undo.hint())
         };
         let status = if self.loading {
             format!("{}", self.status)

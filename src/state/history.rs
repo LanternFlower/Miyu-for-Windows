@@ -20,10 +20,7 @@ impl StateStore {
             .background_report_replies_after(session_id, after_seq)
     }
 
-    pub fn oldest_visible_turn_timestamp(
-        &self,
-        excluding_turn_id: &str,
-    ) -> Result<Option<String>> {
+    pub fn oldest_visible_turn_timestamp(&self, excluding_turn_id: &str) -> Result<Option<String>> {
         self.conv_db
             .oldest_visible_turn_timestamp(&self.session(), excluding_turn_id)
     }
@@ -162,15 +159,6 @@ impl StateStore {
 
     pub fn load_last_summary(&self) -> Result<Option<Turn>> {
         self.conv_db.load_last_summary(&self.session())
-    }
-
-    pub fn prune_stale_tool_reports(
-        &self,
-        protect_recent: usize,
-        min_saved_chars: usize,
-    ) -> Result<PruneStats> {
-        self.conv_db
-            .prune_stale_tool_reports(&self.session(), protect_recent, min_saved_chars)
     }
 
     pub fn replace_visible_with_summary(

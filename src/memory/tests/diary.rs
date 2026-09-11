@@ -1,8 +1,8 @@
 //! 日记的批次、晋升与清理。
 
-use crate::memory::*;
-use crate::config::AppConfig;
 use super::shared::*;
+use crate::config::AppConfig;
+use crate::memory::*;
 
 #[test]
 fn diary_batch_starts_only_at_the_configured_turn_count() {

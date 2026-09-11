@@ -1,7 +1,7 @@
 {
   "name": "deep_research",
   "display_name": "深度研究",
-  "description": "Run a deep research task and write out a Markdown report.\nResearcher and reviewer run as separate roles (dual-role); the final report is written to the configured output directory.",
+  "description": "Run a deep research task and produce a Markdown research report. Use only when a research report is needed.",
   "parameters": {
     "type": "object",
     "properties": {

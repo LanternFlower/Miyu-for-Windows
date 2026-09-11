@@ -1,8 +1,12 @@
 mod crud;
+mod dashboard;
 mod library;
+mod semantic;
 mod validate;
 pub(crate) use crud::*;
+pub(crate) use dashboard::*;
 pub(crate) use library::*;
+pub(crate) use semantic::reindex_library;
 pub(crate) use validate::*;
 
 use super::{vision, ToolRegistry, ToolSpec};
@@ -20,7 +24,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::SystemTime;
 
-
 static MEME_LIBRARY_CACHE: OnceLock<RwLock<Option<MemeLibraryCache>>> = OnceLock::new();
 static MEME_LIBRARY_LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
     OnceLock::new();
@@ -30,16 +33,6 @@ pub(crate) struct MemeRef {
     pub(crate) library: String,
     pub(crate) id: String,
 }
-
-
-
-
-
-
-
-
-
-
 
 pub(crate) fn auto_meme_reminder(
     config: &AppConfig,
@@ -67,8 +60,6 @@ pub(crate) fn auto_meme_reminder(
             .to_string(),
     )
 }
-
-
 
 /// 表情包分两个工具：读路径 `use_meme`，写路径 `manage_meme`。
 ///
@@ -112,7 +103,11 @@ fn register_use(registry: &mut ToolRegistry, config: AppConfig, paths: MiyuPaths
                 let config = config.clone();
                 let paths = paths.clone();
                 async move {
-                    match args.get("action").and_then(Value::as_str).unwrap_or_default() {
+                    match args
+                        .get("action")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                    {
                         "search" => search_meme(args, &config, &paths).await,
                         "show" => show_meme(args, &config, &paths, progress).await,
                         other => bail!("unknown action: {other}; expected search or show"),
@@ -141,7 +136,11 @@ fn register_manage(registry: &mut ToolRegistry, config: AppConfig, paths: MiyuPa
                     let config = config.clone();
                     let paths = paths.clone();
                     async move {
-                        match args.get("action").and_then(Value::as_str).unwrap_or_default() {
+                        match args
+                            .get("action")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                        {
                             "add" => add_meme(args, &config, &paths).await,
                             "update" => update_meme(args, &config, &paths).await,
                             "delete" => delete_meme(args, &config, &paths).await,
@@ -155,6 +154,47 @@ fn register_manage(registry: &mut ToolRegistry, config: AppConfig, paths: MiyuPa
         )
         .writes(),
     );
+}
+
+/// Keyword ranking fused with an optional semantic ranking (RRF); keyword-only
+/// when the semantic pass is unavailable. Returns at most `limit` memes.
+/// 返回体只留"挑哪张"真正要用的字段(08-17 实测:125 条记录 55,708 字符里,
+/// origin 采集元数据占 20.2%、score 全精度浮点 5.4%、source 4.3%、name.en
+/// 约 5%,对选表情包零价值)。tags 参与排序,只是不再发给模型。
+fn rank_memes(
+    loaded: Vec<LoadedMeme>,
+    query: &str,
+    tags: &[String],
+    semantic_rank: Option<Vec<String>>,
+    limit: usize,
+) -> Vec<LoadedMeme> {
+    let mut keyword = loaded
+        .iter()
+        .filter_map(|meme| {
+            let score = score_meme(&meme.item, query, tags);
+            (score > 0.0).then_some((score, meme.item.id.clone()))
+        })
+        .collect::<Vec<_>>();
+    keyword.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    let keyword_ids: Vec<String> = keyword.into_iter().map(|(_, id)| id).collect();
+    let ordered_ids: Vec<String> = match semantic_rank {
+        Some(semantic_ids) if !semantic_ids.is_empty() => {
+            crate::embedding::rrf_fuse(&[keyword_ids, semantic_ids], crate::embedding::RRF_K)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect()
+        }
+        _ => keyword_ids,
+    };
+    let mut by_id: HashMap<String, LoadedMeme> = loaded
+        .into_iter()
+        .map(|meme| (meme.item.id.clone(), meme))
+        .collect();
+    ordered_ids
+        .into_iter()
+        .filter_map(|id| by_id.remove(&id))
+        .take(limit)
+        .collect()
 }
 
 async fn search_meme(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Result<String> {
@@ -171,41 +211,32 @@ async fn search_meme(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Resu
         .clamp(1, 3) as usize;
     let loaded = load_library(paths, &library)?;
     let ids = meme_ids(&loaded);
-    let mut scored = loaded
-        .into_iter()
-        .filter_map(|meme| {
-            let score = score_meme(&meme.item, query, &tags);
-            (score > 0.0).then_some((score, meme))
-        })
-        .collect::<Vec<_>>();
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    let results = scored
-        .into_iter()
-        .take(limit)
-        // 返回体只留"挑哪张"真正要用的字段(08-17 实测:125 条记录 55,708
-        // 字符里,origin 采集元数据占 20.2%、score 全精度浮点 5.4%、
-        // source 4.3%、name.en 约 5%,对选表情包零价值)。tags 照旧参与
-        // 上面的 score_meme 排序,只是不再发给模型。
-        .map(|(_score, meme)| {
-            json!({
-                "id": unique_short_id_from_ids(&ids, &meme.item.id),
-                "name": meme.item.name.zh,
-                "description": meme.item.description,
-                "usage": meme.item.usage,
-                "avoid": meme.item.avoid,
-                "animated": meme.item.animated,
-            })
-        })
-        .collect::<Vec<_>>();
-    if limit == 1 {
-        return Ok(json!({
-            "success": true,
-            "library": library,
-            "result": results.into_iter().next(),
-        })
-        .to_string());
+    // 语义排名是辅助:不可用(没配/没装运行库/超时)时 None,关键词排名独立成立。
+    let semantic_query = format!("{query} {}", tags.join(" "));
+    let semantic_rank =
+        semantic::semantic_rank(config, paths, &library, &loaded, &semantic_query).await;
+    let results = rank_memes(loaded, query, &tags, semantic_rank, limit);
+    // 08-21 token-diet:候选列表改为行格式,不再逐条 JSON 重复键名。
+    let mut output = format!("library {library}: {} candidate(s)\n", results.len());
+    for meme in &results {
+        let mut line = format!(
+            "- id={} {}",
+            unique_short_id_from_ids(&ids, &meme.item.id),
+            meme.item.name.zh
+        );
+        if !meme.item.description.is_empty() {
+            line.push_str(&format!(" — {}", meme.item.description));
+        }
+        if !meme.item.usage.is_empty() {
+            line.push_str(&format!(" | usage: {}", meme.item.usage));
+        }
+        if meme.item.animated {
+            line.push_str(" [animated]");
+        }
+        output.push_str(&line);
+        output.push('\n');
     }
-    Ok(json!({ "success": true, "library": library, "results": results }).to_string())
+    Ok(output)
 }
 
 async fn show_meme(
@@ -229,43 +260,15 @@ async fn show_meme(
             vision::print_image_file(&meme.path, size).await?;
         }
     }
-    Ok(json!({
-        "success": true,
-        "id": unique_short_id_from_ids(&ids, &meme.item.id),
-        "description": meme.item.description,
-    })
-    .to_string())
+    // 文本形态;compact_sent_meme_report(agent/reports.rs)对新旧两种形态
+    // 都能解析。
+    let short_id = unique_short_id_from_ids(&ids, &meme.item.id);
+    if meme.item.description.is_empty() {
+        Ok(format!("sent meme {short_id}"))
+    } else {
+        Ok(format!("sent meme {short_id}: {}", meme.item.description))
+    }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 #[cfg(test)]
 mod tests {
@@ -307,7 +310,6 @@ mod tests {
             animated: false,
             description: "戴墨镜的企鹅抱着终端".to_string(),
             usage: "适合 Linux 话题".to_string(),
-            avoid: String::new(),
             tags: vec!["Linux".to_string(), "企鹅".to_string()],
             origin: None,
         };
@@ -419,6 +421,7 @@ mod tests {
             message_id: "msg-e2e-1".to_string(),
             sent_at: "2026-08-10T12:00:00+00:00".to_string(),
             collected_at: String::new(),
+            reason: String::new(),
         };
         let outcome = collect_meme_from_local_image(&image, &config, &paths, Some(origin))
             .await
@@ -440,7 +443,10 @@ mod tests {
         assert_eq!(origin.sender_name, "测试群友");
         assert_eq!(origin.sent_at, "2026-08-10T12:00:00+00:00");
         assert!(!origin.collected_at.is_empty(), "collected_at stamped");
-        println!("E2E origin: {}", serde_json::to_string_pretty(origin).unwrap());
+        println!(
+            "E2E origin: {}",
+            serde_json::to_string_pretty(origin).unwrap()
+        );
     }
 
     #[test]
@@ -606,7 +612,6 @@ mod tests {
                 animated: false,
                 description: "测试表情".to_string(),
                 usage: "测试".to_string(),
-                avoid: String::new(),
                 tags: Vec::new(),
                 origin: None,
             },
@@ -618,6 +623,9 @@ mod tests {
     fn accepted_classification() -> MemeClassification {
         MemeClassification {
             save: true,
+            // 兼容字段:模型仍可能吐 avoid,收下即丢(见 crud.rs 的说明)
+            avoid: String::new(),
+            reason: String::new(),
             confidence: 100,
             positive_gates: PositiveGates {
                 chat_reaction: true,
@@ -641,7 +649,6 @@ mod tests {
             },
             description: "一只卡通猫开心地挥手。".to_string(),
             usage: "适合轻松打招呼。".to_string(),
-            avoid: "严肃场景不要使用。".to_string(),
             tags: vec!["开心".to_string(), "猫".to_string()],
         }
     }
@@ -805,6 +812,9 @@ mod register_tests {
             .call("use_meme", &json!({"action": "delete"}).to_string())
             .await
             .expect_err("use_meme 不该认 delete");
-        assert!(error.to_string().contains("search or show"), "实际：{error}");
+        assert!(
+            error.to_string().contains("search or show"),
+            "实际：{error}"
+        );
     }
 }

@@ -34,7 +34,6 @@ pub(crate) struct MemeItem {
     pub(crate) animated: bool,
     pub(crate) description: String,
     pub(crate) usage: String,
-    pub(crate) avoid: String,
     #[serde(default)]
     pub(crate) tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -63,6 +62,11 @@ pub(crate) struct MemeOrigin {
     /// 入库时刻（RFC3339）
     #[serde(default)]
     pub(crate) collected_at: String,
+    /// 「添加理由」：分类模型（或调保存工具的模型）用人格口吻说为什么把这张
+    /// 偷回来。只给 WebUI 里的人看乐子，搜索/展示表情时从不回给模型
+    /// （search_meme 的候选行本来就不带 origin）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) reason: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -381,7 +385,6 @@ pub(crate) fn score_meme(item: &MemeItem, query: &str, tags: &[String]) -> f32 {
     let name = normalize(&format!("{} {}", item.name.zh, item.name.en));
     let description = normalize(&item.description);
     let usage = normalize(&item.usage);
-    let avoid = normalize(&item.avoid);
     let tag_text = normalize(&item.tags.join(" "));
     let mut score: f32 = 0.0;
     for term in terms {
@@ -396,9 +399,6 @@ pub(crate) fn score_meme(item: &MemeItem, query: &str, tags: &[String]) -> f32 {
         }
         if description.contains(&term) {
             score += 1.2;
-        }
-        if !avoid.is_empty() && avoid.contains(&term) {
-            score -= 2.5;
         }
     }
     let haystack = format!("{name} {description} {usage} {tag_text}");
@@ -447,7 +447,9 @@ pub(crate) fn normalize(value: &str) -> String {
 
 pub(crate) fn expand_path(value: &str) -> PathBuf {
     if let Some(rest) = value.trim().strip_prefix("~/") {
-        if let Some(home) = crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+        if let Some(home) =
+            crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
+        {
             return home.join(rest);
         }
     }

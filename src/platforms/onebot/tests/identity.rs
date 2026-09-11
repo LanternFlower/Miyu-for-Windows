@@ -1,7 +1,7 @@
 //! 群名、昵称、@ 与身份绑定。
 
-use crate::platforms::onebot::*;
 use super::shared::*;
+use crate::platforms::onebot::*;
 
 #[test]
 fn group_name_cache_is_ttl_bound_and_capacity_bound() {
@@ -165,8 +165,10 @@ fn qq_sender_and_group_metadata_stay_out_of_user_text() {
     assert!(!private_hidden.contains("\"id\":\"7\""));
 }
 
+/// @ 的身份元数据走 `<qq-request-context>`,不靠正文里的名字:正文只有
+/// 一个 CQ at 段,昵称从来不出现在文本里。
 #[test]
-fn named_mention_survives_after_the_qq_wake_prefix_is_removed() {
+fn named_mention_reaches_the_turn_context_without_appearing_in_the_text() {
     let config = config_with(|config| {
         config.group_chats.trigger_keywords = vec!["miyu".to_string()];
     });
@@ -175,9 +177,10 @@ fn named_mention_survives_after_the_qq_wake_prefix_is_removed() {
         { "type": "at", "data": { "qq": "8" } }
     ]);
     let parsed = parse_message(Some(&message), None, 10_000);
+    // 唤醒词不再剥离(见 admission::keyword_wake_keeps_the_whole_sentence)。
     assert_eq!(
         group_trigger_text(&config, &parsed, None, 10_000).as_deref(),
-        Some("他是谁 ")
+        Some("miyu，他是谁 ")
     );
     let mut event = message_event(
         Target::Group { group_id: 42 },
@@ -205,6 +208,15 @@ fn named_mention_survives_after_the_qq_wake_prefix_is_removed() {
     assert!(system.contains("\"display_name\":\"yuyi\""));
     assert!(system.contains("\"qq_id\":\"8\""));
     assert!(!parsed.text.contains("yuyi"));
+
+    // 08-29:回合上下文里不再有 `mentioned_bot`。判官放行、回合已经起来之后
+    // 「该不该回」不是人格模型的问题,而这个字段只对那个问题有用;它是全项目
+    // 唯一一处「陈述一件没发生的事」,实测被她拿去推出「没提到我 不接」并当
+    // 成正文发进群里。被 @ 的事实改由当前消息块的 `[you]` 承载。
+    assert!(
+        !system.contains("mentioned_bot"),
+        "回合上下文不该再声明有没有被 @：{system}"
+    );
 }
 
 #[test]
@@ -340,11 +352,11 @@ async fn qq_conversation_persona_drives_context_and_session_binding() {
             },
             text_models_inheritance: crate::config::PlatformModelPoolInheritance::Platform,
             text_models: None,
-            multimodal_models_inheritance:
-                crate::config::PlatformModelPoolInheritance::Platform,
+            multimodal_models_inheritance: crate::config::PlatformModelPoolInheritance::Platform,
             multimodal_models: None,
             extra_prompt: String::new(),
             session_limits: None,
+            probability_reply: None,
         });
     let target = Target::Group { group_id: 99 };
     let event = json!({

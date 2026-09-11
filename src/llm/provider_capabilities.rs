@@ -59,13 +59,12 @@ pub(crate) fn record_continuation_unsupported(path: &Path, base_url: &str) {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .map(|elapsed| elapsed.as_secs());
-    let write = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))
-        .and_then(|_| {
-            std::fs::write(
-                path,
-                serde_json::to_string_pretty(&file).unwrap_or_default(),
-            )
-        });
+    let write = std::fs::create_dir_all(path.parent().unwrap_or(Path::new("."))).and_then(|_| {
+        std::fs::write(
+            path,
+            serde_json::to_string_pretty(&file).unwrap_or_default(),
+        )
+    });
     if let Err(error) = write {
         tracing::warn!(error = %error, "failed to persist provider capability record");
     }

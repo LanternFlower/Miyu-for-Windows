@@ -100,14 +100,30 @@ impl OneBotAdapter {
                     push_message_frame(&mut frames, &mut current, &mut current_image_digests);
                     files.push((path, name));
                 }
+                OutboundSegment::AudioPath { path, .. } => {
+                    // QQ 语音消息不能和文字/图片混在一条里:前后各切一帧。
+                    push_message_frame(&mut frames, &mut current, &mut current_image_digests);
+                    let bytes = read_file_capped(&path, MAX_OUTBOUND_IMAGE_BYTES).await?;
+                    current.push(record_segment(&bytes));
+                    push_message_frame(&mut frames, &mut current, &mut current_image_digests);
+                }
             }
         }
         push_message_frame(&mut frames, &mut current, &mut current_image_digests);
 
         let has_message_frames = !frames.is_empty();
-        let target_on_first_frame = has_message_frames
-            && matches!(self.target, Target::Group { .. })
-            && response_target.is_some_and(ResponseTarget::is_effective);
+        // 引用/@ 挂在第一条**非语音**帧上:QQ 语音消息(record 段)必须独占一条,
+        // 和 reply/at 段同在一条里时消息能发出去,但别人点不动播放(09-05 用户
+        // 报)。全是语音就不带引用。
+        let target_frame = if matches!(self.target, Target::Group { .. })
+            && response_target.is_some_and(ResponseTarget::is_effective)
+        {
+            frames
+                .iter()
+                .position(|frame| !frame_is_voice(&frame.segments))
+        } else {
+            None
+        };
         let mut receipt = SendReceipt::default();
         for (index, frame) in frames.into_iter().enumerate() {
             let MessageFrame {
@@ -115,7 +131,8 @@ impl OneBotAdapter {
                 image_digests,
             } = frame;
             let has_image = !image_digests.is_empty();
-            if index == 0 && target_on_first_frame {
+            let carries_target = target_frame == Some(index);
+            if carries_target {
                 prepend_response_target(
                     &mut segments,
                     response_target.expect("effective response target exists"),
@@ -126,7 +143,7 @@ impl OneBotAdapter {
                 Err(error) => return Err(partial_send_error(error, receipt)),
             };
             receipt.delivered_parts += 1;
-            if index == 0 && target_on_first_frame {
+            if carries_target {
                 receipt.response_target_delivered = true;
             }
             receipt.image_digests.extend(image_digests);
@@ -200,6 +217,9 @@ impl OneBotAdapter {
                     OutboundSegment::FilePath { .. } => {
                         bail!("files cannot be embedded in a OneBot forward node")
                     }
+                    OutboundSegment::AudioPath { .. } => {
+                        bail!("voice messages cannot be embedded in a OneBot forward node")
+                    }
                 }
             }
             messages.push(json!({
@@ -240,6 +260,27 @@ impl OneBotAdapter {
         segments: Vec<Value>,
     ) -> Result<Value> {
         let timeout = send_timeout_for(&segments);
+        // 带引用的出站留痕(08-26)。历史库能证明 Miyu 决定了引用,但发到对端的
+        // 到底长什么样、对端认不认,原先整条链路没有任何 payload 级记录,查
+        // "引用没渲染"时无从下手。只在含 reply 段时记一行,不记正文。
+        let quoted = segments
+            .iter()
+            .find(|segment| segment.get("type").and_then(Value::as_str) == Some("reply"))
+            .and_then(|segment| segment.get("data").and_then(|data| data.get("id")).cloned());
+        // 段类型要在 segments 被移进 params 之前取好。
+        let kinds = quoted.is_some().then(|| {
+            segments
+                .iter()
+                .map(|segment| {
+                    segment
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?")
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+                .join("+")
+        });
         let (action, params) = match self.target {
             Target::Private { user_id } => (
                 "send_private_msg",
@@ -250,9 +291,32 @@ impl OneBotAdapter {
                 json!({ "group_id": group_id, "message": segments }),
             ),
         };
-        self.connection()
+        let result = self
+            .connection()
             .call_api_with_timeout(action, params, timeout)
-            .await
+            .await;
+        if let Some(quoted) = quoted {
+            tracing::info!(
+                target: "miyu::qq",
+                conversation_id = self.target.conversation_id(),
+                // id 的 JSON 类型是重点嫌疑:group_id 发的是数字,引用段的 id
+                // 发的是字符串,部分实现对此挑剔。
+                reply_id = %quoted,
+                reply_id_json = if quoted.is_string() { "string" } else { "number" },
+                segments = kinds.unwrap_or_default(),
+                sent_message_id = ?result
+                    .as_ref()
+                    .ok()
+                    .and_then(|data| data.get("message_id").and_then(value_id_string)),
+                error = ?result.as_ref().err().map(ToString::to_string),
+                "{}",
+                t(
+                    "OneBot outbound carried a reply segment",
+                    "OneBot 出站消息携带引用段"
+                )
+            );
+        }
+        result
     }
 
     pub(in crate::platforms::onebot) async fn upload_file(
@@ -323,4 +387,11 @@ impl OneBotAdapter {
             .await?;
         Ok(data.get("file_id").and_then(value_id_string))
     }
+}
+
+/// 这一帧是不是语音消息(record 段)。语音必须独占一条 QQ 消息。
+fn frame_is_voice(segments: &[Value]) -> bool {
+    segments
+        .iter()
+        .any(|segment| segment.get("type").and_then(Value::as_str) == Some("record"))
 }

@@ -208,7 +208,11 @@ impl MarkdownLineRenderer {
         if self.in_math_block {
             // 流结束仍未闭合:按原样回放,不吞内容。
             self.in_math_block = false;
-            let opener = if self.math_closer == "$$" { "$$" } else { "\\[" };
+            let opener = if self.math_closer == "$$" {
+                "$$"
+            } else {
+                "\\["
+            };
             let mut output = format!("\x1b[36m{opener}\x1b[0m\n");
             for line in std::mem::take(&mut self.math_buffer) {
                 output.push_str(&format!("\x1b[36m{line}\x1b[0m\n"));
@@ -246,9 +250,7 @@ impl MarkdownLineRenderer {
 /// 其余终端半块画;渲染失败原样回放(青色+定界符)。
 pub(crate) fn render_display_math(tex: &str, closer: &str) -> String {
     let (terminal_cols, terminal_rows) = terminal::size().unwrap_or((100, 24));
-    let max_cols = (terminal_cols as usize)
-        .saturating_sub(6)
-        .clamp(24, 110);
+    let max_cols = (terminal_cols as usize).saturating_sub(6).clamp(24, 110);
     // 垂直方向此前没有任何上限——只约束宽度，行数由调用方写死为 9。
     // 上限取 8 与 kitty 那条路对齐，再按终端高度收一道，矮窗口里一条公式
     // 不该占掉半屏。
@@ -378,9 +380,7 @@ pub(crate) fn render_inline(text: &str) -> String {
                     && (double
                         || (!tex.starts_with(' ')
                             && !tex.ends_with(' ')
-                            && !chars
-                                .get(end + 1)
-                                .is_some_and(|next| next.is_ascii_digit())));
+                            && !chars.get(end + 1).is_some_and(|next| next.is_ascii_digit())));
                 if accept {
                     output.push_str(PRIMARY_STYLE);
                     output.push_str(&math::unicode_math(&tex));

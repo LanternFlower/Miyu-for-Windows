@@ -6,6 +6,257 @@ use crate::config::AppConfig;
 use crate::tools::{empty_parameters, ToolSpec};
 use tokio::net::TcpListener;
 
+/// 复读毒料免疫(08-24):历史 tool_flow 里连续同参轮只回放第一轮——
+/// 122 轮 111 重复的会话曾把模型锁进 in-context 复读。不同参轮照常全放。
+/// 退回 replay_rounds 折叠前,第一段断言(2 个调用轮)会报红为 4。
+#[test]
+fn consecutive_identical_history_rounds_collapse_on_replay() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_paths(temp.path());
+    let config = AppConfig::default();
+    let state = StateStore::new(&paths).unwrap();
+    state.start_turn("old", "查一下", 999_999).unwrap();
+    let round = |args: &str, output: &str| crate::state::ToolFlowRound {
+        remote: false,
+        assistant_content: String::new(),
+        assistant_reasoning: None,
+        calls: vec![crate::state::ToolFlowCall {
+            id: "c".to_string(),
+            name: "web_search".to_string(),
+            arguments: args.to_string(),
+            output: output.to_string(),
+        }],
+    };
+    state
+        .set_turn_tool_flow(
+            "old",
+            &[
+                round("{\"q\":\"a\"}", "r1"),
+                round("{\"q\":\"a\"}", "r2"),
+                round("{\"q\":\"a\"}", "r3"),
+                round("{\"q\":\"b\"}", "r4"),
+            ],
+        )
+        .unwrap();
+    state.complete_turn("old", "查完了", None).unwrap();
+    let client =
+        OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
+    let agent = Agent::new(
+        config,
+        &paths,
+        state,
+        client,
+        ToolRegistry::new(),
+        AgentMode::Normal,
+    )
+    .unwrap();
+
+    let messages = agent.chat_messages("current", "继续").unwrap().0;
+    let tool_call_rounds = messages
+        .iter()
+        .filter(|m| m.tool_calls.as_ref().is_some_and(|c| !c.is_empty()))
+        .count();
+    assert_eq!(tool_call_rounds, 2, "连续同参轮应折叠成 1+1");
+    // 保留的是首轮的真实结果字节;重复轮的 r2/r3 不再出现。
+    let text = format!("{messages:?}");
+    assert!(text.contains("r1") && text.contains("r4"));
+    assert!(!text.contains("r2") && !text.contains("r3"));
+}
+
+/// vision_analyze 让当前模型直接看的图,下一回合必须原位原字节回放。
+/// 默认形态(供应商认 tool 消息带图):图片块就在那次调用的 tool 消息里。
+fn seed_inline_media_turn(state: &StateStore) {
+    state.start_turn("old", "看看这张图", 999_999).unwrap();
+    let inline_output = "{\"ok\":true,\"mode\":\"inline\",\"ref\":\"vis_x\"}";
+    state
+        .set_turn_tool_flow(
+            "old",
+            &[crate::state::ToolFlowRound {
+                remote: false,
+                assistant_content: String::new(),
+                assistant_reasoning: None,
+                calls: vec![
+                    crate::state::ToolFlowCall {
+                        id: "c1".to_string(),
+                        name: "vision_analyze".to_string(),
+                        arguments: "{\"image\":\"/tmp/a.png\"}".to_string(),
+                        output: inline_output.to_string(),
+                    },
+                    crate::state::ToolFlowCall {
+                        id: "c2".to_string(),
+                        name: "web_search".to_string(),
+                        arguments: "{}".to_string(),
+                        output: "r".to_string(),
+                    },
+                ],
+            }],
+        )
+        .unwrap();
+    state
+        .save_turn_inline_media(
+            "old",
+            &[crate::state::TurnInlineMedia {
+                call_id: "c1".to_string(),
+                seq: 0,
+                kind: crate::state::INLINE_MEDIA_KIND_IMAGE.to_string(),
+                mime: "image/png".to_string(),
+                source: "/tmp/a.png".to_string(),
+                data: Some(vec![1, 2, 3]),
+            }],
+        )
+        .unwrap();
+    state.complete_turn("old", "看到了", None).unwrap();
+}
+
+fn agent_for(config: AppConfig, paths: &MiyuPaths, state: StateStore) -> Agent {
+    let client =
+        OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, paths).unwrap();
+    Agent::new(
+        config,
+        paths,
+        state,
+        client,
+        ToolRegistry::new(),
+        AgentMode::Normal,
+    )
+    .unwrap()
+}
+
+#[test]
+fn inline_media_replays_inside_its_tool_message_by_default() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_paths(temp.path());
+    let config = AppConfig::default();
+    assert!(config.active_pool_tool_result_media());
+    let state = StateStore::new(&paths).unwrap();
+    seed_inline_media_turn(&state);
+    let agent = agent_for(config, &paths, state);
+
+    let messages = agent.chat_messages("current", "继续").unwrap().0;
+    let tool_index = messages
+        .iter()
+        .position(|m| m.tool_call_id.as_deref() == Some("c1"))
+        .expect("tool message for c1");
+    let tool = &messages[tool_index];
+    assert_eq!(tool.role, "tool");
+    let parts = match tool.content.as_ref().expect("content") {
+        crate::llm::ChatContent::Parts(parts) => parts,
+        other => panic!("expected parts, got {other:?}"),
+    };
+    assert!(
+        matches!(&parts[0], crate::llm::ChatContentPart::Text { text } if text.contains("\"mode\":\"inline\""))
+    );
+    assert!(matches!(
+        &parts[1],
+        crate::llm::ChatContentPart::ImageUrl { image_url } if image_url.url == "data:image/png;base64,AQID"
+    ));
+    // 紧接着就是 c2 的 tool 消息:没有多出任何用户消息。
+    assert_eq!(messages[tool_index + 1].tool_call_id.as_deref(), Some("c2"));
+    assert!(matches!(
+        messages[tool_index + 1].content,
+        Some(crate::llm::ChatContent::Text(_))
+    ));
+}
+
+/// 供应商不认 tool 消息带图(显式关掉):退回"tool 之后补一条带图的用户消息"。
+#[test]
+fn inline_media_falls_back_to_a_user_message_when_the_provider_cannot_carry_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_paths(temp.path());
+    let mut config = AppConfig::default();
+    let active = config.provider(None).unwrap().id.clone();
+    config
+        .providers
+        .iter_mut()
+        .find(|provider| provider.id == active)
+        .unwrap()
+        .tool_result_media = Some(false);
+    assert!(!config.active_pool_tool_result_media());
+    let state = StateStore::new(&paths).unwrap();
+    seed_inline_media_turn(&state);
+    let agent = agent_for(config, &paths, state);
+
+    let messages = agent.chat_messages("current", "继续").unwrap().0;
+    let tool_index = messages
+        .iter()
+        .position(|m| m.tool_call_id.as_deref() == Some("c1"))
+        .unwrap();
+    assert!(matches!(
+        messages[tool_index].content,
+        Some(crate::llm::ChatContent::Text(_))
+    ));
+    let next = &messages[tool_index + 1];
+    assert_eq!(next.role, "user");
+    assert!(matches!(
+        next.content.as_ref().unwrap(),
+        crate::llm::ChatContent::Parts(parts) if matches!(&parts[0], crate::llm::ChatContentPart::ImageUrl { .. })
+    ));
+    assert_eq!(messages[tool_index + 2].tool_call_id.as_deref(), Some("c2"));
+}
+
+/// pop 溢出策略(平台群会话默认)必须真的裁掉旧回合。08-25 线上实录:某群
+/// 会话堆到 68 万 token(窗口 20 万)仍未裁剪,最后靠 /reset 才收场——这条
+/// 用例把"超水位就逐出到目标线"钉死在库里。
+#[tokio::test]
+async fn pop_overflow_evicts_until_under_target() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_paths(temp.path());
+    let mut config = AppConfig::default();
+    // 与线上群一致的口径:窗口 20 万、水位 0.9、每次裁到 (1-0.6)=8 万。
+    let provider = config
+        .providers
+        .iter_mut()
+        .find(|provider| !provider.is_builtin_cli_provider())
+        .unwrap();
+    provider
+        .model_context_window
+        .insert(provider.default_model.clone(), 200_000);
+    config.context.trim_at_ratio = 0.9;
+    config.context.trim_batch_ratio = 0.6;
+    config.context.on_overflow = "pop".to_string();
+
+    let state = StateStore::new(&paths).unwrap();
+    state.init_files().unwrap();
+    // 40 个大回合:每个约 3 万字符,合计远超水位。
+    let bulk = "群聊记录一行".repeat(2_500);
+    for index in 0..40 {
+        let turn_id = format!("turn-{index}");
+        state.start_turn(&turn_id, &bulk, 999_999).unwrap();
+        state.complete_turn(&turn_id, &bulk, None).unwrap();
+    }
+    let client =
+        OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
+    let agent = Agent::new(
+        config,
+        &paths,
+        state.clone(),
+        client,
+        ToolRegistry::new(),
+        AgentMode::Normal,
+    )
+    .unwrap();
+
+    let window = agent.context_window().expect("窗口应可解析");
+    assert_eq!(window, 200_000);
+    let before = agent.effective_context_tokens().unwrap();
+    assert!(
+        before as usize >= (window as f32 * 0.9) as usize,
+        "造出来的会话没到水位: {before}"
+    );
+
+    let evicted = agent.trim_visible_context().unwrap();
+    assert!(!evicted.is_empty(), "超水位却一个回合都没裁");
+    let after = agent.effective_context_tokens().unwrap();
+    assert!(
+        (after as usize) < (window as f32 * 0.9) as usize,
+        "裁剪后仍在水位之上: {after}"
+    );
+    // 逐出的是最老的,最新一轮必须留着。
+    let remaining = state.load_visible_turns().unwrap();
+    assert!(remaining.iter().any(|turn| turn.turn_id == "turn-39"));
+    assert!(!remaining.iter().any(|turn| turn.turn_id == "turn-0"));
+}
+
 /// 剪枝必须幂等:第二次扫过不能再改写,否则每次落库都掰一次前缀。
 #[test]
 fn tool_result_pruning_is_bounded_and_idempotent() {
@@ -421,118 +672,6 @@ fn trim_visible_context_keeps_summary_and_removes_oldest_turn() {
 }
 
 #[test]
-fn trim_accounts_for_tool_definitions_unloaded_with_a_popped_turn() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = test_paths(temp.path());
-    let mut config = AppConfig::default();
-    config.tools.loading_mode = "hybrid".to_string();
-    let state = StateStore::new(&paths).unwrap();
-    state.init_files().unwrap();
-    let client =
-        OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
-    let mut tools = ToolRegistry::new();
-    tools.register(
-        ToolSpec::new(
-            "heavy_context_tool",
-            "heavy context ".repeat(20_000),
-            empty_parameters(),
-            |_| async { Ok(String::new()) },
-        )
-        .with_always_loaded(false),
-    );
-    let mut agent = Agent::new(
-        config,
-        &paths,
-        state.clone(),
-        client,
-        tools,
-        AgentMode::Normal,
-    )
-    .unwrap();
-    for id in ["t1", "t2"] {
-        state.start_turn(id, id, 999999).unwrap();
-        state.complete_turn(id, "reply", None).unwrap();
-    }
-    state
-        .add_session_loaded_tools(&["heavy_context_tool".to_string()], Some("t1"))
-        .unwrap();
-    agent.trim_at_ratio = 1.0;
-    agent.trim_batch_ratio = 0.5;
-    let context_window = agent.effective_context_tokens().unwrap() as usize;
-    let choice = agent.config.active_provider_model_choices().remove(0);
-    agent
-        .config
-        .providers
-        .iter_mut()
-        .find(|provider| provider.id == choice.provider_id)
-        .unwrap()
-        .model_context_window
-        .insert(choice.model, context_window);
-
-    agent.trim_visible_context().unwrap();
-
-    let visible = state.load_visible_turns().unwrap();
-    assert_eq!(visible.len(), 1);
-    assert_eq!(visible[0].turn_id, "t2");
-    assert!(state.load_session_loaded_tools().unwrap().is_empty());
-}
-
-#[test]
-fn trim_ignores_stale_loaded_tool_sources_when_persistence_is_disabled() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = test_paths(temp.path());
-    let mut config = AppConfig::default();
-    config.tools.loading_mode = "hybrid".to_string();
-    config.tools.persist_loaded_tools = false;
-    let state = StateStore::new(&paths).unwrap();
-    state.init_files().unwrap();
-    let client =
-        OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
-    let mut tools = ToolRegistry::new();
-    tools.register(
-        ToolSpec::new(
-            "stale_heavy_tool",
-            "stale heavy context ".repeat(20_000),
-            empty_parameters(),
-            |_| async { Ok(String::new()) },
-        )
-        .with_always_loaded(false),
-    );
-    let mut agent = Agent::new(
-        config,
-        &paths,
-        state.clone(),
-        client,
-        tools,
-        AgentMode::Normal,
-    )
-    .unwrap();
-    for id in ["t1", "t2"] {
-        state.start_turn(id, id, 999999).unwrap();
-        state.complete_turn(id, "reply", None).unwrap();
-    }
-    state
-        .add_session_loaded_tools(&["stale_heavy_tool".to_string()], Some("t1"))
-        .unwrap();
-    agent.trim_at_ratio = 1.0;
-    agent.trim_batch_ratio = 0.5;
-    let context_window = agent.effective_context_tokens().unwrap() as usize;
-    let choice = agent.config.active_provider_model_choices().remove(0);
-    agent
-        .config
-        .providers
-        .iter_mut()
-        .find(|provider| provider.id == choice.provider_id)
-        .unwrap()
-        .model_context_window
-        .insert(choice.model, context_window);
-
-    agent.trim_visible_context().unwrap();
-
-    assert!(state.load_visible_turns().unwrap().is_empty());
-}
-
-#[test]
 fn explicit_pop_archives_context_content_but_not_reasoning() {
     let temp = tempfile::tempdir().unwrap();
     let paths = test_paths(temp.path());
@@ -692,7 +831,6 @@ async fn compaction_resets_the_byte_prefix_at_most_once_each() {
     // Isolated summary path: its request is identifiable by the compact
     // system prompt and excluded from the prefix chain.
     config.context.compact_cache_reuse = false;
-    config.context.prune_stale_tool_reports = false;
     // Pin the persona. This test is about compaction's effect on the byte
     // prefix, not about whatever `prompts/miyu.md` currently weighs —
     // editing the persona used to move the overflow point and flip the
@@ -855,7 +993,7 @@ fn derive_tool_flow_reconstructs_rounds_from_live_messages() {
     assert_eq!(flow[0].calls[0].arguments, "{\"command\":\"ls\"}");
     assert_eq!(flow[0].calls[0].output, "file-a\nfile-b");
     assert_eq!(flow[1].calls.len(), 2);
-    assert_eq!(flow[1].calls[0].output, "(执行结果不可用)");
+    assert_eq!(flow[1].calls[0].output, "(tool result unavailable)");
     assert_eq!(flow[1].calls[1].output, "搜到了");
 }
 
@@ -870,9 +1008,10 @@ fn spill_replacement_respects_budget_and_char_boundaries() {
         "replacement {} > cap",
         replaced.len()
     );
-    assert!(replaced.contains("已省略"));
+    assert!(replaced.contains("bytes omitted"));
     assert!(replaced.contains("/tmp/x.txt"));
     assert!(replaced.starts_with('长'));
+    // 文案已英文化,预算/切口断言不受语言影响。
     assert!(replaced.trim_end().ends_with(')'));
     // 上限连提示都装不下 → 放弃外溢
     assert!(spill_replacement(&output, 60, "/tmp/x.txt").is_none());

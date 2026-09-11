@@ -403,7 +403,11 @@ impl MarkdownCollector {
         }
     }
 
-    pub(in crate::platforms::plugins::renderer) fn push_text(&mut self, text: &str, style: InlineStyle) {
+    pub(in crate::platforms::plugins::renderer) fn push_text(
+        &mut self,
+        text: &str,
+        style: InlineStyle,
+    ) {
         if let Some(table) = self.table.as_mut() {
             table.push(text, style);
             return;

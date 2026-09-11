@@ -186,7 +186,10 @@ pub(crate) struct ImageNotice {
     pub(crate) message_ids: Vec<String>,
 }
 
-pub(crate) fn normalize_notices(notices: Vec<ImageNotice>, config: &ReplyProcessorConfig) -> Vec<ImageNotice> {
+pub(crate) fn normalize_notices(
+    notices: Vec<ImageNotice>,
+    config: &ReplyProcessorConfig,
+) -> Vec<ImageNotice> {
     let cutoff = unix_timestamp().saturating_sub((config.ttl_hours * 60 * 60) as i64);
     let mut recent = notices
         .into_iter()
@@ -214,7 +217,11 @@ pub(crate) fn reply_command(text: &str) -> Option<&str> {
     Some(command.trim())
 }
 
-pub(crate) fn bool_setting(settings: &serde_json::Map<String, Value>, key: &str, default: bool) -> bool {
+pub(crate) fn bool_setting(
+    settings: &serde_json::Map<String, Value>,
+    key: &str,
+    default: bool,
+) -> bool {
     settings
         .get(key)
         .and_then(Value::as_bool)
@@ -236,7 +243,10 @@ pub(crate) fn usize_setting(
         .unwrap_or(default)
 }
 
-pub(crate) fn string_setting(settings: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
+pub(crate) fn string_setting(
+    settings: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Option<String> {
     settings
         .get(key)
         .and_then(Value::as_str)
@@ -305,7 +315,8 @@ pub(crate) fn strip_trailing_chinese_period(message: &mut OutboundMessage) {
             OutboundSegment::Mention(_)
             | OutboundSegment::ImageBytes { .. }
             | OutboundSegment::ImagePath { .. }
-            | OutboundSegment::FilePath { .. } => continue,
+            | OutboundSegment::FilePath { .. }
+            | OutboundSegment::AudioPath { .. } => continue,
         };
         let trimmed_len = text.trim_end().len();
         if trimmed_len == 0 {

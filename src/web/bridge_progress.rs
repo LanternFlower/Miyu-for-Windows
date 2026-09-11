@@ -80,21 +80,48 @@ fn handle_bridge_progress(
                         state.events.publish(
                             "tool.image",
                             json!({
-                                "run_id": run_id,
+                                "run_id": run_id.clone(),
                                 "tool_id": tool_id,
                                 "name": tool_name,
                                 "size": size,
                                 "asset": SafeImageAsset::from_asset(asset, false),
                             }),
                         );
+                        // 合成 id 的收尾:桥路径没有对应 tool.finished,前端按
+                        // tool_id 惰性建的卡会永远停在"进行中"(08-21 用户实测)。
+                        // publish 时图已交付,当场收口不是谎报。
+                        publish_bridge_finished(state, &run_id, &tool_id, tool_name, true, &alt);
                     }
                 }
-                Err(error) => tracing::warn!(
-                    session_id,
-                    tool = tool_name,
-                    %error,
-                    "failed to persist a bridge tool image"
-                ),
+                Err(error) => {
+                    // 默认日志级别是 ERROR:warn 会让"图静默丢失"完全无感
+                    // (08-21 生图 bug 根因之一,DB 损坏被瞒了三天)。
+                    tracing::error!(
+                        session_id,
+                        tool = tool_name,
+                        %error,
+                        "failed to persist a bridge tool image"
+                    );
+                    if let Some(run_id) = run {
+                        state.events.publish(
+                            "tool.image",
+                            json!({
+                                "run_id": run_id.clone(),
+                                "tool_id": tool_id,
+                                "name": tool_name,
+                                "error": "image could not be added to the WebUI",
+                            }),
+                        );
+                        publish_bridge_finished(
+                            state,
+                            &run_id,
+                            &tool_id,
+                            tool_name,
+                            false,
+                            "tool error: image could not be added to the WebUI",
+                        );
+                    }
+                }
             }
         }
         // Artifact 与图片同构:落 artifact asset + tool.artifact 事件。丢掉
@@ -123,15 +150,16 @@ fn handle_bridge_progress(
                         state.events.publish(
                             "tool.artifact",
                             json!({
-                                "run_id": run_id,
+                                "run_id": run_id.clone(),
                                 "tool_id": tool_id,
                                 "name": tool_name,
                                 "artifact": SafeArtifactAsset::from(asset),
                             }),
                         );
+                        publish_bridge_finished(state, &run_id, &tool_id, tool_name, true, &title);
                     }
                 }
-                Err(error) => tracing::warn!(
+                Err(error) => tracing::error!(
                     session_id,
                     tool = tool_name,
                     %error,
@@ -147,6 +175,28 @@ fn handle_bridge_progress(
         // 文本进度/命令输出/artifact 在桥语义下没有去处,与既往一致丢弃。
         _ => {}
     }
+}
+
+/// 桥路径合成 tool_id 的收尾事件:前端按 tool_id 惰性建卡,没有 finished
+/// 这张卡会永久停在"进行中"(08-21 用户实测,generate_image/print_image)。
+fn publish_bridge_finished(
+    state: &DaemonState,
+    run_id: &str,
+    tool_id: &str,
+    tool_name: &str,
+    ok: bool,
+    output: &str,
+) {
+    state.events.publish(
+        "tool.finished",
+        json!({
+            "run_id": run_id,
+            "tool_id": tool_id,
+            "name": tool_name,
+            "ok": ok,
+            "output": output,
+        }),
+    );
 }
 
 /// 桥调用挂靠的 (活动 run, running turn):没有运行中回合就放弃——asset 的

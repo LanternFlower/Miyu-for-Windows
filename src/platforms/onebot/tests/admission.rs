@@ -1,7 +1,7 @@
 //! 准入判定、并发与限流。
 
-use crate::platforms::onebot::*;
 use super::shared::*;
+use crate::platforms::onebot::*;
 
 #[test]
 fn group_trigger_matrix() {
@@ -21,9 +21,11 @@ fn group_trigger_matrix() {
         config.group_chats.trigger_keywords = vec!["/cmd".into()];
     });
     parsed.at_self = false;
+    // 唤醒词留在正文里:剥掉它对名字型唤醒词无害,对有实义的词是毁句
+    // (见 keyword_wake_keeps_the_whole_sentence)。
     assert_eq!(
         group_trigger_text(&prefix, &parsed, None, 10_000).as_deref(),
-        Some("查询")
+        Some("/cmd 查询")
     );
     parsed.text = "无前缀".into();
     assert!(group_trigger_text(&prefix, &parsed, None, 10_000).is_none());
@@ -38,7 +40,7 @@ fn group_trigger_matrix() {
     parsed.text = "喵喵：早上好".into();
     assert_eq!(
         group_trigger_text(&either, &parsed, None, 10_000).as_deref(),
-        Some("早上好")
+        Some("喵喵：早上好")
     );
 
     parsed.text = "继续说".into();
@@ -59,6 +61,44 @@ fn group_trigger_matrix() {
         group_trigger_text(&at_only, &parsed, Some(&replied_message), 10_000).as_deref(),
         Some("继续说")
     );
+}
+
+/// 唤醒词不剥离。剥离本来是给名字型唤醒词写的(`miyu 你好` → `你好`),
+/// 但关键词表里可以是任何词:用户把「为什么」设成唤醒词,
+/// 「为什么不查知识库」被剥成「不查知识库」——疑问句变祈使句,意思正好
+/// 反过来,她照着"别查"去做(08-29 用户实测)。
+///
+/// 而且剥离只影响人格模型那一份:`observe_inbound` 与判官都在
+/// `parsed.text = trigger.content`(dispatch.rs)之前跑,拿的是完整原文。
+/// 同一条消息两个模型读出两个意思,剥离制造的是不一致而不是干净。
+#[test]
+fn keyword_wake_keeps_the_whole_sentence() {
+    let config = config_with(|config| {
+        config.group_chats.trigger_keywords = vec!["miyu".into(), "为什么".into()];
+    });
+    for text in [
+        "为什么不查知识库",
+        "为什么 不查知识库",
+        "miyu 你好",
+        "miyu：你好",
+    ] {
+        let parsed = InboundMessage {
+            text: text.into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            group_trigger_text(&config, &parsed, None, 10_000).as_deref(),
+            Some(text),
+            "{text}"
+        );
+    }
+
+    // 只认开头,句中出现不算唤醒。
+    let parsed = InboundMessage {
+        text: "他问为什么不查知识库".into(),
+        ..Default::default()
+    };
+    assert!(group_trigger_text(&config, &parsed, None, 10_000).is_none());
 }
 
 #[tokio::test]
@@ -135,6 +175,9 @@ async fn same_conversation_messages_can_be_observed_in_parallel() {
     {
         let mut manager = state.manager.lock().unwrap();
         manager.config.platforms.qq.enabled = true;
+        // 会话内并行是显式开关(08-26 起默认串行);这条用例量的就是开着时
+        // 的并行准入。
+        manager.config.platforms.qq.session_parallel = true;
         manager.config.platforms.qq.group_chats.allow_non_whitelist = true;
         manager
             .config
@@ -200,6 +243,93 @@ async fn same_conversation_messages_can_be_observed_in_parallel() {
     second.await.unwrap();
 }
 
+/// 判断不受串行闸约束(08-26 用户要求)。会话内并行仍默认关闭——回复依旧一条
+/// 一条来、且按到达顺序(由 `platforms::tests::scheduling` 的顺序闸用例把关)
+/// ——但"要不要回"的判断必须并行:第一条还卡在观察/判断里时,第二条的判断就
+/// 该开跑了。
+///
+/// 这条用例原先断言的是反面(第二条必须等第一条让出席位),那正是线上那个
+/// 病灶:14:30:07 到达的消息 14:31:26 才判完,79 秒全花在等前一个回合整段
+/// 生成上,判断的 LLM 调用还被白白串进关键路径。
+#[tokio::test]
+async fn judgement_runs_in_parallel_even_when_replies_stay_serial() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = test_web_state(temp.path(), 8300);
+    {
+        let mut manager = state.manager.lock().unwrap();
+        manager.config.platforms.qq.enabled = true;
+        manager.config.platforms.qq.group_chats.allow_non_whitelist = true;
+        assert!(
+            !manager.config.platforms.qq.session_parallel,
+            "默认应为串行"
+        );
+        manager
+            .config
+            .platforms
+            .qq
+            .group_chats
+            .non_whitelist_rate_limit
+            .max_messages = 0;
+    }
+    let (observed_tx, mut observed_rx) = mpsc::unbounded_channel();
+    let release_first = Arc::new(tokio::sync::Notify::new());
+    assert!(state
+        .platforms
+        .plugins
+        .set(Ok(Arc::new(
+            crate::platforms::plugins::PlatformPluginRegistry::new(vec![Arc::new(
+                BlockingObserverPlugin {
+                    observed: observed_tx,
+                    release_first: release_first.clone(),
+                },
+            )])
+        )))
+        .is_ok());
+    let (handle, _frames) = test_connection(None);
+    let event = |message_id: i64| {
+        json!({
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 10000,
+            "user_id": 7,
+            "group_id": 42,
+            "group_name": "test group",
+            "message_id": message_id,
+            "message": [{ "type": "text", "data": { "text": "ordinary" } }],
+            "sender": { "nickname": "seven" },
+        })
+    };
+
+    let first = tokio::spawn(handle_message(
+        state.clone(),
+        handle.clone(),
+        event(1),
+        next_ingress_order(),
+    ));
+    assert_eq!(observed_rx.recv().await.as_deref(), Some("1"));
+
+    let second = tokio::spawn(handle_message(
+        state.clone(),
+        handle,
+        event(2),
+        next_ingress_order(),
+    ));
+    // 第一条仍卡在观察/判断里,第二条的判断必须已经开跑。把 acquire 挪回
+    // 判断之前,这里就会超时报红。
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), observed_rx.recv())
+            .await
+            .expect("判断应与第一条并行,不该等它让出席位")
+            .as_deref(),
+        Some("2")
+    );
+
+    release_first.notify_one();
+    first.await.unwrap();
+    release_first.notify_one();
+    second.await.unwrap();
+}
+
 #[tokio::test]
 async fn same_conversation_judgements_reuse_parallel_turn_admission() {
     let temp = tempfile::tempdir().unwrap();
@@ -208,6 +338,7 @@ async fn same_conversation_judgements_reuse_parallel_turn_admission() {
         let mut manager = state.manager.lock().unwrap();
         manager.config.platforms.qq.enabled = true;
         manager.config.platforms.qq.group_chats.allow_non_whitelist = true;
+        manager.config.platforms.qq.session_parallel = true;
         manager.config.platforms.qq.session_limits = crate::config::PlatformSessionLimits {
             running: 2,
             queued: 2,
@@ -306,8 +437,8 @@ fn admission_matrix_uses_private_and_group_conversation_buckets() {
 
     let private_guest = admission_for(&config, Target::Private { user_id: 3 }, 100, 3);
     assert!(private_guest.allowed);
-    assert_eq!(private_guest.rate_limit.max_messages, 2);
-    assert_eq!(private_guest.rate_limit.window_seconds, 600);
+    assert_eq!(private_guest.rate_limit.max_messages, 5);
+    assert_eq!(private_guest.rate_limit.window_seconds, 300);
     assert_eq!(private_guest.rate_key.as_deref(), Some("qq:100:private:3"));
     assert!(private_guest.use_non_whitelist_text_models);
 
@@ -320,8 +451,8 @@ fn admission_matrix_uses_private_and_group_conversation_buckets() {
 
     let group_guest = admission_for(&config, Target::Group { group_id: 11 }, 100, 3);
     assert!(group_guest.allowed);
-    assert_eq!(group_guest.rate_limit.max_messages, 2);
-    assert_eq!(group_guest.rate_limit.window_seconds, 600);
+    assert_eq!(group_guest.rate_limit.max_messages, 5);
+    assert_eq!(group_guest.rate_limit.window_seconds, 300);
     assert_eq!(group_guest.rate_key.as_deref(), Some("qq:100:group:11"));
     assert!(group_guest.use_non_whitelist_text_models);
 
@@ -352,8 +483,9 @@ fn admission_materializes_the_effective_text_model_pool() {
         }]
     };
     base.active_provider_models = Some(pool("global"));
-    base.platforms.qq.text_models = Some(pool("platform"));
-    base.platforms.qq.non_whitelist_text_models = Some(pool("non-whitelist"));
+    base.platforms.qq.text_models = crate::config::ModelPoolRef::models(pool("platform"));
+    base.platforms.qq.non_whitelist_text_models =
+        crate::config::ModelPoolRef::models(pool("non-whitelist"));
     base.platforms.qq.admin_users.push(1);
     base.platforms.qq.private_chats.whitelist.push(2);
     base.platforms.qq.group_chats.whitelist.push(10);
@@ -416,8 +548,7 @@ fn dynamic_access_grants_feed_the_same_admission_matrix_for_every_bot() {
     config.private_chats.allow_non_whitelist = false;
     config.group_chats.allow_non_whitelist = false;
 
-    let admin =
-        admission_for_with_state(&config, &state, Target::Group { group_id: 99 }, 999, 1);
+    let admin = admission_for_with_state(&config, &state, Target::Group { group_id: 99 }, 999, 1);
     assert!(admin.allowed);
     assert!(admin.rate_key.is_none());
     assert!(admin.use_non_whitelist_text_models);
@@ -458,9 +589,8 @@ async fn tool_followup_reservation_requires_the_same_conversation_and_sender() {
         "sender": { "nickname": "Alice" }
     });
     let (connection, _frames) = test_connection(None);
-    let context = Arc::new(
-        platform_turn_context(&state, connection, target, &event, config, None).unwrap(),
-    );
+    let context =
+        Arc::new(platform_turn_context(&state, connection, target, &event, config, None).unwrap());
     let followup = PlatformFollowupRun::new(context);
     followup.ingress().tool_started("call_1");
     let session_id: Arc<str> = "qq-session".into();
@@ -536,4 +666,35 @@ fn ingress_order_is_strictly_monotonic() {
     let first = next_ingress_order();
     let second = next_ingress_order();
     assert!(second > first);
+}
+
+/// 回合在跑时新消息该排队还是该取代当前生成。
+///
+/// 群聊恒排队(覆盖走另一条分支);私聊只在工具执行期排队,否则取代——
+/// 她那时只是在写回复,而 QQ 里一句话拆几条发是常态(08-29 かなき 实录:
+/// 先发文字、三秒后补图,她先答"你没发图"再答对,两条都发出去了)。
+#[test]
+fn a_private_message_supersedes_a_reply_being_written_but_not_a_running_tool() {
+    use crate::runtime::TurnUpdateMode;
+
+    assert_eq!(
+        active_turn_update_mode(false, false),
+        TurnUpdateMode::Supersede,
+        "私聊、没在跑工具:该取代"
+    );
+    assert_eq!(
+        active_turn_update_mode(false, true),
+        TurnUpdateMode::Followup,
+        "私聊、正在跑工具:别打断"
+    );
+    assert_eq!(
+        active_turn_update_mode(true, false),
+        TurnUpdateMode::Followup,
+        "群聊在这条路上恒排队"
+    );
+    assert_eq!(
+        active_turn_update_mode(true, true),
+        TurnUpdateMode::Followup,
+        "群聊在这条路上恒排队"
+    );
 }

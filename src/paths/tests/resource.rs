@@ -1,7 +1,7 @@
 //! 资源布局迁移（预检、日志、回滚、并发排他）。
 
-use crate::paths::*;
 use super::shared::*;
+use crate::paths::*;
 
 #[test]
 fn resource_layout_migration_moves_owned_content_and_commits_marker() {

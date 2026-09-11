@@ -2,8 +2,8 @@
 //!
 //! 建临时目录、起假连接、造事件——每个测试文件都要，放一份。
 
-use crate::platforms::onebot::*;
 use crate::paths::MiyuPaths;
+use crate::platforms::onebot::*;
 
 pub(super) fn test_paths(root: &std::path::Path) -> MiyuPaths {
     MiyuPaths {

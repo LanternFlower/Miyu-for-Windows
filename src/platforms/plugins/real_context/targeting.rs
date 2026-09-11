@@ -113,7 +113,7 @@ impl TriggerKind {
 pub(in crate::platforms::plugins::real_context) fn select_trigger(
     system_triggered: bool,
     moderation_candidate: bool,
-    inherited: bool,
+    inherited: Option<TriggerKind>,
     continuation: bool,
     probabilistic: bool,
 ) -> Option<TriggerKind> {
@@ -121,8 +121,12 @@ pub(in crate::platforms::plugins::real_context) fn select_trigger(
         Some(TriggerKind::Direct)
     } else if moderation_candidate {
         Some(TriggerKind::Moderation)
-    } else if inherited {
-        Some(TriggerKind::Supersede)
+    } else if let Some(origin) = inherited {
+        // 覆盖继承保留原始触发。这个标签是好感度归类(mod.rs 的
+        // direct_interaction)、`<qq-join-in>` 注入与判官加分的判据:一律写成
+        // Supersede 会让概率承诺被顶替后白拿直呼好感、注入哑火(08-29 定位,
+        // 08-31 修)。调用方在原始触发不可考时才传 Supersede 兜底。
+        Some(origin)
     } else if continuation {
         Some(TriggerKind::Continuation)
     } else if probabilistic {
@@ -136,7 +140,7 @@ pub(in crate::platforms::plugins::real_context) fn select_trigger_for_policy(
     active_judgement_allowed: bool,
     system_triggered: bool,
     moderation_candidate: bool,
-    inherited: bool,
+    inherited: Option<TriggerKind>,
     continuation: bool,
     probabilistic: bool,
 ) -> Option<TriggerKind> {
@@ -239,10 +243,20 @@ pub(in crate::platforms::plugins::real_context) fn set_active_targets(
     }
 }
 
+/// `@mentions:` 行。`self_id` 给出时,机器人自己那一项渲染成 `[you]`——
+/// 与历史块里 `[you] marks your own messages` 同一个记号。
+///
+/// 08-29:`<qq-request-context>` 原来还带一个 `"mentioned_bot": false`,那是
+/// 全项目唯一一处「陈述一件没发生的事」。判官放行、回合已经起来之后,这个
+/// 字段对人格模型没有任何正当用途,却正好是一个现成判据——实测她拿它推出
+/// 「没提到我 不接」并当成正文发进群里(当天八次)。字段已删,这里补上正向
+/// 的一半:被 @ 时事实照常在场,没被 @ 时单纯不出现,不再有可供立规矩的否定
+/// 陈述。
 pub(in crate::platforms::plugins::real_context) fn format_mentioned_users(
     users: &[PlatformMention],
     user_ids: &[String],
     show_ids: bool,
+    self_id: Option<&str>,
 ) -> Option<String> {
     let users = if users.is_empty() {
         user_ids
@@ -261,19 +275,56 @@ pub(in crate::platforms::plugins::real_context) fn format_mentioned_users(
     Some(
         users
             .iter()
-            .map(|user| match user.display_name.as_deref() {
-                Some(name) if show_ids => format!(
-                    "{}(QQ:{})",
-                    safe_prompt_field(name),
-                    safe_prompt_field(&user.user_id)
-                ),
-                Some(name) => safe_prompt_field(name),
-                None if show_ids => format!("QQ:{}", safe_prompt_field(&user.user_id)),
-                None => "unresolved group member".to_string(),
+            .map(|user| {
+                if self_id.is_some_and(|self_id| self_id == user.user_id) {
+                    return "[you]".to_string();
+                }
+                match user.display_name.as_deref() {
+                    Some(name) if show_ids => format!(
+                        "{}(QQ:{})",
+                        safe_prompt_field(name),
+                        safe_prompt_field(&user.user_id)
+                    ),
+                    Some(name) => safe_prompt_field(name),
+                    None if show_ids => format!("QQ:{}", safe_prompt_field(&user.user_id)),
+                    None => "unresolved group member".to_string(),
+                }
             })
             .collect::<Vec<_>>()
             .join("、"),
     )
+}
+
+/// 本轮真正要回答的那条消息 id。默认是触发消息,纯附件(图片/表情)让位给
+/// 合并集里最新的文字消息——历史块要据此把它摘出去(否则同一条既在
+/// `[Prior group chat records]` 又在 `[New messages received this turn]`,
+/// 08-26 审查抓到)。
+pub(in crate::platforms::plugins::real_context) fn answer_target_id(
+    context: &PlatformTurnContext,
+    event: &PlatformInboundEvent,
+) -> String {
+    let mut targets = active_targets_from_context(context);
+    if !targets
+        .iter()
+        .any(|target| target.message_id == event.message_id)
+    {
+        targets.push(active_reply_target(event));
+    }
+    normalize_active_targets(&mut targets, &event.sender_id);
+    let current_is_supplemental = targets
+        .iter()
+        .find(|target| target.message_id == event.message_id)
+        .is_some_and(|target| target.supplemental)
+        && targets.iter().any(|target| !target.supplemental);
+    if !current_is_supplemental {
+        return event.message_id.clone();
+    }
+    targets
+        .iter()
+        .filter(|target| !target.supplemental)
+        .next_back()
+        .map(|target| target.message_id.clone())
+        .unwrap_or_else(|| event.message_id.clone())
 }
 
 pub(in crate::platforms::plugins::real_context) fn active_target_prompt(
@@ -327,46 +378,67 @@ pub(in crate::platforms::plugins::real_context) fn active_target_prompt(
             safe_prompt_field(&content)
         );
         if let Some(message_id) = target.reply_message_id.as_ref() {
+            // 引用行的作者/时态/引号三重显式标记(08-25:管道格式 "reply-to:
+            // … | 名字 | 原文" 会被弱模型与当前消息连读,把引用内容当成本次
+            // 发言的一部分——渲染层就要把"旧话、别人说的"钉死,不能只靠
+            // <qq-reply-format> 规则自觉)。
+            let author = match (
+                target.reply_sender_name.as_ref(),
+                target.reply_sender_id.as_ref().filter(|_| show_ids),
+            ) {
+                (Some(name), Some(id)) => {
+                    format!("{}(QQ:{})", safe_prompt_field(name), safe_prompt_field(id))
+                }
+                (Some(name), None) => safe_prompt_field(name),
+                (None, Some(id)) => format!("QQ:{}", safe_prompt_field(id)),
+                (None, None) => "an earlier sender".to_string(),
+            };
             line.push_str(&format!(
-                "\n  reply-to: msg={}",
+                "\n  quoted earlier message [msg={}] by {author}",
                 safe_prompt_field(message_id)
             ));
-            if let Some(name) = target.reply_sender_name.as_ref() {
-                line.push_str(&format!(" | {}", safe_prompt_field(name)));
-            }
-            if show_ids {
-                if let Some(id) = target.reply_sender_id.as_ref() {
-                    line.push_str(&format!("(QQ:{})", safe_prompt_field(id)));
-                }
-            }
             if let Some(content) = target.reply_content.as_ref() {
-                line.push_str(&format!(" | {}", safe_prompt_field(content)));
+                line.push_str(&format!(": \u{201c}{}\u{201d}", safe_prompt_field(content)));
             }
         }
         if let Some(mentions) = format_mentioned_users(
             &target.mentioned_users,
             &target.mentioned_user_ids,
             show_ids,
+            Some(context.conversation.account_id.as_str()),
         ) {
             line.push_str(&format!("\n  @mentions: {mentions}"));
         }
         line
     };
 
-    let primary = targets
+    // 谁占"当前消息"位。默认是最新那条,但纯附件(图片/表情,supplemental)
+    // 让位给合并集里最新的文字消息(08-26 取证:文字提问触发回复后补一张
+    // 表情包,表情占了当前消息位,模型先评图再答题,真正的问题被降级成
+    // 背景)。`supplemental` 本来就是"补充材料,不该被单独回复"的意思,
+    // 这里让结构兑现它——加一句"看到图片先答文字"的指令是压不住的。
+    let answer_target = answer_target_id(context, event);
+    // 当前消息同样走 format_target:署名/时间/msg id/reply-to/@mentions 全套
+    // 坐标(08-24 取证:裸文本"卡死了？"贴在他人求助截图后,模型把 A 的问题
+    // 安到了 B 头上——判读线索被我们自己削没了)。
+    let current = targets
         .iter()
+        .find(|target| target.message_id == answer_target)
+        .map(&format_target)
+        .unwrap_or_else(|| current_content.trim().to_string());
+    // 占了当前消息位的那条不再进其它块——否则同一条渲染两遍(08-26 实录:
+    // 表情包同时出现在"本轮新消息"和"随后补充"里,双份强调)。
+    let rest = targets
+        .iter()
+        .filter(|target| target.message_id != answer_target);
+    let previous = rest
+        .clone()
         .filter(|target| !target.supplemental)
         .map(&format_target)
         .collect::<Vec<_>>();
-    let supplements = targets
-        .iter()
+    let supplements = rest
         .filter(|target| target.supplemental)
-        .map(format_target)
-        .collect::<Vec<_>>();
-    let current = current_content.trim().to_string();
-    let previous = primary
-        .into_iter()
-        .filter(|line| !line.contains(&format!("[msg={}]", event.message_id)))
+        .map(&format_target)
         .collect::<Vec<_>>();
     // 块标记同样只描述内容本身。原来结尾那条「只回复当前消息…补充材料不应被单独
     // 回复。需要调用工具时…」整条删除:前两句是跨轮指令丢失的语义来源,末句是多余
@@ -422,7 +494,24 @@ pub(in crate::platforms::plugins::real_context) fn adaptive_response_target(
     event: &PlatformInboundEvent,
     settings: &RealContextPluginSettings,
 ) -> Option<ResponseTarget> {
-    let target = response_target(event, settings);
+    let mut target = response_target(event, settings);
+    // 纯附件让出"当前消息"位之后,引用也跟着钉回那条文字消息(08-26):
+    // 答的是问题,却引用一张表情包,读起来是两码事。
+    if let Some(target) = target.as_mut() {
+        if active_reply_target(event).supplemental {
+            if let Some(text_target) = active_targets_from_context(context)
+                .into_iter()
+                .filter(|candidate| {
+                    !candidate.supplemental
+                        && candidate.sender_id == event.sender_id
+                        && !candidate.message_id.is_empty()
+                })
+                .next_back()
+            {
+                target.message_id = text_target.message_id;
+            }
+        }
+    }
     context.set_adaptive_response_target(
         target.clone(),
         AdaptiveResponseTargetPolicy::new(
@@ -451,6 +540,31 @@ pub(in crate::platforms::plugins::real_context) fn restore_trigger_decision(
     *decision = fallback.clone();
 }
 
+/// 概率抽中且判官放行的那一轮，给一句注入。
+///
+/// `TRIGGER_KEY == Probability` 严格等价于"概率抽中 + 判官放行"：这个值只在
+/// 判官通过后才写(inject.rs)，或从这样一次放行的承诺覆盖继承而来(08-31 起
+/// 覆盖保留原始触发——承诺只可能来自判官放行，所以"判过了，答案是回"对继承
+/// 回合同样成立)。Supersede 只在原始触发不可考时作回退，不再吃掉这句注入。
+///
+/// 08-31 用户点名：她在这种回合里反复说「没提到我 不用回」——判官刚判定该回，
+/// 她自己又推翻一遍；而会话历史里已经攒了十几条同样的话，她在照抄自己。
+///
+/// 模型可见面恒英文(与其它 `<qq-*>` 块一致)。原话是中文的
+/// 「即使该消息没有艾特你，也回复一条符合上下文、符合当前聊天氛围、符合话题
+/// 走向的消息」，翻译时让步结构原样保留。
+///
+/// 措辞是让步句，不是孤立陈述。08-29 第一版写的是 `Nobody called you this
+/// turn`——把"没被点名"作为一个事实单独摆出来、让她自己得结论，实测她原话回
+/// 「没被艾特不接（笑）」。让步句把结论堵死：承认没艾特，紧接着要求照样回。
+pub(in crate::platforms::plugins::real_context) fn probability_reply_notice(
+    trigger: TriggerKind,
+) -> Option<&'static str> {
+    matches!(trigger, TriggerKind::Probability).then_some(
+        "<qq-join-in>Even though this message does not @-mention you, still reply with one message that fits the context, the mood of the room and where the topic is heading.</qq-join-in>",
+    )
+}
+
 pub(in crate::platforms::plugins::real_context) fn identity_warning(
     context: &PlatformTurnContext,
     settings: &RealContextPluginSettings,
@@ -463,7 +577,7 @@ pub(in crate::platforms::plugins::real_context) fn identity_warning(
         mapping.nickname == context.sender_display_name && mapping.user_id != actual_id
     }) {
         return Some(format!(
-            "<qq-identity-warning>受保护昵称 {} 预期属于 QQ {}，但当前发送者是 QQ {}。不得把当前发送者当成预期用户。</qq-identity-warning>",
+            "<qq-identity-warning>Protected nickname {} belongs to QQ {}, but the current sender is QQ {}. Do not treat the current sender as the expected user.</qq-identity-warning>",
             safe_prompt_string(&mapping.nickname), mapping.user_id, actual_id
         ));
     }
@@ -472,7 +586,7 @@ pub(in crate::platforms::plugins::real_context) fn identity_warning(
             context.sender_display_name.contains(&mapping.nickname) && mapping.user_id != actual_id
         }) {
             return Some(format!(
-                "<qq-identity-warning>当前昵称 {} 包含受保护昵称 {}，但当前 QQ {} 并非预期 QQ {}。请按 QQ 号区分身份。</qq-identity-warning>",
+                "<qq-identity-warning>Current nickname {} contains protected nickname {}, but current QQ {} is not the expected QQ {}. Distinguish identities by QQ number.</qq-identity-warning>",
                 safe_prompt_string(&context.sender_display_name), safe_prompt_string(&mapping.nickname), actual_id, mapping.user_id
             ));
         }

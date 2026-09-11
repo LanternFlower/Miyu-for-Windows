@@ -1,7 +1,7 @@
 {
   "name": "search_web_images",
   "display_name": "搜索图片",
-  "description": "Search web images from multiple sources in parallel, with unified ranking, deduplication, and safety review.",
+  "description": "Search web images from several sources in parallel.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -16,10 +16,6 @@
       "preview": {
         "type": "boolean",
         "description": "When terminal image printing is enabled, download the images and preview them with chafa."
-      },
-      "preview_count": {
-        "type": "integer",
-        "description": "Maximum number of images to preview with chafa."
       },
       "safe_search": {
         "type": "boolean",

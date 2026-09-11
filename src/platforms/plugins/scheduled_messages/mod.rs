@@ -110,7 +110,9 @@ fn enabled_tasks(config: &AppConfig) -> Vec<ScheduledTask> {
 fn parse_task(value: &Value) -> Option<ScheduledTask> {
     let conversation = value.get("conversation")?.as_str()?;
     let (kind, id) = conversation.trim().split_once(':')?;
-    if !matches!(kind, "group" | "private") || id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit())
+    if !matches!(kind, "group" | "private")
+        || id.is_empty()
+        || !id.bytes().all(|b| b.is_ascii_digit())
     {
         return None;
     }

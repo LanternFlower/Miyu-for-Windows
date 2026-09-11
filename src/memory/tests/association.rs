@@ -1,8 +1,8 @@
 //! 联想段的生成、去重与格式。
 
-use crate::memory::*;
-use crate::config::AppConfig;
 use super::shared::*;
+use crate::config::AppConfig;
+use crate::memory::*;
 
 #[test]
 fn unrelated_and_rejected_memories_are_not_associated() {

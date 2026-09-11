@@ -59,7 +59,11 @@ pub(crate) fn copy_tree_inner(
                 bail!("skill package exceeds file-count or total-size limits");
             }
             fs::copy(entry.path(), &target)?;
-            File::options().read(true).write(true).open(&target)?.sync_all()?;
+            File::options()
+                .read(true)
+                .write(true)
+                .open(&target)?
+                .sync_all()?;
         } else {
             bail!("skill package contains an unsupported file type");
         }

@@ -2,12 +2,12 @@ mod assets;
 mod history;
 mod shared_files;
 pub use conversation_db::SharedFile;
+mod conversation_db;
+mod migrations;
 mod queue;
 mod sessions;
 mod turns;
 mod usage_ops;
-mod conversation_db;
-mod migrations;
 pub use migrations::DEFAULT_SESSION_ID;
 pub(crate) mod usage;
 
@@ -31,18 +31,21 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 #[allow(unused_imports)]
 pub use conversation_db::{
     interrupted_text, pending_placeholder, ArtifactAsset, ArtifactAssetData, ConversationDb,
-    GoalDenied, GoalPhase, GoalRecord, DEFAULT_MAX_GOAL_ROUNDS,
-    ImageAsset, ImageAssetData, PlatformAccessActor, PlatformAccessGrant, PlatformAccessGrantKey,
-    PlatformMemeRefRecord, PlatformPluginScopeKey, PlatformSessionBinding,
-    PlatformSessionBindingKey, PruneStats, QueuedPrompt, QueuedPromptAttachment, RedoCandidate,
-    RedoInputKind, RedoStart, ReplayEntry, SessionOverview, SessionRecord, ToolFootprint, Turn,
-    TurnFollowup, TurnReplay,
-    TurnJournalEvent,
-    TurnRedoCheckpointPayload, TurnStatus, UserAttachment, UserAttachmentData,
-    GLOBAL_PLATFORM_ACCOUNT_SCOPE,
-    ToolFlowCall, ToolFlowRound,
+    GoalDenied, GoalPhase, GoalRecord, ImageAsset, ImageAssetData, PlatformAccessActor,
+    PlatformAccessGrant, PlatformAccessGrantKey, PlatformMemeRefRecord, PlatformPluginScopeKey,
+    PlatformSessionBinding, PlatformSessionBindingKey, QueuedPrompt, QueuedPromptAttachment,
+    RedoCandidate, RedoInputKind, RedoStart, ReplayEntry, SessionOverview, SessionRecord,
+    ToolFlowCall, ToolFlowRound, ToolFootprint, Turn, TurnFollowup, TurnInlineMedia,
+    TurnJournalEvent, TurnRedoCheckpointPayload, TurnReplay, TurnStatus, UserAttachment,
+    UserAttachmentData, DEFAULT_MAX_GOAL_ROUNDS, GLOBAL_PLATFORM_ACCOUNT_SCOPE,
+    INLINE_MEDIA_KIND_IMAGE, INLINE_MEDIA_KIND_PDF, INLINE_MEDIA_KIND_TEXT,
+    INLINE_MEDIA_KIND_VIDEO, USER_ATTACHMENT_KIND_FILE, USER_ATTACHMENT_KIND_IMAGE,
+    USER_ATTACHMENT_KIND_TEXT,
 };
-pub use usage::{UsageMeta, UsageRange, UsageSnapshot, UsageStats};
+pub use usage::{
+    UsageMeta, UsageRange, UsageSnapshot, UsageStats, USAGE_KIND_AFFECTION, USAGE_KIND_GROUP_JOIN,
+    USAGE_KIND_JUDGE,
+};
 
 /// The only session kind users can list, name, switch to, or bind a platform
 /// to. Everything else is infrastructure and stays out of the session list.
@@ -54,6 +57,9 @@ pub const DEV_PERSONA: &str = "dev";
 /// Backs a one-shot `miyu ask` / `miyu '<message>'` turn: created just before
 /// the turn, deleted right after, and invisible to every listing in between.
 pub const ASK_SESSION_KIND: &str = "ask";
+/// 唤醒对话的专属会话:不进 WebUI 列表(列表只取 user),用 `miyu voice`
+/// 命令组管理(reset / history)。
+pub const VOICE_SESSION_KIND: &str = "voice";
 
 type PlatformAccessSubjects = HashSet<String>;
 type PlatformAccessKinds = HashMap<String, PlatformAccessSubjects>;

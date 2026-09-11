@@ -2,11 +2,10 @@ mod lazy;
 mod spec;
 pub use lazy::empty_parameters;
 pub(crate) use lazy::*;
-pub use spec::{
-    GuardCtx, ToolFuture, ToolGuard, ToolPermission, ToolProgress, ToolProgressEvent,
-    ToolSpec,
-};
 pub(crate) use spec::*;
+pub use spec::{
+    GuardCtx, ToolFuture, ToolGuard, ToolPermission, ToolProgress, ToolProgressEvent, ToolSpec,
+};
 
 use crate::llm::{FunctionDefinition, ToolDefinition};
 use crate::tools::tool_descriptions::{self, LoadPolicy};
@@ -29,6 +28,7 @@ pub struct ToolRegistry {
     script_tool_names: BTreeSet<String>,
     unregistered_scripts: Vec<UnregisteredScript>,
     skill_catalog_fingerprint: Option<[u8; 32]>,
+    script_catalog_fingerprint: Option<[u8; 32]>,
     /// 兜底超时：工具未声明 timeout_seconds 时生效。None=不兜底（默认构
     /// 造/测试保持旧行为），工厂函数按 config.tools.default_timeout_secs
     /// 注入。防的是 MCP/web/生图这类没有自管超时的工具把回合无限挂死；
@@ -58,9 +58,7 @@ impl ToolRegistry {
     }
 
     fn guard_denial(&self, tool: &ToolSpec, args: &Value, ctx: &GuardCtx) -> Option<String> {
-        self.guards
-            .iter()
-            .find_map(|guard| guard(tool, args, ctx))
+        self.guards.iter().find_map(|guard| guard(tool, args, ctx))
     }
 
     fn effective_timeout(&self, tool: &ToolSpec) -> Option<std::time::Duration> {
@@ -81,12 +79,30 @@ impl ToolRegistry {
         self.tools.remove(name).is_some()
     }
 
+    /// 只留白名单里的工具(程序驱动 CLI 的 `--tools`);空名单 = 清空。
+    /// 名单里不存在的名字静默略过,由调用方决定要不要提醒。
+    pub fn retain_named(&mut self, keep: &[String]) {
+        for name in self.tool_names() {
+            if !keep.iter().any(|kept| kept == &name) {
+                self.unregister(&name);
+            }
+        }
+    }
+
     pub(crate) fn skill_catalog_fingerprint(&self) -> Option<[u8; 32]> {
         self.skill_catalog_fingerprint
     }
 
     pub(crate) fn set_skill_catalog_fingerprint(&mut self, fingerprint: [u8; 32]) {
         self.skill_catalog_fingerprint = Some(fingerprint);
+    }
+
+    pub(crate) fn script_catalog_fingerprint(&self) -> Option<[u8; 32]> {
+        self.script_catalog_fingerprint
+    }
+
+    pub(crate) fn set_script_catalog_fingerprint(&mut self, fingerprint: [u8; 32]) {
+        self.script_catalog_fingerprint = Some(fingerprint);
     }
 
     /// Appends runtime info to a registered tool's description. Applied
@@ -231,17 +247,26 @@ impl ToolRegistry {
             .collect()
     }
 
-    pub fn requires_lazy_load(&self, name: &str, loaded: &BTreeSet<String>) -> bool {
-        self.tools
-            .get(name)
-            .map(|tool| !tool.always_loaded && !loaded.contains(name))
-            .unwrap_or(false)
+    /// stub 模式下声明给模型的参数壳是空的(`{"type":"object"}`),真契约只以
+    /// 文本形式出现在 load_tools 的返回里。有的模型信声明的 schema 而不是对话
+    /// 里的文本,于是发一个空的 `{}` 上来,撞出一句看不懂要什么的校验错。
+    /// 失败时把契约补进返回体,让它一个来回自己纠正 —— 这是对话尾部,不动被
+    /// 缓存的工具前缀。
+    pub fn contract_text(&self, name: &str) -> Option<String> {
+        let tool = self.tools.get(name)?;
+        let definition = tool.definition();
+        let schema = serde_json::to_string(&definition.function.parameters).ok()?;
+        Some(format!(
+            "\n\n### {}\n{}\nschema: {schema}",
+            definition.function.name, definition.function.description
+        ))
     }
 
-    pub fn can_auto_load_direct_call(&self, name: &str) -> bool {
+    /// 该工具这轮是不是以桩的形态(空参数壳)发给模型的。
+    pub fn is_stub_presented(&self, name: &str) -> bool {
         self.tools
             .get(name)
-            .map(|tool| tool.load_policy == LoadPolicy::Summary && !tool.always_loaded)
+            .map(|tool| !tool.always_loaded)
             .unwrap_or(false)
     }
 
@@ -509,10 +534,10 @@ impl ToolRegistry {
                 .join(", ");
             let summary = tool_descriptions::group_summary(&group);
             targets.push(format!(
-                "  <target>\n    <name>group:{}</name>\n    <type>group</type>\n    <summary>{}</summary>\n    <tools>{}</tools>\n  </target>",
+                "  <target name=\"group:{}\" type=\"group\" tools=\"{}\">{}</target>",
                 xml_escape(&group),
-                xml_escape(&summary),
                 xml_escape(&members),
+                xml_escape(&summary),
             ));
         }
 
@@ -540,7 +565,7 @@ impl ToolRegistry {
             .collect::<Vec<_>>()
             .join(", ");
         format!(
-            "<script_summary>\n  <total>{}</total>\n  <always_loaded>{}</always_loaded>\n  <lazy>{}</lazy>\n  <unregistered>{}</unregistered>\n  <registered_names>{names}</registered_names>\n</script_summary>",
+            "<script_summary total=\"{}\" always_loaded=\"{}\" lazy=\"{}\" unregistered=\"{}\" registered_names=\"{names}\"/>",
             scripts.len(),
             always_loaded,
             scripts.len() - always_loaded,
@@ -576,6 +601,39 @@ mod tests {
                 Ok("done".to_string())
             },
         )
+    }
+
+    /// 桩工具在 stub 模式下声明的是空参数壳,失败时必须能从返回体拿到真
+    /// schema —— 否则信声明不信对话文本的模型会一直发 `{}`,撞出一句
+    /// "todos array is required" 却不知道要什么(08-31 实测四连失败)。
+    #[test]
+    fn stub_presented_tools_can_hand_back_their_real_contract() {
+        let mut registry = ToolRegistry::new();
+        registry.register(
+            ToolSpec::new(
+                "todo_like",
+                "keeps a list",
+                json!({"type":"object","properties":{"todos":{"type":"array"}}}),
+                |_| async { Ok(String::new()) },
+            )
+            .with_always_loaded(false),
+        );
+        assert!(registry.is_stub_presented("todo_like"));
+        // 常驻工具带着真 schema 发出去,不需要这条补救
+        registry.register(ToolSpec::new(
+            "resident",
+            "always there",
+            json!({"type":"object"}),
+            |_| async { Ok(String::new()) },
+        ));
+        assert!(!registry.is_stub_presented("resident"));
+        let contract = registry.contract_text("todo_like").expect("contract");
+        assert!(contract.contains("todo_like"));
+        assert!(
+            contract.contains("todos"),
+            "真 schema 必须在里面: {contract}"
+        );
+        assert!(registry.contract_text("nope").is_none());
     }
 
     /// 兜底超时:未声明 timeout_seconds 的慢工具被中止,错误走普通
@@ -656,7 +714,10 @@ mod tests {
         registry.add_guard(crate::tools::aur_review_install_guard());
 
         let (sender, _receiver) = mpsc::unbounded_channel();
-        let used = vec!["review_aur_package".to_string(), "install_aur_package".to_string()];
+        let used = vec![
+            "review_aur_package".to_string(),
+            "install_aur_package".to_string(),
+        ];
         let denied = registry
             .call_with_progress_future(
                 "install_aur_package",
@@ -695,7 +756,7 @@ mod tests {
             |_| async { Ok("ran".to_string()) },
         ));
         registry.add_guard(crate::tools::command_deny_guard(vec![
-            "rm -rf /".to_string(),
+            "rm -rf /".to_string()
         ]));
 
         let denied = registry
@@ -747,7 +808,10 @@ mod tests {
         assert_eq!(summary.chars().count(), SUMMARY_MAX_CHARS + 1);
 
         // 只取第一行。
-        assert_eq!(load_target_summary("首行摘要。\n第二行细节。"), "首行摘要。");
+        assert_eq!(
+            load_target_summary("首行摘要。\n第二行细节。"),
+            "首行摘要。"
+        );
     }
 
     /// 模型把结构化参数序列化成字符串再传是常态,08-17 一天踩到三次:
@@ -860,24 +924,6 @@ mod tests {
 
         let loaded = BTreeSet::from(["custom_lazy_tool".to_string()]);
         assert!(names(registry.lazy_definitions(&loaded)).contains("custom_lazy_tool"));
-    }
-
-    #[test]
-    fn lazy_gate_requires_load_for_on_demand_builtin_tools() {
-        let mut registry = ToolRegistry::new();
-        registry.register(
-            ToolSpec::new(
-                "custom_lazy_tool",
-                "old",
-                json!({"type":"object","properties":{}}),
-                |_| async { Ok(String::new()) },
-            )
-            .with_always_loaded(false),
-        );
-        assert!(registry.requires_lazy_load("custom_lazy_tool", &BTreeSet::new()));
-
-        let loaded = BTreeSet::from(["custom_lazy_tool".to_string()]);
-        assert!(!registry.requires_lazy_load("custom_lazy_tool", &loaded));
     }
 
     #[test]

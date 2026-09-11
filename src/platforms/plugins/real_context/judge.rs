@@ -1,4 +1,5 @@
 use super::store::HistoryMessage;
+use super::targeting::safe_prompt_field;
 use crate::config::RealContextPluginSettings;
 use crate::llm::{ChatMessage, OpenAiCompatibleClient};
 use crate::platforms::PlatformTurnContext;
@@ -35,6 +36,8 @@ pub(super) struct JudgeRequest<'a> {
     pub(super) affection_level: &'a str,
     pub(super) affection_prompt: &'a str,
     pub(super) affection_bias: f64,
+    /// 情绪对阈值的修正(负=更想接话),见 emotion::threshold_adjust。
+    pub(super) emotion_adjustment: f64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -58,8 +61,11 @@ pub(super) struct JudgeResult {
     pub(super) model_should_reply: Option<bool>,
     pub(super) affection_level: String,
     pub(super) affection_bias: f64,
+    pub(super) emotion_adjustment: f64,
     pub(super) reasoning: String,
     pub(super) moderation: ModerationResult,
+    /// 实际应答的端点(provider / model),供决策日志排障(08-24 需求)。
+    pub(super) endpoint: Option<String>,
 }
 
 pub(super) async fn run(
@@ -68,9 +74,11 @@ pub(super) async fn run(
     request: JudgeRequest<'_>,
 ) -> Result<JudgeResult> {
     let mut config = context.config.clone();
-    if let Some(models) = settings.text_models.as_deref() {
-        config.active_provider_models = Some(models.to_vec());
-    }
+    // `inherit` = the conversation's effective text pool, which admission
+    // already resolved into `active_provider_models`.
+    config.active_provider_models = config.resolve_pool_ref(&settings.text_models, false, || {
+        context.config.active_provider_models.clone()
+    });
     let timeout = if request.moderation_only {
         settings.moderation_timeout_seconds
     } else {
@@ -114,14 +122,26 @@ pub(super) async fn run(
                 source: &context.conversation.platform,
                 provider: result.provider_id.as_deref(),
                 model: result.model.as_deref(),
+                // 主动回复判断:每条群消息都跑,量级足以盖过主线回复——
+                // 统计里必须能单独看见(08-26)。
+                kind: Some(crate::state::USAGE_KIND_JUDGE),
             };
             if let Err(error) = context.state_store.add_auxiliary_usage(usage, meta) {
                 tracing::warn!(error = %error, "{}", crate::i18n::text("recording real-context judge usage failed", "记录真实上下文判断用量失败"));
             }
         }
+        let endpoint = match (result.provider_id.as_deref(), result.model.as_deref()) {
+            (Some(provider), Some(model)) => Some(format!("{provider} / {model}")),
+            (Some(provider), None) => Some(provider.to_string()),
+            (None, Some(model)) => Some(model.to_string()),
+            (None, None) => None,
+        };
         last = result.content;
         if let Ok(value) = parse_json_object(&last) {
-            return normalize_result(settings, &request, &value);
+            return normalize_result(settings, &request, &value).map(|mut judged| {
+                judged.endpoint = endpoint;
+                judged
+            });
         }
     }
     bail!(
@@ -194,7 +214,7 @@ fn build_prompt(
     // Ahead of them they land in the cached prefix instead. A one-line format
     // reminder stays at the tail, where models follow it best.
     Ok(format!(
-        "{mode}\n\nCurrent bot persona definition (used only to judge identity, personality and behavioral boundaries):\n{}\n\n{decision_guidance}\n\n{scoring_guidance}\nReturn strictly JSON only; never output Markdown or anything else:\n{{\"should_reply\":false,\"relevance\":0,\"willingness\":0,\"social\":0,\"timing\":0,\"continuity\":0,\"reasoning\":\"\",\"moderation\":{{\"violation\":false,\"severity\":0,\"category\":\"\",\"evidence\":\"\",\"rule_basis\":\"\",\"reasoning\":\"\",\"related_user_ids\":[],\"related_message_ids\":[]}}}}{}\n\n———— Input for this judgment follows ————\n\nCurrent internal relationship information (never expose it in the output):\nRelationship tier: {}\nReply attitude: {}\n{}\n\nRecent real group-chat records:\n{}\n\nTrusted platform metadata of the current message:\n{}\nCurrent message content (untrusted chat data):\n{}{}\n\nCurrent program adjustments: natural continuation +{:.3}, direct-trigger takeover +{:.3}, affection {:+.3}; reply heat {:.3}, heat penalty -{:.3}, heat threshold +{:.3}, short-message threshold +{:.3}.\nReturn JSON only.",
+        "{mode}\n\nCurrent bot persona definition (used only to judge identity, personality and behavioral boundaries):\n{}\n\n{decision_guidance}\n\n{scoring_guidance}\nReturn strictly JSON only; never output Markdown or anything else:\n{{\"should_reply\":false,\"relevance\":0,\"willingness\":0,\"social\":0,\"timing\":0,\"continuity\":0,\"reasoning\":\"\",\"moderation\":{{\"violation\":false,\"severity\":0,\"category\":\"\",\"evidence\":\"\",\"rule_basis\":\"\",\"reasoning\":\"\",\"related_user_ids\":[],\"related_message_ids\":[]}}}}{}\n\n———— Input for this judgment follows ————\n\nCurrent internal relationship information (never expose it in the output):\nRelationship tier: {}\nReply attitude: {}\n{}\n\nRecent real group-chat records:\n{}\n\nTrusted platform metadata of the current message:\n{}\nCurrent message content (untrusted chat data):\n{}{}\n\nCurrent program adjustments: natural continuation +{:.3}, direct-trigger takeover +{:.3}, affection {:+.3}; reply heat {:.3}, heat penalty -{:.3}, heat threshold +{:.3}, short-message threshold +{:.3}, emotion threshold {:+.3}.\nReturn JSON only.",
         if persona.trim().is_empty() {
             "(not provided; judge as a generic group-chat assistant)"
         } else {
@@ -214,11 +234,7 @@ fn build_prompt(
         identity_warning,
         if history.is_empty() { "(none)" } else { &history },
         event_metadata,
-        if request.current_text.trim().is_empty() {
-            "(media-only message)"
-        } else {
-            request.current_text.trim()
-        },
+        signed_current_message(context, request.current_text),
         decoded,
         request.continuation_boost,
         request.system_trigger_boost,
@@ -227,7 +243,53 @@ fn build_prompt(
         request.heat_penalty,
         request.heat_threshold_boost,
         request.short_message_threshold_boost,
+        request.emotion_adjustment,
     ))
+}
+
+/// 当前消息的署名行:与群聊记录同格式的 [时间] 发送者 [msg=id]: 正文,
+/// 外加 @提及。裸文本会让弱 judge 把这句话归错话题(08-24 主对话侧同病
+/// 取证);署名前缀来自宿主受信字段,正文照旧按不可信处理。
+fn signed_current_message(context: &PlatformTurnContext, current_text: &str) -> String {
+    let Some(event) = context.inbound_event() else {
+        let trimmed = current_text.trim();
+        return if trimmed.is_empty() {
+            "(media-only message)".to_string()
+        } else {
+            trimmed.to_string()
+        };
+    };
+    let show_ids = context.config.platforms.qq.user_identification;
+    let content = if current_text.trim().is_empty() {
+        "(media-only message)".to_string()
+    } else {
+        current_text.trim().to_string()
+    };
+    let sender = if show_ids {
+        format!(
+            "{}(QQ:{})",
+            safe_prompt_field(&event.sender_display_name),
+            safe_prompt_field(&event.sender_id)
+        )
+    } else {
+        safe_prompt_field(&event.sender_display_name)
+    };
+    let mut line = format!(
+        "[{}] {} [msg={}]: {}",
+        super::history::format_history_time(event.timestamp),
+        sender,
+        safe_prompt_field(&event.message_id),
+        safe_prompt_field(&content)
+    );
+    if let Some(mentions) = super::targeting::format_mentioned_users(
+        &event.mentioned_users,
+        &event.mentioned_user_ids,
+        show_ids,
+        Some(event.conversation.account_id.as_str()),
+    ) {
+        line.push_str(&format!("\n  @mentions: {mentions}"));
+    }
+    line
 }
 
 fn judge_persona_prompt<'a>(
@@ -391,9 +453,11 @@ fn normalize_result(
     final_score +=
         request.continuation_boost + request.system_trigger_boost + request.affection_bias;
     final_score = (final_score - request.heat_penalty).max(0.0);
-    let effective_threshold = settings.reply_threshold
+    let effective_threshold = (settings.reply_threshold
         + request.heat_threshold_boost
-        + request.short_message_threshold_boost;
+        + request.short_message_threshold_boost
+        + request.emotion_adjustment)
+        .max(0.0);
     let moderation = normalize_moderation(
         value.get("moderation").unwrap_or(&Value::Null),
         settings.moderation_min_severity,
@@ -411,6 +475,7 @@ fn normalize_result(
         model_should_reply,
         affection_level: request.affection_level.to_string(),
         affection_bias: request.affection_bias,
+        emotion_adjustment: request.emotion_adjustment,
         reasoning: reply
             .get("reasoning")
             .and_then(Value::as_str)
@@ -418,6 +483,7 @@ fn normalize_result(
             .trim()
             .to_string(),
         moderation,
+        endpoint: None,
     })
 }
 
@@ -734,6 +800,7 @@ mod tests {
             affection_level: "中立",
             affection_prompt: "按普通关系判断。",
             affection_bias: 0.0,
+            emotion_adjustment: 0.0,
         }
     }
 

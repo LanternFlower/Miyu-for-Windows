@@ -44,6 +44,56 @@ pub(in crate::cli) fn read_live_repl_input(
                     live.show_background_report(&report)
                 })?;
             }
+            // 听写:识别出的句子填进编辑框(或按配置直接提交)。
+            for (event, auto_submit) in crate::cli::repl::dictation::poll() {
+                use crate::cli::repl::dictation::DictationEvent;
+                match event {
+                    DictationEvent::Utterance(text) if auto_submit => {
+                        live.editor.input = text;
+                        live.editor.cursor = live.editor.input.chars().count();
+                        if let Some(submission) = live.editor.submit() {
+                            let mode = live.mode();
+                            synchronized_terminal_update(CursorAfterUpdate::Hidden, || {
+                                live.commit_submission_render(&submission)
+                            })?;
+                            live.commit_submission_finalize();
+                            raw.keep_cursor_hidden();
+                            return Ok(LiveReplOutcome::Submit(
+                                mode,
+                                submission.content,
+                                submission.images,
+                            ));
+                        }
+                    }
+                    DictationEvent::Utterance(text) => {
+                        if !live.editor.input.is_empty()
+                            && !live.editor.input.ends_with(char::is_whitespace)
+                        {
+                            live.editor.input.push(' ');
+                        }
+                        live.editor.input.push_str(&text);
+                        live.editor.cursor = live.editor.input.chars().count();
+                        synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
+                            live.redraw()
+                        })?;
+                    }
+                    DictationEvent::Ended => {
+                        repl_note(
+                            live,
+                            &format!("\x1b[2m{}\x1b[0m\n", t("dictation ended", "听写结束")),
+                        )?;
+                    }
+                    DictationEvent::Error(message) => {
+                        repl_note(
+                            live,
+                            &format!(
+                                "\x1b[31m{}: {message}\x1b[0m\n",
+                                t("dictation failed", "听写失败")
+                            ),
+                        )?;
+                    }
+                }
+            }
             let typing = last_key_at.elapsed() < Duration::from_millis(350);
             if typing {
                 continue;
@@ -72,6 +122,26 @@ pub(in crate::cli) fn read_live_repl_input(
             }
             last_key_at = Instant::now();
             let event = event::read()?;
+            // 听写中 Esc = 停止听写,已听写的文字留在编辑框里(编辑框有内容时
+            // 打不出 /stt,所以停止不能靠命令)。
+            if crate::cli::repl::dictation::is_active()
+                && matches!(
+                    &event,
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Esc,
+                        kind,
+                        ..
+                    }) if *kind != KeyEventKind::Release
+                )
+            {
+                crate::cli::repl::dictation::stop();
+                repl_note(
+                    live,
+                    &format!("\x1b[2m{}\x1b[0m\n", t("dictation stopped", "听写已停止")),
+                )?;
+                synchronized_terminal_update(CursorAfterUpdate::Preserve, || live.redraw())?;
+                continue;
+            }
             // 上键开始翻历史之前，先把别的 REPL 刚落盘的输入补进来。历史只在
             // 启动时读一次，两个 REPL 同时开着时先开的那个原本永远看不到后开
             // 的那个敲了什么（见 `refresh_repl_input_history`）。
@@ -110,6 +180,8 @@ pub(in crate::cli) fn read_live_repl_input(
                     })?
                 }
                 LiveEditorAction::Submit(submission) => {
+                    // 回车发送即结束听写,不让麦克风继续往下一条消息里灌字。
+                    crate::cli::repl::dictation::stop();
                     // `/goal edit`（无参数）在提交前原地变身成可编辑的
                     // 「/goal edit <当前目标>」，不回显、不产生任何输出。
                     if submission.content.trim() == "/goal edit"
@@ -186,7 +258,7 @@ pub(in crate::cli) fn read_repl_input(
     let mut keyboard_enhancement = KeyboardEnhancementState::enable(&mut stdout);
     let mut input_row = cursor_row_or(0);
     let mut rendered_rows = 0u16;
-    let mut is_pasted = false;
+    let mut raw_pasted_lines = 0usize;
     let mut pasted_images: Vec<Option<crate::clipboard::PastedImage>> = Vec::new();
     let mut pasted_texts: Vec<Option<PastedText>> = Vec::new();
     // 1. 局部退出时统一恢复终端协议
@@ -205,7 +277,7 @@ pub(in crate::cli) fn read_repl_input(
                              mode: AgentMode,
                              input: &str,
                              cursor: usize,
-                             is_pasted: bool| {
+                             raw_pasted_lines: usize| {
         render_repl_input_with_footer(
             stdout,
             input_row,
@@ -213,7 +285,7 @@ pub(in crate::cli) fn read_repl_input(
             mode,
             input,
             cursor,
-            is_pasted,
+            raw_pasted_lines,
             footer,
             show_shortcut_hint,
         )
@@ -225,14 +297,15 @@ pub(in crate::cli) fn read_repl_input(
         mode,
         &input,
         cursor,
-        is_pasted,
+        raw_pasted_lines,
     )?;
     loop {
         match event::read()? {
             Event::Paste(text) => {
-                insert_pasted_text_at_cursor(&mut input, &mut cursor, text, &mut pasted_texts);
+                let raw_lines =
+                    insert_pasted_text_at_cursor(&mut input, &mut cursor, text, &mut pasted_texts);
                 history_clean_index = None;
-                is_pasted = true;
+                raw_pasted_lines = raw_pasted_lines.saturating_add(raw_lines);
                 render_repl_input(
                     &mut stdout,
                     &mut input_row,
@@ -240,7 +313,7 @@ pub(in crate::cli) fn read_repl_input(
                     mode,
                     &input,
                     cursor,
-                    is_pasted,
+                    raw_pasted_lines,
                 )?;
             }
             Event::Key(KeyEvent {
@@ -256,7 +329,7 @@ pub(in crate::cli) fn read_repl_input(
                     } else {
                         // 会话模式创建时定死:Tab 切换已随闲聊模式一并删除。
                     }
-                    is_pasted = false;
+                    raw_pasted_lines = 0;
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -264,14 +337,14 @@ pub(in crate::cli) fn read_repl_input(
                         mode,
                         &input,
                         cursor,
-                        is_pasted,
+                        raw_pasted_lines,
                     )?;
                 }
                 KeyCode::Esc => {
                     input.clear();
                     cursor = 0;
                     history_clean_index = None;
-                    is_pasted = false;
+                    raw_pasted_lines = 0;
                     pasted_images.clear();
                     pasted_texts.clear();
                     render_repl_input(
@@ -281,7 +354,7 @@ pub(in crate::cli) fn read_repl_input(
                         mode,
                         &input,
                         cursor,
-                        is_pasted,
+                        raw_pasted_lines,
                     )?;
                 }
                 KeyCode::Left => {
@@ -297,7 +370,7 @@ pub(in crate::cli) fn read_repl_input(
                         mode,
                         &input,
                         cursor,
-                        is_pasted,
+                        raw_pasted_lines,
                     )?;
                 }
                 KeyCode::Right => {
@@ -313,7 +386,7 @@ pub(in crate::cli) fn read_repl_input(
                         mode,
                         &input,
                         cursor,
-                        is_pasted,
+                        raw_pasted_lines,
                     )?;
                 }
                 KeyCode::Home => {
@@ -325,7 +398,7 @@ pub(in crate::cli) fn read_repl_input(
                         mode,
                         &input,
                         cursor,
-                        is_pasted,
+                        raw_pasted_lines,
                     )?;
                 }
                 KeyCode::End => {
@@ -337,7 +410,7 @@ pub(in crate::cli) fn read_repl_input(
                         mode,
                         &input,
                         cursor,
-                        is_pasted,
+                        raw_pasted_lines,
                     )?;
                 }
                 KeyCode::Up => {
@@ -351,7 +424,7 @@ pub(in crate::cli) fn read_repl_input(
                         input = history.get(history_index).cloned().unwrap_or_default();
                         cursor = input.chars().count();
                         history_clean_index = Some(history_index);
-                        is_pasted = false;
+                        raw_pasted_lines = 0;
                         pasted_images.clear();
                         pasted_texts.clear();
                     } else {
@@ -364,7 +437,7 @@ pub(in crate::cli) fn read_repl_input(
                         mode,
                         &input,
                         cursor,
-                        is_pasted,
+                        raw_pasted_lines,
                     )?;
                 }
                 KeyCode::Down => {
@@ -380,7 +453,7 @@ pub(in crate::cli) fn read_repl_input(
                             cursor = 0;
                             history_clean_index = None;
                         }
-                        is_pasted = false;
+                        raw_pasted_lines = 0;
                         pasted_images.clear();
                         pasted_texts.clear();
                     } else {
@@ -393,14 +466,14 @@ pub(in crate::cli) fn read_repl_input(
                         mode,
                         &input,
                         cursor,
-                        is_pasted,
+                        raw_pasted_lines,
                     )?;
                 }
                 KeyCode::Enter if modifiers.contains(KeyModifiers::SHIFT) => {
                     // Shift+Enter 与 Ctrl+J 相同：在光标处插入换行，不提交
                     insert_newline_at_cursor(&mut input, &mut cursor);
                     history_clean_index = None;
-                    is_pasted = false;
+                    raw_pasted_lines = 0;
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -408,7 +481,7 @@ pub(in crate::cli) fn read_repl_input(
                         mode,
                         &input,
                         cursor,
-                        is_pasted,
+                        raw_pasted_lines,
                     )?;
                 }
                 KeyCode::Enter => {
@@ -427,7 +500,7 @@ pub(in crate::cli) fn read_repl_input(
                 KeyCode::Char('j') if modifiers.contains(KeyModifiers::CONTROL) => {
                     insert_newline_at_cursor(&mut input, &mut cursor);
                     history_clean_index = None;
-                    is_pasted = false;
+                    raw_pasted_lines = 0;
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -435,7 +508,7 @@ pub(in crate::cli) fn read_repl_input(
                         mode,
                         &input,
                         cursor,
-                        is_pasted,
+                        raw_pasted_lines,
                     )?;
                 }
                 KeyCode::Char('c')
@@ -446,7 +519,7 @@ pub(in crate::cli) fn read_repl_input(
                         input.clear();
                         cursor = 0;
                         history_clean_index = None;
-                        is_pasted = false;
+                        raw_pasted_lines = 0;
                         pasted_images.clear();
                         pasted_texts.clear();
                         render_repl_input(
@@ -456,7 +529,7 @@ pub(in crate::cli) fn read_repl_input(
                             mode,
                             &input,
                             cursor,
-                            is_pasted,
+                            raw_pasted_lines,
                         )?;
                         continue;
                     }
@@ -483,7 +556,7 @@ pub(in crate::cli) fn read_repl_input(
                         mode,
                         &input,
                         cursor,
-                        is_pasted,
+                        raw_pasted_lines,
                     )?;
                 }
                 KeyCode::Char('w') if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -494,7 +567,7 @@ pub(in crate::cli) fn read_repl_input(
                         &mut pasted_texts,
                     );
                     history_clean_index = None;
-                    is_pasted = false;
+                    raw_pasted_lines = 0;
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -502,7 +575,7 @@ pub(in crate::cli) fn read_repl_input(
                         mode,
                         &input,
                         cursor,
-                        is_pasted,
+                        raw_pasted_lines,
                     )?;
                 }
                 KeyCode::Backspace => {
@@ -523,7 +596,7 @@ pub(in crate::cli) fn read_repl_input(
                         }
                         history_clean_index = None;
                     }
-                    is_pasted = false;
+                    raw_pasted_lines = 0;
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -531,7 +604,7 @@ pub(in crate::cli) fn read_repl_input(
                         mode,
                         &input,
                         cursor,
-                        is_pasted,
+                        raw_pasted_lines,
                     )?;
                 }
                 KeyCode::Delete => {
@@ -548,7 +621,7 @@ pub(in crate::cli) fn read_repl_input(
                         remove_char_at_cursor(&mut input, cursor);
                     }
                     history_clean_index = None;
-                    is_pasted = false;
+                    raw_pasted_lines = 0;
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -556,7 +629,7 @@ pub(in crate::cli) fn read_repl_input(
                         mode,
                         &input,
                         cursor,
-                        is_pasted,
+                        raw_pasted_lines,
                     )?;
                 }
                 KeyCode::Char('c' | 'C')
@@ -573,20 +646,14 @@ pub(in crate::cli) fn read_repl_input(
                     match crate::clipboard::read_clipboard() {
                         Ok(crate::clipboard::ClipboardContent::Image(img)) => {
                             let index = pasted_images.len() + 1;
-                            let placeholder = match img.write_temp_file(&paths.cache_dir, index) {
-                                Ok(path) => {
-                                    let filename = path
-                                        .file_name()
-                                        .and_then(|n| n.to_str())
-                                        .unwrap_or("image");
-                                    format!("[Image {}: {}]", index, filename)
-                                }
-                                Err(_) => format!("[Image {}]", index),
-                            };
+                            // 占位符只认序号,文件名纯属显示噪音(模型侧路径
+                            // 由 rewrite_image_placeholders_with_paths 另拼)。
+                            let _ = img.write_temp_file(&paths.cache_dir, index);
+                            let placeholder = format!("[Image {}]", index);
                             insert_str_at_cursor(&mut input, &mut cursor, &placeholder);
                             history_clean_index = None;
                             pasted_images.push(Some(crate::clipboard::PastedImage::Binary(img)));
-                            is_pasted = false;
+                            raw_pasted_lines = 0;
                             render_repl_input(
                                 &mut stdout,
                                 &mut input_row,
@@ -594,20 +661,17 @@ pub(in crate::cli) fn read_repl_input(
                                 mode,
                                 &input,
                                 cursor,
-                                is_pasted,
+                                raw_pasted_lines,
                             )?;
                         }
-                        Ok(crate::clipboard::ClipboardContent::ImagePath(path)) => {
+                        Ok(crate::clipboard::ClipboardContent::MediaPath(path)) => {
                             let index = pasted_images.len() + 1;
-                            let filename = std::path::Path::new(&path)
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("image");
-                            let placeholder = format!("[Image {}: {}]", index, filename);
+                            let label = media_placeholder_label(&path);
+                            let placeholder = format!("[{label} {index}]");
                             insert_str_at_cursor(&mut input, &mut cursor, &placeholder);
                             history_clean_index = None;
                             pasted_images.push(Some(crate::clipboard::PastedImage::Path(path)));
-                            is_pasted = false;
+                            raw_pasted_lines = 0;
                             render_repl_input(
                                 &mut stdout,
                                 &mut input_row,
@@ -615,13 +679,13 @@ pub(in crate::cli) fn read_repl_input(
                                 mode,
                                 &input,
                                 cursor,
-                                is_pasted,
+                                raw_pasted_lines,
                             )?;
                         }
                         Ok(crate::clipboard::ClipboardContent::TextPath(path)) => {
                             insert_str_at_cursor(&mut input, &mut cursor, &path);
                             history_clean_index = None;
-                            is_pasted = false;
+                            raw_pasted_lines = 0;
                             render_repl_input(
                                 &mut stdout,
                                 &mut input_row,
@@ -629,19 +693,19 @@ pub(in crate::cli) fn read_repl_input(
                                 mode,
                                 &input,
                                 cursor,
-                                is_pasted,
+                                raw_pasted_lines,
                             )?;
                         }
                         _ => {
                             if let Ok(Some(text)) = crate::clipboard::read_clipboard_text() {
-                                insert_pasted_text_at_cursor(
+                                let raw_lines = insert_pasted_text_at_cursor(
                                     &mut input,
                                     &mut cursor,
                                     text,
                                     &mut pasted_texts,
                                 );
                                 history_clean_index = None;
-                                is_pasted = true;
+                                raw_pasted_lines = raw_pasted_lines.saturating_add(raw_lines);
                                 render_repl_input(
                                     &mut stdout,
                                     &mut input_row,
@@ -649,7 +713,7 @@ pub(in crate::cli) fn read_repl_input(
                                     mode,
                                     &input,
                                     cursor,
-                                    is_pasted,
+                                    raw_pasted_lines,
                                 )?;
                             }
                         }
@@ -663,7 +727,7 @@ pub(in crate::cli) fn read_repl_input(
                         insert_char_at_cursor(&mut input, &mut cursor, ch);
                         history_clean_index = None;
                     }
-                    is_pasted = false;
+                    raw_pasted_lines = 0;
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -671,7 +735,7 @@ pub(in crate::cli) fn read_repl_input(
                         mode,
                         &input,
                         cursor,
-                        is_pasted,
+                        raw_pasted_lines,
                     )?;
                 }
                 _ => {}
@@ -688,7 +752,7 @@ pub(in crate::cli) fn render_repl_input_with_footer(
     mode: AgentMode,
     input: &str,
     cursor: usize,
-    is_pasted: bool,
+    raw_pasted_lines: usize,
     footer: &ReplFooterStatus,
     show_shortcut_hint: bool,
 ) -> Result<Option<u16>> {
@@ -701,7 +765,7 @@ pub(in crate::cli) fn render_repl_input_with_footer(
         &plain_prefix,
         &lines,
         REPL_MAX_VISIBLE_INPUT_ROWS,
-        is_pasted,
+        raw_pasted_lines,
     );
     let display_rows = repl_wrapped_input_rows_for_cols(&plain_prefix, &display_lines, cols);
     let display_rows: Vec<String> = display_rows

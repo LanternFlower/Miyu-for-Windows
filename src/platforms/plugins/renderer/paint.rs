@@ -27,6 +27,9 @@ pub(in crate::platforms::plugins::renderer) struct Palette {
     pub(in crate::platforms::plugins::renderer) heading: [u8; 4],
     pub(in crate::platforms::plugins::renderer) muted: [u8; 4],
     pub(in crate::platforms::plugins::renderer) link: [u8; 4],
+    /// 加粗文本的替代色:资产只带 Regular 字重(CJK 粗体一个 15MB+,低占用
+    /// 专项不背),**加粗**以变色呈现(08-25 用户裁定)。
+    pub(in crate::platforms::plugins::renderer) strong: [u8; 4],
     pub(in crate::platforms::plugins::renderer) code_background: [u8; 4],
     pub(in crate::platforms::plugins::renderer) code_text: [u8; 4],
     pub(in crate::platforms::plugins::renderer) quote_background: [u8; 4],
@@ -46,6 +49,7 @@ impl Palette {
                 heading: [255, 255, 255, 255],
                 muted: [164, 168, 176, 255],
                 link: [104, 179, 255, 255],
+                strong: [229, 192, 123, 255],
                 code_background: [43, 45, 51, 255],
                 code_text: [239, 240, 244, 255],
                 quote_background: [37, 40, 45, 255],
@@ -61,6 +65,7 @@ impl Palette {
                 heading: [18, 20, 24, 255],
                 muted: [92, 96, 104, 255],
                 link: [48, 101, 190, 255],
+                strong: [176, 112, 14, 255],
                 code_background: [226, 229, 235, 255],
                 code_text: [34, 38, 45, 255],
                 quote_background: [244, 247, 255, 255],
@@ -76,6 +81,7 @@ impl Palette {
                 heading: [37, 34, 29, 255],
                 muted: [104, 98, 88, 255],
                 link: [112, 82, 43, 255],
+                strong: [153, 88, 28, 255],
                 code_background: [225, 219, 208, 255],
                 code_text: [42, 39, 34, 255],
                 quote_background: [236, 229, 214, 255],
@@ -233,7 +239,10 @@ impl Write for CappedVecWriter {
     }
 }
 
-pub(in crate::platforms::plugins::renderer) fn validate_page_dimensions(width: u32, height: u32) -> Result<()> {
+pub(in crate::platforms::plugins::renderer) fn validate_page_dimensions(
+    width: u32,
+    height: u32,
+) -> Result<()> {
     if width == 0 {
         bail!("rendered image width must be non-zero");
     }
@@ -247,7 +256,10 @@ pub(in crate::platforms::plugins::renderer) fn validate_page_dimensions(width: u
     Ok(())
 }
 
-pub(in crate::platforms::plugins::renderer) fn checked_total_page_pixels(current: u64, page: u64) -> Result<u64> {
+pub(in crate::platforms::plugins::renderer) fn checked_total_page_pixels(
+    current: u64,
+    page: u64,
+) -> Result<u64> {
     let total = current
         .checked_add(page)
         .context("rendered page pixel count overflowed")?;
@@ -445,7 +457,14 @@ pub(in crate::platforms::plugins::renderer) fn draw_table_cell_text(
     }
 }
 
-pub(in crate::platforms::plugins::renderer) fn draw_checkbox(image: &mut RgbaImage, x: u32, y: u32, size: u32, checked: bool, color: [u8; 4]) {
+pub(in crate::platforms::plugins::renderer) fn draw_checkbox(
+    image: &mut RgbaImage,
+    x: u32,
+    y: u32,
+    size: u32,
+    checked: bool,
+    color: [u8; 4],
+) {
     if size < 4 {
         return;
     }
@@ -548,8 +567,8 @@ pub(in crate::platforms::plugins::renderer) fn draw_text_fragment(
             if bottom <= top {
                 continue;
             }
-            let global_y = i64::from(destination_y) + top as i64
-                - i64::from(placement.source_start);
+            let global_y =
+                i64::from(destination_y) + top as i64 - i64::from(placement.source_start);
             let x_base = i64::from(column_x) + i64::from(block.inset_left);
             let x0 = (x_base + (start_x - INLINE_CODE_CHIP_PAD_X).floor() as i64)
                 .max(i64::from(column_x));
@@ -692,7 +711,14 @@ pub(in crate::platforms::plugins::renderer) fn fill_rounded_rect(
     }
 }
 
-pub(in crate::platforms::plugins::renderer) fn fill_rect(image: &mut RgbaImage, x: u32, y: u32, width: u32, height: u32, color: [u8; 4]) {
+pub(in crate::platforms::plugins::renderer) fn fill_rect(
+    image: &mut RgbaImage,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    color: [u8; 4],
+) {
     let end_x = x.saturating_add(width).min(image.width());
     let end_y = y.saturating_add(height).min(image.height());
     for py in y.min(end_y)..end_y {

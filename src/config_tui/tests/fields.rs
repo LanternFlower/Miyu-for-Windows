@@ -9,7 +9,10 @@ use crate::llm::ThinkingVariantOptions;
 #[test]
 fn textarea_temp_file_is_markdown_and_reopenable_for_writing() {
     let path = textarea_temp_file("before").unwrap();
-    assert_eq!(path.extension().and_then(|value| value.to_str()), Some("md"));
+    assert_eq!(
+        path.extension().and_then(|value| value.to_str()),
+        Some("md")
+    );
     std::fs::write(&path, "after").unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "after");
 }

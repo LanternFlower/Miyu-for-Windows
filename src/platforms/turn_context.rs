@@ -63,11 +63,23 @@ pub(crate) struct PlatformTurnContext {
     pub(crate) plugins: Arc<plugins::PlatformPluginRegistry>,
     pub(crate) config_manager: Option<Weak<Mutex<crate::runtime::ManagerState>>>,
     pub(crate) inbound_event: Option<Arc<PlatformInboundEvent>>,
+    /// 正在处理中登记的 RAII 守卫:context 掉落即注销(见 inflight 模块头)。
+    pub(crate) inflight_guard: Option<crate::platforms::inflight::InflightGuard>,
     pub(crate) message_activity: Option<MessageActivityHandle>,
+    /// 本回合可看的上下文图片(群里最近若干条消息里的图)。真实回合把它交给
+    /// `vision::register_scoped_platform`;MCP 桥另建工具面时也要用同一份,
+    /// 否则 claude-code 供应商那边整条看图链路是空的(08-26)。
+    pub(crate) context_images: Mutex<Vec<PlatformContextImageRef>>,
+    /// 本回合可懒下载的上下文文件/视频引用,用途同上(09-04)。
+    pub(crate) context_files: Mutex<Vec<PlatformContextFileRef>>,
     pub(crate) response_target: Mutex<Option<PendingResponseTarget>>,
     pub(crate) group_member_cache: Mutex<HashMap<String, PlatformGroupMember>>,
     pub(crate) plugin_values: Mutex<BTreeMap<String, Value>>,
     pub(crate) delivered_image_digests: Mutex<HashSet<blake3::Hash>>,
+    /// 本回合已投递的回复文本(归一化 bigram 集)。文字版幂等闸(08-22 复读
+    /// 取证):端点故障日模型会把"发送回复"重演成同义变体,digest 拦不住,
+    /// 按近似度拦。仅回合内生效——跨回合相似回复可能是正当的再次回答。
+    pub(crate) delivered_reply_texts: Mutex<Vec<std::collections::HashSet<(char, char)>>>,
     /// Lazy file refs for queued follow-up prompts, keyed by prompt id.
     pub(crate) queued_files: Mutex<BTreeMap<String, Vec<PlatformContextFileRef>>>,
     pub(crate) reply_rate_available: AtomicBool,
@@ -100,11 +112,15 @@ impl PlatformTurnContext {
             plugins,
             config_manager: None,
             inbound_event: None,
+            inflight_guard: None,
             message_activity: None,
+            context_images: Mutex::new(Vec::new()),
+            context_files: Mutex::new(Vec::new()),
             response_target: Mutex::new(None),
             group_member_cache: Mutex::new(HashMap::new()),
             plugin_values: Mutex::new(BTreeMap::new()),
             delivered_image_digests: Mutex::new(HashSet::new()),
+            delivered_reply_texts: Mutex::new(Vec::new()),
             queued_files: Mutex::new(BTreeMap::new()),
             reply_rate_available: AtomicBool::new(true),
             pending_final_reply_suppression: AtomicBool::new(false),
@@ -113,6 +129,10 @@ impl PlatformTurnContext {
     }
 
     pub(crate) fn with_inbound_event(mut self, event: PlatformInboundEvent) -> Self {
+        self.inflight_guard = Some(crate::platforms::inflight::InflightGuard::register(
+            self.conversation.scope_key(),
+            event.message_id.clone(),
+        ));
         self.inbound_event = Some(Arc::new(event));
         self
     }
@@ -147,6 +167,24 @@ impl PlatformTurnContext {
             account_id: self.conversation.account_id.clone(),
             user_id: self.sender_id.clone(),
         }
+    }
+
+    /// 登记本回合可看的上下文图片。插件算出来之后调一次,供 MCP 桥取用。
+    pub(crate) fn set_context_images(&self, images: Vec<PlatformContextImageRef>) {
+        *self.context_images.lock().unwrap() = images;
+    }
+
+    pub(crate) fn context_images(&self) -> Vec<PlatformContextImageRef> {
+        self.context_images.lock().unwrap().clone()
+    }
+
+    /// 登记本回合可懒下载的文件引用(历史里的 + 当前消息里的)。
+    pub(crate) fn set_context_files(&self, files: Vec<PlatformContextFileRef>) {
+        *self.context_files.lock().unwrap() = files;
+    }
+
+    pub(crate) fn context_files(&self) -> Vec<PlatformContextFileRef> {
+        self.context_files.lock().unwrap().clone()
     }
 
     pub(crate) fn set_response_target(&self, target: Option<ResponseTarget>) {
@@ -375,6 +413,27 @@ impl PlatformTurnContext {
     }
 
     pub(crate) async fn send(&self, mut message: OutboundMessage) -> Result<SendReceipt> {
+        // 工具模板泄漏过滤:模型复读退化时会把 <tool_call>/<function=> 模板
+        // 当正文吐出(08-23 取证),剥掉泄漏 span,剥空就整条抑制。
+        if matches!(
+            message.origin,
+            OutboundOrigin::FinalReply | OutboundOrigin::IntermediateReply | OutboundOrigin::Tool
+        ) && strip_tool_call_leaks(&mut message)
+        {
+            tracing::warn!(
+                platform = %self.conversation.platform,
+                conversation_kind = self.conversation.kind.as_str(),
+                conversation_id = %self.conversation.conversation_id,
+                "{}",
+                crate::i18n::text(
+                    "stripped a leaked tool-call template from an outgoing reply",
+                    "已从出站回复中剥离泄漏的工具调用模板",
+                )
+            );
+            if !message_has_deliverable_content(&message) {
+                return Ok(SendReceipt::default());
+            }
+        }
         if matches!(
             message.origin,
             OutboundOrigin::FinalReply | OutboundOrigin::IntermediateReply | OutboundOrigin::Tool
@@ -410,9 +469,20 @@ impl PlatformTurnContext {
                 .message_activity
                 .as_ref()
                 .map(|activity| activity.position_for(&target.target.user_id));
+            let last_message_is_own = self
+                .message_activity
+                .as_ref()
+                .is_some_and(|activity| activity.last_message_is_own());
             let resolved = target
                 .policy
-                .and_then(|policy| policy.resolve(target.target.clone(), current, Instant::now()))
+                .and_then(|policy| {
+                    policy.resolve(
+                        target.target.clone(),
+                        current,
+                        last_message_is_own,
+                        Instant::now(),
+                    )
+                })
                 .or_else(|| target.policy.is_none().then(|| target.target.clone()));
             apply_resolved_response_target(
                 &mut prepared.primary,
@@ -475,6 +545,11 @@ impl PlatformTurnContext {
             }
         };
         self.record_delivered_images(&receipt);
+        // 投递成功 = 此刻会话里最后一条是她自己的。下一条回复据此决定要不要
+        // 引用(连发时艾特和引用会一起哑火,见 AdaptiveResponseTargetPolicy)。
+        if let Some(activity) = self.message_activity.as_ref() {
+            activity.record_own_message();
+        }
         self.plugins
             .after_send(self, &delivered_message, &receipt)
             .await;
@@ -545,6 +620,41 @@ impl PlatformTurnContext {
                 Err(error)
             }
         }
+    }
+
+    pub(crate) fn is_duplicate_reply_text(&self, text: &str) -> bool {
+        let grams = reply_text_bigrams(text);
+        // 短文本(问候/单句确认)天然高相似,不设闸。
+        if grams.len() < 16 {
+            return false;
+        }
+        if self
+            .delivered_reply_texts
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|prev| bigram_jaccard(&grams, prev) >= 0.66)
+        {
+            return true;
+        }
+        // 跨回合支路(08-25 并发重复答题取证):同会话 2 分钟内投过的近似
+        // 内容拒发,阈值 0.75 比回合内更严。
+        crate::platforms::activity::recent_conversation_reply_similar(
+            &self.conversation.scope_key(),
+            text,
+        )
+    }
+
+    pub(crate) fn record_delivered_reply_text(&self, text: &str) {
+        crate::platforms::activity::record_recent_conversation_reply(
+            &self.conversation.scope_key(),
+            text,
+        );
+        let grams = reply_text_bigrams(text);
+        if grams.is_empty() {
+            return;
+        }
+        self.delivered_reply_texts.lock().unwrap().push(grams);
     }
 
     pub(crate) fn record_delivered_images(&self, receipt: &SendReceipt) {
@@ -656,6 +766,15 @@ impl PlatformTurnContext {
     ) -> futures_util::future::BoxFuture<'static, Result<Vec<PlatformImageData>>> {
         let adapter = self.adapter.clone();
         Box::pin(async move { adapter.message_images(&message_id).await })
+    }
+
+    pub(crate) fn fetch_platform_file_task(
+        &self,
+        file_ref: PlatformContextFileRef,
+    ) -> futures_util::future::BoxFuture<'static, Result<PlatformFileDownload>> {
+        let adapter = self.adapter.clone();
+        let paths = self.paths.clone();
+        Box::pin(async move { adapter.fetch_platform_file(&file_ref, &paths).await })
     }
 
     pub(crate) async fn group_members(&self) -> Result<Vec<PlatformGroupMember>> {
@@ -814,4 +933,30 @@ pub(crate) fn register_platform_tools(
 ) {
     tool::register(registry, context.clone());
     context.plugins.register_tools(registry, context.clone());
+}
+
+/// 归一化(去标点空白、小写)后的字符 bigram 集。同义改写变体的用词高度
+/// 重叠,bigram Jaccard 是廉价且够用的近似度。
+pub(crate) fn reply_text_bigrams(text: &str) -> std::collections::HashSet<(char, char)> {
+    let normalized: Vec<char> = text
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    normalized
+        .windows(2)
+        .map(|pair| (pair[0], pair[1]))
+        .collect()
+}
+
+pub(crate) fn bigram_jaccard(
+    a: &std::collections::HashSet<(char, char)>,
+    b: &std::collections::HashSet<(char, char)>,
+) -> f64 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let intersection = a.intersection(b).count();
+    let union = a.len() + b.len() - intersection;
+    intersection as f64 / union as f64
 }

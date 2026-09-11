@@ -1,7 +1,7 @@
 //! 旧布局迁移与符号链接处置。
 
-use crate::paths::*;
 use super::shared::*;
+use crate::paths::*;
 
 #[test]
 fn migration_moves_and_merges_without_overwriting() {

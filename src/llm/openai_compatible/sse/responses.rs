@@ -3,8 +3,8 @@
 //! 比 Chat 复杂在于它是**分项目的**：每个 output item 有自己的 id 和生命周期，
 //! 推理摘要还可能分成多段。所以要按 item id 配对，不能靠顺序。
 
-use crate::llm::openai_compatible::*;
 use crate::llm::openai_compatible::sse::*;
+use crate::llm::openai_compatible::*;
 
 pub(in crate::llm::openai_compatible) fn handle_responses_sse_line<F>(
     line: &str,

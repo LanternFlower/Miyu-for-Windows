@@ -1,0 +1,23 @@
+{
+  "name": "edit",
+  "display_name": "编辑",
+  "description": "Create, modify, or delete files. Wrap the patch in *** Begin Patch / *** End Patch with one or more Add File / Update File / Delete File sections; one patch can cover many files and changes.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "patchText": {
+        "type": "string",
+        "description": "Full patch text. Format: *** Begin Patch; one or more file operations; *** End Patch. In Add File every content line must start with +; Update File uses @@ hunks with lines starting with a space, -, or +; Delete File removes the file."
+      }
+    },
+    "required": [
+      "patchText"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": true,
+  "load_policy": "group",
+  "groups": [
+    "dev"
+  ]
+}

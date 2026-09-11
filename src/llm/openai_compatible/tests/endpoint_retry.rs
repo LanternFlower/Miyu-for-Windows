@@ -358,7 +358,10 @@ async fn invalid_request_does_not_fail_over_to_another_endpoint() {
         max_tokens_override: None,
         request_scope: "chat",
         claude_code: None,
+        antigravity: None,
+        codex: None,
         claude_code_dev_mode: false,
+        zen_session: None,
         continuation_health: ResponsesContinuationHealth::detached(),
     };
 

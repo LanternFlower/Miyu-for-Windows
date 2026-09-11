@@ -302,7 +302,7 @@ async fn tool_catalog_matches_the_bridge_callable_set() {
         .filter_map(|tool| tool["name"].as_str())
         .collect::<Vec<_>>();
     assert!(names.contains(&"run_command"), "{names:?}");
-    assert!(names.contains(&"apply_patch"), "{names:?}");
+    assert!(names.contains(&"edit"), "{names:?}");
     assert!(
         !names.contains(&"trash_path"),
         "dev 目录不应混入普通人格工具: {names:?}"
@@ -808,4 +808,65 @@ async fn set_session_models_ipc_pins_and_clears_the_override() {
         .session_model_override(&session_id)
         .unwrap()
         .is_none());
+}
+
+/// 桥的工具面必须和主线回合同一套判据。REPL 是 owner 面,artifact 那套
+/// 预览文件只有 WebUI 渲染得出来;桥原来只看 mode,于是 claude-code
+/// (工具只能从 MCP 桥拿)在 REPL 里照样拿到,模型把文档"扔进 artifact"
+/// 而用户看不见(08-29 实测)。
+#[tokio::test]
+async fn the_bridge_hands_out_artifact_tools_only_to_webui_turns() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = DaemonState::for_test(test_paths(temp.path()), 8300).unwrap();
+    let persona = active_persona_scope(&state);
+    state
+        .state_store
+        .adopt_sessions_for_persona(&persona)
+        .unwrap();
+    let session_id = state.state_store.session_id().to_string();
+    let config = { state.manager.lock().unwrap().config.clone() };
+
+    let tools_with_running_audience = |audience: Option<PromptAudience>| {
+        {
+            let mut manager = state.manager.lock().unwrap();
+            manager.active_runs.clear();
+            if let Some(audience) = audience {
+                manager.active_runs.insert(
+                    "run_probe".to_string(),
+                    RunInfo {
+                        session_id: session_id.clone().into(),
+                        mode: AgentMode::Normal,
+                        audience,
+                        cancel: tokio::sync::watch::channel(false).0,
+                        turn_id: None,
+                        queue_target: None,
+                        supersede: Arc::new(crate::agent::TurnSupersedeSignal::default()),
+                        platform_followup: None,
+                        operation: RunOperation::Create,
+                        job_wake: false,
+                        job_wake_label: None,
+                        turn_origin: crate::tools::workspace::TurnOrigin::Human,
+                    },
+                );
+            }
+        }
+        let mut registry =
+            crate::tools::build_tool_registry(&config, &state.paths, AgentMode::Normal, false)
+                .unwrap();
+        attach_owner_turn_tools(
+            &mut registry,
+            &state,
+            &config,
+            AgentMode::Normal,
+            &session_id,
+        );
+        registry.contains("artifact")
+    };
+
+    // WebUI 回合(External + 无平台 profile)才给。
+    assert!(tools_with_running_audience(Some(PromptAudience::External)));
+    // REPL 回合是 owner 面,不给。
+    assert!(!tools_with_running_audience(Some(PromptAudience::Owner)));
+    // 回合外的桥调用(miyu tool-call)同样不给:宁可少给。
+    assert!(!tools_with_running_audience(None));
 }

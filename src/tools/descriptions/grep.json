@@ -1,7 +1,7 @@
 {
   "name": "grep",
   "display_name": "搜索内容",
-  "description": "Search content in a directory or a single file using ripgrep.",
+  "description": "Search contents in a directory or a single file with ripgrep.",
   "parameters": {
     "type": "object",
     "properties": {

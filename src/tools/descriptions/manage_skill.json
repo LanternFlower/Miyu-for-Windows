@@ -1,7 +1,7 @@
 {
   "name": "manage_skill",
   "display_name": "管理技能",
-  "description": "Author skills: action=create/update opens a draft, publish releases it, delete removes it, list_drafts lists drafts.\nOnly edit the returned draft (with apply_patch), then publish validates and atomically releases it. Creating a draft never overwrites an existing skill; publishing an update draft fails if the live skill changed in the meantime. Drafts unmodified for 30 days are cleaned up before list_drafts. Scripts inside a skill remain resources and are not registered as tools.",
+  "description": "Manage and author skills.",
   "parameters": {
     "type": "object",
     "properties": {

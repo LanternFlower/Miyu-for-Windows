@@ -53,12 +53,21 @@ pub(crate) struct SessionTurnTicket {
     pub(crate) state: Arc<SessionTurnState>,
     pub(crate) generation: u64,
     pub(crate) exclusive: bool,
+    /// 到达顺序位。票据在判断之前建好并持有它,判断期间就已经排上队;票据
+    /// 没走到 `acquire` 就掉落时,顺序位随之让出。抢占票据不参与排序——覆盖
+    /// 的语义就是插队。
+    pub(crate) order_slot: Option<TurnOrderSlot>,
 }
 
 impl SessionTurnTicket {
     pub(crate) async fn acquire(
-        self,
+        mut self,
     ) -> std::result::Result<SessionTurnLease, SessionTurnAcquireError> {
+        if !self.exclusive {
+            if let Some(slot) = self.order_slot.as_ref() {
+                slot.wait_turn().await;
+            }
+        }
         let (guard, permit) = if self.exclusive {
             (
                 SessionTurnGuard::Write(self.state.gate.clone().write_owned().await),
@@ -98,15 +107,50 @@ impl SessionTurnTicket {
                 Some(permit),
             )
         };
+        // 名额到手,顺序位使命完成。继续占着会让 running > 1 的并行体制退化
+        // 成串行——后面的人本该现在就去抢下一个名额。
+        if let Some(mut slot) = self.order_slot.take() {
+            slot.release();
+        }
+        // 克隆而不是移动:票据现在实现了 Drop(见下),Rust 不允许从带 Drop 的
+        // 类型里搬字段出来。三个字段都是 Arc / String,克隆的代价可以忽略。
         Ok(SessionTurnLease {
             guard: Some(guard),
             permit,
-            states: self.states,
-            session_id: self.session_id,
-            state: self.state,
+            states: self.states.clone(),
+            session_id: self.session_id.clone(),
+            state: self.state.clone(),
             generation: self.generation,
             exclusive: self.exclusive,
         })
+    }
+}
+
+impl Drop for SessionTurnTicket {
+    fn drop(&mut self) {
+        // 判断挪到 acquire 之前以后,"票据建好却从不消耗"成了常态(判断说不回
+        // 复就直接 return)。原先这条路不存在,登记表只由租约的 Drop 回收,于是
+        // 每条不回复的消息都会在表里留下一个死 Weak——admission 测试抓到了。
+        //
+        // 判据与租约一致:只有自己是最后一个持有者时才回收。`acquire` 成功后
+        // 租约也持有同一个 Arc,strong_count ≥ 2,这里就不会误删。
+        self.order_slot.take();
+        let mut states = self.states.lock().unwrap();
+        if Arc::strong_count(&self.state) != 1 {
+            return;
+        }
+        // 抢占票据在创建时就置了 preempting,由租约的 Drop 清。没走到 acquire
+        // 的抢占票据必须自己清,否则这条会话上所有后续回合永远等下去。
+        if self.exclusive {
+            self.state.preempting.store(false, Ordering::Release);
+            self.state.preemption_changed.notify_waiters();
+        }
+        if states
+            .get(&self.session_id)
+            .is_some_and(|registered| Weak::ptr_eq(registered, &Arc::downgrade(&self.state)))
+        {
+            states.remove(&self.session_id);
+        }
     }
 }
 
@@ -240,7 +284,12 @@ impl RateWindow {
         self.available_at(Instant::now(), conversation, limit)
     }
 
-    pub(crate) fn available_at(&mut self, now: Instant, conversation: &str, limit: PlatformRateLimit) -> bool {
+    pub(crate) fn available_at(
+        &mut self,
+        now: Instant,
+        conversation: &str,
+        limit: PlatformRateLimit,
+    ) -> bool {
         self.prune_at(now);
         if limit.max_messages == 0 {
             return true;

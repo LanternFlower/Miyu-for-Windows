@@ -37,7 +37,10 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
             }
         });
     }
-    let context = cold_context(&config, &paths, &state_store)?;
+    // 09-04 issue #36:上下文现算含 MCP tools/list,一个不可达的 MCP server
+    // 曾让这一行卡到 CLI 的 8 秒就绪窗口耗尽、整个 daemon 被杀。限时等待,
+    // 超时先用占位快照放行,真数算好后在下面回填。
+    let (context, pending_context) = startup_context(&config, &paths, &state_store)?;
 
     // Default binds all interfaces so the WebUI is reachable from the LAN;
     // `--bind 127.0.0.1` restricts it to this machine. Access URLs matching
@@ -81,6 +84,29 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
         )]),
         runs_changed: Arc::new(tokio::sync::Notify::new()),
     }));
+    if let Some(pending_context) = pending_context {
+        let manager = manager.clone();
+        let state_store = state_store.clone();
+        let session_at_start = state_store.session_id();
+        tokio::task::spawn_blocking(move || {
+            let Ok(Ok(context)) = pending_context.recv() else {
+                return;
+            };
+            let mut manager = manager.lock().unwrap();
+            // 只在没人动过快照时回填:期间跑完的回合或切走的会话已经写入了
+            // 各自的真数,拿启动会话的旧数盖上去反而错。
+            let untouched = manager.context.tokens == 0
+                && manager.active_runs.is_empty()
+                && state_store.session_id() == session_at_start;
+            if untouched {
+                manager.context = context;
+                tracing::info!(
+                    tokens = context.tokens,
+                    "startup context backfilled after slow calculation"
+                );
+            }
+        });
+    }
     let turn_engine = TurnEngineState::default();
     let memory_organizer = MemoryOrganizer::spawn()?;
     let memory_organizer_handle = memory_organizer.handle();
@@ -121,6 +147,9 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
         .commit();
     let (ipc_lease, ipc_task) = start_ipc_server(&state)?;
     install_background_job_hook(&state);
+    // 语音前端(独立 miyu-voice 进程):只在 voice.enabled 时拉起。
+    voice_bridge::install_state(&state);
+    voice_bridge::spawn_if_enabled(&state);
     // 目标续轮驱动器。启动时故意**不**恢复任何自动续跑：目标还在库里，但
     // 「是否自动跑」驻内存、重启即失，必须由人 `/goal resume` 重新授权。
     // 不然一次崩溃重启就能让机器在无人看管的情况下继续自己开轮。
@@ -160,6 +189,7 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
     };
     let _ = actor_tx.send(ActorCommand::Shutdown);
     tools::jobs::shutdown_all();
+    voice_bridge::shutdown();
     state.platforms.qq_listener.shutdown(&state).await;
     ipc_task.abort();
     let _ = ipc_task.await;
@@ -284,6 +314,16 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
             post(upload_persona_asset).layer(DefaultBodyLimit::max(PERSONA_ASSET_LIMIT)),
         )
         .route("/api/config", get(get_config).put(update_config))
+        .route("/api/providers/models", post(provider_models))
+        .route("/api/voice/status", get(voice_status))
+        .route("/api/voice/devices", get(voice_devices))
+        .route("/api/voice/stream", get(voice_stream))
+        .route("/api/voice/tts/voices", get(voice_tts_voices))
+        .route("/api/voice/tts/preview", post(voice_tts_preview))
+        .route(
+            "/api/voice/transcribe",
+            post(voice_transcribe).layer(DefaultBodyLimit::max(VOICE_UPLOAD_LIMIT)),
+        )
         .route(
             "/api/qq-group-management/history",
             get(qq_group_history_http),
@@ -299,15 +339,122 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
         .route("/api/events", get(events))
         .route("/api/assets/{asset_id}", get(image_asset))
         .route("/api/artifacts/{asset_id}", get(artifact_asset))
-        .route("/api/shared", get(shared_files_list))
+        .route(
+            "/api/shared",
+            get(shared_files_list)
+                .post(shared_file_upload)
+                .layer(DefaultBodyLimit::disable()),
+        )
         .route(
             "/api/shared/{share_id}",
             get(shared_file_download).delete(shared_file_delete),
         )
         .route("/shared.js", get(shared_js_asset))
+        .route("/dash/{script}", get(dash_script_asset))
+        .route("/api/dash/memory/personas", get(dash_memory_personas))
+        .route("/api/dash/memory/stats", get(dash_memory_stats))
+        .route("/api/dash/memory/items", get(dash_memory_items))
+        .route(
+            "/api/dash/memory/items/{table}/{id}",
+            get(dash_memory_item)
+                .patch(dash_memory_patch)
+                .delete(dash_memory_delete),
+        )
+        .route("/api/dash/memory/facts", post(dash_memory_add_fact))
+        .route("/api/dash/memory/evicted", get(dash_memory_evicted))
+        .route(
+            "/api/dash/memory/evicted/clear",
+            post(dash_memory_evicted_clear),
+        )
+        .route(
+            "/api/dash/memory/evicted/{id}",
+            get(dash_memory_evicted_item).delete(dash_memory_evicted_delete),
+        )
+        .route(
+            "/api/dash/memory/pending/clear",
+            post(dash_memory_pending_clear),
+        )
+        .route("/api/dash/memory/reset", post(dash_memory_reset))
+        .route("/api/dash/kb/overview", get(dash_kb_overview))
+        .route("/api/dash/kb/file", get(dash_kb_file))
+        .route("/api/dash/kb/search", get(dash_kb_search))
+        .route(
+            "/api/dash/kb/files",
+            post(dash_kb_upload)
+                .layer(DefaultBodyLimit::max(KB_UPLOAD_LIMIT))
+                .delete(dash_kb_delete),
+        )
+        .route(
+            "/api/dash/kb/reindex",
+            get(dash_kb_reindex_status).post(dash_kb_reindex_start),
+        )
+        .route(
+            "/api/dash/kb/reindex/lock",
+            axum::routing::delete(dash_kb_reindex_unlock),
+        )
+        .route("/api/dash/kb/default", get(dash_kb_default))
+        .route("/api/dash/kb/default/update", post(dash_kb_default_update))
+        .route("/api/dash/scripts/personas", get(dash_scripts_personas))
+        .route("/api/dash/scripts/overview", get(dash_scripts_overview))
+        .route("/api/dash/scripts/source", get(dash_scripts_source))
+        .route("/api/dash/scripts/enable", post(dash_scripts_enable))
+        .route("/api/dash/scripts/disable", post(dash_scripts_disable))
+        .route(
+            "/api/dash/scripts/item",
+            axum::routing::delete(dash_scripts_delete),
+        )
+        .route("/api/dash/scripts/register", post(dash_scripts_register))
+        .route("/api/dash/memes/libraries", get(dash_memes_libraries))
+        .route(
+            "/api/dash/memes/items",
+            get(dash_memes_items)
+                .post(dash_memes_upload)
+                .layer(DefaultBodyLimit::max(MEME_UPLOAD_LIMIT)),
+        )
+        .route(
+            "/api/dash/memes/items/{id}",
+            axum::routing::patch(dash_memes_patch).delete(dash_memes_delete),
+        )
+        .route(
+            "/api/dash/memes/items/{id}/classify",
+            post(dash_memes_classify),
+        )
+        .route("/api/dash/memes/image", get(dash_memes_image))
+        .route("/api/dash/qq/accounts", get(dash_qq_accounts))
+        .route("/api/dash/qq/conversations", get(dash_qq_conversations))
+        .route("/api/dash/qq/messages", get(dash_qq_messages))
+        .route("/api/dash/qq/messages/delete", post(dash_qq_delete))
+        .route("/api/dash/qq/stats", get(dash_qq_stats))
+        .route("/api/dash/qq/recalls", get(dash_qq_recalls))
+        .route(
+            "/api/dash/qq/boundary",
+            get(dash_qq_boundary).post(dash_qq_reset_context),
+        )
+        .route("/api/dash/qq/groups", get(dash_qq_groups))
+        .route("/api/dash/qq/management", get(dash_qq_management))
+        .route(
+            "/api/dash/qq/management/events/clear",
+            post(dash_qq_management_clear_events),
+        )
+        .route("/api/dash/affection/scopes", get(dash_affection_scopes))
+        .route("/api/dash/affection/items", get(dash_affection_items))
+        .route(
+            "/api/dash/affection/items/{user}",
+            get(dash_affection_item)
+                .patch(dash_affection_patch)
+                .delete(dash_affection_delete),
+        )
+        .route(
+            "/api/dash/affection/emotion",
+            get(dash_emotion_state).put(dash_emotion_set),
+        )
+        .route(
+            "/api/dash/affection/emotion/reset",
+            post(dash_emotion_reset),
+        )
         .route(
             "/api/attachments",
-            post(upload_user_attachment).layer(DefaultBodyLimit::max(ATTACHMENT_BODY_LIMIT)),
+            post(upload_user_attachment).layer(DefaultBodyLimit::disable()),
         )
         .route(
             "/api/attachments/{attachment_id}",
@@ -368,6 +515,7 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
         .route("/api/jobs", get(list_jobs_http))
         .route("/api/usage/stats", get(usage_stats_web))
         .route("/api/usage/details", get(usage_details_web))
+        .route("/api/usage/clear", post(usage_clear_web))
         .route("/api/jobs/{job_id}", delete(stop_job_http))
         // OneBot v11 reverse-WS endpoint: NapCat connects here as a WS
         // client. Gated by platforms.qq config, not web auth.
@@ -636,6 +784,21 @@ pub(in crate::web) async fn usage_stats_web(
         .map_err(ApiError::internal)?
         .map_err(ApiError::internal)?;
     Ok(Json(json!({ "ok": true, "stats": stats })).into_response())
+}
+
+/// 清空 token 统计明细。只删 usage-history.jsonl(图表与最近调用的数据源),
+/// 累计正账 usage.json 保留——那是"一生用了多少"的唯一记录,删了找不回来。
+pub(in crate::web) async fn usage_clear_web(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+) -> std::result::Result<Response, ApiError> {
+    require_mutation(&headers, &state)?;
+    let store = state.state_store.clone();
+    tokio::task::spawn_blocking(move || store.clear_usage_history())
+        .await
+        .map_err(ApiError::internal)?
+        .map_err(ApiError::internal)?;
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 pub(in crate::web) async fn usage_details_web(

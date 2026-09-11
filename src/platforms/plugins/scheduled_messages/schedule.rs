@@ -55,10 +55,7 @@ pub(super) fn due_fires(
     let mut due = Vec::new();
     for (index, task) in tasks.iter().enumerate() {
         for &(hour, minute) in &task.times {
-            for date in [
-                now.date_naive() - chrono::Days::new(1),
-                now.date_naive(),
-            ] {
+            for date in [now.date_naive() - chrono::Days::new(1), now.date_naive()] {
                 let Some(scheduled) = date
                     .and_hms_opt(hour, minute, 0)
                     .and_then(|naive| naive.and_local_timezone(chrono::Local).earliest())
@@ -127,8 +124,14 @@ mod tests {
         let tasks = vec![task(vec![(8, 30)], EVERY_DAY)];
         // 2026-08-19 是周三。
         assert_eq!(due_fires(&tasks, local(2026, 8, 19, 8, 30, 5), 70).len(), 1);
-        assert_eq!(due_fires(&tasks, local(2026, 8, 19, 8, 31, 30), 70).len(), 0);
-        assert_eq!(due_fires(&tasks, local(2026, 8, 19, 8, 29, 55), 70).len(), 0);
+        assert_eq!(
+            due_fires(&tasks, local(2026, 8, 19, 8, 31, 30), 70).len(),
+            0
+        );
+        assert_eq!(
+            due_fires(&tasks, local(2026, 8, 19, 8, 29, 55), 70).len(),
+            0
+        );
     }
 
     #[test]
@@ -143,7 +146,11 @@ mod tests {
         let tasks = vec![task(vec![(23, 59)], EVERY_DAY)];
         let due = due_fires(&tasks, local(2026, 8, 20, 0, 0, 30), 120);
         assert_eq!(due.len(), 1);
-        assert!(due[0].1.starts_with("2026-08-19|23:59"), "key: {}", due[0].1);
+        assert!(
+            due[0].1.starts_with("2026-08-19|23:59"),
+            "key: {}",
+            due[0].1
+        );
     }
 
     #[test]

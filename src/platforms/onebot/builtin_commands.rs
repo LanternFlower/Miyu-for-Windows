@@ -5,7 +5,10 @@
 
 use crate::platforms::onebot::*;
 
-pub(in crate::platforms::onebot) fn message_info_matches_target(info: &PlatformMessageInfo, target: Target) -> bool {
+pub(in crate::platforms::onebot) fn message_info_matches_target(
+    info: &PlatformMessageInfo,
+    target: Target,
+) -> bool {
     let expected_kind = match target {
         Target::Private { .. } => ConversationKind::Private,
         Target::Group { .. } => ConversationKind::Group,
@@ -40,7 +43,16 @@ pub(in crate::platforms::onebot) async fn execute_builtin_command(
                         .to_string()
                     }
                     Ok(session_id) => {
-                        let ticket = state.platforms.preempt_session_turns(&session_id);
+                        let ticket = state.platforms.preempt_session_turns(
+                            &session_id,
+                            context.config.platforms.qq.session_limits(
+                                match context.conversation.kind {
+                                    ConversationKind::Private => PlatformConversationKind::Private,
+                                    ConversationKind::Group => PlatformConversationKind::Group,
+                                },
+                                &context.conversation.conversation_id,
+                            ),
+                        );
                         cancel_session_runs(state, &session_id);
                         let _session_turn = ticket.acquire().await.ok();
                         match clear_platform_session_content(state, session_id.clone()).await {
@@ -157,7 +169,19 @@ pub(in crate::platforms::onebot) async fn execute_builtin_command(
             let descriptor = commands::descriptor(commands::STOP_COMMAND_ID)
                 .expect("the stop command descriptor is registered");
             if !commands::is_allowed(&context.config.platforms, descriptor, context.is_admin) {
-                commands::permission_denied_message(&context.config.platforms, descriptor)
+                // 与 /reset 对齐:非管理员的管理命令静默忽略(08-25 用户裁定)。
+                // 回拒绝语等于向群友广播命令的存在,还给试探者反馈;日志留痕
+                // 保住管理员排查"为什么我的命令没反应"的通路。
+                tracing::info!(
+                    target: "miyu::qq",
+                    sender_id = %context.sender_id,
+                    "{}",
+                    t(
+                        "ignored /stop from a non-admin",
+                        "已静默忽略非管理员的 /stop",
+                    )
+                );
+                return None;
             } else if has_arguments {
                 commands::stop_usage_message(&context.config.platforms)
             } else {
@@ -171,8 +195,19 @@ pub(in crate::platforms::onebot) async fn execute_builtin_command(
                         .to_string()
                     }
                     Ok(session_id) => {
-                        let queued = state.platforms.queued_session_turns(&session_id);
-                        let ticket = state.platforms.preempt_session_turns(&session_id);
+                        let queued = state
+                            .platforms
+                            .queued_turns(&context.conversation.scope_key());
+                        let ticket = state.platforms.preempt_session_turns(
+                            &session_id,
+                            context.config.platforms.qq.session_limits(
+                                match context.conversation.kind {
+                                    ConversationKind::Private => PlatformConversationKind::Private,
+                                    ConversationKind::Group => PlatformConversationKind::Group,
+                                },
+                                &context.conversation.conversation_id,
+                            ),
+                        );
                         let cancelled = cancel_session_runs(state, &session_id);
                         // 等被取消的回合真正退出再报数,但设上限:回合卡在
                         // LLM 超时重试/慢工具里退不出来时,/stop 的回复被
@@ -217,7 +252,11 @@ pub(in crate::platforms::onebot) async fn execute_builtin_command(
 /// `/models` lists the globally configured models; `/models <index|provider/model>`
 /// switches this conversation's text model by writing a single-model pool into
 /// its per-conversation route (私聊/群聊专属配置), creating the route if needed.
-pub(in crate::platforms::onebot) fn execute_models_command(state: &DaemonState, target: Target, argument: Option<&str>) -> String {
+pub(in crate::platforms::onebot) fn execute_models_command(
+    state: &DaemonState,
+    target: Target,
+    argument: Option<&str>,
+) -> String {
     let kind = match target {
         Target::Private { .. } => PlatformConversationKind::Private,
         Target::Group { .. } => PlatformConversationKind::Group,
@@ -232,8 +271,7 @@ pub(in crate::platforms::onebot) fn execute_models_command(state: &DaemonState, 
         let effective = manager
             .config
             .qq_text_model_pool(kind, &conversation_id, false)
-            .unwrap_or(&[])
-            .to_vec();
+            .unwrap_or_default();
         // Plain numbered lines read best in QQ: no alignment padding (IM
         // fonts are proportional) and no empty checkbox noise — only the
         // effective models carry a marker.
@@ -284,6 +322,7 @@ pub(in crate::platforms::onebot) fn execute_models_command(state: &DaemonState, 
             multimodal_models: None,
             extra_prompt: String::new(),
             session_limits: None,
+            probability_reply: None,
         });
     route.text_models = Some(vec![crate::config::ActiveProviderModelConfig {
         provider_id: selected.provider_id.clone(),
@@ -317,7 +356,10 @@ pub(in crate::platforms::onebot) fn execute_models_command(state: &DaemonState, 
     )
 }
 
-pub(in crate::platforms::onebot) fn stop_response_message(cancelled: usize, queued: usize) -> String {
+pub(in crate::platforms::onebot) fn stop_response_message(
+    cancelled: usize,
+    queued: usize,
+) -> String {
     if crate::i18n::is_zh() {
         match (cancelled, queued) {
             (0, 0) => "当前会话没有正在运行的任务。".to_string(),
@@ -337,7 +379,10 @@ pub(in crate::platforms::onebot) fn stop_response_message(cancelled: usize, queu
     }
 }
 
-pub(in crate::platforms::onebot) fn cancel_session_runs(state: &DaemonState, session_id: &str) -> usize {
+pub(in crate::platforms::onebot) fn cancel_session_runs(
+    state: &DaemonState,
+    session_id: &str,
+) -> usize {
     let manager = state.manager.lock().unwrap();
     let mut cancelled = 0;
     for run in manager

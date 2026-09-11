@@ -1,7 +1,7 @@
 //! 日志截断与脱敏。
 
-use crate::platforms::*;
 use super::shared::*;
+use crate::platforms::*;
 
 #[test]
 fn platform_tool_payload_pretty_prints_small_json() {
@@ -110,13 +110,11 @@ fn platform_final_reply_log_is_bilingual() {
         final_reply_already_sent: false,
     };
 
-    let chinese =
-        format_platform_final_reply_log_for(&outcome, &context, "你好", 0, Locale::Zh);
+    let chinese = format_platform_final_reply_log_for(&outcome, &context, "你好", 0, Locale::Zh);
     assert!(chinese.starts_with("【AI 最终回复】\n运行：run_123"));
     assert!(chinese.contains("模型：provider / model"));
 
-    let english =
-        format_platform_final_reply_log_for(&outcome, &context, "hello", 0, Locale::En);
+    let english = format_platform_final_reply_log_for(&outcome, &context, "hello", 0, Locale::En);
     assert!(english.starts_with("[AI final reply]\nRun: run_123"));
     assert!(english.contains("Model: provider / model"));
 }

@@ -17,6 +17,15 @@ pub(crate) use resource_migration::*;
 /// 所以：第一次调用就把结果缓存下来（daemon 启动时立刻预热，那时文件还在），
 /// 并且把 `(deleted)` 后缀剥掉——路径本身通常仍指向新装上的那个二进制。
 pub fn miyu_executable() -> Result<PathBuf> {
+    // cargo test 下 current_exe 是 libtest 测试二进制:拿它当 miyu 去 spawn,
+    // 子进程会把参数当测试过滤器再跑一遍测试,里面再 spawn 孙进程——指数级
+    // 复制。09-05 知识库改动后的后台 `kb embed reindex` 就这样把机器连续三次
+    // 吃到 OOM 死机。测试里一律拒绝,让依赖它的代码路径明确失败而不是复制自己。
+    if cfg!(test) {
+        // 给一个必然不存在的路径:只拼字符串的用法(MCP 配置、命令行)照常,
+        // 真去 spawn 的会得到 ENOENT 而不是复制测试进程。
+        return Ok(PathBuf::from("/nonexistent/miyu-test-harness"));
+    }
     static EXECUTABLE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     if let Some(path) = EXECUTABLE.get() {
         return Ok(path.clone());
@@ -27,7 +36,15 @@ pub fn miyu_executable() -> Result<PathBuf> {
 }
 
 /// 进程启动早期预热一次，趁二进制还没被换掉。
-    pub fn prime_miyu_executable() {
+/// `~/.miyu` (or `MIYU_HOME`) without building the whole `MiyuPaths`, for
+/// asset lookups that run before or outside path setup.
+pub fn miyu_home_dir() -> Option<PathBuf> {
+    std::env::var_os("MIYU_HOME")
+        .map(PathBuf::from)
+        .or_else(|| PlatformDirs::new().map(|dirs| dirs.home_dir().join(".miyu")))
+}
+
+pub fn prime_miyu_executable() {
     let _ = miyu_executable();
 }
 
@@ -44,7 +61,6 @@ fn strip_deleted_suffix(path: &Path) -> Option<PathBuf> {
 
 use crate::i18n::text as t;
 use crate::platform_dirs::PlatformDirs;
-use crate::sys;
 use anyhow::{bail, Context, Result};
 use directories::UserDirs;
 use serde::{Deserialize, Serialize};
@@ -176,7 +192,11 @@ impl MiyuPaths {
             data_dir.clone()
         };
         let scripts_dir = resource_config_dir.join("scripts");
-        let system_scripts_dir = PathBuf::from("/usr/share/miyu/scripts");
+        // 内置脚本目录默认在系统前缀下,`MIYU_SYSTEM_SCRIPTS_DIR` 可覆盖——
+        // 打包到非标准前缀、或隔离测试时用得上。
+        let system_scripts_dir = std::env::var_os("MIYU_SYSTEM_SCRIPTS_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/usr/share/miyu/scripts"));
 
         Ok(Self {
             // The canonical home even inside the transient legacy window: that

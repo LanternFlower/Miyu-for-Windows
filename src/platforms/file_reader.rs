@@ -38,9 +38,9 @@ pub(crate) fn register(
     let description = if state.context.conversation.kind
         == crate::platform_types::ConversationKind::Group
     {
-        "Read a text file uploaded to the current QQ group. `file` must be a file id from the visible chat history (e.g. file_<message_id>_1). Compressed archives, executables, images, video, and other binary formats are rejected; text is capped at 128 KiB per call."
+        "Read a text or PDF file uploaded to the current QQ group. `file` must be a file id from the visible chat history (e.g. file_<message_id>_1). PDFs are handed to you directly when the current model can read them, and reported as a path otherwise. Compressed archives, executables, and other binary formats are rejected; videos and image files must go through vision_analyze with the same file id instead; text is capped at 128 KiB per call."
     } else {
-        "Read a text file uploaded through the current QQ/platform conversation. `file` is either a file id from the visible chat history (e.g. file_<message_id>_1) or an absolute path Miyu already downloaded under its platform_files cache. Compressed archives, executables, images, video, and other binary formats are rejected; text is capped at 128 KiB per call."
+        "Read a text or PDF file uploaded through the current QQ/platform conversation. `file` is either a file id from the visible chat history (e.g. file_<message_id>_1) or an absolute path Miyu already downloaded under its platform_files cache. PDFs are handed to you directly when the current model can read them, and reported as a path otherwise. Compressed archives, executables, and other binary formats are rejected; videos and image files must go through vision_analyze with the same file id instead; text is capped at 128 KiB per call."
     };
     registry.register(
         ToolSpec::new(
@@ -81,6 +81,12 @@ async fn read(arguments: Value, state: Arc<FileReaderState>) -> Result<String> {
         .context("file is required")?;
 
     let downloaded = if let Some(file_ref) = state.files.iter().find(|file| file.id == raw) {
+        // 视频/图片不下载:这条工具只出文本,下了也读不了。直接指到看图工具,
+        // 省一次最长 200MB 的下载。PDF 不在此列——它要下载,下面按能力决定
+        // 是内联给模型本人还是只报路径。
+        if let Some(hint) = visual_file_hint(&file_ref.file_name, raw) {
+            bail!(hint)
+        }
         Some(state.context.fetch_platform_file(file_ref).await?)
     } else if raw.starts_with("file_") {
         let available = state
@@ -101,10 +107,10 @@ async fn read(arguments: Value, state: Arc<FileReaderState>) -> Result<String> {
         None
     };
 
-    let path = match downloaded {
+    let (path, name, size) = match downloaded {
         Some(file) => {
             let path = validate_cached_path(&file.path, &state.context.paths.cache_dir)?;
-            read_platform_text(&path, &file.name, file.size)?
+            (path, file.name, file.size)
         }
         None => {
             let path = expand_home(Path::new(raw));
@@ -117,10 +123,35 @@ async fn read(arguments: Value, state: Arc<FileReaderState>) -> Result<String> {
             let size = std::fs::metadata(&path)
                 .map(|metadata| metadata.len())
                 .unwrap_or(0);
-            read_platform_text(&path, &name, size)?
+            (path, name, size)
         }
     };
-    Ok(path)
+    // PDF 走内联:当前模型池吃得下就把文件本体寄存给回合循环,模型直接读到
+    // 真文档,而不是一句"不支持的二进制"。吃不下时报路径——原生文件工具
+    // (claude-code 的 Read / agy 的 view_file)和 run_command 都还能用它。
+    if crate::tools::vision::pdf_mime(&name).is_some() {
+        return Ok(inline_platform_pdf(&state, &path, &name, size));
+    }
+    read_platform_text(&path, &name, size)
+}
+
+/// QQ 侧 PDF 的两条出路。返回给模型的文本,不 bail——PDF 读不成不是错误,
+/// 只是这一轮它得换个工具。
+fn inline_platform_pdf(state: &FileReaderState, path: &Path, name: &str, size: u64) -> String {
+    let display = path.display();
+    if crate::agent::active_text_pool_supports_pdf(&state.context.config) {
+        match crate::tools::vision::pdf_inline_media(&display.to_string()) {
+            Ok(items) => return crate::tools::vision::inline::deposit(items),
+            Err(error) => {
+                return format!(
+                    "`{name}` could not be inlined ({error}). It is saved at {display} ({size} bytes); open it with a file tool instead."
+                )
+            }
+        }
+    }
+    format!(
+        "`{name}` is a PDF and the current model cannot read PDFs directly. It is saved at {display} ({size} bytes) — open that path with a file tool (or a command-line PDF utility) instead."
+    )
 }
 
 fn validate_cached_path(path: &Path, cache_dir: &Path) -> Result<PathBuf> {
@@ -149,7 +180,29 @@ fn expand_home(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// 视频与图片文件不是文本:返回一句指向 `vision_analyze` 的提示,`reference`
+/// 是模型该原样传过去的引用(文件 id 或本地路径)。
+fn visual_file_hint(name: &str, reference: &str) -> Option<String> {
+    let extension = Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)?;
+    let kind = if crate::tools::vision::video_mime(name).is_some() {
+        "a video"
+    } else if matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp") {
+        "an image"
+    } else {
+        return None;
+    };
+    Some(format!(
+        "`{name}` is {kind}, not text; watch it with vision_analyze (image=\"{reference}\") instead"
+    ))
+}
+
 fn read_platform_text(path: &Path, name: &str, size: u64) -> Result<String> {
+    if let Some(hint) = visual_file_hint(name, &path.display().to_string()) {
+        bail!(hint)
+    }
     let extension = path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -227,6 +280,22 @@ mod tests {
         let (_dir, path) = write_file("evil.zip", b"PK\x03\x04 not really text");
         let error = read_platform_text(&path, "evil.zip", 22).unwrap_err();
         assert!(error.to_string().contains("binary or compressed"));
+    }
+
+    #[test]
+    fn videos_and_images_point_at_the_vision_tool() {
+        let (_dir, path) = write_file("clip.mp4", b"\x00\x00\x00\x18ftypmp42");
+        let error = read_platform_text(&path, "clip.mp4", 12).unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("is a video"), "{text}");
+        assert!(text.contains("vision_analyze"), "{text}");
+        assert!(text.contains("clip.mp4"), "{text}");
+        assert_eq!(
+            visual_file_hint("photo.PNG", "file_1_1").unwrap(),
+            "`photo.PNG` is an image, not text; watch it with vision_analyze (image=\"file_1_1\") instead"
+        );
+        assert!(visual_file_hint("notes.txt", "file_1_1").is_none());
+        assert!(visual_file_hint("evil.zip", "file_1_1").is_none());
     }
 
     #[test]

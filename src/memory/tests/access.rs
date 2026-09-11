@@ -1,8 +1,8 @@
 //! 可见性与归属：谁能看见谁的记忆。
 
-use crate::memory::*;
-use crate::config::AppConfig;
 use super::shared::*;
+use crate::config::AppConfig;
+use crate::memory::*;
 
 #[test]
 fn ordinary_principals_recall_only_public_and_owned_memories() {

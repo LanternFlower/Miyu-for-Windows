@@ -96,7 +96,10 @@ pub(in crate::cli) const DEFAULT_PERSONA_LABEL_ZH: &str = "Miyu（内置默认�
 
 pub(in crate::cli) const DEFAULT_PERSONA_LABEL_EN: &str = "Miyu (built-in default)";
 
-pub(in crate::cli) fn list_persona_files(paths: &MiyuPaths, config: &AppConfig) -> Result<Vec<String>> {
+pub(in crate::cli) fn list_persona_files(
+    paths: &MiyuPaths,
+    config: &AppConfig,
+) -> Result<Vec<String>> {
     let dir = config.prompts_dir_path(paths);
     let mut names = Vec::new();
     if dir.exists() {
@@ -175,7 +178,10 @@ pub(in crate::cli) fn run_persona_picker(paths: &MiyuPaths, argument: &str) -> R
         for name in &personas {
             println!("  {name}");
         }
-        println!("{}", t("switch with: /persona <name>", "切换：/persona <名称>"));
+        println!(
+            "{}",
+            t("switch with: /persona <name>", "切换：/persona <名称>")
+        );
         return Ok(false);
     };
     let Some(target) = chosen else {

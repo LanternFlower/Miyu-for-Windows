@@ -1,7 +1,7 @@
 //! 撤回、上传、禁言等通知事件。
 
-use crate::platforms::onebot::*;
 use super::shared::*;
+use crate::platforms::onebot::*;
 
 #[test]
 fn group_upload_notice_becomes_a_file_history_event() {

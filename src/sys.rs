@@ -62,10 +62,7 @@ pub fn apply_mode(options: &mut OpenOptions, mode: u32) {
 /// Creates `link` pointing at `target`. On Windows creating a symlink needs
 /// elevated privileges or developer mode, so a failed link silently degrades
 /// to copying the target into place instead.
-pub fn symlink_or_copy(
-    target: impl AsRef<Path>,
-    link: impl AsRef<Path>,
-) -> io::Result<()> {
+pub fn symlink_or_copy(target: impl AsRef<Path>, link: impl AsRef<Path>) -> io::Result<()> {
     let target = target.as_ref();
     let link = link.as_ref();
     #[cfg(unix)]
@@ -748,8 +745,7 @@ pub fn is_executable(path: &Path) -> bool {
         if !metadata.is_file() {
             return false;
         }
-        let pathext = std::env::var_os("PATHEXT")
-            .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+        let pathext = std::env::var_os("PATHEXT").unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
         let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
             return false;
         };

@@ -22,12 +22,13 @@ pub(in crate::llm::openai_compatible) struct ResponsesContinuationHealth {
 }
 
 impl ResponsesContinuationHealth {
-    pub(in crate::llm::openai_compatible) fn for_provider(paths: &MiyuPaths, provider: &ProviderConfig) -> Self {
+    pub(in crate::llm::openai_compatible) fn for_provider(
+        paths: &MiyuPaths,
+        provider: &ProviderConfig,
+    ) -> Self {
         let store = crate::llm::provider_capabilities::store_path(&paths.cache_dir);
-        let unsupported = crate::llm::provider_capabilities::continuation_unsupported(
-            &store,
-            &provider.base_url,
-        );
+        let unsupported =
+            crate::llm::provider_capabilities::continuation_unsupported(&store, &provider.base_url);
         Self {
             unsupported: Arc::new(std::sync::atomic::AtomicBool::new(unsupported)),
             store,
@@ -69,10 +70,33 @@ impl LlmEndpoint {
 pub(in crate::llm::openai_compatible) struct LlmScheduler {
     pub(in crate::llm::openai_compatible) cursor: usize,
     pub(in crate::llm::openai_compatible) cooldowns: HashMap<String, Instant>,
+    /// 连败计数(按端点 id)。冷却到期被探测不清零,只有一次真实成功才清
+    /// ——持续故障的端点探测频率按此指数衰减(08-24:扁平 120s 让挂死的
+    /// mimo 车道每两分钟被重新信任一次,每次又是 30s+ 的等待)。
+    pub(in crate::llm::openai_compatible) failure_streaks: HashMap<String, u32>,
+}
+
+/// 瞬时故障档(120s 基础)的冷却上限。
+const TRANSIENT_COOLDOWN_CAP: Duration = Duration::from_secs(30 * 60);
+/// 限流/认证档(600s 基础)的冷却上限。
+const QUOTA_COOLDOWN_CAP: Duration = Duration::from_secs(60 * 60);
+
+/// 连败指数退避:第 n 次连败 = base × 2^(n-1),按档位封顶。
+fn escalated_cooldown(base: Duration, streak: u32) -> Duration {
+    let cap = if base >= Duration::from_secs(600) {
+        QUOTA_COOLDOWN_CAP
+    } else {
+        TRANSIENT_COOLDOWN_CAP
+    };
+    let factor = 1u32 << streak.saturating_sub(1).min(16);
+    base.saturating_mul(factor).min(cap)
 }
 
 impl LlmScheduler {
-    pub(in crate::llm::openai_compatible) fn ordered_indices(&mut self, endpoints: &[LlmEndpoint]) -> Vec<usize> {
+    pub(in crate::llm::openai_compatible) fn ordered_indices(
+        &mut self,
+        endpoints: &[LlmEndpoint],
+    ) -> Vec<usize> {
         let available = endpoints
             .iter()
             .enumerate()
@@ -100,7 +124,10 @@ impl LlmScheduler {
     /// The endpoint whose cooldown lifts first, for the single probe sent when
     /// every endpoint is cooling down. `None` sorts ahead of any deadline, so
     /// an endpoint with no cooldown recorded wins outright.
-    pub(in crate::llm::openai_compatible) fn soonest_ready_index(&self, endpoints: &[LlmEndpoint]) -> Option<usize> {
+    pub(in crate::llm::openai_compatible) fn soonest_ready_index(
+        &self,
+        endpoints: &[LlmEndpoint],
+    ) -> Option<usize> {
         endpoints
             .iter()
             .enumerate()
@@ -110,10 +137,20 @@ impl LlmScheduler {
 
     pub(in crate::llm::openai_compatible) fn mark_success(&mut self, id: &str) {
         self.cooldowns.remove(id);
+        self.failure_streaks.remove(id);
     }
 
-    pub(in crate::llm::openai_compatible) fn mark_failure(&mut self, id: String, duration: Duration) {
-        self.cooldowns.insert(id, Instant::now() + duration);
+    /// 记一次失败,返回实际生效的(可能已升级的)冷却时长。
+    pub(in crate::llm::openai_compatible) fn mark_failure(
+        &mut self,
+        id: String,
+        base: Duration,
+    ) -> Duration {
+        let streak = self.failure_streaks.entry(id.clone()).or_insert(0);
+        *streak = streak.saturating_add(1);
+        let effective = escalated_cooldown(base, *streak);
+        self.cooldowns.insert(id, Instant::now() + effective);
+        effective
     }
 }
 
@@ -122,18 +159,26 @@ pub(in crate::llm::openai_compatible) fn rotate_from<T>(mut items: Vec<T>, start
     items
 }
 
-pub(in crate::llm::openai_compatible) fn endpoint_id(provider_id: &str, model: &str, key_index: usize) -> String {
+pub(in crate::llm::openai_compatible) fn endpoint_id(
+    provider_id: &str,
+    model: &str,
+    key_index: usize,
+) -> String {
     format!("{provider_id}\t{model}\t{key_index}")
 }
 
-pub(in crate::llm::openai_compatible) fn ordered_endpoint_indices(endpoints: &[LlmEndpoint]) -> Vec<usize> {
+pub(in crate::llm::openai_compatible) fn ordered_endpoint_indices(
+    endpoints: &[LlmEndpoint],
+) -> Vec<usize> {
     LLM_SCHEDULER
         .lock()
         .map(|mut scheduler| scheduler.ordered_indices(endpoints))
         .unwrap_or_else(|_| (0..endpoints.len()).collect())
 }
 
-pub(in crate::llm::openai_compatible) fn soonest_ready_endpoint_index(endpoints: &[LlmEndpoint]) -> Option<usize> {
+pub(in crate::llm::openai_compatible) fn soonest_ready_endpoint_index(
+    endpoints: &[LlmEndpoint],
+) -> Option<usize> {
     LLM_SCHEDULER
         .lock()
         .ok()
@@ -147,11 +192,13 @@ pub(in crate::llm::openai_compatible) fn mark_endpoint_success(endpoint: &LlmEnd
     }
 }
 
-pub(in crate::llm::openai_compatible) fn mark_endpoint_failure(endpoint: &LlmEndpoint, error: &anyhow::Error) -> Option<Duration> {
-    let duration = cooldown_for_error(error)?;
+pub(in crate::llm::openai_compatible) fn mark_endpoint_failure(
+    endpoint: &LlmEndpoint,
+    error: &anyhow::Error,
+) -> Option<Duration> {
+    let base = cooldown_for_error(error)?;
     let mut scheduler = LLM_SCHEDULER.lock().ok()?;
-    scheduler.mark_failure(endpoint.id(), duration);
-    Some(duration)
+    Some(scheduler.mark_failure(endpoint.id(), base))
 }
 
 pub(in crate::llm::openai_compatible) fn cooldown_for_status(status: u16) -> Option<Duration> {
@@ -162,14 +209,18 @@ pub(in crate::llm::openai_compatible) fn cooldown_for_status(status: u16) -> Opt
     }
 }
 
-pub(in crate::llm::openai_compatible) fn cooldown_for_error(error: &anyhow::Error) -> Option<Duration> {
+pub(in crate::llm::openai_compatible) fn cooldown_for_error(
+    error: &anyhow::Error,
+) -> Option<Duration> {
     if let Some(failure) = error.downcast_ref::<HttpStatusFailure>() {
         return match failure.kind {
             HttpFailureKind::Authentication | HttpFailureKind::RateLimit => {
                 Some(Duration::from_secs(600))
             }
             HttpFailureKind::EndpointUnavailable => Some(Duration::from_secs(120)),
-            HttpFailureKind::EndpointIncompatible | HttpFailureKind::InvalidRequest => None,
+            HttpFailureKind::EndpointIncompatible
+            | HttpFailureKind::InvalidRequest
+            | HttpFailureKind::ContentPolicy => None,
             HttpFailureKind::Status => cooldown_for_status(failure.status),
         };
     }
@@ -194,18 +245,25 @@ pub(in crate::llm::openai_compatible) fn endpoint_failover_allowed(error: &anyho
 /// with no backoff and spend more of a quota that already said no — which on a
 /// shared free tier is what exhausted it. Failover to a *different* endpoint is
 /// unaffected; that is `endpoint_failover_allowed`'s job.
-pub(in crate::llm::openai_compatible) fn same_endpoint_retry_allowed(error: &anyhow::Error) -> bool {
+pub(in crate::llm::openai_compatible) fn same_endpoint_retry_allowed(
+    error: &anyhow::Error,
+) -> bool {
     !error
         .downcast_ref::<HttpStatusFailure>()
         .is_some_and(|failure| {
             matches!(
                 failure.kind,
-                HttpFailureKind::Authentication | HttpFailureKind::RateLimit
+                // 内容策略拦截同理:同一条提示词再打同一端点必然再被拦。
+                HttpFailureKind::Authentication
+                    | HttpFailureKind::RateLimit
+                    | HttpFailureKind::ContentPolicy
             )
         })
 }
 
-pub(in crate::llm::openai_compatible) fn endpoint_client(provider: &ProviderConfig) -> Result<Client> {
+pub(in crate::llm::openai_compatible) fn endpoint_client(
+    provider: &ProviderConfig,
+) -> Result<Client> {
     // Auxiliary callers (judge/affection/organizer) rebuild their client per
     // call; without this cache every judge run pays fresh TLS setup and loses
     // connection reuse. Keyed by every input the builder consumes, so a config
@@ -231,10 +289,46 @@ pub(in crate::llm::openai_compatible) fn endpoint_client(provider: &ProviderConf
     Ok(client)
 }
 
-pub(in crate::llm::openai_compatible) fn llm_endpoints(config: &AppConfig, paths: &MiyuPaths) -> Result<Vec<LlmEndpoint>> {
+/// 配了活跃模型却一个都解析不动时,逐条说明原因。
+///
+/// `active_provider_model_choices` 把解析不动的条目**静默筛掉**,于是
+/// `llm_endpoints` 的循环一次都不进,报错尾巴是空的:
+/// "no active provider/model endpoint is configured:\n- "。用户和排查者都
+/// 看不出发生了什么(08-28 实录:会话模型覆盖指向已从供应商移除的模型)。
+fn stale_active_model_reasons(config: &AppConfig) -> Vec<String> {
+    config
+        .active_provider_models
+        .iter()
+        .flatten()
+        .map(|active| {
+            let provider_id = active.provider_id.trim();
+            let model = active.model.trim();
+            let reason = match config.provider(Some(provider_id)) {
+                Err(_) => t(
+                    "provider not found in the configuration",
+                    "配置里找不到这个供应商",
+                ),
+                Ok(_) => t(
+                    "the provider no longer lists this model (a session model override may point at a removed model)",
+                    "该模型已不在供应商的模型列表里(会话模型覆盖可能指向了已删除的模型)",
+                ),
+            };
+            format!("{provider_id} / {model}: {reason}")
+        })
+        .collect()
+}
+
+pub(in crate::llm::openai_compatible) fn llm_endpoints(
+    config: &AppConfig,
+    paths: &MiyuPaths,
+) -> Result<Vec<LlmEndpoint>> {
     let mut endpoints = Vec::new();
     let mut errors = Vec::new();
-    for choice in config.active_provider_model_choices() {
+    let choices = config.active_provider_model_choices();
+    if choices.is_empty() {
+        errors.extend(stale_active_model_reasons(config));
+    }
+    for choice in choices {
         let mut provider = config.provider(Some(&choice.provider_id))?.clone();
         if !provider.enabled {
             errors.push(format!(
@@ -249,8 +343,8 @@ pub(in crate::llm::openai_compatible) fn llm_endpoints(config: &AppConfig, paths
         }
         provider.default_model = choice.model;
         let client = endpoint_client(&provider)?;
-        if provider_uses_claude_code(&provider) {
-            // claude-code 走本机 CLI 的订阅登录态,没有 API key;单端点直进池。
+        if provider_uses_cli_relay(&provider) {
+            // claude-code/antigravity 走本机 CLI 的登录态,没有 API key;单端点直进池。
             endpoints.push(LlmEndpoint {
                 client: client.clone(),
                 provider: provider.clone(),
@@ -292,10 +386,113 @@ pub(in crate::llm::openai_compatible) fn stream_chunk_commits_attempt(
     (chunk.kind == ChatStreamKind::ReasoningPartEnd
         && reasoning_visibility != ReasoningVisibility::Hidden)
         || chunk.kind == ChatStreamKind::ToolCall
+        || chunk.kind == ChatStreamKind::RemoteToolPreparing
         || chunk.kind == ChatStreamKind::RemoteToolStarted
         || chunk.kind == ChatStreamKind::RemoteToolFinished
         || (chunk.kind == ChatStreamKind::Content && !chunk.text.is_empty())
         || (reasoning_visibility == ReasoningVisibility::Full
             && chunk.kind == ChatStreamKind::Reasoning
             && !chunk.text.is_empty())
+}
+
+#[cfg(test)]
+mod cooldown_tests {
+    use super::*;
+
+    /// 连败指数退避:120s 档 120→240→480…封顶 30 分钟;600s 档封顶 1 小时;
+    /// 一次成功清零回基础档。退回 escalated_cooldown 前首断言(第 2 败
+    /// 240s)报红为 120s。
+    #[test]
+    fn consecutive_failures_escalate_and_success_resets() {
+        let mut scheduler = LlmScheduler::default();
+        let base = Duration::from_secs(120);
+        assert_eq!(
+            scheduler.mark_failure("e".into(), base),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            scheduler.mark_failure("e".into(), base),
+            Duration::from_secs(240)
+        );
+        assert_eq!(
+            scheduler.mark_failure("e".into(), base),
+            Duration::from_secs(480)
+        );
+        for _ in 0..10 {
+            scheduler.mark_failure("e".into(), base);
+        }
+        assert_eq!(
+            scheduler.mark_failure("e".into(), base),
+            Duration::from_secs(30 * 60)
+        );
+        scheduler.mark_success("e");
+        assert_eq!(
+            scheduler.mark_failure("e".into(), base),
+            Duration::from_secs(120)
+        );
+
+        let quota = Duration::from_secs(600);
+        for _ in 0..10 {
+            scheduler.mark_failure("q".into(), quota);
+        }
+        assert_eq!(
+            scheduler.mark_failure("q".into(), quota),
+            Duration::from_secs(60 * 60)
+        );
+        // 不同端点互不影响。
+        assert_eq!(
+            scheduler.mark_failure("f".into(), base),
+            Duration::from_secs(120)
+        );
+    }
+
+    /// 冷却到期的探测(is_ready 清掉过期项)不重置连败——只有成功才算数。
+    #[test]
+    fn probe_after_expiry_keeps_the_streak() {
+        let mut scheduler = LlmScheduler::default();
+        scheduler.mark_failure("e".into(), Duration::from_secs(120));
+        // 直接模拟到期:清掉冷却但不动 streak(is_ready 的行为)。
+        scheduler.cooldowns.clear();
+        assert!(scheduler.is_ready("e"));
+        assert_eq!(
+            scheduler.mark_failure("e".into(), Duration::from_secs(120)),
+            Duration::from_secs(240)
+        );
+    }
+
+    /// 活跃模型全都解析不动时,报错必须说清是**哪一条、为什么**。
+    ///
+    /// 08-28 实录:会话覆盖指向已从供应商移除的模型,选项被静默筛掉,报错尾巴
+    /// 是空的——"no active provider/model endpoint is configured:\n- "。
+    #[test]
+    fn stale_active_models_explain_themselves() {
+        let mut config = crate::config::AppConfig::default();
+        let provider_id = config.providers[0].id.clone();
+        config.providers[0].models = vec!["kept".to_string()];
+        config.providers[0].default_model = "kept".to_string();
+        config.active_provider_models = Some(vec![
+            crate::config::ActiveProviderModelConfig {
+                provider_id: provider_id.clone(),
+                model: "removed-model".to_string(),
+            },
+            crate::config::ActiveProviderModelConfig {
+                provider_id: "no-such-provider".to_string(),
+                model: "whatever".to_string(),
+            },
+        ]);
+
+        assert!(config.active_provider_model_choices().is_empty());
+        let reasons = stale_active_model_reasons(&config);
+        assert_eq!(reasons.len(), 2, "两条都要有说法:{reasons:?}");
+        assert!(
+            reasons[0].contains("removed-model"),
+            "要点名模型:{reasons:?}"
+        );
+        assert!(
+            reasons[1].contains("no-such-provider"),
+            "供应商缺失也要点名:{reasons:?}"
+        );
+        // 报错尾巴不再是空的。
+        assert!(reasons.iter().all(|reason| reason.contains(": ")));
+    }
 }

@@ -100,7 +100,9 @@ pub fn hook() -> String {
             set -g __miyu_image_counter 0
         end
         set __miyu_image_counter (math $__miyu_image_counter + 1)
-        set output (string replace "Image 1" "Image $__miyu_image_counter" -- $output)
+        # 视频的占位符标签是 Video,只替 Image 的话第二个视频起序号永远是 1,
+        # 解析端会把它们都当成第一个附件(08-28)。
+        set output (string replace -r '^\[(Image|Video) 1' "[\$1 $__miyu_image_counter" -- $output)
         commandline -i -- $output
         commandline -f repaint
     else
@@ -321,6 +323,9 @@ mod tests {
     #[test]
     fn fish_hook_defines_command_not_found_handler() {
         let hook = hook();
+        // 视频占位符的标签是 Video:只替 Image 的话第二个视频起序号永远
+        // 是 1,解析端会把它们都当成第一个附件(08-28)。
+        assert!(hook.contains("string replace -r '^\\[(Image|Video) 1'"));
         assert!(hook.contains("fish_command_not_found"));
         assert!(hook.contains("--shell fish"));
         assert!(hook.contains("status current-commandline 2>/dev/null | string collect"));

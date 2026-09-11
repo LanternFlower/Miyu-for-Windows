@@ -374,7 +374,12 @@ async fn fetch_forecast(
         .json()
         .await?;
 
-    write_cache(forecast_cache(), cache_key, response.clone(), FORECAST_CACHE_TTL);
+    write_cache(
+        forecast_cache(),
+        cache_key,
+        response.clone(),
+        FORECAST_CACHE_TTL,
+    );
     Ok(response)
 }
 
@@ -503,8 +508,14 @@ mod tests {
     /// 空 location 必须在发起任何网络请求前直接报错——不允许 IP 自动定位。
     #[tokio::test]
     async fn empty_location_errors_without_network() {
-        for args in [json!({}), json!({ "location": "  " }), json!({ "query_type": "air_quality" })] {
-            let error = get_weather(args).await.expect_err("empty location must fail");
+        for args in [
+            json!({}),
+            json!({ "location": "  " }),
+            json!({ "query_type": "air_quality" }),
+        ] {
+            let error = get_weather(args)
+                .await
+                .expect_err("empty location must fail");
             assert!(
                 error.to_string().contains("location is required"),
                 "unexpected error: {error}"

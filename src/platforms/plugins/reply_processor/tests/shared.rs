@@ -1,8 +1,8 @@
 //! 回复处理测试共用的 fixture。
 
-use crate::platforms::plugins::reply_processor::*;
 use crate::config::AppConfig;
 use crate::paths::MiyuPaths;
+use crate::platforms::plugins::reply_processor::*;
 use crate::platforms::{ConversationKind, PlatformAdapter, PlatformConversation};
 use crate::state::StateStore;
 use futures_util::future::BoxFuture;

@@ -186,12 +186,8 @@ pub(in crate::web) async fn handle_session_command(
                     // 桥必须能寻址阅后即焚(ask)会话:回合正跑在里面,run_command 的
                     // 脚本与 MCP 桥的内层调用都以它为身份。只认 user 会话会让
                     // 单次 CLI 形态下的整条工具桥 404(真机实测踩坑)。
-                    resolve_local_session_ref_with_kinds(
-                        state,
-                        &ipc::SessionRef::Id { id: session },
-                        TURN_TARGET_KINDS,
-                    )?
-                    .session_id
+                    resolve_tool_bridge_session_ref(state, &ipc::SessionRef::Id { id: session })?
+                        .session_id
                 }
                 None => store.session_id().to_string(),
             };
@@ -274,12 +270,8 @@ pub(in crate::web) async fn handle_session_command(
                     // 桥必须能寻址阅后即焚(ask)会话:回合正跑在里面,run_command 的
                     // 脚本与 MCP 桥的内层调用都以它为身份。只认 user 会话会让
                     // 单次 CLI 形态下的整条工具桥 404(真机实测踩坑)。
-                    resolve_local_session_ref_with_kinds(
-                        state,
-                        &ipc::SessionRef::Id { id: session },
-                        TURN_TARGET_KINDS,
-                    )?
-                    .session_id
+                    resolve_tool_bridge_session_ref(state, &ipc::SessionRef::Id { id: session })?
+                        .session_id
                 }
                 None => store.session_id().to_string(),
             };
@@ -335,9 +327,13 @@ pub(in crate::web) async fn handle_session_command(
         }
         IpcCommand::SetReplSession { target } => {
             let record = resolve_available_local_session_ref(state, &target)?;
-            store
-                .set_repl_session(&record.persona, &record.session_id)
-                .map_err(|error| safe_error_message(&error))?;
+            // 终端集成会话可以切过去用(活体在 REPL 进程里),但指针不落盘:
+            // 下次启动回到上一条普通会话,而不是终端车道(08-25 用户裁定)。
+            if record.session_id != crate::state::DEFAULT_SESSION_ID {
+                store
+                    .set_repl_session(&record.persona, &record.session_id)
+                    .map_err(|error| safe_error_message(&error))?;
+            }
             Ok(json!({ "session": session_record_json(&record) }))
         }
         IpcCommand::RenameSession { target, name } => {
@@ -412,7 +408,7 @@ pub(in crate::web) async fn handle_session_command(
             let result = store
                 .delete_session(&record.session_id)
                 .map_err(|error| safe_error_message(&error));
-            crate::llm::forget_claude_code_session(&record.session_id);
+            crate::llm::forget_relay_sessions(&record.session_id);
             release_admin(&state.manager);
             result?;
             // 库里的目标行随会话级联删除；进程内的 goal 状态（armed 等）
@@ -499,12 +495,82 @@ pub(in crate::web) fn attach_owner_turn_tools(
     if !config.tools.enabled {
         return;
     }
-    // 与 task.rs 相同的条件:平台会话进不了桥,ask_question 两种模式都有。
+    // 平台会话:把正在跑的那一轮的上下文取回来注册平台工具。claude-code
+    // 供应商忽略请求里的 tools,全靠这条 MCP 桥——不挂上去,群管理/撤回/
+    // 艾特/发送在群聊里整套消失(08-26 用户点名)。权限判定同源:用的就是
+    // 主线回合那个上下文。
+    //
+    // 这里必须与 turns/task.rs 的平台回合底座一致(08-26 审查抓到:桥原来
+    // 拿的是 owner 面全量 registry,非管理员群友经由桥就能调 run_command、
+    // claude_code——§09 owner-only 被绕过)。收口在 apply_platform_turn_scope。
+    if let Some(platform) = crate::platforms::live_turn_context(session_id) {
+        crate::platforms::apply_platform_turn_scope(
+            registry,
+            config,
+            &state.paths,
+            &platform,
+            None,
+        );
+        if !config.platforms.qq.memory.write_enabled {
+            registry.unregister("remember_fact");
+        }
+        // 看图与生图的作用域也要在这条路上装一遍(08-26 用户点名"图我看不了")。
+        // 真实回合是在 agent/input.rs 准备输入时注册的,桥另建工具面走不到那
+        // 里:于是 claude-code 供应商拿到的工具面里根本没有 vision_analyze,
+        // 群上下文里的图只给了 id 却没有任何手段去看——Miyu 说看不了是实话。
+        //
+        // 顺带堵上同一处的另一个洞:受限底座注册的是**不受限**的
+        // generate_image,它的参考图解析器能吃宿主任意路径;
+        // register_scoped_platform 会用作用域版本把它换掉。非管理员的
+        // allow_general_access 为假,只认已入库的 context_image_N。
+        if config.tools.enabled
+            && (config.plugins.vision.enabled || config.plugins.image_generation.enabled)
+        {
+            let context_images = platform.context_images();
+            crate::tools::vision::register_scoped_platform(
+                registry,
+                config.clone(),
+                state.paths.clone(),
+                Vec::new(),
+                context_images,
+                platform.context_files(),
+                platform.clone(),
+            );
+        }
+        crate::platforms::register_platform_tools(registry, platform);
+        return;
+    }
     crate::tools::register_ask_question(registry);
-    if mode == AgentMode::Normal {
+    // artifact / 分享是 WebUI 专有:预览文件要网页端才渲染得出来。REPL 里
+    // 拿到它,模型就会把文档"扔进 artifact"——那地方你根本看不见
+    // (08-29 用户实测,东京攻略写进了 data/artifacts 没人知道)。
+    //
+    // 主线回合按 `is_local_webui_request` 收口(turns/task.rs:224),桥这条路
+    // 原来只看 mode,注释还写着"与 task.rs 相同的条件",其实少了一半。
+    // claude-code 的工具**只能**从 MCP 桥拿,于是 REPL 里照样拿到——
+    // 08-26 那次"群友经由桥能调 run_command"是同一个坑的另一半。
+    if mode == AgentMode::Normal && session_is_running_local_webui(state, session_id) {
         crate::tools::register_webui_artifact_tools(registry, &state.paths, session_id);
         crate::tools::register_webui_share_tools(registry, config, state.state_store.clone());
     }
+}
+
+/// 本会话正在跑的回合是不是 WebUI 面。判据与主线回合同源——同一个
+/// `is_local_webui_request`,只是 audience 与 profile 改从 `RunInfo` 上读,
+/// 桥没有别的途径知道自己在为谁服务。
+///
+/// 没有在跑的回合就判否:桥也可能来自 `miyu tool-call` 这类回合外调用,
+/// 那时宁可少给(与 08-26 收口同一取向)。
+fn session_is_running_local_webui(state: &DaemonState, session_id: &str) -> bool {
+    let manager = state.manager.lock().unwrap();
+    let local =
+        |info: &RunInfo| is_local_webui_request(info.audience, info.platform_followup.is_some());
+    let mut runs = manager
+        .active_runs
+        .values()
+        .filter(|info| &*info.session_id == session_id);
+    runs.next()
+        .is_some_and(|first| local(first) && runs.all(local))
 }
 
 pub(in crate::web) fn session_api_error(message: String) -> ApiError {

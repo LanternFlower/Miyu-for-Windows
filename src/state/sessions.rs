@@ -201,8 +201,11 @@ impl StateStore {
     /// 分开写过一次，改一边漏一边，行为就分叉了。
     pub fn ensure_repl_session(&self, persona: &str) -> Result<String> {
         match self.repl_session(persona)? {
-            Some(session_id) => Ok(session_id),
-            None => self.new_repl_session(persona),
+            // 指针指向终端集成会话=视同缺失(08-25 用户裁定):normal 永远
+            // 不自动进终端车道——历史上的 /session 切换把指针钉过去、或
+            // 老回落语义留下的残值,都在这里自愈成一条新会话。
+            Some(session_id) if session_id != crate::state::DEFAULT_SESSION_ID => Ok(session_id),
+            _ => self.new_repl_session(persona),
         }
     }
 
@@ -450,6 +453,29 @@ impl StateStore {
 
     pub fn delete_platform_meme_ref(&self, library: &str, meme_id: &str) -> Result<usize> {
         self.conv_db.delete_platform_meme_ref(library, meme_id)
+    }
+
+    pub fn plugin_rows(
+        &self,
+        plugin_id: &str,
+        conversation_kind: &str,
+    ) -> Result<Vec<crate::state::conversation_db::PlatformPluginRow>> {
+        self.conv_db.plugin_rows(plugin_id, conversation_kind)
+    }
+
+    pub fn plugin_scopes(
+        &self,
+        plugin_id: &str,
+        conversation_kind: Option<&str>,
+    ) -> Result<Vec<PlatformPluginScopeKey>> {
+        self.conv_db.plugin_scopes(plugin_id, conversation_kind)
+    }
+
+    pub fn platform_meme_ref_counts(
+        &self,
+        library: &str,
+    ) -> Result<Vec<crate::state::conversation_db::PlatformMemeRefCount>> {
+        self.conv_db.platform_meme_ref_counts(library)
     }
 
     pub fn delete_subagent_sessions_older_than(&self, days: i64) -> Result<usize> {

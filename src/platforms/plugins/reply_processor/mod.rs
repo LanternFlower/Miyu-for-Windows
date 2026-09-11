@@ -334,18 +334,18 @@ impl ReplyProcessorPlugin {
     fn context_notice(notices: &[ImageNotice]) -> String {
         let mut lines = vec![
             "[SystemInfo:LongReplyImageConversion]".to_string(),
-            "以下是通讯平台发送层对你最近回复的处理记录，不是用户发言：".to_string(),
+            "Delivery-layer record of your recent replies, not user speech:".to_string(),
         ];
         for (index, notice) in notices.iter().enumerate() {
             lines.push(format!(
-                "{}. 你的一条长回复（约 {} 字）已被自动渲染为 {} 张图片发送。",
+                "{}. One long reply of yours (~{} chars) was auto-rendered and sent as {} image(s).",
                 index + 1,
                 notice.char_count,
                 notice.image_count,
             ));
         }
         lines.push(
-            "用户看到的是图片/长图；后续引用时请称作刚才图片里的内容。历史中的 assistant 文本表示图片内文字。"
+            "The user saw images. Refer to it later as content in those images; the assistant text in history is the text inside them."
                 .to_string(),
         );
         lines.join("\n")
@@ -391,7 +391,9 @@ impl PlatformPlugin for ReplyProcessorPlugin {
                 // system prompt invalidates the whole history prefix. As a
                 // fossilized tail block it appends instead; the agent skips it
                 // when the identical text is already visible in the replay.
-                input.turn_system_context.push(Self::context_notice(&notices));
+                input
+                    .turn_system_context
+                    .push(Self::context_notice(&notices));
             }
             Ok(())
         })

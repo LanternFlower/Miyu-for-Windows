@@ -116,7 +116,11 @@ pub(in crate::platforms::onebot) fn ingress_message_event(
         normalized_event = cloned;
         &normalized_event
     };
-    let parsed = parse_message(event_ref.get("message"), event_ref.get("raw_message"), self_id);
+    let parsed = parse_message(
+        event_ref.get("message"),
+        event_ref.get("raw_message"),
+        self_id,
+    );
     let mut inbound = message_event_at(
         target,
         event_ref,
@@ -141,7 +145,12 @@ pub(in crate::platforms::onebot) struct Admission {
     pub(in crate::platforms::onebot) use_non_whitelist_text_models: bool,
 }
 
-pub(in crate::platforms::onebot) fn admission_for(config: &OneBotConfig, target: Target, self_id: i64, user_id: i64) -> Admission {
+pub(in crate::platforms::onebot) fn admission_for(
+    config: &OneBotConfig,
+    target: Target,
+    self_id: i64,
+    user_id: i64,
+) -> Admission {
     admission_for_access(config, None, target, self_id, user_id)
 }
 
@@ -272,12 +281,10 @@ pub(in crate::platforms::onebot) fn apply_admission_text_model_pool(
         Target::Group { .. } => PlatformConversationKind::Group,
     };
     let conversation_id = target.conversation_id().to_string();
-    let models = config
-        .qq_text_model_pool(
-            kind,
-            &conversation_id,
-            admission.use_non_whitelist_text_models,
-        )
-        .map(<[_]>::to_vec);
+    let models = config.qq_text_model_pool(
+        kind,
+        &conversation_id,
+        admission.use_non_whitelist_text_models,
+    );
     config.active_provider_models = models;
 }

@@ -37,7 +37,11 @@ pub struct RealContextPluginSettings {
     pub active_reply_enable: bool,
     pub judge_include_persona: bool,
     pub judge_persona_prompt: String,
-    pub text_models: Option<Vec<ActiveProviderModelConfig>>,
+    /// Reply-judge pool reference; `inherit` = the conversation's effective
+    /// text pool. Ships as `lite`.
+    pub text_models: ModelPoolRef,
+    /// Affection-update pool reference; `inherit` = the reply-judge pool.
+    pub affection_text_models: ModelPoolRef,
     pub active_judge_probability: f64,
     pub reply_threshold: f64,
     pub judge_timeout_seconds: u64,
@@ -116,6 +120,23 @@ pub struct RealContextPluginSettings {
     pub affection_prompt_trusted: String,
     pub affection_prompt_close: String,
 
+    /// 情绪状态(09-04):按 (bot 账号, 人格) 一份的二维心情/表达欲,默认关。
+    pub emotion_enable: bool,
+    /// 层①:回复后按回合事实定固定增量。
+    pub emotion_heuristic_enable: bool,
+    /// 层②:搭好感度更新那次 LLM 调用的车拿语义增量,有它时替换层①。
+    pub emotion_llm_enrich_enable: bool,
+    pub emotion_influence_threshold: bool,
+    pub emotion_max_threshold_adjust: f64,
+    pub emotion_influence_tone: bool,
+    pub emotion_valence_half_life_hours: f64,
+    pub emotion_arousal_half_life_minutes: f64,
+    pub emotion_idle_loneliness_hours: f64,
+    pub emotion_morning_arousal_bonus: f64,
+    pub emotion_night_arousal_penalty: f64,
+    pub emotion_daily_valence_gain_limit: f64,
+    pub emotion_daily_valence_loss_limit: f64,
+
     pub identity_mappings: Vec<RealContextIdentityMapping>,
 }
 
@@ -128,7 +149,8 @@ impl Default for RealContextPluginSettings {
             active_reply_enable: true,
             judge_include_persona: true,
             judge_persona_prompt: String::new(),
-            text_models: None,
+            text_models: ModelPoolRef::tier(ModelTier::Lite),
+            affection_text_models: ModelPoolRef::inherit(),
             active_judge_probability: 0.05,
             reply_threshold: 0.8,
             judge_timeout_seconds: 60,
@@ -202,6 +224,19 @@ impl Default for RealContextPluginSettings {
             affection_prompt_friend: "你和该用户关系较熟。可以自然接话，允许轻微吐槽、接梗和熟人语气，但不要过度亲密。".to_string(),
             affection_prompt_trusted: "你信任该用户。回复时可以更主动承接上下文，表达更直接明确的判断，但仍要保持事实准确和边界。".to_string(),
             affection_prompt_close: "你和该用户是挚友。可以使用更熟悉、轻松的语气和轻微玩笑。".to_string(),
+            emotion_enable: false,
+            emotion_heuristic_enable: true,
+            emotion_llm_enrich_enable: true,
+            emotion_influence_threshold: true,
+            emotion_max_threshold_adjust: 0.12,
+            emotion_influence_tone: true,
+            emotion_valence_half_life_hours: 6.0,
+            emotion_arousal_half_life_minutes: 45.0,
+            emotion_idle_loneliness_hours: 3.0,
+            emotion_morning_arousal_bonus: 0.06,
+            emotion_night_arousal_penalty: 0.12,
+            emotion_daily_valence_gain_limit: 0.6,
+            emotion_daily_valence_loss_limit: 1.0,
             identity_mappings: Vec::new(),
         }
     }
@@ -217,7 +252,8 @@ impl RealContextPluginSettings {
 
     pub fn normalize(&mut self) {
         self.judge_persona_prompt = self.judge_persona_prompt.trim().to_string();
-        normalize_route_pool(&mut self.text_models);
+        self.text_models.normalize();
+        self.affection_text_models.normalize();
         normalize_unique_strings(&mut self.moderation_keywords);
         self.active_reply_reaction_emoji_ids.retain(|id| *id > 0);
         self.active_reply_reaction_emoji_ids.sort_unstable();
@@ -294,6 +330,54 @@ impl RealContextPluginSettings {
             self.reply_restraint_multiplier,
             0.0,
             3.0,
+        )?;
+        validate_real_context_range(
+            "emotion_max_threshold_adjust",
+            self.emotion_max_threshold_adjust,
+            0.0,
+            1.0,
+        )?;
+        validate_real_context_range(
+            "emotion_valence_half_life_hours",
+            self.emotion_valence_half_life_hours,
+            0.1,
+            168.0,
+        )?;
+        validate_real_context_range(
+            "emotion_arousal_half_life_minutes",
+            self.emotion_arousal_half_life_minutes,
+            1.0,
+            10_080.0,
+        )?;
+        validate_real_context_range(
+            "emotion_idle_loneliness_hours",
+            self.emotion_idle_loneliness_hours,
+            0.1,
+            168.0,
+        )?;
+        validate_real_context_range(
+            "emotion_morning_arousal_bonus",
+            self.emotion_morning_arousal_bonus,
+            0.0,
+            0.5,
+        )?;
+        validate_real_context_range(
+            "emotion_night_arousal_penalty",
+            self.emotion_night_arousal_penalty,
+            0.0,
+            0.5,
+        )?;
+        validate_real_context_range(
+            "emotion_daily_valence_gain_limit",
+            self.emotion_daily_valence_gain_limit,
+            0.0,
+            2.0,
+        )?;
+        validate_real_context_range(
+            "emotion_daily_valence_loss_limit",
+            self.emotion_daily_valence_loss_limit,
+            0.0,
+            2.0,
         )?;
         for (name, value) in [
             ("judge_relevance_weight", self.judge_relevance_weight),
@@ -491,20 +575,11 @@ impl RealContextPluginSettings {
                 bail!("platform plugin real_context.{name} is invalid");
             }
         }
-        for (name, models) in [("text_models", &self.text_models)] {
-            let Some(models) = models else { continue };
-            if models.is_empty() {
-                bail!("platform plugin real_context.{name} must be omitted instead of empty");
-            }
-            let mut seen = HashSet::with_capacity(models.len());
-            if models.iter().any(|model| {
-                model.provider_id.trim().is_empty()
-                    || model.model.trim().is_empty()
-                    || !seen.insert((&model.provider_id, &model.model))
-            }) {
-                bail!("platform plugin real_context.{name} must contain unique, non-empty model references");
-            }
-        }
+        validate_pool_ref_shape(&self.text_models, "real_context.text_models")?;
+        validate_pool_ref_shape(
+            &self.affection_text_models,
+            "real_context.affection_text_models",
+        )?;
         let mut nicknames = HashSet::with_capacity(self.identity_mappings.len());
         if self.identity_mappings.len() > 10_000
             || self.identity_mappings.iter().any(|mapping| {
@@ -556,7 +631,9 @@ pub(crate) const DEPRECATED_REAL_CONTEXT_SETTINGS: &[&str] = &[
     "continuation_window_minutes",
 ];
 
-pub(crate) fn migrate_real_context_settings_map(settings: &mut serde_json::Map<String, serde_json::Value>) {
+pub(crate) fn migrate_real_context_settings_map(
+    settings: &mut serde_json::Map<String, serde_json::Value>,
+) {
     if !settings.contains_key("group_member_search_max_results") {
         if let Some(value) = settings.get("group_member_page_size").cloned() {
             settings.insert("group_member_search_max_results".to_string(), value);
@@ -659,7 +736,9 @@ pub fn merge_real_context_settings(
     }
 }
 
-pub(crate) fn validate_real_context_plugin_config(instance: &PlatformPluginInstanceConfig) -> Result<()> {
+pub(crate) fn validate_real_context_plugin_config(
+    instance: &PlatformPluginInstanceConfig,
+) -> Result<()> {
     let settings = RealContextPluginSettings::from_instance(instance)?;
     settings.validate()
 }
@@ -680,7 +759,12 @@ pub(crate) fn validate_real_context_probability(name: &str, value: f64) -> Resul
     validate_real_context_range(name, value, 0.0, 1.0)
 }
 
-pub(crate) fn validate_real_context_range(name: &str, value: f64, minimum: f64, maximum: f64) -> Result<()> {
+pub(crate) fn validate_real_context_range(
+    name: &str,
+    value: f64,
+    minimum: f64,
+    maximum: f64,
+) -> Result<()> {
     if !value.is_finite() || !(minimum..=maximum).contains(&value) {
         bail!("platform plugin real_context.{name} must be between {minimum} and {maximum}");
     }

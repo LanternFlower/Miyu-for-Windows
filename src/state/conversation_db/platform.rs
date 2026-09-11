@@ -649,6 +649,102 @@ impl ConversationDb {
         Ok(records)
     }
 
+    /// dashboard 用:某插件在某类会话下的全部 kv 行(好感度档案这种"每用户一行"的
+    /// 键要按前缀筛,只能整批拉回来再挑)。
+    pub fn plugin_rows(
+        &self,
+        plugin_id: &str,
+        conversation_kind: &str,
+    ) -> Result<Vec<PlatformPluginRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT platform, account_id, conversation_id, key, value_json, updated_at
+               FROM platform_plugin_kv
+              WHERE plugin_id = ?1 AND conversation_kind = ?2
+              ORDER BY account_id, conversation_id, key",
+        )?;
+        let rows = stmt
+            .query_map(params![plugin_id, conversation_kind], |row| {
+                let updated: rusqlite::types::Value = row.get(5)?;
+                Ok(PlatformPluginRow {
+                    scope: PlatformPluginScopeKey {
+                        plugin_id: plugin_id.to_string(),
+                        platform: row.get(0)?,
+                        account_id: row.get(1)?,
+                        conversation_kind: conversation_kind.to_string(),
+                        conversation_id: row.get(2)?,
+                    },
+                    key: row.get(3)?,
+                    value_json: row.get(4)?,
+                    updated_at: match updated {
+                        rusqlite::types::Value::Integer(v) => v.to_string(),
+                        rusqlite::types::Value::Real(v) => v.to_string(),
+                        rusqlite::types::Value::Text(v) => v,
+                        _ => String::new(),
+                    },
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// dashboard 用:某插件在哪些 (平台, 账号, 会话类型, 会话) 下留有记录。
+    pub fn plugin_scopes(
+        &self,
+        plugin_id: &str,
+        conversation_kind: Option<&str>,
+    ) -> Result<Vec<PlatformPluginScopeKey>> {
+        let conn = self.conn.lock().unwrap();
+        let mut sql = String::from(
+            "SELECT DISTINCT platform, account_id, conversation_kind, conversation_id
+               FROM platform_plugin_kv WHERE plugin_id = ?1",
+        );
+        let mut args: Vec<String> = vec![plugin_id.to_string()];
+        if let Some(kind) = conversation_kind {
+            sql.push_str(" AND conversation_kind = ?2");
+            args.push(kind.to_string());
+        }
+        sql.push_str(" ORDER BY platform, account_id, conversation_kind, conversation_id");
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(args.iter()), |row| {
+                Ok(PlatformPluginScopeKey {
+                    plugin_id: plugin_id.to_string(),
+                    platform: row.get(0)?,
+                    account_id: row.get(1)?,
+                    conversation_kind: row.get(2)?,
+                    conversation_id: row.get(3)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// dashboard 用:某个库里每张表情的入站/出站引用次数与最近一次时间。
+    pub fn platform_meme_ref_counts(&self, library: &str) -> Result<Vec<PlatformMemeRefCount>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT meme_id,
+                    SUM(CASE WHEN direction = 'inbound' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN direction = 'outbound' THEN 1 ELSE 0 END),
+                    MAX(created_at)
+             FROM platform_meme_refs
+             WHERE library = ?1
+             GROUP BY meme_id",
+        )?;
+        let rows = stmt
+            .query_map(params![library], |row| {
+                Ok(PlatformMemeRefCount {
+                    meme_id: row.get(0)?,
+                    inbound: row.get(1)?,
+                    outbound: row.get(2)?,
+                    last_seen_at: row.get(3)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn delete_platform_meme_ref(&self, library: &str, meme_id: &str) -> Result<usize> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;

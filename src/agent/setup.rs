@@ -50,6 +50,8 @@ impl Agent {
         };
         // claude-code 中转的双四档工具作用域按会话模式裁决;其他协议无感。
         let client = client.with_claude_code_dev_mode(mode == AgentMode::Dev);
+        // opencode Zen 的会话头按这个走:一次对话对应服务端一个会话。
+        let client = client.with_zen_session(&state.session_id());
         let base_system_prompt = mode_system_prompt(&config, paths, mode, prompt_audience)?;
         let system_prompt = with_memory_preamble(
             with_host_environment(
@@ -79,6 +81,8 @@ impl Agent {
             system_prompt,
             runtime_system_context: Vec::new(),
             turn_system_context: Vec::new(),
+            system_prompt_override: None,
+            context_window_override: None,
             memory_content: None,
             suppress_session_history: false,
             trim_at_ratio: config.context.trim_at_ratio,
@@ -104,7 +108,6 @@ impl Agent {
             context_images: Vec::new(),
             context_files: Vec::new(),
             persona_reminder: None,
-            repeat_chain: crate::tools::repeat_reminder::RepeatChain::default(),
             preset_dialogs,
             last_request_snapshot: None,
             pending_remote_tool_calls: std::sync::Mutex::new(Vec::new()),
@@ -114,7 +117,6 @@ impl Agent {
             compact_stuck: std::sync::atomic::AtomicBool::new(false),
             last_compact_max_seq: std::sync::atomic::AtomicI64::new(-1),
             rapid_compacts: std::sync::atomic::AtomicU32::new(0),
-            soft_notice_sent: std::sync::atomic::AtomicBool::new(false),
             spinner_interval: crate::render::wait_spinner::SPINNER_INTERVAL,
         })
     }
@@ -190,6 +192,7 @@ impl Agent {
                             source: &usage_source,
                             provider: Some(client.provider_id()),
                             model: None,
+                            kind: None,
                         };
                         let _ = state.add_auxiliary_usage(&usage, meta);
                     }
@@ -211,35 +214,60 @@ impl Agent {
     }
 
     pub fn prepare_for_turn(&mut self) -> Result<()> {
-        let effective_system_prompt =
+        let mode_prompt =
             mode_system_prompt(&self.config, &self.paths, self.mode, self.prompt_audience)?;
         {
+            // 指纹永远按人格/模式提示词算,不看整体替换的覆盖:覆盖是回合级
+            // 瞬态,进指纹会让每个带覆盖的回合都翻转一次指纹文件。
             let fingerprint_prompt = match self.mode {
-                AgentMode::Dev => effective_system_prompt.clone(),
+                AgentMode::Dev => mode_prompt.clone(),
                 AgentMode::Normal => self.config.base_system_prompt(&self.paths)?,
             };
             let compatible_previous = matches!(self.prompt_audience, PromptAudience::Owner)
-                .then_some(effective_system_prompt.as_str());
+                .then_some(mode_prompt.as_str());
             self.state.reset_if_prompt_changed_with_compatible(
                 &fingerprint_prompt,
                 compatible_previous,
             )?;
             self.state.recover_stale_turns()?;
-            self.maybe_cold_resume_prune()?;
         }
-        self.system_prompt = with_memory_preamble(
-            with_host_environment(
-                with_runtime_system_context(
-                    with_mode_reminder(effective_system_prompt, self.mode),
-                    &self.runtime_system_context,
-                ),
-                self.prompt_audience,
-                &self.paths,
-                self.mode,
-            ),
-            self.config.memory_config().enabled,
-        );
+        self.system_prompt = self.assemble_system_prompt(mode_prompt);
         Ok(())
+    }
+
+    /// 人格/模式提示词之上的固定叠加顺序(顺序即缓存前缀,见 prompt 模块头)。
+    /// 有整体替换覆盖时:覆盖文本顶掉模式提示词、模式提醒与属主主机环境块;
+    /// 运行时追加段与记忆前言照旧。
+    fn assemble_system_prompt(&self, mode_prompt: String) -> String {
+        match &self.system_prompt_override {
+            Some(override_prompt) => with_memory_preamble(
+                with_runtime_system_context(override_prompt.clone(), &self.runtime_system_context),
+                self.config.memory_config().enabled,
+            ),
+            None => with_memory_preamble(
+                with_host_environment(
+                    with_runtime_system_context(
+                        with_mode_reminder(mode_prompt, self.mode),
+                        &self.runtime_system_context,
+                    ),
+                    self.prompt_audience,
+                    &self.paths,
+                    self.mode,
+                ),
+                self.config.memory_config().enabled,
+            ),
+        }
+    }
+
+    /// 程序驱动 CLI 的整体替换提示词;`prepare_for_turn` 之前调用才生效。
+    pub(crate) fn set_system_prompt_override(&mut self, prompt: String) {
+        let prompt = prompt.trim().to_string();
+        self.system_prompt_override = (!prompt.is_empty()).then_some(prompt);
+    }
+
+    /// 程序驱动 CLI 的本回合上下文窗口;0 视作不覆盖。
+    pub(crate) fn set_context_window_override(&mut self, window: usize) {
+        self.context_window_override = (window > 0).then_some(window);
     }
 
     pub fn set_runtime_system_context(&mut self, context: Vec<String>) -> Result<()> {
@@ -340,20 +368,9 @@ impl Agent {
     /// `reset_if_prompt_changed` must never fire (it would wipe the very
     /// turn that is running).
     pub(in crate::agent) fn refresh_system_prompt(&mut self) -> Result<()> {
-        let base_system_prompt =
+        let mode_prompt =
             mode_system_prompt(&self.config, &self.paths, self.mode, self.prompt_audience)?;
-        self.system_prompt = with_memory_preamble(
-            with_host_environment(
-                with_runtime_system_context(
-                    with_mode_reminder(base_system_prompt, self.mode),
-                    &self.runtime_system_context,
-                ),
-                self.prompt_audience,
-                &self.paths,
-                self.mode,
-            ),
-            self.config.memory_config().enabled,
-        );
+        self.system_prompt = self.assemble_system_prompt(mode_prompt);
         Ok(())
     }
 
@@ -362,11 +379,17 @@ impl Agent {
     }
 
     pub fn context_window(&self) -> Option<usize> {
+        if let Some(window) = self.context_window_override {
+            return Some(window);
+        }
         self.client.context_window(&self.config).ok().flatten()
     }
 
     /// 上面那个数是不是猜的。猜的时候 footer 不能拿它算百分比。
     pub fn context_window_assumed(&self) -> bool {
+        if self.context_window_override.is_some() {
+            return false;
+        }
         matches!(
             self.client
                 .context_window_with_source(&self.config)
@@ -380,8 +403,7 @@ impl Agent {
         let (messages, _) = self.chat_messages("", "")?;
         let mut tokens = overflow::estimate_messages_tokens(&messages) as u64;
         if self.tools_enabled {
-            let loaded_tools = self.initial_loaded_tools(&messages)?;
-            tokens = tokens.saturating_add(self.tool_definition_tokens(&loaded_tools) as u64);
+            tokens = tokens.saturating_add(self.tool_definition_tokens() as u64);
         }
         Ok(tokens)
     }
@@ -398,18 +420,14 @@ impl Agent {
         self.state.session_cumulative_token_totals()
     }
 
-    pub(in crate::agent) fn tool_definition_tokens(
-        &self,
-        loaded_tools: &BTreeSet<String>,
-    ) -> usize {
+    pub(in crate::agent) fn tool_definition_tokens(&self) -> usize {
         let tools = self.tools.lock().unwrap();
-        let definitions = if tools::is_stub_loading_mode(&self.config.tools.loading_mode) {
-            tools.stub_definitions()
-        } else if tools::is_hybrid_loading_mode(&self.config.tools.loading_mode) {
-            tools.lazy_definitions(loaded_tools)
-        } else {
-            tools.definitions()
-        };
+        let definitions =
+            if tools::is_stub_loading_mode(&tools::effective_tools_loading_mode(&self.config)) {
+                tools.stub_definitions()
+            } else {
+                tools.definitions()
+            };
         estimate_tool_definition_tokens(&definitions)
     }
 

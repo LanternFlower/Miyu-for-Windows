@@ -39,7 +39,10 @@ pub(in crate::tools::web) struct SearchScheduler {
 }
 
 impl SearchScheduler {
-    pub(in crate::tools::web) fn ordered_providers(&mut self, providers: &[SearchProvider]) -> Vec<SearchProvider> {
+    pub(in crate::tools::web) fn ordered_providers(
+        &mut self,
+        providers: &[SearchProvider],
+    ) -> Vec<SearchProvider> {
         let available = providers
             .iter()
             .copied()
@@ -53,7 +56,11 @@ impl SearchScheduler {
         rotate_from(available, start)
     }
 
-    pub(in crate::tools::web) fn ordered_key_positions(&mut self, provider: &'static str, key_count: usize) -> Vec<usize> {
+    pub(in crate::tools::web) fn ordered_key_positions(
+        &mut self,
+        provider: &'static str,
+        key_count: usize,
+    ) -> Vec<usize> {
         let available = (0..key_count)
             .filter(|&index| self.is_ready(&key_cooldown_id(provider, index)))
             .collect::<Vec<_>>();
@@ -103,7 +110,9 @@ pub(in crate::tools::web) fn has_non_empty_key(keys: &[String]) -> bool {
     keys.iter().any(|key| !key.trim().is_empty())
 }
 
-pub(in crate::tools::web) fn configured_primary_providers(config: &WebPluginConfig) -> Vec<SearchProvider> {
+pub(in crate::tools::web) fn configured_primary_providers(
+    config: &WebPluginConfig,
+) -> Vec<SearchProvider> {
     let mut providers = Vec::new();
     if has_non_empty_key(&config.tavily_api_keys) {
         providers.push(SearchProvider::Tavily);
@@ -123,14 +132,19 @@ pub(in crate::tools::web) fn configured_primary_providers(config: &WebPluginConf
     providers
 }
 
-pub(in crate::tools::web) fn ordered_providers(providers: &[SearchProvider]) -> Vec<SearchProvider> {
+pub(in crate::tools::web) fn ordered_providers(
+    providers: &[SearchProvider],
+) -> Vec<SearchProvider> {
     SEARCH_SCHEDULER
         .lock()
         .map(|mut scheduler| scheduler.ordered_providers(providers))
         .unwrap_or_else(|_| providers.to_vec())
 }
 
-pub(in crate::tools::web) fn ordered_key_positions(provider: &'static str, key_count: usize) -> Vec<usize> {
+pub(in crate::tools::web) fn ordered_key_positions(
+    provider: &'static str,
+    key_count: usize,
+) -> Vec<usize> {
     SEARCH_SCHEDULER
         .lock()
         .map(|mut scheduler| scheduler.ordered_key_positions(provider, key_count))
@@ -210,7 +224,10 @@ pub(in crate::tools::web) fn cooldown_for_error(error: &str) -> Option<Duration>
     None
 }
 
-pub(in crate::tools::web) fn search_provider_order(provider: &str, config: &WebPluginConfig) -> Result<Vec<SearchProvider>> {
+pub(in crate::tools::web) fn search_provider_order(
+    provider: &str,
+    config: &WebPluginConfig,
+) -> Result<Vec<SearchProvider>> {
     if provider == "auto" {
         let mut providers = ordered_providers(&configured_primary_providers(config));
         // 未配置 key 时 Exa 走官方 MCP 免费公共额度：排在已配置服务之后、爬虫之前；

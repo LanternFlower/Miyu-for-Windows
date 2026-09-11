@@ -413,7 +413,10 @@ pub(in crate::tools::diagnostics) async fn build_input_method_profile(
     }
 }
 
-pub(in crate::tools::diagnostics) fn refine_electron_toolkit(toolkit: InputToolkit, display_mode: DisplayMode) -> InputToolkit {
+pub(in crate::tools::diagnostics) fn refine_electron_toolkit(
+    toolkit: InputToolkit,
+    display_mode: DisplayMode,
+) -> InputToolkit {
     match toolkit {
         InputToolkit::ElectronChromium => match display_mode {
             DisplayMode::WaylandNative => InputToolkit::ElectronWayland,
@@ -489,7 +492,9 @@ pub(in crate::tools::diagnostics) fn input_method_path_status(
     InputMethodPathStatus { paths, overall }
 }
 
-pub(in crate::tools::diagnostics) fn relevant_input_paths(toolkit: InputToolkit) -> Vec<&'static str> {
+pub(in crate::tools::diagnostics) fn relevant_input_paths(
+    toolkit: InputToolkit,
+) -> Vec<&'static str> {
     match toolkit {
         InputToolkit::Gtk | InputToolkit::Qt | InputToolkit::Sdl | InputToolkit::X11Legacy => {
             vec!["wayland_protocol", "toolkit_module", "xim"]
@@ -780,7 +785,9 @@ pub(in crate::tools::diagnostics) fn check_immodule_locale(
     String::new()
 }
 
-pub(in crate::tools::diagnostics) fn read_process_input_env(pid: u32) -> Option<BTreeMap<String, String>> {
+pub(in crate::tools::diagnostics) fn read_process_input_env(
+    pid: u32,
+) -> Option<BTreeMap<String, String>> {
     let raw = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
     let mut picked = BTreeMap::new();
     for item in raw.split(|byte| *byte == 0) {
@@ -834,7 +841,9 @@ pub(in crate::tools::diagnostics) fn read_loaded_input_modules(pids: &[u32]) -> 
     modules.into_iter().take(80).collect()
 }
 
-pub(in crate::tools::diagnostics) fn input_module_path_from_maps_line(line: &str) -> Option<String> {
+pub(in crate::tools::diagnostics) fn input_module_path_from_maps_line(
+    line: &str,
+) -> Option<String> {
     let path = line.split_whitespace().last()?;
     let lower = path.to_ascii_lowercase();
     let is_input_module = lower.contains("/immodules/")
@@ -856,7 +865,11 @@ pub(in crate::tools::diagnostics) fn scan_available_input_modules() -> Vec<Strin
     modules.into_iter().take(120).collect()
 }
 
-pub(in crate::tools::diagnostics) fn scan_available_input_modules_under(dir: &Path, depth: usize, modules: &mut BTreeSet<String>) {
+pub(in crate::tools::diagnostics) fn scan_available_input_modules_under(
+    dir: &Path,
+    depth: usize,
+    modules: &mut BTreeSet<String>,
+) {
     if depth > 5 || modules.len() >= 120 {
         return;
     }
@@ -961,13 +974,20 @@ pub(in crate::tools::diagnostics) fn infer_display_mode(
     DisplayMode::Unknown
 }
 
-pub(in crate::tools::diagnostics) fn env_has(env: &BTreeMap<String, String>, key: &str, expected: &str) -> bool {
+pub(in crate::tools::diagnostics) fn env_has(
+    env: &BTreeMap<String, String>,
+    key: &str,
+    expected: &str,
+) -> bool {
     env.get(key)
         .map(|value| value == expected || value.split(';').any(|item| item.trim() == expected))
         .unwrap_or(false)
 }
 
-pub(in crate::tools::diagnostics) fn loaded_module_evidence(loaded_modules: &[String], needles: &[&str]) -> Option<String> {
+pub(in crate::tools::diagnostics) fn loaded_module_evidence(
+    loaded_modules: &[String],
+    needles: &[&str],
+) -> Option<String> {
     loaded_modules.iter().find_map(|module| {
         let lower = module.to_ascii_lowercase();
         needles
@@ -977,7 +997,10 @@ pub(in crate::tools::diagnostics) fn loaded_module_evidence(loaded_modules: &[St
     })
 }
 
-pub(in crate::tools::diagnostics) fn available_module_evidence(available_modules: &[String], needles: &[&str]) -> Option<String> {
+pub(in crate::tools::diagnostics) fn available_module_evidence(
+    available_modules: &[String],
+    needles: &[&str],
+) -> Option<String> {
     available_modules.iter().find_map(|module| {
         let lower = module.to_ascii_lowercase();
         needles

@@ -5,7 +5,8 @@
 
 use crate::models_cache::*;
 
-pub(crate) static PROVIDER_API_CACHE: OnceLock<Mutex<HashMap<(String, String), u64>>> = OnceLock::new();
+pub(crate) static PROVIDER_API_CACHE: OnceLock<Mutex<HashMap<(String, String), u64>>> =
+    OnceLock::new();
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct ProviderApiCacheEntry {

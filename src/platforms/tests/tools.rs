@@ -1,14 +1,8 @@
 //! 平台专属工具的注册与策略。
 
+use super::shared::*;
 use crate::platforms::*;
 use std::sync::atomic::Ordering as AtomicOrdering;
-use super::shared::*;
-
-
-
-
-
-
 
 #[test]
 fn host_tools_follow_admin_and_private_whitelist_policy() {
@@ -86,6 +80,7 @@ async fn usage_query_tool_reports_platform_history() {
                 source: "onebot",
                 provider: Some("prov"),
                 model: Some("test-model"),
+                kind: None,
             },
         )
         .unwrap();
@@ -95,10 +90,10 @@ async fn usage_query_tool_reports_platform_history() {
         .call("query_token_usage", r#"{"range":"7d"}"#)
         .await
         .unwrap();
-    assert!(output.contains("Token 消耗"), "{output}");
-    assert!(output.contains("QQ"), "{output}");
+    assert!(output.contains("**Token 消耗 · 近 7 天**"), "{output}");
+    assert!(output.contains("**QQ**"), "{output}");
     assert!(output.contains("test-model"), "{output}");
-    assert!(output.contains("缓存命中率 40%"), "{output}");
+    assert!(output.contains("缓存命中率 **40%**"), "{output}");
 }
 
 #[test]

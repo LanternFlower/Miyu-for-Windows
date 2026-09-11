@@ -1,14 +1,11 @@
 //! 入库前的清洗与上限。
 
-use crate::platforms::plugins::message_history::store::*;
 use super::shared::*;
-
+use crate::platforms::plugins::message_history::store::*;
 
 fn private(account: &str, user_id: &str) -> ConversationKey {
     ConversationKey::for_kind("onebot", account, ConversationKind::Private, user_id).unwrap()
 }
-
-
 
 #[tokio::test]
 async fn database_is_lazy_and_uses_bounded_sqlite_settings() {
@@ -200,9 +197,7 @@ async fn the_reply_window_can_start_after_what_a_previous_turn_already_showed() 
     // Everything up to the watermark is already sitting in the replayed
     // conversation history, so the turn only carries what arrived since.
     let page = store
-        .recent(
-            RecentQuery::for_context(key.clone(), "default", 20).after_ingress_order(Some(200)),
-        )
+        .recent(RecentQuery::for_context(key.clone(), "default", 20).after_ingress_order(Some(200)))
         .await
         .unwrap();
     assert_eq!(

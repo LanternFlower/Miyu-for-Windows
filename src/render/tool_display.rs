@@ -59,7 +59,11 @@ pub(crate) fn style_summary_text(text: &str, style: SummaryStyle) -> String {
     }
 }
 
-pub(crate) fn write_activity_summary(writer: &mut impl Write, text: &str, style: SummaryStyle) -> Result<()> {
+pub(crate) fn write_activity_summary(
+    writer: &mut impl Write,
+    text: &str,
+    style: SummaryStyle,
+) -> Result<()> {
     writeln!(writer, "{}", style_summary_text(text, style))?;
     writeln!(writer)?;
     Ok(())
@@ -148,7 +152,9 @@ pub(crate) fn is_subagent_tool(name: &str) -> bool {
 }
 
 pub(crate) fn tool_event_base_name(name: &str) -> &str {
-    if name.starts_with("use_meme:") {
+    if name.starts_with("divine:") {
+        "divine"
+    } else if name.starts_with("use_meme:") {
         "use_meme"
     } else if name.starts_with("load_skill:") {
         "load_skill"
@@ -189,6 +195,20 @@ pub(crate) fn tool_subject(name: &str, arguments: &str) -> Option<String> {
         "WebSearch" | "ToolSearch" => string_arg(&args, &["query"]),
         "Task" | "Agent" => string_arg(&args, &["description"]),
         "SlashCommand" => string_arg(&args, &["command"]),
+        // —— agy 原生工具(antigravity 中转;入参键已在流层归一成 Miyu 的) ——
+        "view_file" | "write_to_file" | "replace_file_content" | "list_dir" => {
+            string_arg(&args, &["path"])
+        }
+        "find_by_name" | "grep_search" => {
+            let needle = string_arg(&args, &["pattern", "query"])?;
+            Some(match string_arg(&args, &["path"]) {
+                Some(path) => format!("{needle} · {path}"),
+                None => needle,
+            })
+        }
+        "read_url_content" => string_arg(&args, &["url"]).and_then(|url| safe_url_subject(&url)),
+        "search_web" => string_arg(&args, &["query"]),
+        "call_mcp_tool" => string_arg(&args, &["ToolName"]),
         "task" => string_arg(&args, &["description"]),
         "web_search"
         | "search_web_images"
@@ -201,12 +221,31 @@ pub(crate) fn tool_subject(name: &str, arguments: &str) -> Option<String> {
         | "game_compat"
         | "fcitx5_input_method_wiki_qurey" => string_arg(&args, &["query", "topic"]),
         "archwiki_query" | "query_moegirl" => string_arg(&args, &["title", "query"]),
-        "read_file" => {
+        "read" | "read_file" => {
             let path = string_arg(&args, &["path"])?;
             Some(match read_page_label(&args) {
                 Some(page) => format!("{path} ({page})"),
                 None => path,
             })
+        }
+        // 补丁三件套:从补丁头里抠文件名当副标题,不然工具行只剩一个名字,
+        // 用户分不清这回编辑的是什么(08-22 验收反馈)。
+        "edit" | "kb" | "artifact" | "apply_patch" | "apply_artifact_patch" => {
+            let patch = string_arg(&args, &["patchText", "patch_text"])?;
+            let files: Vec<String> = patch
+                .lines()
+                .filter_map(|line| {
+                    line.strip_prefix("*** Add File: ")
+                        .or_else(|| line.strip_prefix("*** Update File: "))
+                        .or_else(|| line.strip_prefix("*** Delete File: "))
+                })
+                .map(|name| name.trim().to_string())
+                .collect();
+            match files.as_slice() {
+                [] => None,
+                [only] => Some(only.clone()),
+                [first, ..] => Some(format!("{first} +{} {}", files.len() - 1, t("more", "项"))),
+            }
         }
         "write_file" | "edit_file" | "edit_string" | "manage_script" => {
             string_arg(&args, &["path"])
@@ -276,9 +315,9 @@ pub(crate) fn tool_subject(name: &str, arguments: &str) -> Option<String> {
         }
         "scientific_calculator" => string_arg(&args, &["expression", "operation"]),
         "alarm" => string_arg(&args, &["label", "time", "id"]),
-        "archlinux_official_package_query"
-        | "review_aur_package"
-        | "install_aur_package" => string_arg(&args, &["package_name", "package"]),
+        "archlinux_official_package_query" | "review_aur_package" | "install_aur_package" => {
+            string_arg(&args, &["package_name", "package"])
+        }
         "vision_analyze" | "print_image" | "manage_meme" => {
             string_arg(&args, &["image"]).map(|image| image_basename(&image))
         }

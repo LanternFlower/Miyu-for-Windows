@@ -85,7 +85,7 @@ fn auto_result(paths: MiyuPaths) -> Result<String> {
 fn detected_text_result(paths: MiyuPaths) -> Result<String> {
     match crate::clipboard::read_clipboard()? {
         ClipboardContent::Image(img) => image_binary_result(img, &paths),
-        ClipboardContent::ImagePath(path) => image_path_result(path),
+        ClipboardContent::MediaPath(path) => media_path_result(path),
         ClipboardContent::TextPath(path) => text_path_result(path),
         ClipboardContent::Text(text) => text_content_result(text),
         ClipboardContent::None => text_result(),
@@ -131,11 +131,18 @@ fn image_binary_result(img: crate::clipboard::ClipboardImage, paths: &MiyuPaths)
     }))?)
 }
 
-fn image_path_result(path: String) -> Result<String> {
+/// 图片与视频共用 `MediaPath` 这一条剪贴板变体,但报给模型的类型必须分开:
+/// 把视频说成 `image_path`,模型就会照着图片去处理(08-27 二轮自审)。
+fn media_path_result(path: String) -> Result<String> {
+    let content_type = if crate::tools::vision::video_mime(&path).is_some() {
+        "video_path"
+    } else {
+        "image_path"
+    };
     Ok(serde_json::to_string_pretty(&json!({
         "ok": true,
         "kind": "clipboard",
-        "content_type": "image_path",
+        "content_type": content_type,
         "source": "clipboard_path",
         "path": path,
     }))?)

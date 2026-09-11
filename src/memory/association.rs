@@ -25,7 +25,11 @@ pub struct AssociationContext {
 /// 渲染单条联想记忆行（含结尾换行），与注入块中的字节完全一致。
 /// 整行同时充当跨回合去重键：内容或日期变化的记忆会渲染出不同的行，
 /// 因而被视为新条目重新注入。
-pub(crate) fn association_entry_line(hit: &MemoryHit, access: &MemoryAccess, entry_max_chars: usize) -> String {
+pub(crate) fn association_entry_line(
+    hit: &MemoryHit,
+    access: &MemoryAccess,
+    entry_max_chars: usize,
+) -> String {
     let label = match (access, hit.visibility.as_str()) {
         (_, VISIBILITY_PUBLIC) => "公共知识".to_string(),
         (MemoryAccess::Privileged, VISIBILITY_PRINCIPAL) => format!(
@@ -115,12 +119,19 @@ pub(crate) fn now() -> String {
 
 /// RFC3339 时间戳 → 本地日期（用于关联记忆展示；解析失败返回 None）
 pub(crate) fn association_date(timestamp: &str) -> Option<String> {
-    DateTime::parse_from_rfc3339(timestamp)
-        .ok()
-        .map(|value| value.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
+    DateTime::parse_from_rfc3339(timestamp).ok().map(|value| {
+        value
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d")
+            .to_string()
+    })
 }
 
-pub(crate) fn diary_content(created_at: &str, user_message: &str, assistant_message: &str) -> String {
+pub(crate) fn diary_content(
+    created_at: &str,
+    user_message: &str,
+    assistant_message: &str,
+) -> String {
     // 第一人称的互动记忆,不是工单:归属(谁说的)由注入行的 [归属=…] 标签
     // 承担,昵称是可改的不可信字段,不进正文。
     format!(

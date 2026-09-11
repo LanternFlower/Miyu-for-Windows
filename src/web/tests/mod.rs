@@ -1,9 +1,9 @@
 //! Web / IPC 层的测试，按被测主题分文件。
+mod auth_secrets;
 mod commands;
+mod events_questions;
 mod http;
+mod ipc_bridge;
 mod session;
 mod shared;
 mod turn;
-mod auth_secrets;
-mod events_questions;
-mod ipc_bridge;

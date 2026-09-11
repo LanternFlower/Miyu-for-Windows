@@ -31,7 +31,7 @@ pub(in crate::config_tui) fn edit_custom_prompts(
             ),
             format!(
                 "{}: {}",
-                t("Reminder interval (turns)", "防失忆间隔轮数"),
+                t("Send reminder every N turns", "每几轮发一次防失忆提醒"),
                 config.prompt.persona_reminder_interval.max(1)
             ),
         ];
@@ -54,7 +54,7 @@ pub(in crate::config_tui) fn edit_custom_prompts(
             KeyCode::Enter if selected == 3 => {
                 if let Some(value) = edit_inline_value(
                     stdout,
-                    t("Reminder interval (turns)", "防失忆间隔轮数"),
+                    t("Send reminder every N turns", "每几轮发一次防失忆提醒"),
                     &config.prompt.persona_reminder_interval.to_string(),
                     false,
                 )? {

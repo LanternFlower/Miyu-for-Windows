@@ -26,9 +26,13 @@ pub(in crate::llm::openai_compatible) const DSML_END: &str = "</｜｜DSML｜｜
 
 pub(in crate::llm::openai_compatible) const SYSTEM_REMINDER_PREFIX: &str = "<system-reminder";
 
-pub(in crate::llm::openai_compatible) const SYSTEM_REMINDER_UNDERSCORE_PREFIX: &str = "<system_reminder";
+pub(in crate::llm::openai_compatible) const SYSTEM_REMINDER_UNDERSCORE_PREFIX: &str =
+    "<system_reminder";
 
-pub(in crate::llm::openai_compatible) fn hidden_start_after(target: &str, offset: usize) -> Option<usize> {
+pub(in crate::llm::openai_compatible) fn hidden_start_after(
+    target: &str,
+    offset: usize,
+) -> Option<usize> {
     [
         target[offset..].find(DSML_ANY_PREFIX),
         target[offset..].find(SYSTEM_REMINDER_PREFIX),
@@ -71,7 +75,10 @@ pub(in crate::llm::openai_compatible) fn partial_hidden_suffix_len(value: &str) 
     0
 }
 
-pub(in crate::llm::openai_compatible) fn hidden_end_after(target: &str, offset: usize) -> Option<usize> {
+pub(in crate::llm::openai_compatible) fn hidden_end_after(
+    target: &str,
+    offset: usize,
+) -> Option<usize> {
     let remaining = &target[offset..];
     if remaining.starts_with(DSML_ANY_PREFIX) {
         return remaining
@@ -90,7 +97,9 @@ pub(in crate::llm::openai_compatible) fn hidden_end_after(target: &str, offset: 
     None
 }
 
-pub(in crate::llm::openai_compatible) fn extract_dsml_tool_calls(mut content: String) -> (String, Vec<ToolCall>) {
+pub(in crate::llm::openai_compatible) fn extract_dsml_tool_calls(
+    mut content: String,
+) -> (String, Vec<ToolCall>) {
     let mut calls = Vec::new();
     let mut index = 0usize;
     while let Some(start) = content.find(DSML_PREFIX) {
@@ -121,7 +130,10 @@ pub(in crate::llm::openai_compatible) fn strip_orphaned_dsml_tags(mut content: S
     content.trim().to_string()
 }
 
-pub(in crate::llm::openai_compatible) fn parse_dsml_block(block: &str, index: &mut usize) -> Vec<ToolCall> {
+pub(in crate::llm::openai_compatible) fn parse_dsml_block(
+    block: &str,
+    index: &mut usize,
+) -> Vec<ToolCall> {
     let mut calls = Vec::new();
     let mut rest = block;
     while let Some(start) = rest.find("<｜｜DSML｜｜invoke") {
@@ -207,7 +219,10 @@ pub(in crate::llm::openai_compatible) fn clean_plain_text(mut text: String) -> S
     text
 }
 
-pub(in crate::llm::openai_compatible) fn strip_tagged_sections(mut text: String, tag: &str) -> String {
+pub(in crate::llm::openai_compatible) fn strip_tagged_sections(
+    mut text: String,
+    tag: &str,
+) -> String {
     let close = format!("</{tag}>");
     let open_prefix = format!("<{tag}");
     loop {

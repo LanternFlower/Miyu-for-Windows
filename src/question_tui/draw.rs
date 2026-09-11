@@ -267,7 +267,10 @@ pub(in crate::question_tui) fn panel_layout(
     }
 }
 
-pub(in crate::question_tui) fn tab_line(request: &QuestionRequest, state: &QuestionState) -> String {
+pub(in crate::question_tui) fn tab_line(
+    request: &QuestionRequest,
+    state: &QuestionState,
+) -> String {
     let mut parts = Vec::new();
     for (index, question) in request.questions.iter().enumerate() {
         let answered = !state.answers[index].is_empty();
@@ -314,7 +317,10 @@ pub(in crate::question_tui) fn option_lines(
     let label_indent = " ".repeat(label_prefix_width);
     let label_width = content_width.saturating_sub(label_prefix_width).max(1);
     let mut lines = Vec::new();
-    for (index, part) in wrap_display_text(label, label_width).into_iter().enumerate() {
+    for (index, part) in wrap_display_text(label, label_width)
+        .into_iter()
+        .enumerate()
+    {
         let part = if active || picked {
             format!("\x1b[35m{part}\x1b[0m")
         } else {
@@ -344,7 +350,11 @@ pub(in crate::question_tui) fn option_lines(
     lines
 }
 
-pub(in crate::question_tui) fn editor_option_line(multiple: bool, picked: bool, editor: &str) -> String {
+pub(in crate::question_tui) fn editor_option_line(
+    multiple: bool,
+    picked: bool,
+    editor: &str,
+) -> String {
     let marker = if multiple {
         if picked {
             "\x1b[35m[✓]\x1b[0m "
@@ -404,7 +414,11 @@ pub(in crate::question_tui) fn display_inline(value: &str) -> String {
         .collect()
 }
 
-pub(in crate::question_tui) fn editor_view(value: &str, cursor: usize, width: usize) -> (String, usize) {
+pub(in crate::question_tui) fn editor_view(
+    value: &str,
+    cursor: usize,
+    width: usize,
+) -> (String, usize) {
     if width == 0 {
         return (String::new(), 0);
     }

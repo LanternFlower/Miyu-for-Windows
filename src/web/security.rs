@@ -105,7 +105,11 @@ pub(in crate::web) fn resolve_web_password(args: &WebArgs) -> Result<Option<Stri
     Ok(password)
 }
 
-pub(in crate::web) fn redact_secret_list(states: &mut HashMap<String, bool>, key: &str, values: &mut Vec<String>) {
+pub(in crate::web) fn redact_secret_list(
+    states: &mut HashMap<String, bool>,
+    key: &str,
+    values: &mut Vec<String>,
+) {
     states.insert(
         key.to_string(),
         values.iter().any(|value| !value.trim().is_empty()),
@@ -222,7 +226,10 @@ pub(in crate::web) fn normalize_single_secret(
     Ok(Some(value.trim().to_string()).filter(|value| !value.is_empty()))
 }
 
-pub(in crate::web) fn parse_secret_list(value: &str, field: &str) -> std::result::Result<Vec<String>, ApiError> {
+pub(in crate::web) fn parse_secret_list(
+    value: &str,
+    field: &str,
+) -> std::result::Result<Vec<String>, ApiError> {
     validate_secret_text(value, field)?;
     Ok(value
         .split(|character| matches!(character, ',' | '\n' | '\r'))
@@ -232,7 +239,10 @@ pub(in crate::web) fn parse_secret_list(value: &str, field: &str) -> std::result
         .collect())
 }
 
-pub(in crate::web) fn validate_secret_text(value: &str, field: &str) -> std::result::Result<(), ApiError> {
+pub(in crate::web) fn validate_secret_text(
+    value: &str,
+    field: &str,
+) -> std::result::Result<(), ApiError> {
     if value.chars().count() > MAX_SECRET_CHARS
         || value
             .chars()
@@ -246,11 +256,17 @@ pub(in crate::web) fn validate_secret_text(value: &str, field: &str) -> std::res
     Ok(())
 }
 
-pub(in crate::web) fn is_local_webui_request(audience: PromptAudience, has_turn_profile: bool) -> bool {
+pub(in crate::web) fn is_local_webui_request(
+    audience: PromptAudience,
+    has_turn_profile: bool,
+) -> bool {
     audience == PromptAudience::External && !has_turn_profile
 }
 
-pub(in crate::web) fn require_auth(headers: &HeaderMap, state: &DaemonState) -> std::result::Result<(), ApiError> {
+pub(in crate::web) fn require_auth(
+    headers: &HeaderMap,
+    state: &DaemonState,
+) -> std::result::Result<(), ApiError> {
     if state
         .auth
         .is_authenticated(cookie_value(headers, AUTH_COOKIE))
@@ -264,7 +280,10 @@ pub(in crate::web) fn require_auth(headers: &HeaderMap, state: &DaemonState) -> 
     }
 }
 
-pub(in crate::web) fn require_mutation(headers: &HeaderMap, state: &DaemonState) -> std::result::Result<(), ApiError> {
+pub(in crate::web) fn require_mutation(
+    headers: &HeaderMap,
+    state: &DaemonState,
+) -> std::result::Result<(), ApiError> {
     require_auth(headers, state)?;
     if origin_is_allowed(headers) {
         Ok(())

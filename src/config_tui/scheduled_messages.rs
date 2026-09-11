@@ -47,6 +47,23 @@ fn task_row_label(task: &serde_json::Value) -> String {
     format!("{conversation} | {times} | {message}")
 }
 
+/// 星期归一化:长名/大小写 → 规范短名(mon..sun)。存量配置里的长名在
+/// 下一次表单往返时自动迁移成短名。
+fn normalize_day(day: &str) -> String {
+    let lower = day.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        "monday" => "mon",
+        "tuesday" => "tue",
+        "wednesday" => "wed",
+        "thursday" => "thu",
+        "friday" => "fri",
+        "saturday" => "sat",
+        "sunday" => "sun",
+        other => return other.to_string(),
+    }
+    .to_string()
+}
+
 fn field_list(value: &str) -> Vec<String> {
     value
         .split([',', '，', ' '])
@@ -73,14 +90,7 @@ fn conversation_parts(task: Option<&serde_json::Value>) -> (bool, String) {
 /// `group:`/`private:` 前缀由代码拼——让用户手打前缀曾直接撞校验器报错。
 /// 会话类型是表单首项(choices 字段,回车弹菜单)——编辑存量任务不再被
 /// 强制先选一遍类型(用户 08-20 点名)。
-fn task_from_fields(fields: &[Field]) -> Result<Option<serde_json::Value>> {
-    if fields
-        .last()
-        .filter(|field| field.boolean)
-        .is_some_and(|field| field.value.parse::<bool>().unwrap_or(false))
-    {
-        return Ok(None);
-    }
+fn task_from_fields(fields: &[Field]) -> Result<serde_json::Value> {
     let is_group = fields[0].value != t("Private chat", "私聊");
     let target_id = fields[1].value.trim();
     if target_id.is_empty() || !target_id.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -105,7 +115,10 @@ fn task_from_fields(fields: &[Field]) -> Result<Option<serde_json::Value>> {
         "message".to_string(),
         serde_json::json!(fields[3].value.trim()),
     );
-    let days = field_list(&fields[4].value);
+    let days = field_list(&fields[4].value)
+        .iter()
+        .map(|day| normalize_day(day))
+        .collect::<Vec<_>>();
     if !days.is_empty() {
         task.insert("days".to_string(), serde_json::json!(days));
     }
@@ -116,7 +129,7 @@ fn task_from_fields(fields: &[Field]) -> Result<Option<serde_json::Value>> {
             .map_err(|_| anyhow::anyhow!(t("Invalid account number.", "账号必须是数字。")))?;
         task.insert("account".to_string(), serde_json::json!(account));
     }
-    Ok(Some(serde_json::Value::Object(task)))
+    Ok(serde_json::Value::Object(task))
 }
 
 fn task_fields(task: Option<&serde_json::Value>) -> Vec<Field> {
@@ -149,33 +162,41 @@ fn task_fields(task: Option<&serde_json::Value>) -> Vec<Field> {
     } else {
         t("Private chat", "私聊")
     };
-    let mut fields = vec![
+    let fields = vec![
         Field::new(t("Conversation type", "会话类型"), kind_label.to_string())
             .choices(&[t("Group chat", "群聊"), t("Private chat", "私聊")]),
         Field::new(t("Group number / QQ number", "群号 / QQ 号"), target_id),
         Field::new(
-            t("Times (HH:MM, comma separated)", "时间点（HH:MM，逗号分隔）"),
+            t(
+                "Times (HH:MM, comma separated)",
+                "时间点（HH:MM，逗号分隔）",
+            ),
             list("times"),
         ),
         Field::new(t("Message text", "发送内容"), text("message")),
+        // 回车弹多选菜单(08-23 用户点名:手填 mon..sun 太不方便);读取时
+        // 顺手把存量长名归一成短名。
         Field::new(
-            t("Weekdays (mon..sun, empty = every day)", "星期（mon..sun，留空=每天）"),
-            list("days"),
-        ),
+            t(
+                "Weekdays (Enter to pick, empty = every day)",
+                "星期（回车多选，留空=每天）",
+            ),
+            field_list(&list("days"))
+                .iter()
+                .map(|day| normalize_day(day))
+                .collect::<Vec<_>>()
+                .join(","),
+        )
+        .multi_choices(&["mon", "tue", "wed", "thu", "fri", "sat", "sun"]),
         Field::new(
-            t("Bot account (empty = first connected)", "机器人账号（留空=第一个已连接）"),
+            t(
+                "Bot account (empty = first connected)",
+                "机器人账号（留空=第一个已连接）",
+            ),
             account,
         ),
     ];
-    if task.is_some() {
-        fields.push(Field::boolean(
-            t(
-                "Remove this task from the list on save",
-                "保存时从任务表中移除这条任务",
-            ),
-            false,
-        ));
-    }
+    // "保存时移除"复选框已撤(08-23 用户点名语义费解):删除统一走列表 d 键。
     fields
 }
 
@@ -237,8 +258,8 @@ pub(in crate::config_tui) fn edit_scheduled_messages(
             &options,
             selected,
             t(
-                "[Enter]toggle/edit [j/k]move [q]back",
-                "[Enter]切换/编辑 [j/k]移动 [q]返回",
+                "[Enter]toggle/edit [d]delete [j/k]move [q]back",
+                "[Enter]切换/编辑 [d]删除 [j/k]移动 [q]返回",
             ),
         )?;
         match read_key()? {
@@ -254,10 +275,7 @@ pub(in crate::config_tui) fn edit_scheduled_messages(
                     if run_form(stdout, t(" EDIT TASK ", " 编辑任务 "), &mut fields)? {
                         let mut tasks = tasks;
                         match task_from_fields(&fields) {
-                            Ok(Some(task)) => tasks[index] = task,
-                            Ok(None) => {
-                                tasks.remove(index);
-                            }
+                            Ok(task) => tasks[index] = task,
                             Err(error) => {
                                 message(stdout, &error.to_string())?;
                                 continue;
@@ -269,16 +287,21 @@ pub(in crate::config_tui) fn edit_scheduled_messages(
                     let mut fields = task_fields(None);
                     if run_form(stdout, t(" ADD TASK ", " 新增任务 "), &mut fields)? {
                         match task_from_fields(&fields) {
-                            Ok(Some(task)) => {
+                            Ok(task) => {
                                 let mut tasks = tasks;
                                 tasks.push(task);
                                 write_back(stdout, config, enabled, tasks)?;
                             }
-                            Ok(None) => {}
                             Err(error) => message(stdout, &error.to_string())?,
                         }
                     }
                 }
+            }
+            KeyCode::Char('d') if selected >= 1 && selected <= tasks.len() => {
+                let index = selected - 1;
+                let mut tasks = tasks;
+                tasks.remove(index);
+                write_back(stdout, config, enabled, tasks)?;
             }
             _ => {}
         }
@@ -306,7 +329,7 @@ mod tests {
         assert_eq!(fields[2].value, "08:30,21:00");
         assert_eq!(fields[4].value, "mon,fri");
         assert_eq!(fields[5].value, "10001");
-        let rebuilt = task_from_fields(&fields).unwrap().unwrap();
+        let rebuilt = task_from_fields(&fields).unwrap();
         assert_eq!(rebuilt, task);
     }
 
@@ -321,7 +344,7 @@ mod tests {
         let fields = task_fields(Some(&task));
         assert_eq!(fields[0].value, t("Private chat", "私聊"));
         assert_eq!(fields[1].value, "10001");
-        let rebuilt = task_from_fields(&fields).unwrap().unwrap();
+        let rebuilt = task_from_fields(&fields).unwrap();
         assert_eq!(rebuilt, task);
 
         let mut bad = task_fields(Some(&task));
@@ -331,14 +354,17 @@ mod tests {
         assert!(task_from_fields(&bad).is_err());
     }
 
+    /// 存量长名/大小写星期在表单往返时自动迁移成规范短名。
     #[test]
-    fn delete_checkbox_removes_the_task() {
+    fn legacy_weekday_names_are_normalized_on_round_trip() {
         let task = serde_json::json!({
-            "conversation": "group:1", "times": ["08:00"], "message": "hi"
+            "conversation": "group:1", "times": ["08:00"], "message": "hi",
+            "days": ["Monday", "FRIDAY", "sun"]
         });
-        let mut fields = task_fields(Some(&task));
-        fields.last_mut().unwrap().value = "true".to_string();
-        assert!(task_from_fields(&fields).unwrap().is_none());
+        let fields = task_fields(Some(&task));
+        assert_eq!(fields[4].value, "mon,fri,sun");
+        let rebuilt = task_from_fields(&fields).unwrap();
+        assert_eq!(rebuilt["days"], serde_json::json!(["mon", "fri", "sun"]));
     }
 
     #[test]
@@ -351,7 +377,7 @@ mod tests {
             Field::new("d", "".to_string()),
             Field::new("a", "".to_string()),
         ];
-        let task = task_from_fields(&fields).unwrap().unwrap();
+        let task = task_from_fields(&fields).unwrap();
         assert_eq!(
             task,
             serde_json::json!({ "conversation": "private:9", "times": ["07:15"], "message": "hello" })

@@ -7,16 +7,20 @@
 //! reuse everything here without touching the web core.
 
 mod activity;
+mod inflight;
+mod live_turns;
 mod logging;
 mod reply;
 mod scheduling;
 mod turn_context;
+mod turn_order;
 mod turn_run;
 pub(crate) use activity::*;
 pub(crate) use logging::*;
 pub(crate) use reply::*;
 pub(crate) use scheduling::*;
 pub(crate) use turn_context::*;
+pub(crate) use turn_order::*;
 pub(crate) use turn_run::*;
 mod access_control;
 mod assets;
@@ -47,8 +51,10 @@ use crate::config::{
 use crate::i18n::{text_for, Locale};
 use crate::ipc::ImageAttachment;
 use crate::paths::MiyuPaths;
+use crate::runtime::{
+    random_id, validate_content, ActorCommand, DaemonState, IpcRunGuard, RunInfo,
+};
 use crate::state::{PlatformSessionBindingKey, StateStore};
-use crate::runtime::{random_id, validate_content, ActorCommand, DaemonState, IpcRunGuard, RunInfo};
 use anyhow::{anyhow, bail, Context, Result};
 use futures_util::StreamExt;
 use serde_json::Value;
@@ -72,6 +78,9 @@ pub(crate) struct PlatformRuntime {
     pub(crate) file_store_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) message_activity: MessageActivityRegistry,
     session_turn_locks: Arc<Mutex<HashMap<String, Weak<SessionTurnState>>>>,
+    /// 到达顺序闸,按会话标识分表(见 `turn_order`)。与 session 锁分开,是
+    /// 因为它要在 session id 查出来之前就登记。
+    pub(crate) turn_order: TurnOrderRegistry,
 }
 
 impl PlatformRuntime {
@@ -87,6 +96,7 @@ impl PlatformRuntime {
             file_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             message_activity: MessageActivityRegistry::default(),
             session_turn_locks: Arc::new(Mutex::new(HashMap::new())),
+            turn_order: TurnOrderRegistry::default(),
         })
     }
 
@@ -137,7 +147,24 @@ impl PlatformRuntime {
             state,
             states: self.session_turn_locks.clone(),
             exclusive: false,
+            order_slot: None,
         }
+    }
+
+    /// 用一个**已登记的**到达顺序位建票。顺序位在派发链最前面就拿到手
+    /// (`turn_order.enter`),这里只是把它交给票据保管。
+    ///
+    /// 票据本身**必须在主动回复判断之前建**:它快照 generation,判断期间发生
+    /// 的覆盖要能让这张票失效。真正阻塞的是随后的 `acquire()`。
+    pub(crate) fn session_turn_ticket_in_order(
+        &self,
+        session_id: &str,
+        limits: PlatformSessionLimits,
+        order_slot: TurnOrderSlot,
+    ) -> SessionTurnTicket {
+        let mut ticket = self.session_turn_ticket(session_id, limits);
+        ticket.order_slot = Some(order_slot);
+        ticket
     }
 
     async fn acquire_session_turn(
@@ -148,8 +175,15 @@ impl PlatformRuntime {
         self.session_turn_ticket(session_id, limits).acquire().await
     }
 
-    pub(crate) fn preempt_session_turns(&self, session_id: &str) -> SessionTurnTicket {
-        let mut ticket = self.session_turn_ticket(session_id, PlatformSessionLimits::default());
+    /// `limits` 只在这条会话尚无调度状态时生效(建状态用)。传解析后的值,
+    /// 别传 default——串行体制下用 default 建出来的状态带着 8 个并行位,
+    /// 后续回合会顺着它偷跑(08-26 会话内并行开关)。
+    pub(crate) fn preempt_session_turns(
+        &self,
+        session_id: &str,
+        limits: PlatformSessionLimits,
+    ) -> SessionTurnTicket {
+        let mut ticket = self.session_turn_ticket(session_id, limits);
         ticket.generation = ticket
             .state
             .generation
@@ -160,17 +194,50 @@ impl PlatformRuntime {
         ticket
     }
 
-    pub(crate) fn queued_session_turns(&self, session_id: &str) -> usize {
-        let locks = self.session_turn_locks.lock().unwrap();
-        locks
-            .get(session_id)
-            .and_then(Weak::upgrade)
-            .map(|state| state.waiting.load(Ordering::Acquire))
-            .unwrap_or(0)
+    /// 这条会话上还压着多少回合。取顺序闸的登记数而不是 `waiting`:判断挪到
+    /// 抢名额之前以后,同一时刻最多只有一条卡在信号量上,`waiting` 恒 0 或 1,
+    /// 拿它报数会让 `/stop` 把八条积压说成一条(08-26 二轮审查)。
+    pub(crate) fn queued_turns(&self, conversation_scope: &str) -> usize {
+        self.turn_order.backlog(conversation_scope)
     }
 }
 
+/// 把一个 registry 收敛成平台回合该有的样子:非管理员会话换成受限底座,
+/// 管理员会话保留底座但摘掉 owner 专属工具、并把记忆工具作用域化到该会话。
+///
+/// 平台回合(turns/task.rs)与 MCP 桥(web/session_cmds.rs)两条路必须给出
+/// 同一套工具面——桥曾经直接发 owner 面全量 registry,非管理员群友经它就
+/// 能调 run_command 与 claude_code(08-26 审查)。收在这里,两边不再各写一遍。
+/// `restricted_base` 给调用方复用已建好的受限底座(回合路径每轮都要用,
+/// 现建一次不划算);传 None 就地建一个。
+pub(crate) fn apply_platform_turn_scope(
+    registry: &mut crate::tools::ToolRegistry,
+    config: &crate::config::AppConfig,
+    paths: &crate::paths::MiyuPaths,
+    context: &PlatformTurnContext,
+    restricted_base: Option<&crate::tools::ToolRegistry>,
+) {
+    if !context.host_tools_allowed() {
+        *registry = match restricted_base {
+            Some(base) => base.clone(),
+            None => crate::tools::restricted_platform_registry(config, paths),
+        };
+    } else {
+        crate::tools::rescope_platform_memory_tools(registry, config, paths, context, false);
+    }
+    // claude_code 只属于本机 owner 面(§09):订阅额度与本机代理权限不跟
+    // 平台身份走,管理员会话也一并摘掉。该委托工具 08-21 已删除,这行是它
+    // 万一回归时的常备闸——当下不生效,也无法被测试钉住。
+    registry.unregister("claude_code");
+    // 扬声器与「发到 QQ」都是本机 owner 面的东西:QQ 聊天通常是远程的,
+    // 从群里让电脑开口没有意义;从 QQ 会话再发 QQ 更是绕圈(那边有
+    // send_message_to_user)。管理员会话也一并摘掉。
+    registry.unregister("speak");
+    registry.unregister("send_qq_message");
+}
+
 pub(crate) use assets::platform_asset;
+pub(crate) use live_turns::{live_turn_context, LiveTurnGuard};
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

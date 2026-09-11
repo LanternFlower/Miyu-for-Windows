@@ -1,7 +1,7 @@
 //! 主动回复的目标选择与提示词拼装。
 
-use crate::platforms::plugins::real_context::*;
 use super::shared::*;
+use crate::platforms::plugins::real_context::*;
 
 #[test]
 fn disabled_targeting_returns_none_and_core_fallback_is_preserved_exactly() {
@@ -92,8 +92,9 @@ fn active_target_prompt_is_bounded_and_keeps_the_current_message() {
     assert!(prompt.len() <= MAX_ACTIVE_TARGET_PROMPT_BYTES);
     assert!(prompt.contains("CURRENT:"));
     assert!(prompt.contains("earlier merged messages omitted due to length limits"));
-    // 截断保留的头部是带标记的当前消息,而不是裸正文。
-    assert!(prompt.starts_with("[New messages received this turn]\nCURRENT:"));
+    // 截断保留的头部是带标记+署名行的当前消息,而不是裸正文。
+    assert!(prompt.starts_with("[New messages received this turn]\n["));
+    assert!(prompt.lines().nth(1).unwrap().contains("CURRENT:"));
 }
 
 #[test]
@@ -115,7 +116,9 @@ fn supersede_inherits_targets_only_for_the_same_sender() {
                 generation: 1,
                 started: Instant::now(),
                 trigger: TriggerKind::Probability,
-                committed: false,
+                // 接管只对已承诺的回复开放;未承诺的场景见 trigger.rs 的
+                // an_uncommitted_takeover_goes_back_to_the_judge_not_the_bypass。
+                committed: true,
                 reactions: Vec::new(),
                 targets: vec![target],
                 cancel,
@@ -138,4 +141,38 @@ fn supersede_inherits_targets_only_for_the_same_sender() {
     let mut other = event.clone();
     other.sender_id = "other-user".to_string();
     assert!(!plugin.preempt_inbound(&context, &other).unwrap());
+}
+
+/// 被 @ 时,自己那一项渲染成 `[you]`;没被 @ 时这行里单纯没有自己——
+/// 不再有任何「你没被提到」的否定陈述可供她立规矩(08-29)。
+#[test]
+fn the_mention_line_marks_the_bot_itself_and_says_nothing_when_absent() {
+    let mentions = vec![
+        PlatformMention {
+            user_id: "10000".to_string(),
+            display_name: Some("Miyu".to_string()),
+        },
+        PlatformMention {
+            user_id: "40000".to_string(),
+            display_name: Some("yuyi".to_string()),
+        },
+    ];
+    let ids = vec!["10000".to_string(), "40000".to_string()];
+
+    let rendered = format_mentioned_users(&mentions, &ids, true, Some("10000")).unwrap();
+    assert_eq!(rendered, "[you]、yuyi(QQ:40000)");
+
+    // 别人之间互相 @：这行里没有自己,也没有任何"你没被提到"的说法。
+    let others = vec![PlatformMention {
+        user_id: "40000".to_string(),
+        display_name: Some("yuyi".to_string()),
+    }];
+    let rendered =
+        format_mentioned_users(&others, &["40000".to_string()], true, Some("10000")).unwrap();
+    assert_eq!(rendered, "yuyi(QQ:40000)");
+    assert!(!rendered.contains("you"));
+
+    // 历史块传 None:行为与改动前一致。
+    let rendered = format_mentioned_users(&mentions, &ids, true, None).unwrap();
+    assert_eq!(rendered, "Miyu(QQ:10000)、yuyi(QQ:40000)");
 }

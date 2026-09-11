@@ -24,7 +24,7 @@ impl AppConfig {
             rename_provider_in_pool(entries, old_id, new_id);
         }
         for tier in ModelTier::ALL {
-            rename_provider_in_pool(self.subagent_tiers.pool_mut(tier), old_id, new_id);
+            rename_provider_in_pool(self.model_tiers.pool_mut(tier), old_id, new_id);
         }
         self.platforms.rename_provider_references(old_id, new_id);
         if self.plugins.vision.vision_provider_id == old_id {
@@ -43,7 +43,7 @@ impl AppConfig {
         retain_provider_pool(&mut self.active_provider_models, provider_id);
         retain_provider_pool(&mut self.active_multimodal_provider_models, provider_id);
         for tier in ModelTier::ALL {
-            self.subagent_tiers
+            self.model_tiers
                 .pool_mut(tier)
                 .retain(|entry| entry.provider_id != provider_id);
         }
@@ -83,7 +83,7 @@ impl AppConfig {
         self.prune_stale_active_provider_models();
         retain_nonempty_pool(&mut self.active_provider_models);
         retain_nonempty_pool(&mut self.active_multimodal_provider_models);
-        self.prune_subagent_tiers();
+        self.prune_model_tiers();
         self.prune_platform_model_routes();
 
         let vision_provider_id = self.plugins.vision.vision_provider_id.trim();
@@ -99,7 +99,7 @@ impl AppConfig {
                         vision_model
                     };
                     provider
-                        .input_modalities(model)
+                        .message_input_modalities(model)
                         .is_some_and(|modalities| modalities.iter().any(|item| item == "image"))
                 })
                 .unwrap_or(false);
@@ -180,6 +180,55 @@ impl AppConfig {
             .model_modalities
             .get(model)
             .is_some_and(|modalities| modalities.iter().any(|item| item == EMBEDDING_MODALITY))
+    }
+
+    /// 会话模型覆盖里**还解析得动**的那些条目;一个都不剩时返回 `None`。
+    ///
+    /// 覆盖是会话级的快照,而供应商的模型列表会变。指向已删除模型的覆盖会让
+    /// `active_provider_model_choices` 静默筛空,进而 `llm_endpoints` 报
+    /// "no active provider/model endpoint is configured" 且错误列表是空的
+    /// ——用户连 REPL 都进不去,更没机会用 `/model` 换一个,只能去改配置或改
+    /// 库(08-28 实录:opencodego/glm-5.3-flash 被移出 models 之后
+    /// `miyu normal` 直接起不来)。
+    ///
+    /// 调用方据此退回全局池:宁可用错模型,也别让整个入口打不开。
+    pub fn usable_model_override(
+        &self,
+        models: Vec<ActiveProviderModelConfig>,
+    ) -> Option<Vec<ActiveProviderModelConfig>> {
+        let usable = models
+            .into_iter()
+            .filter(|active| {
+                self.provider(Some(active.provider_id.trim()))
+                    .is_ok_and(|provider| provider.has_configured_model(active.model.trim()))
+            })
+            .collect::<Vec<_>>();
+        (!usable.is_empty()).then_some(usable)
+    }
+
+    /// 活跃池里每个供应商的工具结果都能直接带媒体时才用"图进工具结果"
+    /// 形态;否则整池退回"工具结果之后补一条带图的用户消息"。池是负载均衡
+    /// 的,一半供应商会 400 就不能用。空池按能带处理(无处可发,形态无关)。
+    pub fn active_pool_tool_result_media(&self) -> bool {
+        self.active_provider_model_choices().iter().all(|choice| {
+            self.provider(Some(&choice.provider_id))
+                .map(|provider| provider.tool_result_carries_media())
+                .unwrap_or(false)
+        })
+    }
+
+    /// 活跃文本池整池靠原生 `view_file` 看媒体,且该工具在本模式放行。
+    /// 满足时用户媒体只留本地路径提示、邀请模型自己打开,不做视觉旁路
+    /// 转述,也不往消息里内联。池是负载均衡的,有一个端点不是这条线就不算。
+    pub fn active_pool_views_media_with_native_file_tool(&self, dev_mode: bool) -> bool {
+        let pool = self.active_provider_model_choices();
+        !pool.is_empty()
+            && pool.iter().all(|choice| {
+                self.provider(Some(&choice.provider_id))
+                    .ok()
+                    .is_some_and(|provider| provider.views_media_with_native_file_tool())
+            })
+            && relay_scope_allows(&self.plugins.antigravity.native_tools, dev_mode)
     }
 
     pub fn active_provider_model_choices(&self) -> Vec<ProviderModelChoice> {
@@ -266,7 +315,7 @@ impl AppConfig {
         }
         // A model gone from the text models must leave every tier pool too.
         for tier in ModelTier::ALL {
-            self.subagent_tiers
+            self.model_tiers
                 .pool_mut(tier)
                 .retain(|entry| !(entry.provider_id == provider_id && entry.model == model));
         }
@@ -345,6 +394,25 @@ impl AppConfig {
             .unwrap_or(false)
     }
 
+    /// 这些输入能不能直接放进**消息**发给该模型(内联图/视频、视觉旁路请求)。
+    /// 与 [`Self::model_supports_any_input`] 的差别见 `ProviderConfig::message_input_modalities`。
+    pub fn model_accepts_message_input(
+        &self,
+        provider_id: &str,
+        model: &str,
+        inputs: &[&str],
+    ) -> bool {
+        self.provider(Some(provider_id))
+            .ok()
+            .and_then(|provider| provider.message_input_modalities(model))
+            .map(|modalities| {
+                modalities
+                    .iter()
+                    .any(|m| inputs.iter().any(|input| m == input))
+            })
+            .unwrap_or(false)
+    }
+
     pub fn vision_provider_choice(&self) -> Result<(String, String)> {
         let vision = &self.plugins.vision;
         if !vision.vision_provider_id.trim().is_empty() {
@@ -355,11 +423,15 @@ impl AppConfig {
             } else {
                 vision.vision_model.trim().to_string()
             };
+            // 视觉旁路是往消息里塞图的请求:模型只能靠原生文件工具看媒体的线
+            // (agy)当不了旁路,哪怕目录里标着 image。
             if !provider
-                .input_modalities(&model)
+                .message_input_modalities(&model)
                 .is_some_and(|modalities| modalities.iter().any(|item| item == "image"))
             {
-                bail!("vision model does not declare image input: {provider_id} / {model}");
+                bail!(
+                    "vision model does not accept image input in messages: {provider_id} / {model}"
+                );
             }
             return Ok((provider_id, model));
         }
@@ -368,7 +440,7 @@ impl AppConfig {
                 .active_multimodal_provider_model_choices()
                 .into_iter()
                 .find(|choice| {
-                    self.model_supports_any_input(&choice.provider_id, &choice.model, &["image"])
+                    self.model_accepts_message_input(&choice.provider_id, &choice.model, &["image"])
                 })
             {
                 return Ok((choice.provider_id, choice.model));
@@ -387,8 +459,8 @@ impl AppConfig {
     /// models that still exist under their provider (entries whose model
     /// was removed from the text models are ignored, mirroring
     /// `active_provider_model_choices`).
-    pub fn subagent_tier_choices(&self, tier: ModelTier) -> Vec<ProviderModelChoice> {
-        self.subagent_tiers
+    pub fn tier_choices(&self, tier: ModelTier) -> Vec<ProviderModelChoice> {
+        self.model_tiers
             .pool(tier)
             .iter()
             .filter_map(|entry| {
@@ -405,8 +477,8 @@ impl AppConfig {
             .collect()
     }
 
-    pub fn is_subagent_tier_model(&self, tier: ModelTier, provider_id: &str, model: &str) -> bool {
-        self.subagent_tiers
+    pub fn is_tier_model(&self, tier: ModelTier, provider_id: &str, model: &str) -> bool {
+        self.model_tiers
             .pool(tier)
             .iter()
             .any(|entry| entry.provider_id == provider_id && entry.model == model)
@@ -414,7 +486,7 @@ impl AppConfig {
 
     /// Adds/removes a model in a tier pool. Returns `true` when the model
     /// is in the pool after the call.
-    pub fn toggle_subagent_tier_model(
+    pub fn toggle_tier_model(
         &mut self,
         tier: ModelTier,
         provider_id: &str,
@@ -424,7 +496,7 @@ impl AppConfig {
             bail!("model cannot be empty");
         }
         self.provider(Some(provider_id))?;
-        let pool = self.subagent_tiers.pool_mut(tier);
+        let pool = self.model_tiers.pool_mut(tier);
         if let Some(index) = pool
             .iter()
             .position(|entry| entry.provider_id == provider_id && entry.model == model)
@@ -443,10 +515,10 @@ impl AppConfig {
     /// Drops tier pool entries whose model no longer exists among the
     /// configured text models (a model removed from a provider must also
     /// leave every tier pool).
-    pub fn prune_subagent_tiers(&mut self) {
+    pub fn prune_model_tiers(&mut self) {
         for tier in ModelTier::ALL {
             let providers = &self.providers;
-            self.subagent_tiers
+            self.model_tiers
                 .pool_mut(tier)
                 .retain(|entry| active_model_exists(providers, entry));
         }
@@ -676,11 +748,24 @@ impl AppConfig {
 }
 
 impl AppConfig {
-    /// 内置 Claude Code 特殊供应商是否启用。这是订阅接入的**总开关**:
-    /// 同时决定中转供应商可选与 `claude_code` 委托工具注册。
+    /// 内置 Claude Code 特殊供应商是否启用(订阅中转的总开关)。
     pub fn claude_code_enabled(&self) -> bool {
         self.providers
             .iter()
             .any(|provider| provider.is_claude_code() && provider.enabled)
+    }
+
+    /// 内置 Codex 特殊供应商是否启用(codex CLI 中转的总开关)。
+    pub fn codex_enabled(&self) -> bool {
+        self.providers
+            .iter()
+            .any(|provider| provider.is_codex() && provider.enabled)
+    }
+
+    /// 内置 Antigravity 特殊供应商是否启用(agy CLI 中转的总开关)。
+    pub fn antigravity_enabled(&self) -> bool {
+        self.providers
+            .iter()
+            .any(|provider| provider.is_antigravity() && provider.enabled)
     }
 }

@@ -1,7 +1,7 @@
 //! 表格与 todo 表。
 
-use crate::render::*;
 use super::shared::*;
+use crate::render::*;
 
 #[test]
 fn buffers_tables_until_non_table_line() {
@@ -139,8 +139,7 @@ fn many_column_tables_stay_within_terminal_width() {
 #[test]
 fn supports_table_alignment_markers() {
     let mut renderer = MarkdownStreamRenderer::new();
-    let output =
-        renderer.push("| left | mid | right |\n| :--- | :---: | ---: |\n| a | b | c |\n");
+    let output = renderer.push("| left | mid | right |\n| :--- | :---: | ---: |\n| a | b | c |\n");
     let output = format!("{output}{}", renderer.flush());
     assert!(output.contains('┌'));
     assert!(output.contains('│'));

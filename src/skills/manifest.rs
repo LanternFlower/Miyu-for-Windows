@@ -83,7 +83,10 @@ pub fn parse_skill_metadata(raw: &str, expected_name: Option<&str>) -> Result<Sk
     parse_skill_document(raw, expected_name).map(|(metadata, _)| metadata)
 }
 
-pub(crate) fn parse_skill_document(raw: &str, expected_name: Option<&str>) -> Result<(SkillMetadata, String)> {
+pub(crate) fn parse_skill_document(
+    raw: &str,
+    expected_name: Option<&str>,
+) -> Result<(SkillMetadata, String)> {
     let (frontmatter, body) = split_frontmatter(raw)?;
     validate_frontmatter_tokens(&frontmatter)?;
     let documents =
@@ -163,7 +166,10 @@ pub(crate) fn required_yaml_string(mapping: &yaml_rust2::yaml::Hash, key: &str) 
     optional_yaml_string(mapping, key)?.ok_or_else(|| anyhow::anyhow!("skill {key} is required"))
 }
 
-pub(crate) fn optional_yaml_string(mapping: &yaml_rust2::yaml::Hash, key: &str) -> Result<Option<String>> {
+pub(crate) fn optional_yaml_string(
+    mapping: &yaml_rust2::yaml::Hash,
+    key: &str,
+) -> Result<Option<String>> {
     let Some(value) = mapping.get(&Yaml::String(key.to_string())) else {
         return Ok(None);
     };

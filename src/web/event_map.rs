@@ -19,6 +19,8 @@ pub(in crate::web) struct RunEventMapper {
     pub(in crate::web) redo_input_id: Option<String>,
     pub(in crate::web) redo_display_content: Option<String>,
     pub(in crate::web) command_output_lines: usize,
+    /// 最近一次模型请求的 (provider, model),盖到工具事件上供日志标注。
+    pub(in crate::web) round_endpoint: Option<(String, String)>,
 }
 
 pub(in crate::web) struct ActiveTool {
@@ -54,6 +56,7 @@ impl RunEventMapper {
             redo_input_id,
             redo_display_content,
             command_output_lines,
+            round_endpoint: None,
         }
     }
 
@@ -144,6 +147,8 @@ impl RunEventMapper {
                         "name": tool.name,
                         "display_name": tool.display_name,
                         "arguments": arguments,
+                        "provider_id": self.round_endpoint.as_ref().map(|(provider, _)| provider),
+                        "model": self.round_endpoint.as_ref().map(|(_, model)| model),
                     }),
                 );
                 self.active_tools.push(tool);
@@ -246,6 +251,8 @@ impl RunEventMapper {
                         "ok": ok,
                         "output": output,
                         "preview": preview,
+                        "provider_id": self.round_endpoint.as_ref().map(|(provider, _)| provider),
+                        "model": self.round_endpoint.as_ref().map(|(_, model)| model),
                     }),
                 );
             }
@@ -300,7 +307,8 @@ impl RunEventMapper {
                         }),
                     ),
                     Err(error) => {
-                        tracing::warn!(
+                        // warn 在默认 ERROR 级别下不可见——图片静默丢失(08-21)。
+                        tracing::error!(
                             run_id = %self.run_id,
                             tool = %tool_name,
                             error = %error,
@@ -416,18 +424,31 @@ impl RunEventMapper {
                 round,
                 turn,
                 estimated,
-            } => self.publish(
-                "chat.round_usage",
-                json!({
-                    "run_id": self.run_id,
-                    "turn_id": self.turn_id,
-                    "usage": *round,
-                    "turn_total": turn.total,
-                    "turn_prompt": turn.prompt,
-                    "turn_cache_read": turn.cache_read,
-                    "estimated": estimated,
-                }),
-            ),
+                provider_id,
+                model,
+            } => {
+                self.round_endpoint = match (provider_id.as_deref(), model.as_deref()) {
+                    (None, None) => None,
+                    (provider, model) => Some((
+                        provider.unwrap_or_default().to_string(),
+                        model.unwrap_or_default().to_string(),
+                    )),
+                };
+                self.publish(
+                    "chat.round_usage",
+                    json!({
+                        "run_id": self.run_id,
+                        "turn_id": self.turn_id,
+                        "usage": *round,
+                        "turn_total": turn.total,
+                        "turn_prompt": turn.prompt,
+                        "turn_cache_read": turn.cache_read,
+                        "estimated": estimated,
+                        "provider_id": provider_id,
+                        "model": model,
+                    }),
+                );
+            }
             AgentEvent::CompactStart => {
                 self.publish("context.compact_start", json!({ "run_id": self.run_id }))
             }

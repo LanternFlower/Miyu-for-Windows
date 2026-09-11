@@ -36,17 +36,7 @@ pub(in crate::agent) fn compact_remembered_fact_report(output: &str) -> Option<S
 }
 
 pub(in crate::agent) fn compact_loaded_tools_report(output: &str) -> Option<String> {
-    let value = serde_json::from_str::<Value>(output).ok()?;
-    let names = value
-        .get("loaded_tools")
-        .and_then(Value::as_array)?
-        .iter()
-        .filter_map(|item| {
-            item.as_str()
-                .or_else(|| item.get("name").and_then(Value::as_str))
-        })
-        .map(str::to_string)
-        .collect::<Vec<_>>();
+    let names = loaded_items_from_output(output).tools;
     if names.is_empty() {
         return None;
     }
@@ -61,7 +51,21 @@ pub(in crate::agent) struct LoadedItems {
 
 pub(in crate::agent) fn loaded_items_from_output(output: &str) -> LoadedItems {
     let Ok(value) = serde_json::from_str::<Value>(output) else {
-        return LoadedItems::default();
+        // 08-21 token-diet 文本形态:头部 "loaded_targets: a, b" /
+        // "loaded_tools: a, b" 两行;契约正文从首个 "### " 起,不参与解析。
+        // 旧 JSON 形态(历史回放)继续走下面的原路径。
+        let mut items = LoadedItems::default();
+        for line in output.lines() {
+            if line.starts_with("### ") {
+                break;
+            }
+            if let Some(rest) = line.strip_prefix("loaded_targets:") {
+                items.targets = split_comma_names(rest);
+            } else if let Some(rest) = line.strip_prefix("loaded_tools:") {
+                items.tools = split_comma_names(rest);
+            }
+        }
+        return items;
     };
     let targets = value
         .get("loaded_targets")
@@ -87,6 +91,14 @@ pub(in crate::agent) fn loaded_items_from_output(output: &str) -> LoadedItems {
     LoadedItems { targets, tools }
 }
 
+fn split_comma_names(rest: &str) -> Vec<String> {
+    rest.split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 pub(in crate::agent) fn string_array_items(items: &[Value]) -> Vec<String> {
     items
         .iter()
@@ -100,17 +112,32 @@ pub(in crate::agent) fn string_array_items(items: &[Value]) -> Vec<String> {
 pub(in crate::agent) fn compact_sent_meme_report(output: &str) -> Option<String> {
     const MAX_DESCRIPTION_CHARS: usize = 120;
 
-    let value = serde_json::from_str::<Value>(output).ok()?;
-    if value.get("success").and_then(Value::as_bool) != Some(true) {
-        return None;
-    }
-    let id = value.get("id").and_then(Value::as_str)?.trim();
+    // 08-21 token-diet 文本形态:"sent meme {id}" 或 "sent meme {id}: {desc}"。
+    // 旧 JSON 形态(历史回放)走下面的原路径。
+    let (id, description): (String, Option<String>) =
+        if let Some(rest) = output.trim().strip_prefix("sent meme ") {
+            match rest.split_once(": ") {
+                Some((id, description)) => (id.to_string(), Some(description.to_string())),
+                None => (rest.to_string(), None),
+            }
+        } else {
+            let value = serde_json::from_str::<Value>(output).ok()?;
+            if value.get("success").and_then(Value::as_bool) != Some(true) {
+                return None;
+            }
+            let id = value.get("id").and_then(Value::as_str)?.trim().to_string();
+            let description = value
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            (id, description)
+        };
+    let id = id.trim();
     if id.is_empty() {
         return None;
     }
-    let description = value
-        .get("description")
-        .and_then(Value::as_str)
+    let description = description
+        .as_deref()
         .map(compact_one_line)
         .filter(|description| !description.is_empty())
         .map(|description| truncate_chars(&description, MAX_DESCRIPTION_CHARS));
@@ -209,6 +236,15 @@ pub(in crate::agent) fn tool_event_name(name: &str, arguments: &str) -> String {
             .unwrap_or_else(|| name.to_string()),
         // use_meme 有两个动作:show 要静默(图片自己会打出来),search 要照常
         // 显示摘要。渲染层只拿得到名字,所以把 action 编进事件名。
+        // divine 四种占法都叫"占卜"毫无区分度(08-22 用户点名):method 编进
+        // 事件名,渲染层按 divine:zhouyi/tarot/fortune/dice 取各自的显示名。
+        "divine" => args
+            .get("method")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|method| !method.is_empty())
+            .map(|method| format!("divine:{method}"))
+            .unwrap_or_else(|| name.to_string()),
         "use_meme" => args
             .get("action")
             .and_then(Value::as_str)

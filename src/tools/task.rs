@@ -20,7 +20,6 @@ pub(in crate::tools) const SUBAGENT_EXCLUDED: &[&str] = &[
     "task",
     "task_agent",
     "deep_research",
-    "claude_code",
     "load_skill",
     "manage_skill",
     "alarm",
@@ -47,7 +46,6 @@ pub fn register(
     paths: MiyuPaths,
     tools: ToolRegistry,
 ) {
-    let config_for_status = config.clone();
     let context = TaskContext {
         config,
         paths,
@@ -81,8 +79,8 @@ pub fn register(
                 },
                 "tier": {
                     "type": "string",
-                    "enum": ["cheap", "balanced", "strong"],
-                    "description": "Optional model tier, picked by task complexity: cheap for simple lookups/mechanical steps, balanced for typical multi-step work, strong for hard reasoning. Defaults to balanced; unconfigured tiers fall back to the main model."
+                    "enum": ["lite", "cheap", "standard", "flagship"],
+                    "description": "Optional model tier by task difficulty: lite for trivial lookups and formatting, cheap for simple tool-using work, standard for regular multi-step work (default), flagship for hard reasoning. Every tier has the full tool set; an unconfigured tier falls back to the main model."
                 }
             },
             "required": ["description", "prompt"],
@@ -93,58 +91,6 @@ pub fn register(
             async move { run_task(args, context, progress).await }
         },
     ).writes());
-    registry.amend_description("task", &tier_pool_status(&config_for_status));
-}
-
-/// Human-readable tier pool status appended to the task tool description,
-/// so the calling agent knows which tiers are configured and with which
-/// concrete models when choosing a tier.
-fn tier_pool_status(config: &AppConfig) -> String {
-    // 全部未配置=默认形态:一个字都不追加。三行"未配置(回退主模型池)"
-    // 对模型是零信息,还把动态文本焊进 tools 数组(字节稳定性隐患,
-    // 验收 08-16 dev 解剖)。配置了档位的用户才见状态。
-    let describe = |tier: ModelTier| {
-        let pool = config.subagent_tier_choices(tier);
-        if pool.is_empty() {
-            String::new()
-        } else {
-            pool.iter()
-                .map(|choice| choice.model.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        }
-    };
-    let (cheap, balanced, strong) = (
-        describe(ModelTier::Cheap),
-        describe(ModelTier::Balanced),
-        describe(ModelTier::Strong),
-    );
-    if cheap.is_empty() && balanced.is_empty() && strong.is_empty() {
-        return String::new();
-    }
-    let fallback = "main pool";
-    let show = |pool: &str| -> String {
-        if pool.is_empty() {
-            fallback.to_string()
-        } else {
-            pool.to_string()
-        }
-    };
-    format!(
-        "{}cheap=[{}]; balanced=[{}]; strong=[{}]",
-        " Current tier pools: ",
-        show(&cheap),
-        show(&balanced),
-        show(&strong),
-    )
-}
-
-fn main_pool_choice(config: &AppConfig) -> Option<(String, String)> {
-    config
-        .active_provider_model_choices()
-        .into_iter()
-        .next()
-        .map(|choice| (choice.provider_id, choice.model))
 }
 
 #[derive(Clone)]
@@ -201,7 +147,7 @@ fn parse_task_params(args: &Value) -> Result<TaskParams> {
         .get("tier")
         .and_then(Value::as_str)
         .and_then(ModelTier::from_str)
-        .unwrap_or(ModelTier::Balanced);
+        .unwrap_or(ModelTier::Standard);
     Ok(TaskParams {
         description,
         prompt,
@@ -241,26 +187,28 @@ async fn spawn_background_task(
     progress: crate::tools::ToolProgress,
 ) -> Result<String> {
     let description = params.description.clone();
-    crate::tools::jobs::spawn_background_subagent(None, &description, &progress, move |job_id, log_path| {
-        async move {
+    crate::tools::jobs::spawn_background_subagent(
+        None,
+        &description,
+        &progress,
+        move |job_id, log_path| async move {
             let bridge = spawn_subagent_log_bridge(log_path.clone());
             let output = run_task_core(context, bridge, params, anchor).await;
             let state_label = match &output {
                 Ok(json) => serde_json::from_str::<Value>(json)
                     .ok()
-                    .and_then(|value| value.get("state").and_then(Value::as_str).map(str::to_string))
+                    .and_then(|value| {
+                        value
+                            .get("state")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
                     .unwrap_or_else(|| "completed".to_string()),
                 Err(_) => "error".to_string(),
             };
             let tail = match &output {
-                Ok(json) => format!(
-                    "\n{}\n{json}\n",
-                    crate::tools::jobs::SUBAGENT_RESULT_MARKER
-                ),
-                Err(error) => format!(
-                    "\n{}\n{error}\n",
-                    crate::tools::jobs::SUBAGENT_ERROR_MARKER
-                ),
+                Ok(json) => format!("\n{}\n{json}\n", crate::tools::jobs::SUBAGENT_RESULT_MARKER),
+                Err(error) => format!("\n{}\n{error}\n", crate::tools::jobs::SUBAGENT_ERROR_MARKER),
             };
             let _ = std::fs::OpenOptions::new()
                 .append(true)
@@ -277,8 +225,8 @@ async fn spawn_background_task(
                 "timeout" => crate::tools::jobs::JobState::TimedOut,
                 _ => crate::tools::jobs::JobState::Exited { code: None },
             }
-        }
-    })
+        },
+    )
     .await
 }
 
@@ -350,44 +298,15 @@ async fn run_task_core(
     // Tier routing: the tier's pool gets its own load-balanced client;
     // an unconfigured pool silently uses the main model pool, and a
     // configured-but-unusable pool falls back with a notice returned to
-    // the calling agent (not printed to the user).
-    let pool = context.config.subagent_tier_choices(tier);
-    let mut tier_notice: Option<String> = None;
-    let (client, model_choice) = if pool.is_empty() {
-        if !context.config.subagent_tiers.pool(tier).is_empty() {
-            tier_notice = Some(format!(
-                "tier '{}' pool has no usable model (models were removed from the text models); fell back to the main model pool",
-                tier.label()
-            ));
-        }
-        (
-            OpenAiCompatibleClient::from_config(&context.config, &context.paths)?
-                .with_request_scope("subagent"),
-            main_pool_choice(&context.config),
-        )
-    } else {
-        match OpenAiCompatibleClient::from_choices(&context.config, &context.paths, &pool) {
-            Ok(client) => {
-                let first = &pool[0];
-                (
-                    client.with_request_scope("subagent"),
-                    Some((first.provider_id.clone(), first.model.clone())),
-                )
-            }
-            Err(err) => {
-                tier_notice = Some(format!(
-                    "tier '{}' pool is unavailable ({err}); fell back to the main model pool",
-                    tier.label()
-                ));
-                (
-                    OpenAiCompatibleClient::from_config(&context.config, &context.paths)?
-                .with_request_scope("subagent"),
-                    main_pool_choice(&context.config),
-                )
-            }
-        }
-    };
-    let client = client.for_subagent_output(mode == ProgressMode::Full);
+    // the calling agent (not printed to the user). The fallback contract
+    // lives in `from_tier` so auxiliary roles share it byte for byte.
+    let routed = OpenAiCompatibleClient::from_tier(&context.config, &context.paths, tier)?;
+    let tier_notice = routed.notice;
+    let model_choice = routed.model_choice;
+    let client = routed
+        .client
+        .with_request_scope("subagent")
+        .for_subagent_output(mode == ProgressMode::Full);
     // 工具沿用主体目录:子代理的任务是主体布置的,分类只会让"承诺的工具"
     // 与"实际注册的工具"漂移(dev 下的旧 explore 就是这么坏掉的)。
     let tools = context.tools.clone();
@@ -400,30 +319,30 @@ async fn run_task_core(
     // 子代理不设总时长上限:它自然结束于任务完成或步数预算;逐工具超时
     // (tool_timeout)仍然兜底单步挂死。
     let (result, stats) = match runner.run_with_resume(&prompt, resume_id.as_deref()).await {
-            Ok((result, stats)) => (result, stats),
-            Err(err) => {
-                let output = serde_json::to_string_pretty(&json!({
-                    "ok": false,
-                    "kind": "task",
-                    "tier": tier.label(),
-                    "tier_notice": tier_notice,
-                    "description": description,
-                    "state": "error",
-                    "error": err.to_string(),
-                    "stats": SubagentStats::default().public(),
-                }))?;
-                record_subagent_audit(
-                    &context,
-                    &anchor,
-                    &description,
-                    &prompt,
-                    &output,
-                    None,
-                    &model_choice,
-                );
-                return Ok(output);
-            }
-        };
+        Ok((result, stats)) => (result, stats),
+        Err(err) => {
+            let output = serde_json::to_string_pretty(&json!({
+                "ok": false,
+                "kind": "task",
+                "tier": tier.label(),
+                "tier_notice": tier_notice,
+                "description": description,
+                "state": "error",
+                "error": err.to_string(),
+                "stats": SubagentStats::default().public(),
+            }))?;
+            record_subagent_audit(
+                &context,
+                &anchor,
+                &description,
+                &prompt,
+                &output,
+                None,
+                &model_choice,
+            );
+            return Ok(output);
+        }
+    };
 
     let state = if stats.budget_reached {
         "budget_reached"
@@ -433,16 +352,21 @@ async fn run_task_core(
 
     let final_text = result.content.trim().to_string();
 
-    let output = serde_json::to_string_pretty(&json!({
-        "ok": true,
-        "kind": "task",
-        "tier": tier.label(),
-        "tier_notice": tier_notice,
-        "description": description,
-        "state": state,
-        "result": final_text,
-        "stats": stats.public(),
-    }))?;
+    // 08-21 token-diet:成功路径改文本形态——子代理结论不再被 JSON 转义
+    // (换行/引号转义在长结论上是实打实的浪费)。result: 之后到结尾都是
+    // 结论本体,tool_report.rs 的持久化提取按此约定解析;错误路径保留
+    // ok:false JSON(成败判定的结构即功能)。
+    let mut output = format!("task {state} (tier {}): {description}\n", tier.label());
+    if let Some(notice) = &tier_notice {
+        output.push_str(notice);
+        output.push('\n');
+    }
+    output.push_str(&format!(
+        "stats: {}\n",
+        serde_json::to_string(&stats.public())?
+    ));
+    output.push_str("result:\n");
+    output.push_str(&final_text);
     // Prefer the endpoint that actually produced the final reply (pools
     // load-balance, so the representative pool entry may differ).
     let model_choice = match (&result.provider_id, &result.model) {

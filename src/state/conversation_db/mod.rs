@@ -1,4 +1,8 @@
 mod attachments;
+mod inline_media;
+pub use attachments::{
+    USER_ATTACHMENT_KIND_FILE, USER_ATTACHMENT_KIND_IMAGE, USER_ATTACHMENT_KIND_TEXT,
+};
 mod goals;
 pub use goals::*;
 mod history;
@@ -23,7 +27,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 fn insert_platform_access_audit(
@@ -62,6 +66,9 @@ fn insert_platform_access_audit(
 
 pub struct ConversationDb {
     conn: Mutex<Connection>,
+    /// 落盘附件的根目录(`<state_dir>/attachments`),布局
+    /// `<attachment_id>/<file_name>`;路径完全由行数据推导,表里不存。
+    attachments_dir: PathBuf,
 }
 
 impl std::fmt::Debug for ConversationDb {
@@ -98,11 +105,71 @@ fn reclaim_free_pages(conn: &Connection) {
         let _ = conn.execute_batch("VACUUM;");
         return;
     }
+    // 08-21 取证:incremental_vacuum 的截断提交对 wal/主文件失配零容忍,是把
+    // 失配放大成截断损坏的放大器;子代理审计等瞬时连接也在每次 open 白跑它。
+    // 攒到 64 空闲页(256 KB)再回收,把最脆的代码路径从"每次 open"降到"偶尔"。
+    let free: i64 = conn
+        .query_row("PRAGMA freelist_count", [], |row| row.get(0))
+        .unwrap_or(0);
+    if free < 64 {
+        return;
+    }
     let _ = conn.execute_batch("PRAGMA incremental_vacuum(256);");
 }
 
+/// 这条错误链里有没有 SQLite 的「库损坏」。损坏码有两个:`DatabaseCorrupt`
+/// (SQLITE_CORRUPT,11) 是页面结构坏了,`NotADatabase` (SQLITE_NOTADB,26) 是
+/// 文件头就不对——对用户是同一件事,恢复手段也一样。
+fn is_database_corrupt(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error {
+                    code: rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase,
+                    ..
+                },
+                _
+            ))
+        )
+    })
+}
+
 impl ConversationDb {
+    /// 开库。库损坏时把 rusqlite 的裸报错换成一条能照着做的说明——
+    /// 08-29 用户反馈:`miyu daemon start` / `web` / `dev` 全都只吐
+    /// 「exited before becoming ready (exit status: 1)」,daemon.log 里也只有
+    /// 一行 `database disk image is malformed`,既不说是哪个文件,也不说怎么
+    /// 办;真正有用的那句在第三个文件 `miyu.<date>.log` 里。
+    ///
+    /// 损坏可能从 open/PRAGMA/版本读取/迁移里任意一处冒出来,所以在出口统一
+    /// 认,不逐个 `?` 去猜。
     pub fn open(state_dir: &Path) -> Result<Self> {
+        let db_path = state_dir.join("conversation.db");
+        Self::open_inner(state_dir).map_err(|error| {
+            if !is_database_corrupt(&error) {
+                return error;
+            }
+            let backup = state_dir.join("conversation.db.bak");
+            let recovery = if backup.exists() {
+                format!(
+                    "\n可用的迁移前备份：{}（改名成 conversation.db 顶上，会丢掉最后一次版本升级之后的记录）",
+                    backup.display()
+                )
+            } else {
+                String::new()
+            };
+            error.context(format!(
+                "会话数据库已损坏：{}\n先停掉所有 miyu 进程，再任选一条：\n\
+                 1. 抢救数据：用 sqlite3 命令行对该文件跑 \".recover\" 导出后重建\n\
+                 2. 放弃历史：把 conversation.db、conversation.db-wal、conversation.db-shm 一起挪走，Miyu 会重建空库{}",
+                db_path.display(),
+                recovery
+            ))
+        })
+    }
+
+    fn open_inner(state_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(state_dir)?;
         let db_path = state_dir.join("conversation.db");
         let mut conn = Connection::open(&db_path)
@@ -119,6 +186,19 @@ impl ConversationDb {
              PRAGMA foreign_keys = ON;
              PRAGMA cache_size = -1024;",
         )?;
+        // 08-21 生图 bug 教训:损坏库(freelist 不一致)只在 ≥1MB blob 写入时
+        // 失败,且失败只打 warn,静默丢了三天图片资产。启动即体检,坏了就用
+        // 默认级别可见的 error 亮出来;只报不拦——拦截会把用户整个锁在门外。
+        let check = conn
+            .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))
+            .unwrap_or_else(|error| format!("quick_check failed: {error}"));
+        if check != "ok" {
+            tracing::error!(
+                db = %db_path.display(),
+                %check,
+                "conversation.db 未通过完整性体检;大对象写入可能失败,请备份后用 sqlite3 .recover 重建"
+            );
+        }
         // Back up the database file before applying schema migrations to a
         // database that already holds data.
         if super::migrations::current_version(&conn)? < super::migrations::LATEST_VERSION {
@@ -127,16 +207,66 @@ impl ConversationDb {
                 [],
                 |row| row.get(0),
             )?;
-            if has_turns {
-                let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
-                let _ = std::fs::copy(&db_path, state_dir.join("conversation.db.bak"));
+            // 体检不过就不导:坏库上 VACUUM 会把失配放大成截断损坏(08-21
+            // 取证,下面 reclaim_free_pages 同一个判据)。这里原来没挡,坏库
+            // 照样往下走。
+            if has_turns && check == "ok" {
+                // 08-21 取证:std::fs::copy 打开再 close 主库文件,POSIX close
+                // 语义会连带丢掉本进程在主文件上的常驻 WAL 锁,且拷出的副本
+                // 可能撕裂。VACUUM INTO 在 SQLite 事务内导出自洽副本,两个坑
+                // 一起填(transfer/export.rs 同范式)。
+                //
+                // 先导到暂存文件、成功了再改名顶上。原来是"先 remove 旧备份、
+                // 再 VACUUM INTO、失败只 log"——在坏库上 VACUUM 几乎必失败,
+                // 于是用户最需要备份的那一刻,上一份好备份刚被删掉,新的又没
+                // 生成(08-29 用户反馈的坏库现场)。
+                let bak = state_dir.join("conversation.db.bak");
+                let staging = state_dir.join("conversation.db.bak.new");
+                let _ = std::fs::remove_file(&staging);
+                match conn.execute("VACUUM INTO ?1", [staging.to_string_lossy().as_ref()]) {
+                    Ok(_) => {
+                        if let Err(error) = std::fs::rename(&staging, &bak) {
+                            let _ = std::fs::remove_file(&staging);
+                            tracing::error!(%error, "conversation.db 迁移前备份改名失败(旧备份保留)");
+                        }
+                    }
+                    Err(error) => {
+                        let _ = std::fs::remove_file(&staging);
+                        tracing::error!(%error, "conversation.db 迁移前备份失败(旧备份保留,继续迁移)");
+                    }
+                }
+            } else if has_turns {
+                tracing::error!(
+                    %check,
+                    "conversation.db 体检未通过,跳过迁移前备份以免放大损坏;已有的 conversation.db.bak 保持不动"
+                );
             }
         }
         super::migrations::run_migrations(&mut conn)?;
-        reclaim_free_pages(&conn);
+        // 坏库上跑 vacuum 会把失配放大成截断损坏(08-21 取证),体检不过就跳过。
+        if check == "ok" {
+            reclaim_free_pages(&conn);
+        }
         Ok(Self {
             conn: Mutex::new(conn),
+            attachments_dir: state_dir.join("attachments"),
         })
+    }
+
+    /// 落盘附件的根目录。
+    pub fn attachments_dir(&self) -> &Path {
+        &self.attachments_dir
+    }
+
+    /// 某个附件在磁盘上的目录(`<root>/<attachment_id>`)。
+    pub fn attachment_dir(&self, attachment_id: &str) -> PathBuf {
+        self.attachments_dir.join(attachment_id)
+    }
+
+    /// 某个附件在磁盘上的文件路径。文件名已在上传时消毒。
+    pub fn attachment_path(&self, attachment: &UserAttachment) -> PathBuf {
+        self.attachment_dir(&attachment.attachment_id)
+            .join(&attachment.file_name)
     }
 
     fn next_seq_locked(&self, conn: &Connection, session_id: &str) -> Result<i64> {
@@ -870,6 +1000,88 @@ mod reclaim_probe {
             (before - after) as f64 / 1048576.0,
             100.0 * (before - after) as f64 / before as f64,
             elapsed.as_secs_f64() * 1000.0,
+        );
+    }
+}
+
+#[cfg(test)]
+mod corruption_tests {
+    use super::*;
+
+    /// 造一个真正会让 SQLite 报损坏的库：先建一个合法库，再把中间的页面
+    /// 用垃圾覆盖掉。文件头还在，所以它过得了"是不是 SQLite 文件"这关，
+    /// 坏在页面结构上——正是用户 08-29 反馈的那种 `SQLITE_CORRUPT`。
+    fn write_corrupt_database(path: &Path) {
+        {
+            let conn = Connection::open(path).unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode = DELETE;
+                 CREATE TABLE turns(turn_id TEXT PRIMARY KEY, body TEXT);",
+            )
+            .unwrap();
+            let mut insert = conn.prepare("INSERT INTO turns VALUES(?1, ?2)").unwrap();
+            let filler = "x".repeat(4096);
+            for index in 0..200 {
+                insert.execute(params![index.to_string(), filler]).unwrap();
+            }
+        }
+        // 保留 100 字节文件头（否则 SQLite 只会说"这不是数据库"），砸掉
+        // 第一页剩下的部分——sqlite_master 的 b-tree 就在那儿，读不出 schema
+        // 才是 SQLITE_CORRUPT。砸文件尾部没用：第一页完好时 schema 照样读得
+        // 出来，报的会是"no such column"之类的普通错误。
+        let mut bytes = std::fs::read(path).unwrap();
+        let page_size = 4096.min(bytes.len());
+        for byte in &mut bytes[100..page_size] {
+            *byte = 0x5a;
+        }
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    /// 坏库的报错要说清楚是哪个文件、怎么办。原来只有 rusqlite 的裸串
+    /// 「database disk image is malformed」,用户拿到手什么也做不了。
+    #[test]
+    fn a_corrupt_database_reports_the_file_and_what_to_do() {
+        let dir = tempfile::tempdir().unwrap();
+        write_corrupt_database(&dir.path().join("conversation.db"));
+
+        let error = ConversationDb::open(dir.path()).unwrap_err();
+        let rendered = format!("{error:#}");
+
+        assert!(is_database_corrupt(&error), "没认出损坏: {rendered}");
+        assert!(rendered.contains("会话数据库已损坏"), "{rendered}");
+        assert!(rendered.contains("conversation.db"), "{rendered}");
+        assert!(rendered.contains("conversation.db-wal"), "{rendered}");
+    }
+
+    /// 备份必须先导到暂存文件、成功了再顶上。原来是「先删旧备份、再
+    /// VACUUM INTO、失败只 log」——导出一失败,用户最需要备份的那一刻,上一
+    /// 份好备份刚被自己删掉。
+    ///
+    /// 这里用「把暂存路径先占成目录」来逼 VACUUM INTO 失败:坏库测不出这条
+    /// (库一坏,`current_version` 先炸,根本走不到备份这段——第一版测试就是
+    /// 这么假绿的)。
+    #[test]
+    fn a_failed_backup_never_destroys_the_existing_one() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let conn = Connection::open(dir.path().join("conversation.db")).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE turns(turn_id TEXT PRIMARY KEY, body TEXT);
+                 INSERT INTO turns VALUES('t1', 'body');",
+            )
+            .unwrap();
+        }
+        let backup = dir.path().join("conversation.db.bak");
+        std::fs::write(&backup, b"previous good backup").unwrap();
+        // 暂存路径被目录占住 → VACUUM INTO 必失败。
+        std::fs::create_dir(dir.path().join("conversation.db.bak.new")).unwrap();
+
+        let _ = ConversationDb::open(dir.path());
+
+        assert_eq!(
+            std::fs::read(&backup).unwrap(),
+            b"previous good backup",
+            "导出失败时旧备份被删了"
         );
     }
 }

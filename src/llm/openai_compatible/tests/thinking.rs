@@ -1,7 +1,7 @@
 //! 思考变体的保存、迁移与线路映射。
 
-use crate::llm::openai_compatible::*;
 use super::shared::*;
+use crate::llm::openai_compatible::*;
 
 #[test]
 fn reasoning_failover_visibility_only_follows_reasoning_display() {
@@ -373,7 +373,10 @@ fn mixed_client_keeps_variants_per_provider_and_model() {
         max_tokens_override: None,
         request_scope: "chat",
         claude_code: None,
+        antigravity: None,
+        codex: None,
         claude_code_dev_mode: false,
+        zen_session: None,
         continuation_health: ResponsesContinuationHealth::detached(),
     };
 

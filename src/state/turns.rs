@@ -250,10 +250,6 @@ impl StateStore {
         Ok(recoveries.len())
     }
 
-    pub fn session_last_request_at(&self) -> Result<Option<i64>> {
-        self.conv_db.session_last_request_at(&self.session())
-    }
-
     pub fn merge_turn_footprint(
         &self,
         turn_id: &str,
@@ -266,7 +262,8 @@ impl StateStore {
         &self,
         turn_ids: &[String],
     ) -> Result<crate::state::ToolFootprint> {
-        self.conv_db.load_merged_footprint(&self.session(), turn_ids)
+        self.conv_db
+            .load_merged_footprint(&self.session(), turn_ids)
     }
 
     #[allow(dead_code)]

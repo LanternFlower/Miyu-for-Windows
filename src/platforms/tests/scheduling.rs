@@ -1,7 +1,7 @@
 //! 并发闸门与限流。
 
-use crate::platforms::*;
 use super::shared::*;
+use crate::platforms::*;
 
 #[test]
 fn rate_window_allows_then_drops_with_single_notice() {
@@ -235,7 +235,8 @@ async fn session_preemption_invalidates_old_waiters_but_not_new_arrivals() {
     });
     assert_eq!(started_rx.recv().await, Some("old"));
 
-    let command_ticket = runtime.preempt_session_turns("session-a");
+    let command_ticket =
+        runtime.preempt_session_turns("session-a", PlatformSessionLimits::default());
     assert!(!first.is_valid());
     let command_tx = order_tx.clone();
     let command_started = started_tx.clone();
@@ -315,4 +316,148 @@ async fn running_platform_turn_does_not_block_an_independent_dispatch() {
         .load_queued_prompts()
         .unwrap()
         .is_empty());
+}
+
+/// 到达顺序闸(08-26):判断挪到抢名额之前后,靠 ingress_order 保证回复仍按
+/// 消息到达先后出去。这里让**后到的先判完**——没有顺序闸时它会先抢到名额。
+#[tokio::test]
+async fn ordered_tickets_serve_by_arrival_even_when_judgement_finishes_out_of_order() {
+    let runtime = PlatformRuntime::new().unwrap();
+    let limits = PlatformSessionLimits {
+        running: 1,
+        queued: 8,
+    };
+    // 先到的三条按到达顺序建票(判断之前),序号即 ingress_order。
+    let first = runtime.session_turn_ticket_in_order(
+        "session-order",
+        limits,
+        order_slot(&runtime, "scope-order", 1, 9),
+    );
+    let second = runtime.session_turn_ticket_in_order(
+        "session-order",
+        limits,
+        order_slot(&runtime, "scope-order", 2, 9),
+    );
+    let third = runtime.session_turn_ticket_in_order(
+        "session-order",
+        limits,
+        order_slot(&runtime, "scope-order", 3, 9),
+    );
+
+    let (served_tx, mut served_rx) = tokio::sync::mpsc::unbounded_channel();
+    // 反着抢:第三条最先判完去排队,第一条最后。
+    let mut handles = Vec::new();
+    for (order, ticket) in [(3, third), (2, second), (1, first)] {
+        let served_tx = served_tx.clone();
+        handles.push(tokio::spawn(async move {
+            let lease = ticket.acquire().await.expect("lease");
+            served_tx.send(order).unwrap();
+            // 拿住名额一小会儿,逼后面的人真的去排队。
+            tokio::task::yield_now().await;
+            drop(lease);
+        }));
+        // 让这个任务真正跑到 acquire 里,复现"判断完成顺序 = 抢名额顺序"。
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+    }
+    drop(served_tx);
+
+    let mut served = Vec::new();
+    while let Some(order) = served_rx.recv().await {
+        served.push(order);
+    }
+    for handle in handles {
+        handle.await.unwrap();
+    }
+    assert_eq!(served, vec![1, 2, 3]);
+}
+
+/// 顺序闸满了就在登记阶段拒绝——原先满队丢弃发生在判断之后,白花一次 LLM。
+#[tokio::test]
+async fn ordered_tickets_refuse_once_the_backlog_is_full() {
+    let runtime = PlatformRuntime::new().unwrap();
+    let limits = PlatformSessionLimits {
+        running: 1,
+        queued: 2,
+    };
+    let mut tickets = Vec::new();
+    for order in 0..3 {
+        tickets.push(
+            runtime
+                .turn_order
+                .enter("scope-full", order, limits.running + limits.queued)
+                .expect("capacity is running + queued = 3"),
+        );
+    }
+    let capacity = limits.running + limits.queued;
+    assert!(runtime
+        .turn_order
+        .enter("scope-full", 3, capacity)
+        .is_none());
+    // 判断不通过的票据掉落即让位,后来的消息立刻能登记。
+    tickets.pop();
+    assert!(runtime
+        .turn_order
+        .enter("scope-full", 4, capacity)
+        .is_some());
+}
+
+/// 抢占票据不排队——覆盖的语义就是插队。
+#[tokio::test]
+async fn preemptive_tickets_skip_the_arrival_order_gate() {
+    let runtime = PlatformRuntime::new().unwrap();
+    let limits = PlatformSessionLimits {
+        running: 1,
+        queued: 4,
+    };
+    let _blocking = runtime.session_turn_ticket_in_order(
+        "session-preempt",
+        limits,
+        order_slot(&runtime, "scope-preempt", 1, 9),
+    );
+    let preempt = runtime.preempt_session_turns("session-preempt", limits);
+    // 序号 1 还占着头位,但抢占票据不看顺序闸,应当立刻拿到独占。
+    let lease = tokio::time::timeout(Duration::from_secs(2), preempt.acquire())
+        .await
+        .expect("preemption must not wait behind the arrival queue")
+        .expect("lease");
+    assert!(lease.is_valid());
+}
+
+/// `/stop` 报的排队条数要跟得上顺序闸(08-26 二轮审查):判断挪到抢名额之前
+/// 以后,同一刻最多一条卡在信号量上,`waiting` 恒 0/1,只读它会把积压报少。
+#[tokio::test]
+async fn queued_session_turns_counts_the_arrival_backlog() {
+    let runtime = PlatformRuntime::new().unwrap();
+    let limits = PlatformSessionLimits {
+        running: 1,
+        queued: 8,
+    };
+    let mut tickets = Vec::new();
+    for order in 0..5 {
+        tickets.push(order_slot(
+            &runtime,
+            "scope-backlog",
+            order,
+            limits.running + limits.queued,
+        ));
+    }
+    assert_eq!(runtime.queued_turns("scope-backlog"), 5);
+    tickets.truncate(2);
+    assert_eq!(runtime.queued_turns("scope-backlog"), 2);
+    drop(tickets);
+    assert_eq!(runtime.queued_turns("scope-backlog"), 0);
+}
+
+/// 测试里把"登记顺序位"这一步收成一行。真实链路上它在 dispatch 最前面拿。
+fn order_slot(
+    runtime: &PlatformRuntime,
+    scope: &str,
+    order: i64,
+    capacity: usize,
+) -> crate::platforms::TurnOrderSlot {
+    runtime
+        .turn_order
+        .enter(scope, order, capacity)
+        .expect("backlog has room")
 }

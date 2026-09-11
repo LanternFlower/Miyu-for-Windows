@@ -123,7 +123,10 @@ pub(crate) fn convert_command(chars: &[char], cursor: &mut usize) -> String {
         }
     }
     let start = *cursor;
-    while chars.get(*cursor).is_some_and(|ch| ch.is_ascii_alphabetic()) {
+    while chars
+        .get(*cursor)
+        .is_some_and(|ch| ch.is_ascii_alphabetic())
+    {
         *cursor += 1;
     }
     let name: String = chars[start..*cursor].iter().collect();
@@ -135,7 +138,11 @@ pub(crate) fn convert_command(chars: &[char], cursor: &mut usize) -> String {
         "frac" | "dfrac" | "tfrac" => {
             let numerator = read_group(chars, cursor);
             let denominator = read_group(chars, cursor);
-            format!("{}/{}", parenthesize(&numerator), parenthesize(&denominator))
+            format!(
+                "{}/{}",
+                parenthesize(&numerator),
+                parenthesize(&denominator)
+            )
         }
         "sqrt" => {
             let radicand = read_group(chars, cursor);
@@ -166,7 +173,9 @@ pub(crate) fn convert_command(chars: &[char], cursor: &mut usize) -> String {
         "left" | "right" | "big" | "Big" | "bigg" | "Bigg" | "displaystyle" | "textstyle"
         | "limits" | "nolimits" => String::new(),
         "quad" | "qquad" => " ".to_string(),
-        other => symbol_for(other).map(str::to_string).unwrap_or_else(|| format!("\\{other}")),
+        other => symbol_for(other)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("\\{other}")),
     }
 }
 
@@ -174,9 +183,15 @@ pub(crate) fn convert_command(chars: &[char], cursor: &mut usize) -> String {
 pub(crate) fn parenthesize(text: &str) -> String {
     let trimmed = text.trim();
     let simple = trimmed.chars().count() <= 1
-        || trimmed.chars().all(|ch| ch.is_alphanumeric() || ch == '.' || ch == '′')
+        || trimmed
+            .chars()
+            .all(|ch| ch.is_alphanumeric() || ch == '.' || ch == '′')
         || fully_parenthesized(trimmed);
-    if simple { trimmed.to_string() } else { format!("({trimmed})") }
+    if simple {
+        trimmed.to_string()
+    } else {
+        format!("({trimmed})")
+    }
 }
 
 /// 整体被同一对匹配括号包裹才算"已括":`(a)+(b)` 两端虽是括号但
@@ -203,18 +218,77 @@ pub(crate) fn fully_parenthesized(text: &str) -> bool {
 }
 
 pub(crate) const SUPERSCRIPTS: &[(char, char)] = &[
-    ('0', '⁰'), ('1', '¹'), ('2', '²'), ('3', '³'), ('4', '⁴'), ('5', '⁵'), ('6', '⁶'),
-    ('7', '⁷'), ('8', '⁸'), ('9', '⁹'), ('+', '⁺'), ('-', '⁻'), ('−', '⁻'), ('=', '⁼'),
-    ('(', '⁽'), (')', '⁾'), ('n', 'ⁿ'), ('i', 'ⁱ'), ('T', 'ᵀ'), ('t', 'ᵗ'), ('k', 'ᵏ'),
-    ('m', 'ᵐ'), ('a', 'ᵃ'), ('b', 'ᵇ'), ('c', 'ᶜ'), ('d', 'ᵈ'), ('e', 'ᵉ'), ('x', 'ˣ'),
-    ('y', 'ʸ'), ('p', 'ᵖ'), ('r', 'ʳ'), ('s', 'ˢ'), ('u', 'ᵘ'), ('v', 'ᵛ'), ('*', '*'),
-    ('′', '′'), ('⊤', 'ᵀ'),
+    ('0', '⁰'),
+    ('1', '¹'),
+    ('2', '²'),
+    ('3', '³'),
+    ('4', '⁴'),
+    ('5', '⁵'),
+    ('6', '⁶'),
+    ('7', '⁷'),
+    ('8', '⁸'),
+    ('9', '⁹'),
+    ('+', '⁺'),
+    ('-', '⁻'),
+    ('−', '⁻'),
+    ('=', '⁼'),
+    ('(', '⁽'),
+    (')', '⁾'),
+    ('n', 'ⁿ'),
+    ('i', 'ⁱ'),
+    ('T', 'ᵀ'),
+    ('t', 'ᵗ'),
+    ('k', 'ᵏ'),
+    ('m', 'ᵐ'),
+    ('a', 'ᵃ'),
+    ('b', 'ᵇ'),
+    ('c', 'ᶜ'),
+    ('d', 'ᵈ'),
+    ('e', 'ᵉ'),
+    ('x', 'ˣ'),
+    ('y', 'ʸ'),
+    ('p', 'ᵖ'),
+    ('r', 'ʳ'),
+    ('s', 'ˢ'),
+    ('u', 'ᵘ'),
+    ('v', 'ᵛ'),
+    ('*', '*'),
+    ('′', '′'),
+    ('⊤', 'ᵀ'),
 ];
 
 pub(crate) const SUBSCRIPTS: &[(char, char)] = &[
-    ('0', '₀'), ('1', '₁'), ('2', '₂'), ('3', '₃'), ('4', '₄'), ('5', '₅'), ('6', '₆'),
-    ('7', '₇'), ('8', '₈'), ('9', '₉'), ('+', '₊'), ('-', '₋'), ('−', '₋'), ('=', '₌'),
-    ('(', '₍'), (')', '₎'), ('a', 'ₐ'), ('e', 'ₑ'), ('h', 'ₕ'), ('i', 'ᵢ'), ('j', 'ⱼ'),
-    ('k', 'ₖ'), ('l', 'ₗ'), ('m', 'ₘ'), ('n', 'ₙ'), ('o', 'ₒ'), ('p', 'ₚ'), ('r', 'ᵣ'),
-    ('s', 'ₛ'), ('t', 'ₜ'), ('u', 'ᵤ'), ('v', 'ᵥ'), ('x', 'ₓ'),
+    ('0', '₀'),
+    ('1', '₁'),
+    ('2', '₂'),
+    ('3', '₃'),
+    ('4', '₄'),
+    ('5', '₅'),
+    ('6', '₆'),
+    ('7', '₇'),
+    ('8', '₈'),
+    ('9', '₉'),
+    ('+', '₊'),
+    ('-', '₋'),
+    ('−', '₋'),
+    ('=', '₌'),
+    ('(', '₍'),
+    (')', '₎'),
+    ('a', 'ₐ'),
+    ('e', 'ₑ'),
+    ('h', 'ₕ'),
+    ('i', 'ᵢ'),
+    ('j', 'ⱼ'),
+    ('k', 'ₖ'),
+    ('l', 'ₗ'),
+    ('m', 'ₘ'),
+    ('n', 'ₙ'),
+    ('o', 'ₒ'),
+    ('p', 'ₚ'),
+    ('r', 'ᵣ'),
+    ('s', 'ₛ'),
+    ('t', 'ₜ'),
+    ('u', 'ᵤ'),
+    ('v', 'ᵥ'),
+    ('x', 'ₓ'),
 ];

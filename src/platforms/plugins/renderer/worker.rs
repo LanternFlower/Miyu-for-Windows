@@ -12,17 +12,21 @@ use crate::platforms::plugins::renderer::*;
 
 // 10 分钟：worker 常驻约 30 MB（字体 + 塑形缓存），闲置回收后下次渲染
 // 自动重拉，冷启动只多付一次字体加载。
-pub(in crate::platforms::plugins::renderer) const WORKER_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+pub(in crate::platforms::plugins::renderer) const WORKER_IDLE_TIMEOUT: Duration =
+    Duration::from_secs(10 * 60);
 
-pub(in crate::platforms::plugins::renderer) const RENDER_TIMEOUT: Duration = Duration::from_secs(60);
+pub(in crate::platforms::plugins::renderer) const RENDER_TIMEOUT: Duration =
+    Duration::from_secs(60);
 
 // debug 二进制未优化可到 550MB+,光映射自身就会撞 512MB 上限,worker
 // 秒死只留下一句 "communication failed"——开发构建放宽到 2GB。
 #[cfg(not(debug_assertions))]
-pub(in crate::platforms::plugins::renderer) const WORKER_ADDRESS_SPACE_LIMIT: u64 = 512 * 1024 * 1024;
+pub(in crate::platforms::plugins::renderer) const WORKER_ADDRESS_SPACE_LIMIT: u64 =
+    512 * 1024 * 1024;
 
 #[cfg(debug_assertions)]
-pub(in crate::platforms::plugins::renderer) const WORKER_ADDRESS_SPACE_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
+pub(in crate::platforms::plugins::renderer) const WORKER_ADDRESS_SPACE_LIMIT: u64 =
+    2 * 1024 * 1024 * 1024;
 
 pub(in crate::platforms::plugins::renderer) const MAX_REQUEST_FRAME_BYTES: usize = 512 * 1024;
 
@@ -30,7 +34,8 @@ pub(in crate::platforms::plugins::renderer) const MAX_ERROR_FRAME_BYTES: usize =
 
 pub(in crate::platforms::plugins::renderer) const MAX_RESPONSE_IMAGES: usize = 1;
 
-pub(in crate::platforms::plugins::renderer) const WORKER_ENV: &str = "MIYU_INTERNAL_RENDERER_WORKER";
+pub(in crate::platforms::plugins::renderer) const WORKER_ENV: &str =
+    "MIYU_INTERNAL_RENDERER_WORKER";
 
 pub(in crate::platforms::plugins::renderer) const WORKER_ARG: &str = "__renderer-worker";
 
@@ -187,7 +192,10 @@ pub(in crate::platforms::plugins::renderer) fn apply_worker_address_space_limit(
     Ok(())
 }
 
-pub(in crate::platforms::plugins::renderer) async fn write_frame<W>(writer: &mut W, payload: &[u8]) -> Result<()>
+pub(in crate::platforms::plugins::renderer) async fn write_frame<W>(
+    writer: &mut W,
+    payload: &[u8],
+) -> Result<()>
 where
     W: AsyncWrite + Unpin,
 {
@@ -200,7 +208,10 @@ where
     Ok(())
 }
 
-pub(in crate::platforms::plugins::renderer) async fn read_frame<R>(reader: &mut R, limit: usize) -> Result<Option<Vec<u8>>>
+pub(in crate::platforms::plugins::renderer) async fn read_frame<R>(
+    reader: &mut R,
+    limit: usize,
+) -> Result<Option<Vec<u8>>>
 where
     R: AsyncRead + Unpin,
 {
@@ -219,7 +230,10 @@ where
     Ok(Some(payload))
 }
 
-pub(in crate::platforms::plugins::renderer) async fn write_worker_response<W>(writer: &mut W, result: Result<Vec<RenderedImage>>) -> Result<()>
+pub(in crate::platforms::plugins::renderer) async fn write_worker_response<W>(
+    writer: &mut W,
+    result: Result<Vec<RenderedImage>>,
+) -> Result<()>
 where
     W: AsyncWrite + Unpin,
 {
@@ -338,7 +352,11 @@ where
     }
 }
 
-pub(in crate::platforms::plugins::renderer) async fn write_u32<W>(writer: &mut W, value: usize, label: &str) -> Result<()>
+pub(in crate::platforms::plugins::renderer) async fn write_u32<W>(
+    writer: &mut W,
+    value: usize,
+    label: &str,
+) -> Result<()>
 where
     W: AsyncWrite + Unpin,
 {
@@ -346,7 +364,10 @@ where
     write_u32_value(writer, value).await
 }
 
-pub(in crate::platforms::plugins::renderer) async fn write_u32_value<W>(writer: &mut W, value: u32) -> Result<()>
+pub(in crate::platforms::plugins::renderer) async fn write_u32_value<W>(
+    writer: &mut W,
+    value: u32,
+) -> Result<()>
 where
     W: AsyncWrite + Unpin,
 {
@@ -372,7 +393,12 @@ where
     Ok(byte[0])
 }
 
-pub(in crate::platforms::plugins::renderer) async fn write_sized_bytes<W>(writer: &mut W, bytes: &[u8], limit: usize, label: &str) -> Result<()>
+pub(in crate::platforms::plugins::renderer) async fn write_sized_bytes<W>(
+    writer: &mut W,
+    bytes: &[u8],
+    limit: usize,
+    label: &str,
+) -> Result<()>
 where
     W: AsyncWrite + Unpin,
 {
@@ -384,7 +410,10 @@ where
     Ok(())
 }
 
-pub(in crate::platforms::plugins::renderer) async fn read_sized_bytes<R>(reader: &mut R, limit: usize) -> Result<Vec<u8>>
+pub(in crate::platforms::plugins::renderer) async fn read_sized_bytes<R>(
+    reader: &mut R,
+    limit: usize,
+) -> Result<Vec<u8>>
 where
     R: AsyncRead + Unpin,
 {

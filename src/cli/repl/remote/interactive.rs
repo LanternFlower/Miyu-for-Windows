@@ -192,6 +192,29 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
             match command {
                 ReplSlashCommand::Exit => break,
                 ReplSlashCommand::Help => print_repl_help(),
+                ReplSlashCommand::Stt => {
+                    if crate::cli::repl::dictation::is_active() {
+                        crate::cli::repl::dictation::stop();
+                        repl_note(
+                            &mut live_repl,
+                            &format!("\x1b[2m{}\x1b[0m\n", t("dictation stopped", "听写已停止")),
+                        )?;
+                    } else if crate::cli::repl::dictation::start(
+                        paths,
+                        config.voice.dictation_auto_submit,
+                    ) {
+                        repl_note(
+                            &mut live_repl,
+                            &format!(
+                                "\x1b[2m{}\x1b[0m\n",
+                                t(
+                                    "listening… speak; Esc stops, Enter sends (10s of silence also ends it)",
+                                    "在听…请讲;Esc 停止,回车发送(静默 10 秒也会自动结束)"
+                                )
+                            ),
+                        )?;
+                    }
+                }
                 ReplSlashCommand::History => {
                     let state = StateStore::new(paths)?.pinned(&active_session_id);
                     run_history_with_state(
@@ -541,24 +564,30 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         let _ =
                             repl_ipc_admin(paths, &mut live_repl, IpcCommand::ReloadConfig).await;
                         config = AppConfig::load(paths)?;
-                        let session_config =
-                            footer_config_for_session(paths, &config, &active_session_id);
-                        let (state, _) =
-                            repl_active_or_default_state(paths, &active_session_id).await?;
-                        cumulative_tokens = state_cumulative(&state);
-                        footer = ReplFooterStatus::from_config(
-                            &session_config,
-                            state.context_tokens,
-                            cumulative_tokens,
-                        );
-                        let client = OpenAiCompatibleClient::from_config(&session_config, paths)?;
-                        footer
-                            .update_thinking_variant(client.thinking_variant_summary().as_deref());
-                        footer.update_context_window(
-                            state.context_window,
-                            state.context_window_assumed,
-                        );
-                        live_repl.set_footer(footer.clone());
+                        // 人格是会话的命名空间维度:切人格后 daemon 的当前会话
+                        // 指针已经指向新人格的会话,前端必须重取并把
+                        // active_session_id / history / footer 一起换过去。
+                        // 漏了这步(09-01 前的实现)会让前端还挂在旧人格的
+                        // 会话上等事件流,而 daemon 在新人格语境里跑,消息发出
+                        // 去永远等不到回执——UI 卡死在「加载中 0ms」。
+                        let (daemon_state, _) = send_ipc_admin(
+                            paths,
+                            IpcCommand::GetReplSession {
+                                mode: (mode == AgentMode::Dev).then(|| "dev".to_string()),
+                            },
+                        )
+                        .await?;
+                        apply_repl_session_switch(
+                            paths,
+                            &config,
+                            &daemon_state,
+                            &mut active_session_id,
+                            &mut history,
+                            &mut live_repl,
+                            &mut footer,
+                            &mut cumulative_tokens,
+                        )
+                        .await?;
                         repl_note(
                             &mut live_repl,
                             &format!("{}\n", t("configuration reloaded", "配置已重新加载")),
@@ -1000,6 +1029,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
             &images,
             Some(active_session_id.clone()),
             Some(&jobs_feed),
+            None,
         )
         .await
         {

@@ -97,9 +97,21 @@ pub(crate) async fn reset_platform_persona_state(
         }
     }
 
+    let default_limits = {
+        let manager = state.manager.lock().unwrap();
+        manager
+            .config
+            .platforms
+            .qq
+            .session_limits(crate::config::PlatformConversationKind::Group, "")
+    };
     let tickets = session_ids
         .iter()
-        .map(|session_id| state.platforms.preempt_session_turns(session_id))
+        .map(|session_id| {
+            state
+                .platforms
+                .preempt_session_turns(session_id, default_limits)
+        })
         .collect::<Vec<_>>();
     let leases = match tokio::time::timeout(Duration::from_secs(10), async {
         let mut leases = Vec::with_capacity(tickets.len());

@@ -1,7 +1,7 @@
 {
   "name": "install_aur_package",
   "display_name": "安装 AUR 包",
-  "description": "Install an AUR package; requires a prior review and explicit user confirmation.\nOnly callable after review_aur_package recorded an allowed review state and the user explicitly confirmed installation in a later reply. Requires user_confirmed=true.",
+  "description": "Install an AUR package. Requires a prior review and the user's explicit confirmation.",
   "parameters": {
     "type": "object",
     "properties": {

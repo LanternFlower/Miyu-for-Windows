@@ -1,8 +1,8 @@
 //! 命令行参数与子命令的解析。
 
 // 被测的东西散在 cli::mod 与 repl 的兄弟模块里，这里全都要够到。
-use crate::cli::*;
 use super::shared::*;
+use crate::cli::*;
 /// REPL 的 `/models` 收一整串自由文本,`--global` / `-g` 要能从里面摘
 /// 出来,并且不能把 `-g` 开头的模型名(如 `-gpt`)误当成开关。
 #[test]
@@ -54,7 +54,7 @@ fn variant_is_a_cli_subcommand_with_an_optional_name() {
 #[test]
 fn continue_and_session_flags_are_mutually_exclusive() {
     let cli = parse_args(["miyu", "-c", "hello"].map(OsString::from).to_vec()).unwrap();
-    assert!(cli.continue_session);
+    assert!(cli.turn.continue_session);
     assert_eq!(cli.message, vec!["hello".to_string()]);
 
     let cli = parse_args(
@@ -63,8 +63,8 @@ fn continue_and_session_flags_are_mutually_exclusive() {
             .to_vec(),
     )
     .unwrap();
-    assert!(!cli.continue_session);
-    assert_eq!(cli.session.as_deref(), Some("2"));
+    assert!(!cli.turn.continue_session);
+    assert_eq!(cli.turn.session.as_deref(), Some("2"));
 
     assert!(parse_args(
         ["miyu", "-c", "--session", "2", "hello"]
@@ -318,7 +318,10 @@ fn daemon_owns_lifecycle_and_log_commands() {
     assert!(matches!(
         cli.command,
         Some(Command::Daemon(DaemonArgs {
-            command: Some(DaemonCommand::Logs(DaemonLogsArgs { lines: Some(25), .. })),
+            command: Some(DaemonCommand::Logs(DaemonLogsArgs {
+                lines: Some(25),
+                ..
+            })),
             ..
         }))
     ));
@@ -410,13 +413,13 @@ fn pop_is_a_cli_subcommand_with_an_optional_count() {
     let cli = parse_args(["miyu", "pop"].map(OsString::from).to_vec()).unwrap();
     assert!(matches!(
         cli.command,
-        Some(Command::Pop(PopArgs { count: None }))
+        Some(Command::Pop(PopArgs { count: None, .. }))
     ));
 
     let cli = parse_args(["miyu", "pop", "3"].map(OsString::from).to_vec()).unwrap();
     assert!(matches!(
         cli.command,
-        Some(Command::Pop(PopArgs { count: Some(3) }))
+        Some(Command::Pop(PopArgs { count: Some(3), .. }))
     ));
     assert!(parse_args(["miyu", "pop", "0"].map(OsString::from).to_vec()).is_err());
     assert!(parse_args(["miyu", "pop", "nope"].map(OsString::from).to_vec()).is_err());

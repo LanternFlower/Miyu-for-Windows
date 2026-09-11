@@ -25,9 +25,7 @@ async fn query_deepseek_status(args: Value) -> Result<String> {
     let html = fetch_status_html().await?;
     let raw = parse_status_page(&html)?;
     Ok(serde_json::to_string_pretty(&build_response(
-        &raw,
-        detail,
-        5,
+        &raw, detail, 5,
     ))?)
 }
 

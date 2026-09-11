@@ -1,7 +1,7 @@
 //! 会话增删、人格归属与一次性会话。
 
-use crate::state::*;
 use super::shared::*;
+use crate::state::*;
 
 #[test]
 fn session_crud_switching_and_persona_adoption() {
@@ -46,7 +46,6 @@ fn session_crud_switching_and_persona_adoption() {
         .find_session_by_name("miyu", "旅行计划")
         .unwrap()
         .is_none());
-
 
     // Deleting a session cascades its turns away.
     store.delete_session(&default_id).unwrap();
@@ -483,6 +482,40 @@ fn one_shot_sessions_stay_invisible_and_stale_ones_are_swept() {
     assert!(store.session_record(&user.session_id).unwrap().is_some());
 }
 
+/// normal 车道永不落进终端集成会话(08-25 用户裁定):指针缺失自举新会话;
+/// 指针被(历史 /session 切换或老回落语义)钉在终端会话上时同样自愈成新
+/// 会话并改钉。退回 ensure_repl_session 的守卫前,第二段断言会拿到
+/// DEFAULT_SESSION_ID 报红。
+#[test]
+fn ensure_repl_session_never_lands_on_the_terminal_session() {
+    let (_temp, store) = test_store();
+    store.init_files().unwrap();
+    let terminal = store.session_id().to_string();
+
+    // 库里只有终端会话:自举新会话而不是借用终端车道。
+    let bootstrapped = store.ensure_repl_session("miyu").unwrap();
+    assert_ne!(bootstrapped, terminal);
+
+    // 指针被钉到终端会话:视同缺失,自愈成另一条新会话。生产形态里终端
+    // 会话已被 daemon 启动时的 adopt 认领(persona 匹配、kind=user),指针
+    // 校验放行——生产实锤 repl_session_persona:default=default 正是这么
+    // 进的终端车道,测试必须先复刻认领。
+    store.adopt_sessions_for_persona("miyu").unwrap();
+    store.set_repl_session("miyu", &terminal).unwrap();
+    assert_eq!(
+        store.repl_session("miyu").unwrap().as_deref(),
+        Some(terminal.as_str()),
+        "认领后指针校验应放行终端会话,否则本用例测不到守卫"
+    );
+    let healed = store.ensure_repl_session("miyu").unwrap();
+    assert_ne!(healed, terminal);
+    assert_ne!(healed, bootstrapped);
+    assert_eq!(
+        store.repl_session("miyu").unwrap().as_deref(),
+        Some(healed.as_str())
+    );
+}
+
 #[test]
 fn repl_session_pointer_is_separate_and_drops_when_stale() {
     let (_temp, store) = test_store();
@@ -542,7 +575,12 @@ fn clearing_pinned_session_content_is_isolated_and_preserves_usage_and_binding()
                 total_tokens: 15,
                 ..Usage::default()
             },
-            UsageMeta { source: "agent", provider: Some("prov"), model: Some("model") },
+            UsageMeta {
+                source: "agent",
+                provider: Some("prov"),
+                model: Some("model"),
+                kind: None,
+            },
         )
         .unwrap();
     let usage_before = store.usage_snapshot().unwrap();

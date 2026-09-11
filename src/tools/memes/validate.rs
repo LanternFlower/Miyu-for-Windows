@@ -23,8 +23,6 @@ pub(crate) const MAX_DESCRIPTION_CHARS: usize = 500;
 
 pub(crate) const MAX_USAGE_CHARS: usize = 500;
 
-pub(crate) const MAX_AVOID_CHARS: usize = 500;
-
 pub(crate) const MAX_TAGS: usize = 16;
 
 pub(crate) const MAX_TAG_CHARS: usize = 40;
@@ -137,7 +135,6 @@ pub(in crate::tools::memes) fn validate_classification(
         MAX_DESCRIPTION_CHARS,
     )?;
     validate_text_field("usage", &classification.usage, 1, MAX_USAGE_CHARS)?;
-    validate_text_field("avoid", &classification.avoid, 0, MAX_AVOID_CHARS)?;
     validate_tags(&classification.tags, true)?;
     Ok(())
 }
@@ -299,16 +296,9 @@ pub(crate) fn configured_meme_size(config: &MemesPluginConfig) -> Option<String>
 }
 
 pub(crate) fn has_supplied_metadata(args: &Value) -> bool {
-    [
-        "name_zh",
-        "name_en",
-        "description",
-        "usage",
-        "avoid",
-        "tags",
-    ]
-    .iter()
-    .any(|key| args.get(*key).is_some())
+    ["name_zh", "name_en", "description", "usage", "tags"]
+        .iter()
+        .any(|key| args.get(*key).is_some())
 }
 
 pub(crate) fn item_from_args(
@@ -352,13 +342,6 @@ pub(crate) fn item_from_args(
     validate_text_field("name.en", &name.en, 0, MAX_NAME_CHARS)?;
     validate_text_field("description", &description, 1, MAX_DESCRIPTION_CHARS)?;
     validate_text_field("usage", &usage, 1, MAX_USAGE_CHARS)?;
-    let avoid = args
-        .get("avoid")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    validate_text_field("avoid", &avoid, 0, MAX_AVOID_CHARS)?;
     validate_tags(&tags, false)?;
     Ok(MemeItem {
         id,
@@ -368,7 +351,6 @@ pub(crate) fn item_from_args(
         animated,
         description,
         usage,
-        avoid,
         tags,
         origin: None,
     })
@@ -386,6 +368,13 @@ pub(in crate::tools::memes) fn item_from_classification(
     if !classification.save {
         bail!("vision classification rejected the image")
     }
+    // 调用方（保存工具）已经写了理由就尊重它，否则用分类模型给的那句。
+    let origin = origin.map(|mut origin| {
+        if origin.reason.trim().is_empty() {
+            origin.reason = classification.reason.trim().chars().take(200).collect();
+        }
+        origin
+    });
     let item = MemeItem {
         id,
         name: classification.name,
@@ -394,7 +383,6 @@ pub(in crate::tools::memes) fn item_from_classification(
         animated,
         description: classification.description,
         usage: classification.usage,
-        avoid: classification.avoid,
         tags: classification.tags,
         origin,
     };
@@ -433,9 +421,6 @@ pub(crate) fn apply_updates(item: &mut MemeItem, args: &Value) {
         .filter(|value| !value.is_empty())
     {
         item.usage = value.to_string();
-    }
-    if let Some(value) = args.get("avoid").and_then(Value::as_str).map(str::trim) {
-        item.avoid = value.to_string();
     }
     if args.get("tags").is_some() {
         item.tags = string_array(args.get("tags"));

@@ -33,12 +33,24 @@ pub(crate) fn ratex_png(tex: &str, mode: MathMode) -> Option<Vec<u8>> {
         MathMode::Block => (MathStyle::Display, 28.0, 4.0),
         MathMode::Cell => (MathStyle::Text, 24.0, 1.0),
     };
-    let color = Color { r: MATH_COLOR.0, g: MATH_COLOR.1, b: MATH_COLOR.2, a: 1.0 };
-    let layout_opts = LayoutOptions::default().with_style(math_style).with_color(color);
+    let color = Color {
+        r: MATH_COLOR.0,
+        g: MATH_COLOR.1,
+        b: MATH_COLOR.2,
+        a: 1.0,
+    };
+    let layout_opts = LayoutOptions::default()
+        .with_style(math_style)
+        .with_color(color);
     let render_opts = RenderOptions {
         font_size,
         padding,
-        background_color: Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 },
+        background_color: Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        },
         font_dir: String::new(),
         device_pixel_ratio: 2.0,
     };
@@ -161,11 +173,21 @@ pub(crate) fn decode_and_trim(png: &[u8]) -> Option<Raster> {
             trimmed.push(pixels[y * width + x]);
         }
     }
-    Some(Raster { pixels: trimmed, width: trimmed_width, height: trimmed_height })
+    Some(Raster {
+        pixels: trimmed,
+        width: trimmed_width,
+        height: trimmed_height,
+    })
 }
 
 /// 区域平均采样(缩小时抗锯齿;放大时最近邻)。
-pub(crate) fn sample(raster: &Raster, x: usize, y: usize, target_width: usize, target_height: usize) -> [u8; 4] {
+pub(crate) fn sample(
+    raster: &Raster,
+    x: usize,
+    y: usize,
+    target_width: usize,
+    target_height: usize,
+) -> [u8; 4] {
     if target_width >= raster.width && target_height >= raster.height {
         let source_x = (x * raster.width / target_width).min(raster.width - 1);
         let source_y = (y * raster.height / target_height).min(raster.height - 1);
@@ -174,7 +196,8 @@ pub(crate) fn sample(raster: &Raster, x: usize, y: usize, target_width: usize, t
     let start_x = (x * raster.width / target_width).min(raster.width - 1);
     let end_x = (((x + 1) * raster.width).div_ceil(target_width)).clamp(start_x + 1, raster.width);
     let start_y = (y * raster.height / target_height).min(raster.height - 1);
-    let end_y = (((y + 1) * raster.height).div_ceil(target_height)).clamp(start_y + 1, raster.height);
+    let end_y =
+        (((y + 1) * raster.height).div_ceil(target_height)).clamp(start_y + 1, raster.height);
     let (mut r, mut g, mut b, mut a, mut count) = (0u32, 0u32, 0u32, 0u32, 0u32);
     for sy in start_y..end_y {
         for sx in start_x..end_x {
@@ -186,7 +209,12 @@ pub(crate) fn sample(raster: &Raster, x: usize, y: usize, target_width: usize, t
             count += 1;
         }
     }
-    [(r / count) as u8, (g / count) as u8, (b / count) as u8, (a / count) as u8]
+    [
+        (r / count) as u8,
+        (g / count) as u8,
+        (b / count) as u8,
+        (a / count) as u8,
+    ]
 }
 
 /// 非 kitty 终端交给 chafa 渲染公式。
@@ -287,11 +315,7 @@ pub(crate) fn natural_block_rows(raster: &Raster, max_rows: usize) -> usize {
 ///
 /// 用和 kitty 那条路同一套 retina 语义：RaTeX 以 2x 密度出图，显示尺寸取
 /// 内容的一半，所以简单式子 1~2 行、积分矩阵自然更高。
-pub(crate) fn render_block_math(
-    tex: &str,
-    max_cols: usize,
-    max_rows: usize,
-) -> Option<MathArt> {
+pub(crate) fn render_block_math(tex: &str, max_cols: usize, max_rows: usize) -> Option<MathArt> {
     let png = ratex_png(tex, MathMode::Block)?;
     let raster = decode_and_trim(&png)?;
     let rows = natural_block_rows(&raster, max_rows);
@@ -330,7 +354,10 @@ pub(crate) fn halfblock_from_raster(
         line.push_str("\x1b[0m");
         lines.push(line);
     }
-    Some(MathArt { lines, cols: width_px })
+    Some(MathArt {
+        lines,
+        cols: width_px,
+    })
 }
 
 pub(crate) fn halfblock_cell(top: [u8; 4], bottom: [u8; 4]) -> String {
@@ -342,7 +369,10 @@ pub(crate) fn halfblock_cell(top: [u8; 4], bottom: [u8; 4]) -> String {
             top[0], top[1], top[2], bottom[0], bottom[1], bottom[2]
         ),
         (true, false) => format!("\x1b[49m\x1b[38;2;{};{};{}m▀", top[0], top[1], top[2]),
-        (false, true) => format!("\x1b[49m\x1b[38;2;{};{};{}m▄", bottom[0], bottom[1], bottom[2]),
+        (false, true) => format!(
+            "\x1b[49m\x1b[38;2;{};{};{}m▄",
+            bottom[0], bottom[1], bottom[2]
+        ),
         (false, false) => "\x1b[49m ".to_string(),
     }
 }

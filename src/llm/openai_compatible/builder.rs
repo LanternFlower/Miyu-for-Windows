@@ -47,7 +47,9 @@ impl OpenAiCompatibleClient {
             .first()
             .with_context(|| "no active provider/model endpoint is configured")?;
         let continuation_health = ResponsesContinuationHealth::for_provider(paths, &first.provider);
-        let claude_code = claude_code_runtime(&endpoints, config, paths);
+        let claude_code = claude_code_runtime(&endpoints, config);
+        let antigravity = antigravity_runtime(&endpoints, config);
+        let codex = codex_runtime(&endpoints, config);
         let mut client = Self {
             client: first.client.clone(),
             provider: first.provider.clone(),
@@ -62,7 +64,10 @@ impl OpenAiCompatibleClient {
             request_scope: "chat",
             continuation_health,
             claude_code,
+            antigravity,
+            codex,
             claude_code_dev_mode: false,
+            zen_session: None,
         };
         client.restore_saved_thinking_variants(paths);
         Ok(client)
@@ -101,7 +106,7 @@ impl OpenAiCompatibleClient {
             }
             provider.default_model = choice.model.clone();
             let client = endpoint_client(&provider)?;
-            if provider_uses_claude_code(&provider) {
+            if provider_uses_cli_relay(&provider) {
                 // CLI 用订阅登录态,没有 API key;单端点直进池。
                 endpoints.push(LlmEndpoint {
                     client: client.clone(),
@@ -136,7 +141,9 @@ impl OpenAiCompatibleClient {
             ),
         };
         let continuation_health = ResponsesContinuationHealth::for_provider(paths, &first.provider);
-        let claude_code = claude_code_runtime(&endpoints, config, paths);
+        let claude_code = claude_code_runtime(&endpoints, config);
+        let antigravity = antigravity_runtime(&endpoints, config);
+        let codex = codex_runtime(&endpoints, config);
         let mut client = Self {
             client: first.client.clone(),
             provider: first.provider.clone(),
@@ -151,10 +158,80 @@ impl OpenAiCompatibleClient {
             request_scope: "chat",
             continuation_health,
             claude_code,
+            antigravity,
+            codex,
             claude_code_dev_mode: false,
+            zen_session: None,
         };
         client.restore_saved_thinking_variants(paths);
         Ok(client)
+    }
+
+    /// Builds the client for a subagent tier pool with the tier-routing
+    /// fallback contract shared by every tier consumer (the `task` tool and
+    /// the auxiliary roles under `model_tiers.roles`):
+    ///
+    /// * an unconfigured pool silently uses the main model pool;
+    /// * a configured pool whose models were all removed from the text
+    ///   models, or that cannot be built (disabled provider, missing key),
+    ///   falls back to the main pool and says so in `notice` — the caller
+    ///   decides whether that reaches the calling agent or only the log.
+    ///
+    /// `model_choice` is the representative endpoint for audit rows; pools
+    /// load-balance, so the endpoint that actually answers may differ.
+    pub fn from_tier(
+        config: &AppConfig,
+        paths: &MiyuPaths,
+        tier: crate::config::ModelTier,
+    ) -> Result<TierClient> {
+        let pool = config.tier_choices(tier);
+        if pool.is_empty() {
+            let notice = (!config.model_tiers.pool(tier).is_empty()).then(|| {
+                format!(
+                    "tier '{}' pool has no usable model (models were removed from the text models); fell back to the main model pool",
+                    tier.label()
+                )
+            });
+            return Ok(TierClient {
+                client: Self::from_config(config, paths)?,
+                model_choice: main_pool_choice(config),
+                notice,
+            });
+        }
+        match Self::from_choices(config, paths, &pool) {
+            Ok(client) => Ok(TierClient {
+                client,
+                model_choice: Some((pool[0].provider_id.clone(), pool[0].model.clone())),
+                notice: None,
+            }),
+            Err(err) => Ok(TierClient {
+                client: Self::from_config(config, paths)?,
+                model_choice: main_pool_choice(config),
+                notice: Some(format!(
+                    "tier '{}' pool is unavailable ({err}); fell back to the main model pool",
+                    tier.label()
+                )),
+            }),
+        }
+    }
+
+    /// Builds the client for an auxiliary role: the tier configured under
+    /// `model_tiers.roles`, or the main pool when the role is unrouted.
+    /// Fallback notices are logged here (there is no calling agent to tell)
+    /// so every role consumer gets the same warning without repeating it.
+    pub fn from_aux_role(
+        config: &AppConfig,
+        paths: &MiyuPaths,
+        role: crate::config::AuxRole,
+    ) -> Result<Self> {
+        let Some(tier) = config.model_tiers.role_tier(role) else {
+            return Self::from_config(config, paths);
+        };
+        let routed = Self::from_tier(config, paths, tier)?;
+        if let Some(notice) = &routed.notice {
+            tracing::warn!(role = role.key(), tier = tier.label(), "{notice}");
+        }
+        Ok(routed.client)
     }
 
     pub fn new(provider: &ProviderConfig, config: &AppConfig, paths: &MiyuPaths) -> Result<Self> {
@@ -179,7 +256,7 @@ impl OpenAiCompatibleClient {
             );
         }
         let client = endpoint_client(provider)?;
-        let (key_value, key_index) = if provider_uses_claude_code(provider) {
+        let (key_value, key_index) = if provider_uses_cli_relay(provider) {
             (String::new(), 0)
         } else {
             let key = provider
@@ -197,7 +274,9 @@ impl OpenAiCompatibleClient {
         };
         let continuation_health = ResponsesContinuationHealth::for_provider(paths, provider);
         let endpoints = vec![endpoint];
-        let claude_code = claude_code_runtime(&endpoints, config, paths);
+        let claude_code = claude_code_runtime(&endpoints, config);
+        let antigravity = antigravity_runtime(&endpoints, config);
+        let codex = codex_runtime(&endpoints, config);
         let mut client = Self {
             client,
             provider: provider.clone(),
@@ -212,7 +291,10 @@ impl OpenAiCompatibleClient {
             request_scope: "chat",
             continuation_health,
             claude_code,
+            antigravity,
+            codex,
             claude_code_dev_mode: false,
+            zen_session: None,
         };
         client.restore_saved_thinking_variants(paths);
         Ok(client)
@@ -333,7 +415,10 @@ impl OpenAiCompatibleClient {
             // failover 换端点共享同一健康位(续传本就钉在原端点)。
             continuation_health: self.continuation_health.clone(),
             claude_code: self.claude_code.clone(),
+            antigravity: self.antigravity.clone(),
+            codex: self.codex.clone(),
             claude_code_dev_mode: self.claude_code_dev_mode,
+            zen_session: self.zen_session.clone(),
         }
     }
 
@@ -341,6 +426,14 @@ impl OpenAiCompatibleClient {
     /// (off/dev/normal/all)按它裁决。其他协议不受影响。
     pub fn with_claude_code_dev_mode(mut self, dev: bool) -> Self {
         self.claude_code_dev_mode = dev;
+        self
+    }
+
+    /// 声明这个客户端服务于哪个会话。目前只有 opencode Zen 的
+    /// `x-opencode-session` 用它:一次对话对应服务端一个会话,而不是整个
+    /// daemon 共用一个。派生出去的辅助客户端(压缩、判官)跟着继承。
+    pub fn with_zen_session(mut self, session_id: &str) -> Self {
+        self.zen_session = Some(session_id.to_string());
         self
     }
 
@@ -369,11 +462,32 @@ impl OpenAiCompatibleClient {
     }
 }
 
+/// 端点池里出现 codex 协议端点时,解析一份共享运行时参数。
+pub(in crate::llm::openai_compatible) fn codex_runtime(
+    endpoints: &[LlmEndpoint],
+    config: &AppConfig,
+) -> Option<Arc<CodexRuntime>> {
+    endpoints
+        .iter()
+        .any(|endpoint| provider_uses_codex(&endpoint.provider))
+        .then(|| Arc::new(CodexRuntime::from_config(config)))
+}
+
+/// 端点池里出现 antigravity 协议端点时,解析一份共享运行时参数。
+pub(in crate::llm::openai_compatible) fn antigravity_runtime(
+    endpoints: &[LlmEndpoint],
+    config: &AppConfig,
+) -> Option<Arc<AntigravityRuntime>> {
+    endpoints
+        .iter()
+        .any(|endpoint| provider_uses_antigravity(&endpoint.provider))
+        .then(|| Arc::new(AntigravityRuntime::from_config(config)))
+}
+
 /// 端点池里出现 claude-code 协议端点时,解析一份共享运行时参数。
 pub(in crate::llm::openai_compatible) fn claude_code_runtime(
     endpoints: &[LlmEndpoint],
     config: &AppConfig,
-    _paths: &MiyuPaths,
 ) -> Option<Arc<ClaudeCodeRuntime>> {
     if !endpoints
         .iter()
@@ -402,4 +516,22 @@ pub(in crate::llm::openai_compatible) fn claude_code_runtime(
         );
     }
     Some(Arc::new(runtime))
+}
+
+/// A client resolved from a tier pool plus the fallback facts a caller may
+/// want to surface (see [`OpenAiCompatibleClient::from_tier`]).
+pub struct TierClient {
+    pub client: OpenAiCompatibleClient,
+    /// Representative `(provider_id, model)` for audit rows.
+    pub model_choice: Option<(String, String)>,
+    /// Set when the tier pool could not be used and the main pool answered.
+    pub notice: Option<String>,
+}
+
+fn main_pool_choice(config: &AppConfig) -> Option<(String, String)> {
+    config
+        .active_provider_model_choices()
+        .into_iter()
+        .next()
+        .map(|choice| (choice.provider_id, choice.model))
 }

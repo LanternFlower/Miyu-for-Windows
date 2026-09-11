@@ -1,9 +1,9 @@
 //! 输入编辑：光标、换行、粘贴、历史。
 
 // 被测的东西散在 cli::mod 与 repl 的兄弟模块里，这里全都要够到。
+use super::shared::*;
 use crate::cli::repl::editor::*;
 use crate::cli::*;
-use super::shared::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -627,13 +627,32 @@ fn long_paste_visible_lines_are_collapsed() {
     let lines = (0..20)
         .map(|index| format!("line {index}"))
         .collect::<Vec<_>>();
-    let visible = repl_visible_input_lines("[NORMAL] > ", &lines, 12, true);
+    // 整段都是粘进来的原文:这才是折叠该管的场景。
+    let visible = repl_visible_input_lines("[NORMAL] > ", &lines, 12, 20);
 
     assert_eq!(visible.len(), 3);
     assert_eq!(visible[0], "line 0");
     assert!(visible[1].contains("18") || visible[1].contains("已隐藏 18"));
     assert_eq!(visible[2], "line 19");
     assert_eq!(lines.len(), 20);
+}
+
+/// 已经敲了十几行之后再粘一小段,不该把用户自己写的内容折起来(08-26 实测:
+/// 折叠判据原本是"上一个动作是不是粘贴",随便再打个字又恢复)。
+#[test]
+fn a_short_paste_does_not_collapse_hand_typed_input() {
+    let mut lines = (0..18)
+        .map(|index| format!("第 {index} 行是我自己敲的"))
+        .collect::<Vec<_>>();
+    lines.push("/home/shorin/Downloads/1.png".to_string());
+
+    // 生粘贴只带进来 1 行,缓冲区绝大部分是手敲的 → 不折。
+    let visible = repl_visible_input_lines("  ", &lines, 12, 1);
+    assert_eq!(visible.len(), lines.len(), "短粘贴不该折叠手敲内容");
+    assert_eq!(visible, lines);
+
+    // 一行都不是粘进来的,同样不折。
+    assert_eq!(repl_visible_input_lines("  ", &lines, 12, 0), lines);
 }
 
 #[test]
@@ -842,4 +861,52 @@ fn legacy_global_history_is_still_reachable() {
         load_repl_input_history(&state, &paths).unwrap(),
         vec!["分会话之前敲的".to_string(), "分会话之后敲的".to_string()]
     );
+}
+
+/// 视频粘贴要显示成 `[Video N]` 而不是 `[Image N]`(08-28 用户点名"怎么视频
+/// 粘贴进去还是图片的占位符")。两种标签共用同一条解析通路。
+#[test]
+fn video_placeholders_carry_their_own_label() {
+    // 定位:两种前缀都要被认出来。
+    let input = "看这个 [Image 1] 和 [Video 2] 还有 [Video 10: clip.mp4]";
+    assert_eq!(find_image_placeholders(input).len(), 3);
+
+    // 序号解析对两种标签一致,多位数也不能丢。
+    let spots = find_image_placeholders(input);
+    let idx = |n: usize| {
+        parse_image_placeholder_index(input, spots[n].0, spots[n].1).expect("能解析出序号")
+    };
+    assert_eq!(idx(0), 1);
+    assert_eq!(idx(1), 2);
+    assert_eq!(idx(2), 10);
+
+    // 标签按文件类型挑。
+    assert_eq!(media_placeholder_label("/tmp/a.mp4"), "Video");
+    assert_eq!(media_placeholder_label("/tmp/a.mkv"), "Video");
+    assert_eq!(media_placeholder_label("/tmp/a.png"), "Image");
+    assert_eq!(media_placeholder_label("/tmp/a.pdf"), "PDF");
+}
+
+/// `[PDF ` 只有 5 位,而前缀匹配一度写死 7("[Image "/"[Video " 恰好都是 7)。
+/// 写死的那版会把 PDF 占位符整条漏掉:光标能走进去、上色不生效、路径改写
+/// 也认不出来。
+#[test]
+fn pdf_placeholders_are_found_despite_shorter_prefix() {
+    let input = "看 [PDF 1] 和 [PDF 2: /tmp/b.pdf] 还有 [Image 3]";
+    let spots = find_repl_placeholders(input);
+    let chars: Vec<char> = input.chars().collect();
+    let slice = |n: usize| chars[spots[n].0..spots[n].1].iter().collect::<String>();
+
+    assert_eq!(spots.len(), 3, "三个占位符都要认出来");
+    assert_eq!(slice(0), "[PDF 1]");
+    assert_eq!(slice(1), "[PDF 2: /tmp/b.pdf]");
+    assert_eq!(slice(2), "[Image 3]");
+
+    // 序号照旧解析得出,PDF 与图片走同一套改写。
+    let idx = |n: usize| {
+        parse_image_placeholder_index(input, spots[n].0, spots[n].1).expect("能解析出序号")
+    };
+    assert_eq!(idx(0), 1);
+    assert_eq!(idx(1), 2);
+    assert_eq!(idx(2), 3);
 }

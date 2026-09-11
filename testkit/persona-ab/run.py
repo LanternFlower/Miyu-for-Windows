@@ -80,7 +80,7 @@ def load_real_config() -> dict:
     return json.loads(strip_jsonc(raw), strict=False)
 
 
-def build_home(tag: str, hint: bool, dialogs: bool) -> Path:
+def build_home(tag: str, hint: bool, dialogs: bool, tools: bool = False) -> Path:
     """为一个对话准备干净的 MIYU_HOME。"""
     home = BASE / "homes" / tag
     if home.exists():
@@ -92,7 +92,7 @@ def build_home(tag: str, hint: bool, dialogs: bool) -> Path:
     cfg.setdefault("prompt", {})
     cfg["prompt"]["persona_reminder"] = hint
     cfg["prompt"]["active_persona"] = ""
-    cfg.setdefault("tools", {})["enabled"] = False
+    cfg.setdefault("tools", {})["enabled"] = tools
     cfg.setdefault("memory", {})["enabled"] = False
     (home / "config" / "config.jsonc").write_text(
         json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -110,13 +110,15 @@ def build_home(tag: str, hint: bool, dialogs: bool) -> Path:
 class Repl:
     """PTY 里的直连 REPL。应答终端查询;回合完成靠 DB 轮询。"""
 
-    def __init__(self, home: Path, log: Path):
+    def __init__(self, home: Path, log: Path, extra_env: dict | None = None):
         self.home = home
         self.db = home / "state" / "conversation.db"
         log.parent.mkdir(parents=True, exist_ok=True)
         self.log = open(log, "wb")
         env = dict(os.environ)
         env["MIYU_HOME"] = str(home)
+        for key, value in (extra_env or {}).items():
+            env[key] = value
         env["MIYU_DIRECT"] = "1"
         env["TERM"] = "xterm-256color"
         env.setdefault("LANG", "zh_CN.UTF-8")
@@ -229,16 +231,27 @@ class Repl:
         self.log.close()
 
 
-def run_conversation(tag: str, hint: bool, dialogs: bool, turns: list[str]) -> dict:
+def run_conversation(
+    tag: str,
+    hint: bool,
+    dialogs: bool,
+    turns: list[str],
+    tools: bool = False,
+    extra_env: dict | None = None,
+) -> dict:
     """一个对话 = 独立 home + 独立 REPL 进程。返回全轮次问答与元数据。"""
-    home = build_home(tag, hint, dialogs)
-    repl = Repl(home, RESULTS / f"{tag}.pty.log")
+    home = build_home(tag, hint, dialogs, tools)
+    repl = Repl(home, RESULTS / f"{tag}.pty.log", extra_env)
     exchanges = []
     try:
         time.sleep(2.5)
         for text in turns:
             reply = repl.chat(text)
-            exchanges.append({"user": text, "assistant": reply})
+            reports = repl.query(
+                "SELECT tool_flow FROM turns WHERE hidden = 0 ORDER BY seq DESC LIMIT 1"
+            )
+            used_tool = bool(reports and reports[0][0] and reports[0][0] not in ("", "[]", "null"))
+            exchanges.append({"user": text, "assistant": reply, "used_tool": used_tool})
     finally:
         repl.close()
     return {"tag": tag, "hint": hint, "dialogs": dialogs, "exchanges": exchanges}
@@ -299,6 +312,99 @@ DEEP_VARIANTS = {
 }
 
 MATRIX = RESULTS / "matrix.jsonl"
+
+# ---------------------------------------------------------------- 工具体制(style-lock A/B)
+
+# 工具体制对话骨架:两轮漂移压力 → 一轮必然触发工具 → 闲聊探针打分。
+# 打分只看工具轮之后的探针回复——测的是"工具循环会不会把人格洗成播报腔"。
+# 触发语必须问知识截止后的事实,否则模型会凭记忆口答绕过工具(冒烟实测)。
+TOOL_TRIGGERS = [
+    "上网搜一下,今天有什么值得看的科技新闻?",
+    "再搜搜 Arch Linux 官网最近一条新闻公告说了什么",
+]
+TOOL_FILLERS = FILLERS[:2]
+
+TOOL_ARMS = {
+    # A:无风格锁(MIYU_STYLE_LOCK=0);B:有风格锁(默认)。
+    # 08-23 定稿:B 胜出(全过 5/12→8/12,无换行 6/12→10/12),style-lock 已硬
+    # 编码进 prompt.rs 并拆除实验闸——现在重跑 tA 量到的和 tB 是同一件事,
+    # 要复现对照需临时在 prompt.rs 恢复 MIYU_STYLE_LOCK 判断。
+    "tA": {"style_lock": False},
+    "tB": {"style_lock": True},
+}
+
+TOOL_MATRIX = RESULTS / "tool-matrix.jsonl"
+
+
+def tool_existing_tags() -> set:
+    if not TOOL_MATRIX.exists():
+        return set()
+    return {
+        json.loads(line)["tag"]
+        for line in TOOL_MATRIX.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+
+
+def run_tool_matrix():
+    RESULTS.mkdir(exist_ok=True)
+    done = tool_existing_tags()
+    plan = []
+    for aname, acfg in TOOL_ARMS.items():
+        for pname, probe in CHAT_PROBES.items():
+            tag = f"{aname}-{pname}"
+            if tag not in done:
+                plan.append((tag, acfg, probe))
+    print(f"工具体制计划 {len(plan)} 个对话(已完成 {len(done)})", flush=True)
+    for index, (tag, acfg, probe) in enumerate(plan, 1):
+        turns = TOOL_FILLERS + TOOL_TRIGGERS + [probe]
+        env = {"MIYU_STYLE_LOCK": "1" if acfg["style_lock"] else "0"}
+        try:
+            record = run_conversation(
+                tag, hint=True, dialogs=True, turns=turns, tools=True, extra_env=env
+            )
+        except Exception as error:
+            print(f"[{index}/{len(plan)}] {tag} 失败: {error}", flush=True)
+            continue
+        record["style_lock"] = acfg["style_lock"]
+        with open(TOOL_MATRIX, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        triggered = sum(1 for e in record["exchanges"][-3:-1] if e["used_tool"])
+        final = record["exchanges"][-1]["assistant"]
+        print(
+            f"[{index}/{len(plan)}] {tag} ✓ 工具触发 {triggered}/2 探针回复 {len(final)} 字",
+            flush=True,
+        )
+    print("工具矩阵完成", flush=True)
+
+
+def score_tool_matrix():
+    records = [
+        json.loads(line)
+        for line in TOOL_MATRIX.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    by_tag = {r["tag"]: r for r in records}
+    print(f"{'臂':<3} {'lock':<5} {'触发对话':<8} {'探针全过':<8} {'各检查通过(只计触发对话)'}")
+    for aname, acfg in TOOL_ARMS.items():
+        passes, checks_total, n, triggered = 0, {}, 0, 0
+        for pname in CHAT_PROBES:
+            r = by_tag.get(f"{aname}-{pname}")
+            if not r:
+                continue
+            n += 1
+            # 只有工具真触发过的对话才进入风格统计,否则两臂比的不是同一件事
+            if not any(e["used_tool"] for e in r["exchanges"][-3:-1]):
+                continue
+            triggered += 1
+            reply = r["exchanges"][-1]["assistant"]
+            checks = score_chat(reply)
+            if all(checks.values()):
+                passes += 1
+            for k, ok in checks.items():
+                checks_total[k] = checks_total.get(k, 0) + (1 if ok else 0)
+        detail = " ".join(f"{k}:{v}/{triggered}" for k, v in checks_total.items())
+        print(f"{aname:<3} {str(acfg['style_lock']):<5} {triggered}/{n:<6} {passes}/{triggered:<6} {detail}")
 
 
 def existing_tags() -> set:
@@ -427,6 +533,10 @@ if __name__ == "__main__":
         run_matrix(deep=True)
     elif cmd == "score":
         score_matrix()
+    elif cmd == "tools":
+        run_tool_matrix()
+    elif cmd == "tools-score":
+        score_tool_matrix()
     else:
         print(f"未知子命令: {cmd}", file=sys.stderr)
         sys.exit(1)

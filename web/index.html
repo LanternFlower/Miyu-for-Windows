@@ -16,6 +16,16 @@
   <script defer src="/lightbox.js"></script>
   <script defer src="/todos.js"></script>
   <script defer src="/shared.js"></script>
+  <script defer src="/dash/dashboards.js"></script>
+  <script defer src="/dash/dash-memory.js"></script>
+  <script defer src="/dash/dash-kb.js"></script>
+  <script defer src="/dash/dash-memes.js"></script>
+  <script defer src="/dash/dash-qq.js"></script>
+  <script defer src="/dash/dash-groups.js"></script>
+  <script defer src="/dash/dash-affection.js"></script>
+  <script defer src="/dash/dash-scripts.js"></script>
+  <script defer src="/dash/settings-schema.js"></script>
+  <script defer src="/dash/settings.js"></script>
   <script defer src="/app.js"></script>
 </head>
 <body data-theme="graphite">
@@ -150,6 +160,10 @@
         </button>
 
         <footer class="composer-dock" id="composerDock">
+          <div class="voice-float" id="voiceIndicator" role="status" aria-label="正在听写" hidden>
+            <span class="icon-slot" data-icon="mic" aria-hidden="true"><span class="icon-fallback">●</span></span>
+            <i class="voice-level" aria-hidden="true"><b id="voiceLevel"></b></i>
+          </div>
           <!-- 目标状态行：目标是长期存在的东西，不该只在对话流里闪一下。
                贴在输入框上方随状态刷新，操作直接在这儿点。 -->
           <div class="goal-bar" id="goalBar" aria-label="当前目标" hidden></div>
@@ -158,8 +172,9 @@
           <form class="composer" id="composerForm">
             <div class="queue-tray" id="queueTray" aria-label="排队中的消息" hidden></div>
             <div class="attachment-tray" id="attachmentTray" aria-label="待发送附件" hidden></div>
+            <!-- 首屏兜底:人格加载完由 applyPersona 换成配置值(或按人格名生成的默认句)。 -->
             <textarea id="composerInput" rows="3" placeholder="给 Miyu 发消息" aria-label="消息" disabled></textarea>
-            <input id="attachmentInput" type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,.txt,.md,.markdown,.json,.jsonl,.csv,.tsv,.log,.rs,.js,.jsx,.ts,.tsx,.py,.go,.java,.c,.cc,.cpp,.h,.hpp,.cs,.rb,.php,.swift,.kt,.kts,.sh,.bash,.zsh,.fish,.toml,.yaml,.yml,.xml,.html,.css,.scss,.sql" hidden>
+            <input id="attachmentInput" type="file" multiple hidden>
             <div class="composer-footer">
               <div class="composer-controls">
                 <div class="model-menu-wrap" id="modelMenuWrap">
@@ -185,6 +200,9 @@
                 <span class="character-count" id="characterCount" hidden>0 / 20,000</span>
                 <button class="icon-button artifact-toggle-button" id="artifactToggleButton" type="button" title="打开预览" aria-label="打开预览" hidden>
                   <span class="icon-slot" data-icon="panel-right" aria-hidden="true"><span class="icon-fallback">▥</span></span>
+                </button>
+                <button class="attach-button mic-button" id="micButton" type="button" title="语音输入" aria-label="语音输入" aria-pressed="false" hidden>
+                  <span class="icon-slot" data-icon="mic" aria-hidden="true"><span class="icon-fallback">●</span></span>
                 </button>
                 <button class="attach-button" id="attachButton" type="button" title="添加附件" aria-label="添加附件" disabled>
                   <span class="icon-slot" data-icon="paperclip" aria-hidden="true"><span class="icon-fallback">+</span></span>
@@ -267,6 +285,34 @@
             <span class="icon-slot" data-icon="chart-column" aria-hidden="true"><span class="icon-fallback">▮</span></span>
             <span>数据统计</span>
           </button>
+          <button class="con-rail-item" type="button" data-console-panel="memory">
+            <span class="icon-slot" data-icon="brain" aria-hidden="true"><span class="icon-fallback">◎</span></span>
+            <span>记忆</span>
+          </button>
+          <button class="con-rail-item" type="button" data-console-panel="kb">
+            <span class="icon-slot" data-icon="book-open" aria-hidden="true"><span class="icon-fallback">▤</span></span>
+            <span>知识库</span>
+          </button>
+          <button class="con-rail-item" type="button" data-console-panel="memes">
+            <span class="icon-slot" data-icon="smile" aria-hidden="true"><span class="icon-fallback">☺</span></span>
+            <span>表情包</span>
+          </button>
+          <button class="con-rail-item" type="button" data-console-panel="qq">
+            <span class="icon-slot" data-icon="messages-square" aria-hidden="true"><span class="icon-fallback">▥</span></span>
+            <span>QQ 消息记录</span>
+          </button>
+          <button class="con-rail-item" type="button" data-console-panel="groups">
+            <span class="icon-slot" data-icon="lock-keyhole" aria-hidden="true"><span class="icon-fallback">⚑</span></span>
+            <span>群管</span>
+          </button>
+          <button class="con-rail-item" type="button" data-console-panel="affection">
+            <span class="icon-slot" data-icon="sparkles" aria-hidden="true"><span class="icon-fallback">♥</span></span>
+            <span>好感·情绪</span>
+          </button>
+          <button class="con-rail-item" type="button" data-console-panel="scripts">
+            <span class="icon-slot" data-icon="file-code" aria-hidden="true"><span class="icon-fallback">▶</span></span>
+            <span>脚本</span>
+          </button>
           <button class="con-rail-item" type="button" data-console-panel="settings">
             <span class="icon-slot" data-icon="sliders-horizontal" aria-hidden="true"><span class="icon-fallback">⚙</span></span>
             <span>设置</span>
@@ -286,6 +332,9 @@
             <h2>数据统计</h2>
             <button class="icon-button u-refresh" id="usageRefresh" type="button" title="刷新" aria-label="刷新">
               <span class="icon-slot" data-icon="refresh-cw" aria-hidden="true"><span class="icon-fallback">⟳</span></span>
+            </button>
+            <button class="icon-button u-clear" id="usageClear" type="button" title="清空数据统计" aria-label="清空数据统计">
+              <span class="icon-slot" data-icon="trash-2" aria-hidden="true"><span class="icon-fallback">🗑</span></span>
             </button>
             <small id="usageStamp">正在载入…</small>
             <div class="con-segmented" id="usageRangeSeg">
@@ -339,15 +388,38 @@
           </div>
         </div>
         </div>
+        <div class="con-panel" data-console-panel="memory" hidden>
+          <div class="con-inner" id="dashMemoryRoot"></div>
+        </div>
+        <div class="con-panel" data-console-panel="kb" hidden>
+          <div class="con-inner is-wide" id="dashKbRoot"></div>
+        </div>
+        <div class="con-panel" data-console-panel="memes" hidden>
+          <div class="con-inner is-wide" id="dashMemesRoot"></div>
+        </div>
+        <div class="con-panel" data-console-panel="qq" hidden>
+          <div class="con-inner is-wide" id="dashQqRoot"></div>
+        </div>
+        <div class="con-panel" data-console-panel="groups" hidden>
+          <div class="con-inner is-wide" id="dashGroupsRoot"></div>
+        </div>
+        <div class="con-panel" data-console-panel="affection" hidden>
+          <div class="con-inner is-wide" id="dashAffectionRoot"></div>
+        </div>
+        <div class="con-panel" data-console-panel="scripts" hidden>
+          <div class="con-inner is-wide" id="dashScriptsRoot"></div>
+        </div>
         <div class="con-panel" data-console-panel="settings" hidden>
         <div class="settings-layout">
           <nav class="settings-nav" aria-label="设置分类">
             <button class="active" type="button" data-settings-view="interface">界面</button>
-            <button type="button" data-settings-view="prompts">提示词</button>
-            <button type="button" data-settings-view="general">全局</button>
+            <button type="button" data-settings-view="prompts">人格</button>
             <button type="button" data-settings-view="providers">供应商</button>
             <button type="button" data-settings-view="models">模型池</button>
+            <button type="button" data-settings-view="general">全局</button>
+            <button type="button" data-settings-view="mcp">MCP</button>
             <button type="button" data-settings-view="plugins">插件</button>
+            <button type="button" data-settings-view="qq">QQ 平台</button>
             <button type="button" data-settings-view="advanced">高级</button>
           </nav>
           <div class="settings-content">
@@ -400,46 +472,22 @@
             <h2>关于</h2>
             <div class="about-row"><span>Miyu WebUI</span><span id="versionLabel">--</span></div>
             </section>
-            <section class="settings-section settings-panel" data-settings-panel="prompts" hidden>
-            <h2>自定义提示词</h2>
-            <div class="prompt-editor" id="promptEditor"></div>
-            </section>
-            <section class="settings-section settings-panel" data-settings-panel="general" hidden>
-            <h2>全局设置</h2>
-            <div class="config-form" id="generalConfigForm"></div>
-            </section>
-            <section class="settings-section settings-panel" data-settings-panel="providers" hidden>
-            <div class="settings-section-heading"><h2>供应商</h2><button class="secondary-button compact-button" id="addProviderButton" type="button">添加</button></div>
-            <div class="provider-editor" id="providerEditor"></div>
-            </section>
-            <section class="settings-section settings-panel" data-settings-panel="models" hidden>
-            <h2>模型池</h2>
-            <div class="model-pool-editor" id="modelPoolEditor"></div>
-            </section>
-             <section class="settings-section settings-panel" data-settings-panel="plugins" hidden>
-             <h2>插件配置</h2>
-             <div class="plugin-editor" id="pluginEditor"></div>
-             <section class="qq-history-tool" aria-labelledby="qqHistoryTitle">
-               <h2 id="qqHistoryTitle">QQ群管理记录</h2>
-               <p class="settings-description">输入 bot QQ 和群号，查看已保存的违规者与踢人记录。</p>
-               <form class="qq-history-form" id="qqHistoryForm">
-                 <label>bot QQ<input id="qqHistoryAccount" inputmode="numeric" pattern="[0-9]*" maxlength="12" required></label>
-                 <label>群号<input id="qqHistoryGroup" inputmode="numeric" pattern="[0-9]*" maxlength="12" required></label>
-                 <button class="secondary-button compact-button" type="submit">加载</button>
-               </form>
-               <div class="qq-history-status" id="qqHistoryStatus" role="status"></div>
-               <div class="qq-history-output" id="qqHistoryOutput" hidden></div>
-             </section>
-             </section>
+            <section class="settings-section settings-panel st-page" data-settings-panel="prompts" hidden><div class="st-root" id="settings-prompts"></div></section>
+            <section class="settings-section settings-panel st-page" data-settings-panel="providers" hidden><div class="st-root" id="settings-providers"></div></section>
+            <section class="settings-section settings-panel st-page" data-settings-panel="models" hidden><div class="st-root" id="settings-models"></div></section>
+            <section class="settings-section settings-panel st-page" data-settings-panel="general" hidden><div class="st-root" id="settings-general"></div></section>
+            <section class="settings-section settings-panel st-page" data-settings-panel="mcp" hidden><div class="st-root" id="settings-mcp"></div></section>
+            <section class="settings-section settings-panel st-page" data-settings-panel="plugins" hidden><div class="st-root" id="settings-plugins"></div></section>
+            <section class="settings-section settings-panel st-page" data-settings-panel="qq" hidden><div class="st-root" id="settings-qq"></div></section>
             <section class="settings-section settings-panel" data-settings-panel="advanced" hidden>
             <h2>完整配置</h2>
-            <p class="settings-description">这里包含结构化表单未单独展示的所有配置项。应用到草稿后仍需保存。</p>
+            <p class="settings-description">逃生舱：完整配置 JSON，包含表单未单独展示的所有项。应用到草稿后仍需保存。</p>
             <textarea class="config-json-editor" id="advancedConfigEditor" spellcheck="false" aria-label="完整配置 JSON"></textarea>
             <button class="secondary-button" id="applyAdvancedConfigButton" type="button">应用到草稿</button>
             </section>
           </div>
         </div>
-        <footer class="settings-footer">
+        <footer class="settings-footer" id="settingsFooter">
           <span id="settingsStatus">尚未载入配置</span>
           <div>
             <button class="secondary-button" id="reloadConfigButton" type="button">重新载入</button>

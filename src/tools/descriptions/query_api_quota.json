@@ -1,7 +1,7 @@
 {
   "name": "query_api_quota",
   "display_name": "查询大模型 API 额度",
-  "description": "Query the configured DeepSeek or OpenRouter API quota.",
+  "description": "Query configured DeepSeek or OpenRouter API quotas.",
   "parameters": {
     "type": "object",
     "properties": {

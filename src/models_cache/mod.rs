@@ -193,28 +193,35 @@ fn retain_configured_models(
             .flatten()
             .chain(route.multimodal_models.iter().flatten())
     });
-    let real_context_models = config
+    let real_context_models: Vec<crate::config::ActiveProviderModelConfig> = config
         .platforms
         .qq
         .plugins
         .get(crate::config::REAL_CONTEXT_PLUGIN_ID)
         .and_then(|instance| crate::config::RealContextPluginSettings::from_instance(instance).ok())
-        .and_then(|settings| settings.text_models)
+        .map(|settings| {
+            settings
+                .text_models
+                .explicit_entries()
+                .iter()
+                .chain(settings.affection_text_models.explicit_entries())
+                .cloned()
+                .collect()
+        })
         .unwrap_or_default();
     for choice in config
         .active_provider_models
         .iter()
         .flatten()
         .chain(config.active_multimodal_provider_models.iter().flatten())
-        .chain(config.platforms.qq.text_models.iter().flatten())
-        .chain(config.platforms.qq.multimodal_models.iter().flatten())
+        .chain(config.platforms.qq.text_models.explicit_entries())
+        .chain(config.platforms.qq.multimodal_models.explicit_entries())
         .chain(
             config
                 .platforms
                 .qq
                 .non_whitelist_text_models
-                .iter()
-                .flatten(),
+                .explicit_entries(),
         )
         .chain(conversation_models)
         .chain(real_context_models.iter())
@@ -272,9 +279,12 @@ mod tests {
             protocol: "openai-chat".to_string(),
             api_key: None,
             models: vec!["m".to_string()],
+            custom_models: Vec::new(),
             model_context_window: HashMap::new(),
-model_temperature: HashMap::new(),
+            model_temperature: HashMap::new(),
+            model_tools_loading_mode: HashMap::new(),
             model_modalities: HashMap::new(),
+            tool_result_media: None,
             model_costs: HashMap::from([(
                 "m".to_string(),
                 crate::config::ModelCostConfig {
@@ -330,12 +340,19 @@ model_temperature: HashMap::new(),
             "https://opencode.ai/zen/go/v1"
         );
         assert!(parsed.data["opencode-go"]["no-cost"].cost.is_none());
-        let cost = parsed.data["opencode-go"]["deepseek-v4-flash"].cost.unwrap();
+        let cost = parsed.data["opencode-go"]["deepseek-v4-flash"]
+            .cost
+            .unwrap();
         // 200 万 prompt(其中 100 万命中)+ 100 万输出
         let est = cost.estimate(2_000_000, 1_000_000, 1_000_000, 0);
         assert!((est - (0.07 + 0.0014 + 0.14)).abs() < 1e-9, "{est}");
         // 无缓存价时命中按输入价计
-        let flat = ApiCost { input: 1.0, output: 2.0, cache_read: None, cache_write: None };
+        let flat = ApiCost {
+            input: 1.0,
+            output: 2.0,
+            cache_read: None,
+            cache_write: None,
+        };
         assert!((flat.estimate(1_000_000, 0, 400_000, 0) - 1.0).abs() < 1e-9);
     }
 
@@ -418,12 +435,13 @@ model_temperature: HashMap::new(),
             "non-whitelist-text".to_string(),
             "context-text".to_string(),
         ]);
-        config.platforms.qq.text_models = Some(vec![crate::config::ActiveProviderModelConfig {
-            provider_id: provider_id.clone(),
-            model: "platform-text".to_string(),
-        }]);
+        config.platforms.qq.text_models =
+            crate::config::ModelPoolRef::models(vec![crate::config::ActiveProviderModelConfig {
+                provider_id: provider_id.clone(),
+                model: "platform-text".to_string(),
+            }]);
         config.platforms.qq.non_whitelist_text_models =
-            Some(vec![crate::config::ActiveProviderModelConfig {
+            crate::config::ModelPoolRef::models(vec![crate::config::ActiveProviderModelConfig {
                 provider_id: provider_id.clone(),
                 model: "non-whitelist-text".to_string(),
             }]);
@@ -431,10 +449,12 @@ model_temperature: HashMap::new(),
         crate::config::merge_real_context_settings(
             &mut real_context,
             &crate::config::RealContextPluginSettings {
-                text_models: Some(vec![crate::config::ActiveProviderModelConfig {
-                    provider_id: provider_id.clone(),
-                    model: "context-text".to_string(),
-                }]),
+                text_models: crate::config::ModelPoolRef::models(vec![
+                    crate::config::ActiveProviderModelConfig {
+                        provider_id: provider_id.clone(),
+                        model: "context-text".to_string(),
+                    },
+                ]),
                 ..Default::default()
             },
         );
@@ -465,6 +485,7 @@ model_temperature: HashMap::new(),
                 }]),
                 extra_prompt: String::new(),
                 session_limits: None,
+                probability_reply: None,
             });
         let mut data = HashMap::from([(
             provider_id.clone(),

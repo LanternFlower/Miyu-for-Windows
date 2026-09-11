@@ -1,7 +1,7 @@
 //! 记忆测试共用的 fixture。
 
-use crate::memory::*;
 use crate::config::AppConfig;
+use crate::memory::*;
 use crate::paths::MiyuPaths;
 
 pub(super) fn test_paths(temp: &tempfile::TempDir) -> MiyuPaths {

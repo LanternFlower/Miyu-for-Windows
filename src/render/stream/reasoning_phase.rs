@@ -229,6 +229,26 @@ impl StreamRenderer {
             .unwrap_or_else(|| "0ms".to_string())
     }
 
+    /// 工具跑完就把等待计时器重新锚定到此刻。
+    ///
+    /// 计时锚点是 `ReasoningStart`,而它**每次 LLM 请求发一次**。本地工具每轮
+    /// 一问一答,锚点自然跟着重置;claude-code 的工具在它自己进程里闭环执行,
+    /// 用 RemoteToolStarted/Finished 在**同一条流**里报告,整轮只发一次请求
+    /// ——锚点只设一次,秒数从回合开头一路累加到结尾(08-26 用户点名)。
+    ///
+    /// 有待落地的思考摘要时不动:那条摘要要显示的是它自己那段的耗时,重锚会
+    /// 把它算短。
+    pub(crate) fn reanchor_wait_timer(&mut self) {
+        if self.reasoning_started_at.is_none() {
+            return;
+        }
+        if self.reasoning_title.is_some() || !self.reasoning_text.is_empty() {
+            return;
+        }
+        self.reasoning_started_at = Some(std::time::Instant::now());
+        self.reasoning_elapsed = None;
+    }
+
     pub(crate) fn freeze_reasoning_elapsed_at(&mut self, received_at: std::time::Instant) {
         self.reasoning_elapsed = self
             .reasoning_started_at
@@ -270,7 +290,11 @@ impl StreamRenderer {
         }
     }
 
-    pub(crate) fn ensure_waiting_phase(&mut self, phase: String, style: SpinnerStyle) -> Result<()> {
+    pub(crate) fn ensure_waiting_phase(
+        &mut self,
+        phase: String,
+        style: SpinnerStyle,
+    ) -> Result<()> {
         if self.command_display.is_some() {
             return Ok(());
         }

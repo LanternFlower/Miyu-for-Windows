@@ -168,7 +168,9 @@ pub(in crate::tools::web_images) async fn download_and_store_images(
     })
 }
 
-pub(in crate::tools::web_images) fn dedupe_downloaded(mut completed: Vec<(usize, StoredImage)>) -> Vec<StoredImage> {
+pub(in crate::tools::web_images) fn dedupe_downloaded(
+    mut completed: Vec<(usize, StoredImage)>,
+) -> Vec<StoredImage> {
     completed.sort_by_key(|(index, _)| *index);
     let mut seen_hashes = HashSet::new();
     completed
@@ -361,7 +363,10 @@ pub(in crate::tools::web_images) async fn write_temp_file(path: &Path, bytes: &[
     Ok(())
 }
 
-pub(in crate::tools::web_images) async fn publish_image(cache_dir: &Path, item: &mut StoredImage) -> Result<()> {
+pub(in crate::tools::web_images) async fn publish_image(
+    cache_dir: &Path,
+    item: &mut StoredImage,
+) -> Result<()> {
     let final_path = cache_dir.join(format!(
         "webimg-{}{}",
         item.sha256,
@@ -460,7 +465,11 @@ pub(in crate::tools::web_images) fn remove_invalid_cache_entry(path: &Path) -> R
     }
 }
 
-pub(in crate::tools::web_images) fn valid_cached_file(path: &Path, expected_hash: &str, expected_size: usize) -> Result<bool> {
+pub(in crate::tools::web_images) fn valid_cached_file(
+    path: &Path,
+    expected_hash: &str,
+    expected_size: usize,
+) -> Result<bool> {
     if expected_size == 0 || expected_size > MAX_DOWNLOAD_BYTES {
         return Ok(false);
     }
@@ -660,7 +669,11 @@ pub(in crate::tools::web_images) fn is_public_ip(ip: IpAddr) -> bool {
     }
 }
 
-pub(in crate::tools::web_images) fn detect_image_mime(bytes: &[u8], _content_type: &str, _url: &str) -> Option<String> {
+pub(in crate::tools::web_images) fn detect_image_mime(
+    bytes: &[u8],
+    _content_type: &str,
+    _url: &str,
+) -> Option<String> {
     if bytes.starts_with(b"\xff\xd8\xff") {
         return Some("image/jpeg".to_string());
     }
@@ -679,7 +692,10 @@ pub(in crate::tools::web_images) fn detect_image_mime(bytes: &[u8], _content_typ
     None
 }
 
-pub(in crate::tools::web_images) fn detect_image_dimensions(bytes: &[u8], mime_type: &str) -> (u32, u32) {
+pub(in crate::tools::web_images) fn detect_image_dimensions(
+    bytes: &[u8],
+    mime_type: &str,
+) -> (u32, u32) {
     match mime_type {
         "image/png" if bytes.len() >= 24 && bytes.starts_with(b"\x89PNG\r\n\x1a\n") => (
             u32::from_be_bytes(bytes[16..20].try_into().unwrap()),

@@ -40,10 +40,10 @@ impl PlatformDirs {
                 let path = PathBuf::from(drive).join(tail);
                 path.is_absolute().then_some(path)
             })?;
-            let config_dir = absolute_env("APPDATA")
-                .unwrap_or_else(|| home_dir.join("AppData/Roaming"));
-            let cache_dir = absolute_env("LOCALAPPDATA")
-                .unwrap_or_else(|| home_dir.join("AppData/Local"));
+            let config_dir =
+                absolute_env("APPDATA").unwrap_or_else(|| home_dir.join("AppData/Roaming"));
+            let cache_dir =
+                absolute_env("LOCALAPPDATA").unwrap_or_else(|| home_dir.join("AppData/Local"));
             return Some(Self {
                 home_dir,
                 data_dir: config_dir.clone(),

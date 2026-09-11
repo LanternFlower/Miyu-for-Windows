@@ -21,7 +21,7 @@ pub struct EditResult {
     pub(in crate::tools::knowledge_base) semantic_refreshed: bool,
 }
 
-pub(in crate::tools::knowledge_base) fn reject_non_kb_upload(
+pub(in crate::tools) fn reject_non_kb_upload(
     content: &str,
     title: &str,
     file_name: &str,
@@ -58,6 +58,15 @@ pub(in crate::tools::knowledge_base) fn init_semantic_db(conn: &Connection) -> R
         [],
     )?;
     conn.execute("CREATE INDEX IF NOT EXISTS idx_semantic_file ON semantic_chunks(file_name, content_sha256)", [])?;
+    // 09-05: vectors moved from JSON text to f32 BLOBs (136 MB → 43 MB for a
+    // 10k-chunk library, and no per-query parse). Legacy rows keep their JSON
+    // until the next reindex rewrites them.
+    let has_blob_column = conn
+        .prepare("SELECT embedding FROM semantic_chunks LIMIT 0")
+        .is_ok();
+    if !has_blob_column {
+        conn.execute("ALTER TABLE semantic_chunks ADD COLUMN embedding BLOB", [])?;
+    }
     Ok(())
 }
 
@@ -153,7 +162,9 @@ pub(in crate::tools::knowledge_base) fn unix_time(time: SystemTime) -> f64 {
 
 pub(in crate::tools::knowledge_base) fn expand_path(value: &str) -> PathBuf {
     if let Some(rest) = value.trim().strip_prefix("~/") {
-        if let Some(home) = crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+        if let Some(home) =
+            crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
+        {
             return home.join(rest);
         }
     }

@@ -5,8 +5,6 @@
   const MAX_CUSTOM_ANSWER_CHARS = 4_000;
   const MAX_TOOL_OUTPUT_CHARS = 200_000;
   const MAX_ATTACHMENTS = 12;
-  const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-  const MAX_ATTACHMENT_TOTAL_BYTES = 32 * 1024 * 1024;
   const COMMAND_OUTPUT_PREVIEW_ROWS = 8;
   const NEAR_BOTTOM_PX = 120;
   // Mirrors the CSS --ui-scale custom property; mobile drops it to 1 via a
@@ -23,6 +21,9 @@
   const artifactTextScale = () => 1.2 / UI_SCALE;
   const DEFAULT_BOARD_TITLE = "今天想聊些什么？";
   const DEFAULT_BOARD_SUBTITLE = "从一个问题、计划或此刻的想法开始。";
+  // 输入框提示跟着人格名走,所以是函数不是常量;与后端
+  // `web::dto::default_composer_placeholder` 保持同一句话。
+  const defaultComposerPlaceholder = (name) => `给 ${name} 发消息`;
   const DEFAULT_STARTER_PROMPTS = ["查询今天的天气", "分析一个问题", "发表情包打个招呼吧", "搜索一张图片"];
   // 档位一律用供应商原值(max/high/minimal…),不翻译:译名和文档、和模型
   // 实际认的参数值对不上,查起来反而费劲。"没设"这一档没有原值,只好写字。
@@ -104,6 +105,7 @@
     "panel-left-open": [["rect", { width: "18", height: "18", x: "3", y: "3", rx: "2" }], ["path", { d: "M9 3v18" }], ["path", { d: "m12 9 3 3-3 3" }]],
     "panel-right": [["rect", { width: "18", height: "18", x: "3", y: "3", rx: "2" }], ["path", { d: "M15 3v18" }]],
     paperclip: [["path", { d: "m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" }]],
+    mic: [["path", { d: "M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" }], ["path", { d: "M19 10v2a7 7 0 0 1-14 0v-2" }], ["line", { x1: "12", x2: "12", y1: "19", y2: "22" }]],
     "refresh-cw": [["path", { d: "M21 12a9 9 0 0 0-15.35-6.35L3 8" }], ["path", { d: "M3 3v5h5" }], ["path", { d: "M3 12a9 9 0 0 0 15.35 6.35L21 16" }], ["path", { d: "M16 16h5v5" }]],
     route: [["circle", { cx: "6", cy: "19", r: "3" }], ["path", { d: "M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15" }], ["circle", { cx: "18", cy: "5", r: "3" }]],
     "settings-2": [["path", { d: "M20 7h-9" }], ["path", { d: "M14 17H5" }], ["circle", { cx: "17", cy: "17", r: "3" }], ["circle", { cx: "7", cy: "7", r: "3" }]],
@@ -211,6 +213,7 @@
     usageSources: document.getElementById("usageSources"),
     usageRecords: document.getElementById("usageRecords"),
     usageRefresh: document.getElementById("usageRefresh"),
+    usageClear: document.getElementById("usageClear"),
     usageSrcFilter: document.getElementById("usageSrcFilter"),
     usageModelFilter: document.getElementById("usageModelFilter"),
     sidebarThemeButton: document.getElementById("sidebarThemeButton"),
@@ -272,6 +275,9 @@
     attachmentTray: document.getElementById("attachmentTray"),
     attachmentInput: document.getElementById("attachmentInput"),
     attachButton: document.getElementById("attachButton"),
+    micButton: document.getElementById("micButton"),
+    voiceIndicator: document.getElementById("voiceIndicator"),
+    voiceLevel: document.getElementById("voiceLevel"),
     queueTray: document.getElementById("queueTray"),
     composerState: document.getElementById("composerState"),
     characterCount: document.getElementById("characterCount"),
@@ -283,22 +289,12 @@
     settingsModelProvider: document.getElementById("settingsModelProvider"),
     capabilityList: document.getElementById("capabilityList"),
     versionLabel: document.getElementById("versionLabel"),
-    generalConfigForm: document.getElementById("generalConfigForm"),
-    providerEditor: document.getElementById("providerEditor"),
-    addProviderButton: document.getElementById("addProviderButton"),
-    modelPoolEditor: document.getElementById("modelPoolEditor"),
-    pluginEditor: document.getElementById("pluginEditor"),
-    promptEditor: document.getElementById("promptEditor"),
     advancedConfigEditor: document.getElementById("advancedConfigEditor"),
-    qqHistoryForm: document.getElementById("qqHistoryForm"),
-    qqHistoryAccount: document.getElementById("qqHistoryAccount"),
-    qqHistoryGroup: document.getElementById("qqHistoryGroup"),
-    qqHistoryStatus: document.getElementById("qqHistoryStatus"),
-    qqHistoryOutput: document.getElementById("qqHistoryOutput"),
     applyAdvancedConfigButton: document.getElementById("applyAdvancedConfigButton"),
     reloadConfigButton: document.getElementById("reloadConfigButton"),
     saveConfigButton: document.getElementById("saveConfigButton"),
     settingsStatus: document.getElementById("settingsStatus"),
+    settingsFooter: document.getElementById("settingsFooter"),
     toastRegion: document.getElementById("toastRegion"),
     resetDialog: document.getElementById("resetDialog"),
     popDialog: document.getElementById("popDialog"),
@@ -328,6 +324,7 @@
       board_image_url: "/assets/miyuwallpaper.png",
       board_title: DEFAULT_BOARD_TITLE,
       board_subtitle: DEFAULT_BOARD_SUBTITLE,
+      composer_placeholder: defaultComposerPlaceholder("Miyu"),
       starter_prompts: DEFAULT_STARTER_PROMPTS
     },
     sessions: [],
@@ -804,6 +801,8 @@
       : null;
     const boardTitle = String(value?.board_title || "").trim() || DEFAULT_BOARD_TITLE;
     const boardSubtitle = String(value?.board_subtitle || "").trim() || DEFAULT_BOARD_SUBTITLE;
+    const composerPlaceholder =
+      String(value?.composer_placeholder || "").trim() || defaultComposerPlaceholder(name);
     const configuredPrompts = Array.isArray(value?.starter_prompts) ? value.starter_prompts : [];
     const starterPrompts = DEFAULT_STARTER_PROMPTS.map((fallback, index) => String(configuredPrompts[index] || "").trim() || fallback);
     // revision 只在图片 URL 真正变化时更新:每次快照都取 Date.now() 会让
@@ -819,6 +818,7 @@
       board_image_url: boardImageUrl,
       board_title: boardTitle,
       board_subtitle: boardSubtitle,
+      composer_placeholder: composerPlaceholder,
       starter_prompts: starterPrompts,
       revision
     };
@@ -848,6 +848,7 @@
     elements.emptyKickerName.textContent = state.persona.name;
     elements.emptyTitle.textContent = state.persona.board_title;
     elements.emptySubtitle.textContent = state.persona.board_subtitle;
+    elements.composerInput.placeholder = state.persona.composer_placeholder;
     const boardImageUrl = state.persona.board_image_url;
     elements.emptyVisual.hidden = !boardImageUrl;
     elements.emptyBoardImage.alt = `${state.persona.name} 看板图片`;
@@ -879,7 +880,7 @@
   }
 
   function setSettingsView(view) {
-    const selected = ["interface", "prompts", "general", "providers", "models", "plugins", "advanced"].includes(view) ? view : "interface";
+    const selected = ["interface", "prompts", "providers", "models", "general", "mcp", "plugins", "qq", "advanced"].includes(view) ? view : "interface";
     state.settingsView = selected;
     elements.settingsNav.querySelectorAll("[data-settings-view]").forEach((button) => {
       const active = button.dataset.settingsView === selected;
@@ -889,6 +890,7 @@
     elements.settingsPanels.forEach((panel) => {
       panel.hidden = panel.dataset.settingsPanel !== selected;
     });
+    window.MiyuSettings?.onShow(selected);
   }
 
   function configValue(path, fallback = undefined) {
@@ -910,175 +912,6 @@
     }
     target[keys[keys.length - 1]] = value;
     markConfigDirty();
-  }
-
-  function clearConfigFieldError(input) {
-    const message = state.invalidConfigFields.get(input);
-    if (message) message.remove();
-    state.invalidConfigFields.delete(input);
-    input.classList.remove("is-invalid");
-  }
-
-  function setConfigFieldError(input, message) {
-    clearConfigFieldError(input);
-    const error = document.createElement("small");
-    error.className = "config-field-error";
-    error.textContent = message;
-    input.classList.add("is-invalid");
-    input.closest(".config-field")?.appendChild(error);
-    state.invalidConfigFields.set(input, error);
-  }
-
-  function parseConfigInput(input, current) {
-    clearConfigFieldError(input);
-    if (input.dataset.valueType === "boolean") return input.checked;
-    const raw = input.value;
-    if (input.dataset.valueType === "number") {
-      const number = Number(raw);
-      if (!Number.isFinite(number)) throw new Error("请输入有效数字");
-      return input.dataset.integer === "true" ? Math.trunc(number) : number;
-    }
-    if (input.dataset.valueType === "json") {
-      if (!raw.trim()) return input.dataset.nullable === "true" ? null : {};
-      try {
-        return JSON.parse(raw);
-      } catch (_) {
-        throw new Error("请输入有效 JSON");
-      }
-    }
-    if (input.dataset.valueType === "lines") {
-      return raw.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
-    }
-    if (input.dataset.valueType === "numbers") {
-      return raw.split(/[\s,;，；]+/).filter(Boolean).map((item) => {
-        const number = Number(item);
-        if (!Number.isSafeInteger(number)) throw new Error(`无效号码：${item}`);
-        return number;
-      });
-    }
-    return raw;
-  }
-
-  function bindConfigInput(input, path, options = {}) {
-    input.dataset.configPath = path;
-    input.dataset.valueType = options.type || "string";
-    if (options.integer) input.dataset.integer = "true";
-    if (options.nullable) input.dataset.nullable = "true";
-    const eventName = input.tagName === "SELECT" || input.type === "checkbox" ? "change" : "input";
-    input.addEventListener(eventName, () => {
-      try {
-        const value = parseConfigInput(input, configValue(path));
-        setConfigValue(path, value);
-        updateAdvancedConfigEditor();
-        if (options.rerender) renderConfigEditors();
-      } catch (error) {
-        setConfigFieldError(input, error.message);
-        updateSettingsControls();
-      }
-    });
-    return input;
-  }
-
-  function configField(labelText, input, description = "") {
-    const label = document.createElement("label");
-    label.className = "config-field";
-    const heading = document.createElement("span");
-    heading.className = "config-field-label";
-    heading.textContent = labelText;
-    label.append(heading, input);
-    if (description) {
-      const hint = document.createElement("small");
-      hint.className = "config-field-hint";
-      hint.textContent = description;
-      label.appendChild(hint);
-    }
-    return label;
-  }
-
-  function textConfigField(label, path, options = {}) {
-    const current = configValue(path, options.defaultValue ?? "");
-    const input = options.multiline ? document.createElement("textarea") : document.createElement("input");
-    input.className = "config-input";
-    if (!options.multiline) input.type = options.inputType || "text";
-    if (options.multiline) input.rows = options.rows || 3;
-    input.value = options.type === "json"
-      ? (current == null ? "" : JSON.stringify(current, null, 2))
-      : options.type === "lines"
-        ? (Array.isArray(current) ? current.join("\n") : "")
-        : options.type === "numbers"
-          ? (Array.isArray(current) ? current.join(", ") : "")
-          : String(current ?? "");
-    if (options.placeholder) input.placeholder = options.placeholder;
-    if (options.min != null) input.min = String(options.min);
-    if (options.max != null) input.max = String(options.max);
-    if (options.step != null) input.step = String(options.step);
-    bindConfigInput(input, path, options);
-    return configField(label, input, options.description || "");
-  }
-
-  function selectConfigField(label, path, choices, description = "") {
-    const select = document.createElement("select");
-    select.className = "config-input";
-    const current = String(configValue(path, ""));
-    for (const choice of choices) {
-      const option = document.createElement("option");
-      option.value = typeof choice === "string" ? choice : choice.value;
-      option.textContent = typeof choice === "string" ? choice : choice.label;
-      option.selected = option.value === current;
-      select.appendChild(option);
-    }
-    bindConfigInput(select, path);
-    return configField(label, select, description);
-  }
-
-  function booleanConfigField(labelText, path, description = "") {
-    const label = document.createElement("label");
-    label.className = "config-toggle";
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.checked = Boolean(configValue(path));
-    bindConfigInput(input, path, { type: "boolean" });
-    const switchTrack = document.createElement("span");
-    switchTrack.className = "toggle-track";
-    const copy = document.createElement("span");
-    copy.className = "config-toggle-copy";
-    const title = document.createElement("strong");
-    title.textContent = labelText;
-    copy.appendChild(title);
-    if (description) {
-      const hint = document.createElement("small");
-      hint.textContent = description;
-      copy.appendChild(hint);
-    }
-    label.append(input, switchTrack, copy);
-    return label;
-  }
-
-  function configGroup(titleText, fields = [], description = "") {
-    const group = document.createElement("section");
-    group.className = "config-group";
-    const header = document.createElement("header");
-    const title = document.createElement("h3");
-    title.textContent = titleText;
-    header.appendChild(title);
-    if (description) {
-      const copy = document.createElement("p");
-      copy.textContent = description;
-      header.appendChild(copy);
-    }
-    const body = document.createElement("div");
-    body.className = "config-group-body";
-    body.append(...fields);
-    group.append(header, body);
-    return group;
-  }
-
-  function actionButton(label, className = "secondary-button") {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = className;
-    button.textContent = label;
-    return button;
   }
 
   function markConfigDirty() {
@@ -1105,7 +938,8 @@
     const busy = state.configLoading || state.configSaving;
     elements.reloadConfigButton.disabled = busy;
     elements.saveConfigButton.disabled = busy || !state.configLoaded || !state.configDirty || state.invalidConfigFields.size > 0 || conversationRunning();
-    elements.addProviderButton.disabled = busy || !state.configLoaded;
+    elements.settingsFooter?.classList.toggle("is-dirty", Boolean(state.configLoaded && state.configDirty));
+    elements.settingsFooter?.classList.toggle("is-invalid", state.invalidConfigFields.size > 0);
     if (state.configLoading) elements.settingsStatus.textContent = "正在载入配置";
     else if (state.configSaving) elements.settingsStatus.textContent = "正在验证并保存";
     else if (!state.configLoaded) elements.settingsStatus.textContent = "尚未载入配置";
@@ -1119,998 +953,11 @@
     elements.advancedConfigEditor.value = JSON.stringify(state.configDraft, null, 2);
   }
 
-  function renderGeneralConfig() {
-    elements.generalConfigForm.replaceChildren(
-      configGroup("工具", [
-        booleanConfigField("启用工具", "tools.enabled"),
-        textConfigField("最大工具轮数", "tools.max_rounds", { type: "number", integer: true, inputType: "number", min: 0 }),
-        selectConfigField("工具加载模式", "tools.loading_mode", ["full", "hybrid"]),
-        booleanConfigField("记住已加载工具", "tools.persist_loaded_tools")
-      ]),
-      configGroup("Skills", [
-        booleanConfigField("启用 Skills", "skills.enabled"),
-        booleanConfigField("允许执行命令", "skills.allow_command_execution")
-      ]),
-      configGroup("思考", [
-        selectConfigField(
-          "思考详细程度",
-          "display.reasoning",
-          [{ value: "summary", label: "摘要" }, { value: "full", label: "完整" }, { value: "hidden", label: "隐藏" }],
-          "决定向模型请求摘要还是完整思考并写入会话；设为隐藏则不产生思考内容。WebUI 的展开/收起在「界面」里设置。"
-        )
-      ]),
-      configGroup("上下文", [
-        selectConfigField("到达上限后", "context.on_overflow", [{ value: "compact", label: "压缩上下文" }, { value: "pop", label: "弹出旧消息" }]),
-        textConfigField("开始裁剪比例", "context.trim_at_ratio", { type: "number", inputType: "number", min: 0.1, max: 1, step: 0.01 }),
-        textConfigField("每批裁剪比例", "context.trim_batch_ratio", { type: "number", inputType: "number", min: 0.01, max: 0.9, step: 0.01 })
-      ]),
-      configGroup("记忆", [
-        booleanConfigField("启用记忆", "memory.enabled"),
-        booleanConfigField("保留弹出上下文", "memory.evicted_context_enabled"),
-        booleanConfigField("启用联想", "memory.association_enabled"),
-        booleanConfigField("自动日记", "memory.auto_diary_enabled"),
-        booleanConfigField("自动事实记忆", "memory.auto_fact_enabled"),
-        textConfigField("日记整理轮数", "memory.diary_batch_size", { type: "number", inputType: "number", integer: true, min: 2, max: 100 }),
-        textConfigField("短期日记保留天数", "memory.short_diary_retention_days", { type: "number", inputType: "number", integer: true, min: 1, max: 3650 }),
-        textConfigField("日记长期化召回次数", "memory.diary_promotion_recalls", { type: "number", inputType: "number", integer: true, min: 1, max: 100 }),
-        textConfigField("记忆整理超时秒数", "memory.organizer_timeout_seconds", { type: "number", inputType: "number", integer: true, min: 5, max: 600 }),
-        textConfigField("联想知识条数", "memory.association_facts", { type: "number", inputType: "number", integer: true, min: 0 }),
-        textConfigField("联想事件条数", "memory.association_episodes", { type: "number", inputType: "number", integer: true, min: 0 }),
-        textConfigField("联想字符上限", "memory.association_max_chars", { type: "number", inputType: "number", integer: true, min: 0 }),
-        textConfigField("片段字符数", "memory.snippet_chars", { type: "number", inputType: "number", integer: true, min: 0 }),
-        textConfigField("遗忘期限（天）", "memory.forget_after_days", { type: "number", inputType: "number", integer: true, min: 1 }),
-        booleanConfigField("启用遗忘", "memory.forgetting_enabled"),
-        textConfigField("遗忘半衰期（天）", "memory.forgetting_half_life_days", { type: "number", inputType: "number", min: 0.1, step: 0.1 }),
-        textConfigField("最低遗忘强度", "memory.forgetting_min_strength", { type: "number", inputType: "number", min: 0, max: 1, step: 0.01 }),
-        textConfigField("回忆增强强度", "memory.forgetting_review_boost", { type: "number", inputType: "number", min: 0, step: 0.01 }),
-        textConfigField("最小任务字数", "memory.learning_min_task_chars", { type: "number", inputType: "number", integer: true, min: 0 }),
-        textConfigField("最小方法字数", "memory.learning_min_method_chars", { type: "number", inputType: "number", integer: true, min: 0 })
-      ]),
-      configGroup("MCP", [
-        booleanConfigField("启用 MCP", "mcp.enabled"),
-        textConfigField("服务器配置", "mcp.servers", { type: "json", multiline: true, rows: 10, description: "JSON 数组，支持 id、command、args、env、timeout_seconds 和 enabled。" })
-      ])
-    );
-  }
-
-  function secretEditor(labelText, key, { multiline = false } = {}) {
-    const wrapper = document.createElement("div");
-    wrapper.className = "secret-editor config-field";
-    const label = document.createElement("span");
-    label.className = "config-field-label";
-    label.textContent = labelText;
-    const status = document.createElement("small");
-    status.className = "secret-status";
-    status.textContent = state.secretChanges[key]?.action === "clear"
-      ? "将清空"
-      : state.secretChanges[key]?.action === "set"
-        ? "已输入新值"
-        : state.secretStates[key]
-          ? "已配置"
-          : "未配置";
-    const input = multiline ? document.createElement("textarea") : document.createElement("input");
-    input.className = "config-input";
-    if (!multiline) input.type = "password";
-    if (multiline) input.rows = 3;
-    input.placeholder = state.secretStates[key] ? "留空保留现有值" : "输入新值";
-    input.value = state.secretChanges[key]?.action === "set" ? state.secretChanges[key].value : "";
-    input.autocomplete = "new-password";
-    const actions = document.createElement("div");
-    actions.className = "secret-actions";
-    const clear = actionButton("清空", "text-button danger-text");
-    const preserve = actionButton("保留", "text-button");
-    actions.append(preserve, clear);
-    input.addEventListener("input", () => {
-      if (input.value) state.secretChanges[key] = { action: "set", value: input.value };
-      else delete state.secretChanges[key];
-      markConfigDirty();
-      status.textContent = input.value ? "已输入新值" : state.secretStates[key] ? "已配置" : "未配置";
-    });
-    clear.addEventListener("click", () => {
-      input.value = "";
-      state.secretChanges[key] = { action: "clear" };
-      status.textContent = "将清空";
-      markConfigDirty();
-    });
-    preserve.addEventListener("click", () => {
-      input.value = "";
-      delete state.secretChanges[key];
-      status.textContent = state.secretStates[key] ? "已配置" : "未配置";
-      markConfigDirty();
-    });
-    wrapper.append(label, status, input, actions);
-    return wrapper;
-  }
-
-  function ensureProviderDefaults(provider = {}) {
-    return {
-      id: "",
-      display_name: "",
-      base_url: "",
-      protocol: "auto",
-      api_key: null,
-      models: [],
-      model_context_window: {},
-      model_costs: {},
-      model_modalities: {},
-      default_model: "",
-      timeout_seconds: 60,
-      temperature: 1.0,
-      anthropic_max_tokens: 4096,
-      extra_body: null,
-      ...provider
-    };
-  }
-
-  const PLATFORM_MODEL_POOL_NAMES = ["text_models", "multimodal_models", "non_whitelist_text_models"];
-
-  function forEachPlatformModelPool(callback) {
-    const qq = state.configDraft?.platforms?.qq;
-    if (!qq || typeof qq !== "object") return;
-    for (const poolName of PLATFORM_MODEL_POOL_NAMES) {
-      if (Array.isArray(qq[poolName])) callback(qq, poolName, qq[poolName]);
-    }
-    const realContext = qq.plugins?.real_context?.settings;
-    if (Array.isArray(realContext?.text_models)) {
-      callback(realContext, "text_models", realContext.text_models);
-    }
-    for (const route of Array.isArray(qq.conversations) ? qq.conversations : []) {
-      if (!route || typeof route !== "object") continue;
-      for (const poolName of PLATFORM_MODEL_POOL_NAMES) {
-        if (Array.isArray(route[poolName])) callback(route, poolName, route[poolName]);
-      }
-    }
-  }
-
-  function normalizePlatformModelRoutes() {
-    forEachPlatformModelPool((owner, poolName, pool) => {
-      if (pool.length === 0) delete owner[poolName];
-    });
-  }
-
-  function replacePlatformProviderReferences(previousId, nextId) {
-    forEachPlatformModelPool((_route, _poolName, pool) => {
-      for (const item of pool) {
-        if (item?.provider_id === previousId) item.provider_id = nextId;
-      }
-    });
-  }
-
-  function removePlatformProviderReferences(providerId) {
-    forEachPlatformModelPool((route, poolName, pool) => {
-      route[poolName] = pool.filter((item) => item?.provider_id !== providerId);
-    });
-    normalizePlatformModelRoutes();
-  }
-
-  function providerHasConfiguredModel(provider, model) {
-    const normalizedModel = String(model || "").trim();
-    return Boolean(normalizedModel) && (
-      String(provider?.default_model || "") === normalizedModel
-      || (Array.isArray(provider?.models) && provider.models.includes(normalizedModel))
-    );
-  }
-
-  function forEachSubagentTierPool(callback) {
-    const tiers = state.configDraft?.subagent_tiers;
-    if (!tiers || typeof tiers !== "object") return;
-    for (const [tierName, pool] of Object.entries(tiers)) {
-      if (Array.isArray(pool)) callback(tiers, tierName, pool);
-    }
-  }
-
-  function pruneOptionalPool(owner, key, predicate) {
-    if (!owner || !Array.isArray(owner[key])) return;
-    const pool = owner[key].filter(predicate);
-    if (pool.length) owner[key] = pool;
-    else delete owner[key];
-  }
-
-  function providerModelSupportsMedia(provider, model) {
-    const normalizedModel = String(model || "").trim();
-    const declared = provider?.model_modalities;
-    if (declared && typeof declared === "object" && Object.prototype.hasOwnProperty.call(declared, normalizedModel)) {
-      return Array.isArray(declared[normalizedModel])
-        && declared[normalizedModel].includes("image");
-    }
-    return state.configInferredImageModels.some((item) => (
-      item?.provider_id === provider?.id && item?.model === normalizedModel
-    ));
-  }
-
-  function modelReferenceTarget(providersById, item) {
-    const provider = providersById.get(String(item?.provider_id || "").trim());
-    const model = String(item?.model || "").trim();
-    return provider && providerHasConfiguredModel(provider, model) ? { provider, model } : null;
-  }
-
-  function prunePlatformModelRoutes(providersById) {
-    forEachPlatformModelPool((route, poolName, pool) => {
-      route[poolName] = pool.filter((item) => {
-        const target = modelReferenceTarget(providersById, item);
-        return Boolean(target) && (
-          poolName !== "multimodal_models"
-          || providerModelSupportsMedia(target.provider, target.model)
-        );
-      });
-    });
-    normalizePlatformModelRoutes();
-  }
-
-  function clearInvalidPluginModelReferences(providersById) {
-    const vision = state.configDraft?.plugins?.vision;
-    if (vision?.vision_provider_id) {
-      const provider = providersById.get(String(vision.vision_provider_id).trim());
-      const configuredModel = String(vision.vision_model || "").trim();
-      const model = configuredModel || String(provider?.default_model || "").trim();
-      if (!provider || !providerHasConfiguredModel(provider, model) || !providerModelSupportsMedia(provider, model)) {
-        vision.vision_provider_id = "";
-        vision.vision_model = "";
-      }
-    }
-    const knowledgeBase = state.configDraft?.plugins?.knowledge_base;
-    if (knowledgeBase?.embedding_provider_id) {
-      const provider = providersById.get(String(knowledgeBase.embedding_provider_id).trim());
-      const configuredModel = String(knowledgeBase.embedding_model || "").trim();
-      const model = configuredModel || String(provider?.default_model || "").trim();
-      if (!provider || !providerHasConfiguredModel(provider, model)) {
-        knowledgeBase.embedding_provider_id = "";
-        knowledgeBase.embedding_model = "";
-      }
-    }
-  }
-
-  function pruneModelReferences() {
-    if (!state.configDraft) return;
-    const providers = Array.isArray(state.configDraft.providers) ? state.configDraft.providers : [];
-    const providersById = new Map(providers.map((provider) => [String(provider?.id || ""), provider]));
-    pruneOptionalPool(state.configDraft, "active_provider_models", (item) => (
-      Boolean(modelReferenceTarget(providersById, item))
-    ));
-    pruneOptionalPool(state.configDraft, "active_multimodal_provider_models", (item) => {
-      const target = modelReferenceTarget(providersById, item);
-      return Boolean(target) && providerModelSupportsMedia(target.provider, target.model);
-    });
-    forEachSubagentTierPool((tiers, tierName, pool) => {
-      tiers[tierName] = pool.filter((item) => Boolean(modelReferenceTarget(providersById, item)));
-    });
-    prunePlatformModelRoutes(providersById);
-    clearInvalidPluginModelReferences(providersById);
-  }
-
-  function replaceProviderReferences(previousId, nextId) {
-    if (!previousId || previousId === nextId || !state.configDraft) return;
-    if (state.configDraft.active_provider === previousId) state.configDraft.active_provider = nextId;
-    for (const poolName of ["active_provider_models", "active_multimodal_provider_models"]) {
-      for (const item of state.configDraft[poolName] || []) {
-        if (item.provider_id === previousId) item.provider_id = nextId;
-      }
-    }
-    if (state.configDraft.plugins?.vision?.vision_provider_id === previousId) {
-      state.configDraft.plugins.vision.vision_provider_id = nextId;
-    }
-    if (state.configDraft.plugins?.knowledge_base?.embedding_provider_id === previousId) {
-      state.configDraft.plugins.knowledge_base.embedding_provider_id = nextId;
-    }
-    forEachSubagentTierPool((_tiers, _tierName, pool) => {
-      for (const item of pool) {
-        if (item?.provider_id === previousId) item.provider_id = nextId;
-      }
-    });
-    replacePlatformProviderReferences(previousId, nextId);
-    for (const models of [state.configMultimodalModels, state.configInferredImageModels]) {
-      for (const model of models) {
-        if (model?.provider_id === previousId) model.provider_id = nextId;
-      }
-    }
-  }
-
-  function removeProviderReferences(providerId) {
-    if (!state.configDraft) return;
-    pruneOptionalPool(state.configDraft, "active_provider_models", (item) => item?.provider_id !== providerId);
-    pruneOptionalPool(state.configDraft, "active_multimodal_provider_models", (item) => item?.provider_id !== providerId);
-    forEachSubagentTierPool((tiers, tierName, pool) => {
-      tiers[tierName] = pool.filter((item) => item?.provider_id !== providerId);
-    });
-    if (state.configDraft.plugins?.vision?.vision_provider_id === providerId) {
-      state.configDraft.plugins.vision.vision_provider_id = "";
-      state.configDraft.plugins.vision.vision_model = "";
-    }
-    if (state.configDraft.plugins?.knowledge_base?.embedding_provider_id === providerId) {
-      state.configDraft.plugins.knowledge_base.embedding_provider_id = "";
-      state.configDraft.plugins.knowledge_base.embedding_model = "";
-    }
-    removePlatformProviderReferences(providerId);
-    state.configMultimodalModels = state.configMultimodalModels.filter((item) => item?.provider_id !== providerId);
-    state.configInferredImageModels = state.configInferredImageModels.filter((item) => item?.provider_id !== providerId);
-  }
-
-  function renderProviders() {
-    elements.providerEditor.replaceChildren();
-    const providers = Array.isArray(state.configDraft?.providers) ? state.configDraft.providers : [];
-    providers.forEach((provider, index) => {
-      let referencedProviderId = String(provider.id || "");
-      const card = document.createElement("details");
-      card.className = "provider-card";
-      card.open = index === 0;
-      const summary = document.createElement("summary");
-      const copy = document.createElement("span");
-      const name = document.createElement("strong");
-      name.textContent = provider.display_name || provider.id || `供应商 ${index + 1}`;
-      const id = document.createElement("small");
-      id.textContent = provider.id || "尚未命名";
-      copy.append(name, id);
-      const remove = actionButton("", "icon-button danger-text");
-      remove.title = "删除";
-      remove.setAttribute("aria-label", "删除");
-      remove.appendChild(makeIconSlot("trash-2"));
-      remove.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        if (!window.confirm(`删除供应商“${provider.display_name || provider.id || index + 1}”？`)) return;
-        state.configDraft.providers.splice(index, 1);
-        state.providerSecretStates.splice(index, 1);
-        refreshProviderSecretStates();
-        clearProviderSecretChanges();
-        const removedProviderId = referencedProviderId || provider.id;
-        removeProviderReferences(removedProviderId);
-        if (state.configDraft.active_provider === removedProviderId || state.configDraft.active_provider === provider.id) {
-          state.configDraft.active_provider = state.configDraft.providers[0]?.id || "";
-        }
-        markConfigDirty();
-        renderConfigEditors();
-      });
-      summary.append(copy, remove);
-      const body = document.createElement("div");
-      body.className = "provider-card-body";
-      const fields = [
-        ["配置 ID", "id"], ["显示名称", "display_name"], ["Base URL", "base_url"],
-        ["默认模型", "default_model"]
-      ];
-      for (const [label, key] of fields) {
-        const input = document.createElement("input");
-        input.className = "config-input";
-        input.value = String(provider[key] || "");
-        input.addEventListener("input", () => {
-          const previousId = key === "id" ? String(provider.id || "") : "";
-          provider[key] = input.value;
-          if (key === "id" && previousId !== provider.id) {
-            const nextId = String(provider.id || "");
-            if (referencedProviderId && nextId && referencedProviderId !== nextId) {
-              replaceProviderReferences(referencedProviderId, nextId);
-            }
-            if (nextId) referencedProviderId = nextId;
-            state.providerSecretStates[index] = false;
-            delete state.secretChanges[`providers.${index}.api_key`];
-            refreshProviderSecretStates();
-            renderModelPools();
-          }
-          if (key === "default_model") renderModelPools();
-          if (key === "display_name" || key === "id") {
-            name.textContent = provider.display_name || provider.id || `供应商 ${index + 1}`;
-            id.textContent = provider.id || "尚未命名";
-          }
-          markConfigDirty();
-          updateAdvancedConfigEditor();
-        });
-        if (key === "default_model") {
-          input.addEventListener("change", () => {
-            provider.models = Array.isArray(provider.models) ? provider.models : [];
-            if (provider.default_model && !provider.models.includes(provider.default_model)) {
-              provider.models.push(provider.default_model);
-            }
-            pruneModelReferences();
-            renderModelPools();
-            updateAdvancedConfigEditor();
-          });
-        }
-        body.appendChild(configField(label, input));
-      }
-      const protocol = document.createElement("select");
-      protocol.className = "config-input";
-      for (const value of ["auto", "openai-chat", "openai-responses", "anthropic"]) {
-        const option = document.createElement("option");
-        option.value = value;
-        option.textContent = value;
-        option.selected = provider.protocol === value;
-        protocol.appendChild(option);
-      }
-      protocol.addEventListener("change", () => { provider.protocol = protocol.value; markConfigDirty(); updateAdvancedConfigEditor(); });
-      body.appendChild(configField("协议", protocol));
-      const secretKey = `providers.${index}.api_key`;
-      body.appendChild(secretEditor("API Key", secretKey));
-
-      const numeric = [
-        ["超时秒数", "timeout_seconds", 1, 1], ["Temperature", "temperature", 0, 0.1], ["Anthropic 最大 Token", "anthropic_max_tokens", 1, 1]
-      ];
-      for (const [label, key, min, step] of numeric) {
-        const input = document.createElement("input");
-        input.className = "config-input";
-        input.type = "number";
-        input.min = String(min);
-        input.step = String(step);
-        input.value = String(provider[key] ?? "");
-        input.addEventListener("input", () => {
-          const value = Number(input.value);
-          if (Number.isFinite(value)) {
-            provider[key] = key === "temperature" ? value : Math.trunc(value);
-            markConfigDirty();
-            updateAdvancedConfigEditor();
-          }
-        });
-        body.appendChild(configField(label, input));
-      }
-      const structured = [
-        ["可用模型", "models", "lines", "每行一个模型"],
-        ["模型上下文窗口", "model_context_window", "json", "JSON 对象：模型名到 Token 数"], ["模型价格", "model_costs", "json", "JSON 对象：模型名到 {currency, input, output, cache_read}，currency 可为 USD/CNY(默认 USD)，价格单位为 每 1M tokens；留空用 models.dev 目录价"],
-        ["模型输入模态", "model_modalities", "json", "JSON 对象：模型名到 text/image/audio/video/pdf 数组"],
-        ["额外请求体", "extra_body", "json", "JSON 对象，留空表示不设置"]
-      ];
-      for (const [label, key, type, description] of structured) {
-        const input = document.createElement("textarea");
-        input.className = "config-input";
-        input.rows = key === "models" ? 4 : 5;
-        input.value = type === "lines" ? (provider[key] || []).join("\n") : provider[key] == null ? "" : JSON.stringify(provider[key], null, 2);
-        input.addEventListener("input", () => {
-          clearConfigFieldError(input);
-          try {
-            provider[key] = type === "lines"
-              ? input.value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean)
-              : input.value.trim() ? JSON.parse(input.value) : key === "extra_body" ? null : {};
-            if (key === "models" && provider.default_model && !provider.models.includes(provider.default_model)) {
-              provider.models.push(provider.default_model);
-            }
-            markConfigDirty();
-            updateAdvancedConfigEditor();
-            if (key === "models" || key === "model_modalities") renderModelPools();
-          } catch (_) {
-            setConfigFieldError(input, "请输入有效 JSON");
-            updateSettingsControls();
-          }
-        });
-        if (key === "models" || key === "model_modalities") {
-          input.addEventListener("change", () => {
-            if (state.invalidConfigFields.has(input)) return;
-            pruneModelReferences();
-            renderModelPools();
-            updateAdvancedConfigEditor();
-          });
-        }
-        body.appendChild(configField(label, input, description));
-      }
-      card.append(summary, body);
-      elements.providerEditor.appendChild(card);
-    });
-    if (!providers.length) {
-      const empty = document.createElement("p");
-      empty.className = "settings-empty";
-      empty.textContent = "至少需要添加一个供应商。";
-      elements.providerEditor.appendChild(empty);
-    }
-  }
-
-  function configuredModelChoices() {
-    const result = [];
-    for (const provider of state.configDraft?.providers || []) {
-      const models = Array.isArray(provider.models) && provider.models.length ? provider.models : provider.default_model ? [provider.default_model] : [];
-      for (const model of models) {
-        if (String(model).trim()) result.push({ provider_id: String(provider.id || ""), provider_name: String(provider.display_name || provider.id || ""), model: String(model) });
-      }
-    }
-    return result;
-  }
-
-  function renderModelPoolList(titleText, path, choices) {
-    const providers = Array.isArray(state.configDraft?.providers) ? state.configDraft.providers : [];
-    const selected = Array.isArray(state.configDraft[path])
-      ? state.configDraft[path]
-      : path === "active_provider_models"
-        ? choices.filter((choice) => choice.provider_id === state.configDraft.active_provider && choice.model === providers.find((provider) => provider.id === state.configDraft.active_provider)?.default_model)
-        : [];
-    const group = configGroup(titleText);
-    const body = group.querySelector(".config-group-body");
-    if (!choices.length) {
-      const empty = document.createElement("p");
-      empty.className = "settings-empty";
-      empty.textContent = "请先在供应商中配置模型。";
-      body.appendChild(empty);
-    }
-    for (const model of choices) {
-      const label = document.createElement("label");
-      label.className = "model-pool-option";
-      const input = document.createElement("input");
-      input.type = "checkbox";
-      input.checked = selected.some((item) => item.provider_id === model.provider_id && item.model === model.model);
-      input.addEventListener("change", () => {
-        let pool = Array.isArray(state.configDraft[path]) ? state.configDraft[path] : [...selected];
-        if (input.checked && !pool.some((item) => item.provider_id === model.provider_id && item.model === model.model)) {
-          pool = [...pool, { provider_id: model.provider_id, model: model.model }];
-        } else if (!input.checked) {
-          pool = pool.filter((item) => item.provider_id !== model.provider_id || item.model !== model.model);
-        }
-        state.configDraft[path] = pool;
-        markConfigDirty();
-        updateAdvancedConfigEditor();
-      });
-      const copy = document.createElement("span");
-      const name = document.createElement("strong");
-      name.textContent = model.model;
-      const provider = document.createElement("small");
-      provider.textContent = model.provider_name;
-      copy.append(name, provider);
-      label.append(input, copy);
-      body.appendChild(label);
-    }
-    return group;
-  }
-
-  function renderSubagentTierList(titleText, tierKey, choices) {
-    if (!state.configDraft.subagent_tiers || typeof state.configDraft.subagent_tiers !== "object") {
-      state.configDraft.subagent_tiers = {};
-    }
-    const tiers = state.configDraft.subagent_tiers;
-    const selected = Array.isArray(tiers[tierKey]) ? tiers[tierKey] : [];
-    const group = configGroup(titleText);
-    const body = group.querySelector(".config-group-body");
-    if (!choices.length) {
-      const empty = document.createElement("p");
-      empty.className = "settings-empty";
-      empty.textContent = "请先在供应商中配置模型。";
-      body.appendChild(empty);
-    }
-    for (const model of choices) {
-      const label = document.createElement("label");
-      label.className = "model-pool-option";
-      const input = document.createElement("input");
-      input.type = "checkbox";
-      input.checked = selected.some((item) => item.provider_id === model.provider_id && item.model === model.model);
-      input.addEventListener("change", () => {
-        let pool = Array.isArray(tiers[tierKey]) ? tiers[tierKey] : [];
-        if (input.checked && !pool.some((item) => item.provider_id === model.provider_id && item.model === model.model)) {
-          pool = [...pool, { provider_id: model.provider_id, model: model.model }];
-        } else if (!input.checked) {
-          pool = pool.filter((item) => item.provider_id !== model.provider_id || item.model !== model.model);
-        }
-        tiers[tierKey] = pool;
-        markConfigDirty();
-        updateAdvancedConfigEditor();
-      });
-      const copy = document.createElement("span");
-      const name = document.createElement("strong");
-      name.textContent = model.model;
-      const provider = document.createElement("small");
-      provider.textContent = model.provider_name;
-      copy.append(name, provider);
-      label.append(input, copy);
-      body.appendChild(label);
-    }
-    return group;
-  }
-
-  function renderModelPools() {
-    const providers = Array.isArray(state.configDraft?.providers) ? state.configDraft.providers : [];
-    const choices = configuredModelChoices();
-    const multimodal = choices.filter((choice) => {
-      const provider = providers.find((item) => item.id === choice.provider_id);
-      return providerModelSupportsMedia(provider, choice.model);
-    });
-    elements.modelPoolEditor.replaceChildren(
-      renderModelPoolList("文本模型池", "active_provider_models", choices),
-      renderModelPoolList("多模态模型池", "active_multimodal_provider_models", multimodal),
-      renderSubagentTierList("子代理档位池 · cheap（简单任务）", "cheap", choices),
-      renderSubagentTierList("子代理档位池 · balanced（普通任务）", "balanced", choices),
-      renderSubagentTierList("子代理档位池 · strong（复杂任务）", "strong", choices)
-    );
-  }
-
-  const PLUGIN_LABELS = {
-    weather: "天气", web: "网络搜索", web_images: "图片搜索", deep_research: "深度研究", deep_diagnose: "深度诊断",
-    vision: "识图", exchange_rate: "汇率", xuanxue: "玄学", image_generation: "生图", print_image: "打印图片",
-    memes: "表情包", knowledge_base: "知识库", archlinux: "Arch Linux", man: "在线手册", moegirl: "萌娘百科",
-    hash_codec: "哈希与编解码", calculator: "计算器", package_advisor: "AUR 审查",
-    deep_research_linux_game_compatibility: "Linux 游戏兼容", diagnostics: "系统诊断", api_quota: "大模型额度查询", memory: "记忆"
-  };
-
-  const SECRET_PLUGIN_PATHS = new Map([
-    ["web.tavily_api_keys", "plugins.web.tavily_api_keys"],
-    ["web.firecrawl_api_keys", "plugins.web.firecrawl_api_keys"],
-    ["web.anysearch_api_keys", "plugins.web.anysearch_api_keys"],
-    ["web.exa_api_keys", "plugins.web.exa_api_keys"],
-    ["exchange_rate.api_key", "plugins.exchange_rate.api_key"],
-    ["image_generation.api_keys", "plugins.image_generation.api_keys"]
-  ]);
-
-  const WEB_HIDDEN_PLUGIN_FIELDS = new Set([
-    "vision.preview_with_chafa",
-    "image_generation.auto_print",
-    "print_image.width_percent",
-    "print_image.height_percent",
-    "memes.width_percent",
-    "memes.height_percent",
-    "web_images.auto_preview",
-    "web_images.preview_count"
-  ]);
-
-  function humanizeConfigKey(key) {
-    return String(key).replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
-  }
-
-  function pluginValueEditor(pluginKey, fieldKey, value) {
-    const path = `plugins.${pluginKey}.${fieldKey}`;
-    const secretKey = SECRET_PLUGIN_PATHS.get(`${pluginKey}.${fieldKey}`);
-    if (secretKey) return secretEditor(humanizeConfigKey(fieldKey), secretKey, { multiline: Array.isArray(value) });
-    if (typeof value === "boolean") return booleanConfigField(humanizeConfigKey(fieldKey), path);
-    if (typeof value === "number") return textConfigField(humanizeConfigKey(fieldKey), path, { type: "number", integer: Number.isInteger(value), inputType: "number", step: Number.isInteger(value) ? 1 : 0.01 });
-    if (typeof value === "string") return textConfigField(humanizeConfigKey(fieldKey), path, { multiline: value.length > 100, rows: 3 });
-    return textConfigField(humanizeConfigKey(fieldKey), path, { type: "json", multiline: true, rows: 5 });
-  }
-
-  function apiQuotaProviderEditor(providerKey, provider) {
-    const details = document.createElement("details");
-    details.className = "plugin-subsection";
-    const summary = document.createElement("summary");
-    summary.textContent = providerKey === "deepseek" ? "DeepSeek" : "OpenRouter";
-    const body = document.createElement("div");
-    body.className = "plugin-subsection-body";
-    const hint = document.createElement("p");
-    hint.className = "config-field-hint";
-    hint.textContent = providerKey === "deepseek"
-      ? "DeepSeek API 余额按 CNY 与 USD 分为两个独立余额池，以下分别显示各币种总余额。"
-      : "每个账号配置对应一个 OpenRouter API Key。";
-    body.appendChild(hint);
-    provider.accounts = Array.isArray(provider.accounts) && provider.accounts.length
-      ? provider.accounts
-      : [{ id: "account-1", name: "默认账号", api_key: "" }];
-    const nextAccountId = () => `account-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
-    const nextAccountName = () => {
-      let number = 2;
-      while (provider.accounts.some((account) => account.name === `账号 ${number}`)) number += 1;
-      return `账号 ${number}`;
-    };
-    const reindexSecrets = (previousAccounts) => {
-      const prefix = `plugins.api_quota.${providerKey}.accounts.`;
-      const previous = new Map(previousAccounts.map((account, index) => {
-        const key = `${prefix}${index}.api_key`;
-        return [account.id || account.name, {
-          configured: Boolean(state.secretStates[key]),
-          change: state.secretChanges[key]
-        }];
-      }));
-      for (const key of Object.keys(state.secretChanges)) {
-        if (key.startsWith(prefix)) delete state.secretChanges[key];
-      }
-      for (const key of Object.keys(state.secretStates)) {
-        if (key.startsWith(prefix)) delete state.secretStates[key];
-      }
-      provider.accounts.forEach((account, index) => {
-        const prior = previous.get(account.id || account.name);
-        const key = `${prefix}${index}.api_key`;
-        state.secretStates[key] = Boolean(prior?.configured);
-        if (prior?.change) state.secretChanges[key] = prior.change;
-      });
-    };
-    const renderAccounts = () => {
-      for (const child of Array.from(accountsBody.children)) child.remove();
-      provider.accounts.forEach((account, index) => {
-        const accountDetails = document.createElement("details");
-        accountDetails.className = "quota-account";
-        accountDetails.open = true;
-        const accountSummary = document.createElement("summary");
-        const accountTitle = document.createElement("span");
-        accountTitle.textContent = account.name || `账号 ${index + 1}`;
-        const remove = actionButton("删除", "text-button danger-text");
-        remove.addEventListener("click", (event) => {
-          event.preventDefault();
-          if (!window.confirm(`删除账号配置“${account.name || `账号 ${index + 1}`}”？`)) return;
-          const previousAccounts = provider.accounts.map((item) => ({ ...item }));
-          const deletingOnlyAccount = provider.accounts.length === 1;
-          if (deletingOnlyAccount) {
-            provider.accounts[0] = { id: provider.accounts[0].id || "account-1", name: "默认账号", api_key: "" };
-          } else {
-            provider.accounts.splice(index, 1);
-          }
-          reindexSecrets(previousAccounts);
-          if (deletingOnlyAccount) {
-            const key = `plugins.api_quota.${providerKey}.accounts.0.api_key`;
-            state.secretStates[key] = false;
-            state.secretChanges[key] = { action: "clear" };
-          }
-          markConfigDirty();
-          renderAccounts();
-        });
-        accountSummary.append(accountTitle, remove);
-        const accountBody = document.createElement("div");
-        accountBody.className = "quota-account-body";
-        accountBody.appendChild(textConfigField("账号名称", `plugins.api_quota.${providerKey}.accounts.${index}.name`, { value: account.name || `账号 ${index + 1}` }));
-        accountBody.appendChild(secretEditor("API Key", `plugins.api_quota.${providerKey}.accounts.${index}.api_key`));
-        accountDetails.append(accountSummary, accountBody);
-        accountsBody.appendChild(accountDetails);
-      });
-    };
-    const accountsBody = document.createElement("div");
-    accountsBody.className = "quota-accounts";
-    body.appendChild(accountsBody);
-    const add = actionButton("新建账号", "text-button");
-    add.addEventListener("click", () => {
-      if (provider.accounts.length >= 32) {
-        showToast("每个平台最多配置 32 个账号", "error");
-        return;
-      }
-      const previousAccounts = provider.accounts.map((item) => ({ ...item }));
-      provider.accounts.push({ id: nextAccountId(), name: nextAccountName(), api_key: "" });
-      reindexSecrets(previousAccounts);
-      markConfigDirty();
-      renderAccounts();
-    });
-    body.appendChild(add);
-    renderAccounts();
-    details.append(summary, body);
-    return details;
-  }
-
-  function remapApiQuotaSecrets(previousConfig, nextConfig) {
-    for (const providerKey of ["deepseek", "openrouter"]) {
-      const prefix = `plugins.api_quota.${providerKey}.accounts.`;
-      const previousAccounts = previousConfig?.plugins?.api_quota?.[providerKey]?.accounts || [];
-      const saved = new Map(previousAccounts.map((account, index) => {
-        const key = `${prefix}${index}.api_key`;
-        return [account.id, {
-          configured: Boolean(state.secretStates[key]),
-          change: state.secretChanges[key]
-        }];
-      }).filter(([id]) => id));
-      for (const key of Object.keys(state.secretStates)) {
-        if (key.startsWith(prefix)) delete state.secretStates[key];
-      }
-      for (const key of Object.keys(state.secretChanges)) {
-        if (key.startsWith(prefix)) delete state.secretChanges[key];
-      }
-      const nextAccounts = nextConfig?.plugins?.api_quota?.[providerKey]?.accounts || [];
-      nextAccounts.forEach((account, index) => {
-        const prior = saved.get(account.id);
-        const key = `${prefix}${index}.api_key`;
-        state.secretStates[key] = Boolean(prior?.configured);
-        if (prior?.change) state.secretChanges[key] = prior.change;
-      });
-    }
-  }
-
-  function renderPlugins() {
-    elements.pluginEditor.replaceChildren();
-    for (const [pluginKey, plugin] of Object.entries(state.configDraft?.plugins || {})) {
-      if (pluginKey === "memory" || pluginKey === "print_image") continue;
-      const details = document.createElement("details");
-      details.className = "plugin-card";
-      const summary = document.createElement("summary");
-      const copy = document.createElement("span");
-      const title = document.createElement("strong");
-      title.textContent = PLUGIN_LABELS[pluginKey] || humanizeConfigKey(pluginKey);
-      const technical = document.createElement("small");
-      technical.textContent = pluginKey;
-      copy.append(title, technical);
-      const badge = document.createElement("span");
-      badge.className = `plugin-state${plugin?.enabled ? " is-enabled" : ""}`;
-      badge.textContent = plugin?.enabled ? "启用" : "禁用";
-      summary.append(copy, badge);
-      const body = document.createElement("div");
-      body.className = "plugin-card-body";
-      for (const [fieldKey, value] of Object.entries(plugin || {})) {
-        if (WEB_HIDDEN_PLUGIN_FIELDS.has(`${pluginKey}.${fieldKey}`)) continue;
-        if (pluginKey === "api_quota" && (fieldKey === "deepseek" || fieldKey === "openrouter")) {
-          body.appendChild(apiQuotaProviderEditor(fieldKey, value));
-          continue;
-        }
-        body.appendChild(pluginValueEditor(pluginKey, fieldKey, value));
-      }
-      details.append(summary, body);
-      elements.pluginEditor.appendChild(details);
-    }
-  }
-
-  function normalizedDocumentName(name) {
-    const trimmed = String(name || "").trim().replace(/[\\/]/g, "-").replace(/\.md$/i, "");
-    return trimmed ? `${trimmed}.md` : "";
-  }
-
-  function personaTextField(promptDocument, key, label, placeholder) {
-    const input = document.createElement("input");
-    input.className = "config-input";
-    input.type = "text";
-    input.maxLength = 200;
-    input.placeholder = placeholder;
-    input.value = String(promptDocument[key] || "");
-    input.addEventListener("input", () => {
-      promptDocument[key] = input.value.trim() || null;
-      markConfigDirty();
-    });
-    return configField(label, input);
-  }
-
-  function personaImageField(promptDocument, key, label, fallbackUrl) {
-    const pathInput = document.createElement("input");
-    pathInput.className = "config-input";
-    pathInput.type = "text";
-    pathInput.placeholder = "";
-    pathInput.value = String(promptDocument[key] || "");
-    const picker = document.createElement("input");
-    picker.type = "file";
-    picker.accept = "image/png,image/jpeg,image/webp,image/gif,image/bmp";
-    picker.hidden = true;
-    const pickButton = actionButton("", "icon-button");
-    pickButton.title = `选择${label.replace(/^自定义/, "")}`;
-    pickButton.setAttribute("aria-label", pickButton.title);
-    pickButton.appendChild(makeIconSlot("folder"));
-    pickButton.addEventListener("click", () => picker.click());
-    const preview = document.createElement("img");
-    preview.className = `persona-avatar-preview${key === "board_image_path" ? " persona-board-preview" : ""}`;
-    preview.alt = "";
-    preview.setAttribute("aria-hidden", "true");
-    const showStoredPreview = () => {
-      preview.classList.remove("is-missing");
-      preview.src = promptDocument[key]
-        ? `/api/persona/avatar?path=${encodeURIComponent(promptDocument[key])}`
-        : fallbackUrl || "";
-      if (!promptDocument[key] && !fallbackUrl) {
-        preview.removeAttribute("src");
-        preview.classList.add("is-missing");
-      }
-    };
-    preview.addEventListener("error", () => {
-      preview.removeAttribute("src");
-      preview.classList.add("is-missing");
-    });
-    showStoredPreview();
-    pathInput.addEventListener("input", () => {
-      promptDocument[key] = pathInput.value.trim() || null;
-      showStoredPreview();
-      markConfigDirty();
-    });
-    picker.addEventListener("change", async () => {
-      const file = picker.files?.[0];
-      if (!file) return;
-      if (file.size > 8 * 1024 * 1024) return showToast("图片不能超过 8 MiB", "error");
-      if (preview.src && preview.src.startsWith("blob:")) URL.revokeObjectURL(preview.src);
-      preview.src = URL.createObjectURL(file);
-      preview.classList.remove("is-missing");
-      pickButton.disabled = true;
-      try {
-        const response = await apiRequest("/api/persona/assets", {
-          method: "POST",
-          headers: { "Content-Type": file.type || "application/octet-stream" },
-          body: file
-        });
-        const result = await response.json();
-        promptDocument[key] = result.path;
-        pathInput.value = result.path;
-        preview.src = result.preview_url;
-        markConfigDirty();
-      } catch (error) {
-        showToast(error.message || "图片上传失败", "error");
-      } finally {
-        pickButton.disabled = false;
-        picker.value = "";
-      }
-    });
-    const row = document.createElement("div");
-    row.className = "avatar-path-row";
-    row.append(pathInput, pickButton, preview, picker);
-    return configField(label, row);
-  }
-
-  function renderPromptCollection(kind, titleText, activePath) {
-    const documents = state.promptDraft[kind];
-    const group = configGroup(titleText);
-    const body = group.querySelector(".config-group-body");
-    const active = document.createElement("select");
-    active.className = "config-input";
-    const defaultOption = document.createElement("option");
-    defaultOption.value = "";
-    defaultOption.textContent = kind === "personas" ? "Miyu 默认人格" : "不使用用户身份";
-    active.appendChild(defaultOption);
-    for (const promptDocument of documents) {
-      const option = document.createElement("option");
-      option.value = promptDocument.name;
-      option.textContent = promptDocument.name.replace(/\.md$/i, "");
-      active.appendChild(option);
-    }
-    active.value = String(configValue(activePath, ""));
-    active.addEventListener("change", () => { setConfigValue(activePath, active.value); renderPromptEditor(); updateAdvancedConfigEditor(); });
-    body.appendChild(configField("当前使用", active));
-    const selected = documents.find((document) => document.name === active.value);
-    for (const [index, promptDocument] of documents.entries()) {
-      if (promptDocument !== selected) continue;
-      const card = document.createElement("section");
-      card.className = "prompt-document";
-      const header = document.createElement("header");
-      const name = document.createElement("input");
-      name.className = "config-input";
-      name.value = promptDocument.name.replace(/\.md$/i, "");
-      name.setAttribute("aria-label", `${titleText}名称`);
-      const remove = actionButton("删除", "text-button danger-text");
-      remove.addEventListener("click", () => {
-        const wasActive = configValue(activePath, "") === promptDocument.name;
-        documents.splice(index, 1);
-        if (wasActive) setConfigValue(activePath, "");
-        markConfigDirty();
-        renderPromptEditor();
-        updateAdvancedConfigEditor();
-      });
-      header.append(configField("名称", name), remove);
-      const content = document.createElement("textarea");
-      content.className = "config-input prompt-content";
-      content.rows = 10;
-      content.value = promptDocument.content;
-      content.setAttribute("aria-label", `${titleText}内容`);
-      name.addEventListener("input", () => {
-        const previous = promptDocument.name;
-        promptDocument.name = normalizedDocumentName(name.value);
-        if (configValue(activePath, "") === previous) setConfigValue(activePath, promptDocument.name);
-        markConfigDirty();
-        updateAdvancedConfigEditor();
-      });
-      content.addEventListener("input", () => { promptDocument.content = content.value; markConfigDirty(); });
-      card.append(header, configField("内容", content));
-      if (kind === "personas") {
-        card.append(
-          personaImageField(promptDocument, "avatar_path", "自定义头像图片", null),
-          personaImageField(promptDocument, "board_image_path", "自定义看板图片", null),
-          personaTextField(promptDocument, "board_title", "自定义看板大字", DEFAULT_BOARD_TITLE),
-          personaTextField(promptDocument, "board_subtitle", "自定义看板小字", DEFAULT_BOARD_SUBTITLE)
-        );
-        const starterFields = document.createElement("div");
-        starterFields.className = "persona-starter-fields";
-        const values = Array.isArray(promptDocument.starter_prompts)
-          ? DEFAULT_STARTER_PROMPTS.map((_, index) => String(promptDocument.starter_prompts[index] || ""))
-          : DEFAULT_STARTER_PROMPTS.map(() => "");
-        values.forEach((value, promptIndex) => {
-          const input = document.createElement("input");
-          input.className = "config-input";
-          input.type = "text";
-          input.maxLength = 200;
-          input.value = value;
-          input.placeholder = DEFAULT_STARTER_PROMPTS[promptIndex];
-          input.setAttribute("aria-label", `预设问题 ${promptIndex + 1}`);
-          input.addEventListener("input", () => {
-            values[promptIndex] = input.value;
-            promptDocument.starter_prompts = values.some((item) => item.trim()) ? [...values] : null;
-            markConfigDirty();
-          });
-          starterFields.appendChild(input);
-        });
-        card.appendChild(configField("自定义预设问题", starterFields));
-      }
-      body.appendChild(card);
-    }
-    const add = actionButton("添加", "secondary-button compact-button");
-    add.addEventListener("click", () => {
-      const base = kind === "personas" ? "新建人格" : "新建身份";
-      let name = `${base}.md`;
-      let suffix = 2;
-      while (documents.some((document) => document.name === name)) name = `${base} ${suffix++}.md`;
-      documents.push({ name, content: "", avatar_path: null, original_name: null });
-      setConfigValue(activePath, name);
-      markConfigDirty();
-      renderPromptEditor();
-    });
-    body.appendChild(add);
-    return group;
-  }
-
-  function renderPromptEditor() {
-    elements.promptEditor.replaceChildren(
-      renderPromptCollection("personas", "AI 人格", "prompt.active_persona"),
-      renderPromptCollection("identities", "用户身份", "prompt.active_identity")
-    );
-  }
-
+  // 设置区的渲染在 settings.js:这里只清校验状态、同步「高级」JSON 与底栏。
   function renderConfigEditors() {
     if (!state.configLoaded || !state.configDraft) return;
     state.invalidConfigFields.clear();
-    renderGeneralConfig();
-    renderProviders();
-    renderModelPools();
-    renderPlugins();
-    renderPromptEditor();
+    window.MiyuSettings?.render();
     updateAdvancedConfigEditor();
     updateSettingsControls();
   }
@@ -2221,6 +1068,7 @@
           board_image_path: _BoardImagePath,
           board_title: _BoardTitle,
           board_subtitle: _BoardSubtitle,
+          composer_placeholder: _ComposerPlaceholder,
           starter_prompts: _StarterPrompts,
           ...document
         }) => document)
@@ -2271,7 +1119,7 @@
       const parsed = JSON.parse(elements.advancedConfigEditor.value);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("配置必须是 JSON 对象");
       const oldSecretStates = new Map((state.configDraft?.providers || []).map((provider, index) => [String(provider?.id || ""), Boolean(state.providerSecretStates[index])]));
-      remapApiQuotaSecrets(state.configDraft, parsed);
+      window.MiyuSettings?.remapApiQuotaSecrets(state.configDraft, parsed);
       state.configDraft = parsed;
       ensurePlatformDefaults(state.configDraft);
       state.providerSecretStates = (Array.isArray(parsed.providers) ? parsed.providers : []).map((provider) => oldSecretStates.get(String(provider?.id || "")) || false);
@@ -2308,122 +1156,6 @@
     }
     if (!response.ok) throw new ApiError(await readErrorMessage(response), response.status);
     return response;
-  }
-
-  function qqHistoryQuery() {
-    return new URLSearchParams({
-      account_id: elements.qqHistoryAccount.value.trim(),
-      group_id: elements.qqHistoryGroup.value.trim()
-    });
-  }
-
-  function qqHistoryButton(label, className, onClick) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = className;
-    button.textContent = label;
-    button.addEventListener("click", onClick);
-    return button;
-  }
-
-  function renderQqHistory(data) {
-    const offenderValue = data?.offender_history ?? data?.offenders;
-    const offenders = offenderValue && typeof offenderValue === "object" && !Array.isArray(offenderValue) ? offenderValue : {};
-    const kickValue = data?.kick_history ?? data?.kicks;
-    const kicks = Array.isArray(kickValue) ? kickValue : [];
-    const output = elements.qqHistoryOutput;
-    output.replaceChildren();
-    const heading = document.createElement("div");
-    heading.className = "qq-history-summary";
-    heading.textContent = `违规者 ${formatInteger(Object.keys(offenders).length)} 人 · 踢人 ${formatInteger(kicks.length)} 条`;
-    output.appendChild(heading);
-
-    const offenderSection = document.createElement("section");
-    offenderSection.className = "qq-history-list";
-    const offenderTitle = document.createElement("h3");
-    offenderTitle.textContent = "违规者统计";
-    offenderSection.appendChild(offenderTitle);
-    for (const [userId, record] of Object.entries(offenders)) {
-      const row = document.createElement("div");
-      row.className = "qq-history-row";
-      const text = document.createElement("span");
-      text.textContent = `${record?.user_name || "未知用户"} (${userId}) · ${formatInteger(record?.ban_count)} 次 · ${record?.last_reason || "无原因"}`;
-      const remove = qqHistoryButton("删除", "text-button danger-text", async () => {
-        if (!window.confirm(`删除 ${userId} 的违规记录？`)) return;
-        try {
-          await apiRequest(`/api/qq-group-management/offenders/${encodeURIComponent(userId)}?${qqHistoryQuery()}`, { method: "DELETE" });
-          await loadQqHistory();
-        } catch (error) { showToast(error.message, "error"); }
-      });
-      row.append(text, remove);
-      offenderSection.appendChild(row);
-    }
-    if (!Object.keys(offenders).length) offenderSection.appendChild(qqHistoryEmpty("暂无违规者记录"));
-    output.appendChild(offenderSection);
-
-    const kickSection = document.createElement("section");
-    kickSection.className = "qq-history-list";
-    const kickHeader = document.createElement("div");
-    kickHeader.className = "qq-history-list-heading";
-    const kickTitle = document.createElement("h3");
-    kickTitle.textContent = "踢人历史";
-    kickHeader.appendChild(kickTitle);
-    if (kicks.length) kickHeader.appendChild(qqHistoryButton("清空", "text-button danger-text", () => clearQqHistory("kicks")));
-    kickSection.appendChild(kickHeader);
-    for (const record of kicks.slice().reverse()) {
-      const row = document.createElement("div");
-      row.className = "qq-history-row qq-history-kick";
-      const kickedAt = typeof record?.kicked_at === "number" ? record.kicked_at * 1000 : record?.kicked_at;
-      row.textContent = `${record?.user_name || "未知用户"} (${record?.user_id || "--"}) · ${record?.reason || "无原因"} · ${formatDateTime(kickedAt)}`;
-      kickSection.appendChild(row);
-    }
-    if (!kicks.length) kickSection.appendChild(qqHistoryEmpty("暂无踢人记录"));
-    output.appendChild(kickSection);
-    if (Object.keys(offenders).length) {
-      const clear = qqHistoryButton("清空违规者", "text-button danger-text", () => clearQqHistory("offenders"));
-      offenderTitle.appendChild(clear);
-      offenderTitle.className = "qq-history-list-heading";
-    }
-    output.hidden = false;
-  }
-
-  function qqHistoryEmpty(text) {
-    const empty = document.createElement("p");
-    empty.className = "settings-empty";
-    empty.textContent = text;
-    return empty;
-  }
-
-  async function loadQqHistory() {
-    const account = elements.qqHistoryAccount.value.trim();
-    const group = elements.qqHistoryGroup.value.trim();
-    if (!/^\d{5,12}$/.test(account) || !/^\d{5,12}$/.test(group)) {
-      showToast("请输入有效的 bot QQ 和群号", "error");
-      return;
-    }
-    elements.qqHistoryStatus.textContent = "正在加载记录...";
-    try {
-      const response = await apiRequest(`/api/qq-group-management/history?${qqHistoryQuery()}`);
-      const data = await response.json();
-      const accounts = Array.isArray(data.connected_accounts) ? data.connected_accounts : [];
-      elements.qqHistoryStatus.textContent = accounts.length ? `当前连接账户：${accounts.join("、")}` : "当前没有在线连接账户";
-      renderQqHistory(data);
-    } catch (error) {
-      elements.qqHistoryStatus.textContent = "";
-      showToast(error.message, "error");
-    }
-  }
-
-  async function clearQqHistory(kind) {
-    const title = kind === "offenders" ? "违规者记录" : "踢人记录";
-    if (!window.confirm(`清空全部${title}？此操作无法撤销。`)) return;
-    try {
-      await apiRequest("/api/qq-group-management/history/clear", {
-        method: "POST",
-        body: JSON.stringify({ account_id: elements.qqHistoryAccount.value.trim(), group_id: elements.qqHistoryGroup.value.trim(), kind })
-      });
-      await loadQqHistory();
-    } catch (error) { showToast(error.message, "error"); }
   }
 
   function asFiniteNumber(value, fallback = 0) {
@@ -4057,18 +2789,11 @@
       showToast(`每条消息最多添加 ${MAX_ATTACHMENTS} 个附件，已忽略 ${incoming.length - available} 个`, "error");
     }
     const accepted = incoming.slice(0, available);
-    const existingBytes = state.composerAttachments.reduce((sum, item) => sum + asFiniteNumber(item.size), 0);
-    let totalBytes = existingBytes;
     for (const file of accepted) {
-      if (!(file instanceof File) || file.size <= 0 || file.size > MAX_ATTACHMENT_BYTES) {
-        showToast(`${file?.name || "附件"} 必须小于 10 MB`, "error");
+      if (!(file instanceof File) || file.size <= 0) {
+        showToast(`${file?.name || "附件"} 是空文件`, "error");
         continue;
       }
-      if (totalBytes + file.size > MAX_ATTACHMENT_TOTAL_BYTES) {
-        showToast("单条消息的附件总计不能超过 32 MB", "error");
-        break;
-      }
-      totalBytes += file.size;
       const image = file.type.startsWith("image/");
       const item = {
         localId: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -4127,6 +2852,178 @@
     elements.jumpBottomButton.style.bottom = `${elements.composerDock.offsetHeight + 10}px`;
   }
 
+  // 语音输入(流式听写):浏览器麦克风 → 16kHz PCM16 → WebSocket
+  // /api/voice/stream → daemon → miyu-voice(VAD/分句/识别)→ 识别一句回一句,
+  // 逐句填进输入框。按一下开始,再按一下或 Esc 结束;静默 10 秒 daemon 自动收。
+  // 按钮只在 daemon 说语音功能已启用时显示;LAN 上的 http 页面拿不到麦克风
+  // (浏览器安全策略),这时提示改用本机 REPL 的 /stt。
+  function wireMicButton() {
+    const button = elements.micButton;
+    const indicator = elements.voiceIndicator;
+    if (!button) return;
+    let session = null;
+    const MAX_MS = 5 * 60_000;
+
+    apiRequest("/api/voice/status")
+      .then((response) => response.json())
+      .then((status) => { button.hidden = !status?.enabled; })
+      .catch(() => { button.hidden = true; });
+
+    function setIndicator(shown) {
+      if (indicator) indicator.hidden = !shown;
+      if (!shown) setLevel(0);
+    }
+
+    function setLevel(level) {
+      if (elements.voiceLevel) elements.voiceLevel.style.width = `${Math.round(Math.max(0, Math.min(1, level)) * 100)}%`;
+    }
+
+    // 线性重采样到 16kHz,跨块保留相位和上一块末尾采样,块边界不跳变。
+    function makeResampler(sourceRate) {
+      const ratio = sourceRate / 16000;
+      let previous = 0;
+      let phase = 0;
+      return (input) => {
+        if (input.length === 0) return new Float32Array(0);
+        const output = [];
+        let position = phase;
+        while (position <= input.length - 1) {
+          const index = Math.floor(position);
+          const from = index < 0 ? previous : input[index];
+          const to = input[Math.min(index + 1, input.length - 1)];
+          output.push(from + (to - from) * (position - index));
+          position += ratio;
+        }
+        phase = position - input.length;
+        previous = input[input.length - 1];
+        return Float32Array.from(output);
+      };
+    }
+
+    function insertText(text) {
+      const input = elements.composerInput;
+      const start = input.selectionStart ?? input.value.length;
+      const end = input.selectionEnd ?? input.value.length;
+      const before = input.value.slice(0, start);
+      const after = input.value.slice(end);
+      const glue = before && !/\s$/.test(before) ? " " : "";
+      input.value = `${before}${glue}${text}${after}`;
+      const cursor = before.length + glue.length + text.length;
+      input.setSelectionRange(cursor, cursor);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.focus();
+    }
+
+    function startCapture(current) {
+      const { context } = current;
+      const source = context.createMediaStreamSource(current.stream);
+      const processor = context.createScriptProcessor(4096, 1, 1);
+      const resample = makeResampler(context.sampleRate);
+      processor.onaudioprocess = (event) => {
+        current.lastFrameAt = Date.now();
+        if (current.socket.readyState !== WebSocket.OPEN) return;
+        const samples = resample(event.inputBuffer.getChannelData(0));
+        const pcm = new Int16Array(samples.length);
+        let energy = 0;
+        for (let i = 0; i < samples.length; i += 1) {
+          const clamped = Math.max(-1, Math.min(1, samples[i]));
+          pcm[i] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+          energy += clamped * clamped;
+        }
+        current.socket.send(pcm.buffer);
+        setLevel(Math.sqrt(energy / Math.max(1, samples.length)) * 6);
+      };
+      source.connect(processor);
+      processor.connect(context.destination);
+      context.resume().catch(() => {});
+      Object.assign(current, { source, processor, lastFrameAt: Date.now() });
+      // 看门狗:音频帧断流 3 秒(标签页被挂起、AudioContext 没跑起来)就收,
+      // 否则 daemon 那头收不到静音帧,10 秒静默自动结束永远不会触发。
+      current.watchdog = setInterval(() => {
+        if (Date.now() - current.lastFrameAt > 3000) stop(current, "麦克风没有音频,听写已停止");
+      }, 1000);
+    }
+
+    function stop(current, notice) {
+      if (session !== current) return;
+      session = null;
+      clearTimeout(current.timer);
+      clearInterval(current.watchdog);
+      try { current.processor?.disconnect(); current.source?.disconnect(); } catch { /* 已断 */ }
+      current.stream.getTracks().forEach((track) => track.stop());
+      current.context?.close().catch(() => {});
+      current.socket.onclose = null;
+      current.socket.onmessage = null;
+      if (current.socket.readyState === WebSocket.OPEN) {
+        try { current.socket.send("stop"); } catch { /* 对端已关 */ }
+      }
+      try { current.socket.close(); } catch { /* 已关 */ }
+      button.classList.remove("is-recording");
+      button.setAttribute("aria-pressed", "false");
+      button.title = "语音输入";
+      setIndicator(false);
+      if (notice) showToast(notice, "info");
+    }
+
+    async function start() {
+      if (session) return;
+      if (!navigator.mediaDevices?.getUserMedia) {
+        showToast("这个页面拿不到麦克风(需要 https 或 localhost);可在终端 REPL 里用 /stt 听写", "error");
+        return;
+      }
+      const context = new (window.AudioContext || window.webkitAudioContext)();
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+      } catch (error) {
+        context.close().catch(() => {});
+        showToast(`麦克风不可用:${error?.message || error}`, "error");
+        return;
+      }
+      const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/voice/stream`;
+      const socket = new WebSocket(url);
+      socket.binaryType = "arraybuffer";
+      const current = { socket, stream, context, source: null, processor: null, timer: null, watchdog: null, ready: false, lastFrameAt: 0 };
+      session = current;
+      button.classList.add("is-recording");
+      button.setAttribute("aria-pressed", "true");
+      button.title = "点击结束听写(Esc 也可以)";
+      socket.onmessage = (event) => {
+        let message;
+        try { message = JSON.parse(event.data); } catch { return; }
+        if (message.type === "ready") {
+          current.ready = true;
+          startCapture(current);
+          setIndicator(true);
+        } else if (message.type === "dictation") {
+          if (message.text) insertText(String(message.text));
+        } else if (message.type === "ended") {
+          stop(current, "听写结束");
+        } else if (message.type === "error") {
+          showToast(`语音听写不可用:${message.message || "未知错误"}`, "error");
+          stop(current, null);
+        }
+      };
+      socket.onclose = () => {
+        if (session !== current) return;
+        if (!current.ready) showToast("语音听写连接失败", "error");
+        stop(current, current.ready ? "听写结束" : null);
+      };
+      current.timer = setTimeout(() => stop(current, "听写超时结束"), MAX_MS);
+    }
+
+    button.addEventListener("click", () => {
+      if (session) stop(session, "听写已停止");
+      else start();
+    });
+    elements.composerInput.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && session) {
+        event.preventDefault();
+        stop(session, "听写已停止");
+      }
+    });
+  }
+
   function updateControlState() {
     syncRunIndicator();
     const running = conversationRunning();
@@ -4140,6 +3037,7 @@
     elements.composerInput.disabled = locked;
     elements.composerForm.classList.toggle("is-disabled", locked);
     elements.attachButton.disabled = locked || state.submitting || !state.capabilities?.attachments || state.composerAttachments.length >= MAX_ATTACHMENTS;
+    elements.micButton.disabled = locked || state.submitting;
     elements.newChatButton.disabled = state.blocked || busy || state.sessionBusy || state.viewLoading;
     // 会话级模型覆盖允许在回复进行中调整，下一轮生效。
     elements.modelButton.disabled = state.blocked || state.models.length === 0;
@@ -5479,6 +4377,22 @@
     }
   }
 
+  /// 新版 todowrite 输出不含清单本体,实时卡片与舞台面板改从会话 API 取。
+  /// 拿不到就静默放弃——面板是附带信息,不打扰对话。
+  async function attachLiveTodoPanel(tool, live, sameSession) {
+    const scope = runSessionId(live.runId);
+    if (!scope) return;
+    try {
+      const response = await apiRequest(`/api/sessions/${encodeURIComponent(scope)}/todos`);
+      const payload = await response.json();
+      const todos = window.MiyuTodos?.normalize(payload?.todos) || null;
+      if (sameSession) renderStageTodos(todos);
+      const panel = todos ? window.MiyuTodos.renderList(todos) : null;
+      tool.card.querySelector(".todo-panel")?.remove();
+      if (panel) tool.card.appendChild(panel);
+    } catch (_) {}
+  }
+
   function syncArtifactsFromTurns(turns) {
     let artifacts = [];
     for (const turn of turns) {
@@ -6715,7 +5629,9 @@
   }
 
   // 普通 Markdown 随内容收缩；只有需要稳定横向空间的结构撑满消息列。
-  const WIDE_BLOCK_SELECTOR = ".markdown-body pre, .markdown-table-scroll, .conversation-media, .context-operation, img, .tool-card:not(.collapsed), .tool-live-progress:not([hidden])";
+  // .image-gen-bubble 必须算宽块:纯生图回合没有其他宽内容,漏掉它气泡
+  // 会收缩成 fit-content,占位方块的 70% 宽随之塌成一丁点(08-25 实录)。
+  const WIDE_BLOCK_SELECTOR = ".markdown-body pre, .markdown-table-scroll, .conversation-media, .context-operation, img, .image-gen-bubble, .tool-card:not(.collapsed), .tool-live-progress:not([hidden])";
   function syncBubbleWidth(article) {
     if (!article) return;
     const content = article.querySelector(".assistant-content");
@@ -7018,7 +5934,7 @@
       const background = args.background === true || args.run_in_background === true;
       return background ? `[后台] ${line}` : line;
     }
-    if (toolName === "read_file") {
+    if (toolName === "read" || toolName === "read_file") {
       const path = compactPath(args.path);
       const offset = Number.isFinite(Number(args.offset)) && args.offset != null ? Number(args.offset) : null;
       const limit = Number.isFinite(Number(args.limit)) && args.limit != null ? Number(args.limit) : null;
@@ -7027,7 +5943,7 @@
       const page = limit !== null ? `L${start}-${start + limit - 1}` : `L${start}+`;
       return path ? `${path} (${page})` : page;
     }
-    if (toolName === "apply_patch" || toolName === "apply_artifact_patch") {
+    if (["edit", "artifact", "kb", "apply_patch", "apply_artifact_patch"].includes(toolName)) {
       // 唯一编辑器:patchText 里抠出文件名当副标题,不然标签恒空。
       const text = String(args.patchText || args.patch_text || "");
       const files = [...text.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map((m) => m[1].trim());
@@ -7128,6 +6044,9 @@
     // 了第二份真相，改一条忘另一条，同一次调用实时是红的、刷新变绿的。
     const ok = call?.ok !== false;
     card.classList.add(ok ? "is-success" : "is-failure");
+    if (ok && (name === "generate_image" || name === "print_image")) {
+      card.classList.add("image-tool-chip");
+    }
 
     const head = document.createElement("button");
     head.className = "tool-head";
@@ -7248,9 +6167,15 @@
   function toolIconName(name) {
     const n = String(name || "");
     if (["run_command", "Bash", "job_status", "job_stop"].includes(n)) return "terminal";
-    if (["web_search", "web_fetch", "search_web", "webfetch"].includes(n)) return "globe";
+    if (["web_search", "web_fetch", "search_web", "webfetch", "read_url_content"].includes(n)) return "globe";
+    // agy 原生工具(antigravity 中转)。
+    if (["view_file", "list_dir"].includes(n)) return "file-text";
+    if (["write_to_file", "replace_file_content"].includes(n)) return "square-pen";
+    if (["find_by_name", "grep_search"].includes(n)) return "search";
+    if (["manage_task", "invoke_subagent", "define_subagent", "manage_subagents"].includes(n)) return "bot";
+    if (n.startsWith("browser_") || n === "call_mcp_tool") return "wrench";
     if (n === "search_web_images") return "image-search";
-    if (n === "apply_patch" || n === "apply_artifact_patch") return "square-pen";
+    if (["edit", "artifact", "kb", "apply_patch", "apply_artifact_patch"].includes(n)) return "square-pen";
     if (["recall_memories", "recall_past_events", "remember_fact", "search_evicted_context"].includes(n)) return "brain";
     if (["create_goal", "get_goal", "update_goal"].includes(n)) return "target";
     if (n === "todowrite" || n === "todoupdate") return "list-todo";
@@ -7264,7 +6189,7 @@
     if (n === "read_clipboard") return "clipboard";
     if (n === "get_weather") return "cloud-sun";
     if (["calculator", "scientific_calculator", "calculate_hash", "get_exchange_rate", "decode_encoded_text"].includes(n)) return "calculator";
-    if (n === "read_file") return "file-text";
+    if (n === "read" || n === "read_file") return "file-text";
     if (n === "glob" || n === "grep") return "search";
     if (n === "trash_path") return "trash-2";
     if (n === "load_tools") return "package";
@@ -7275,6 +6200,38 @@
     if (["draw_tarot_card", "draw_zhouyi_hexagram", "draw_fortune_lot"].includes(n)) return "sparkles";
     if (["create_artifact", "read_artifact", "present_artifact"].includes(n)) return "file-text";
     return "wrench";
+  }
+
+  /// 生图占位气泡的点阵动画(A 方案,08-22 定稿):随机位置/大小/时长的
+  /// 小块点阵若隐若现,同屏最多 3 块;出图/失败/离屏即停,定时器不外泄。
+  function startImageGenDots(bubble) {
+    const spawn = () => {
+      if (!bubble.isConnected) {
+        stopImageGenDots(bubble);
+        return;
+      }
+      if (bubble.querySelectorAll(".dot-patch").length >= 3) return;
+      const patch = document.createElement("span");
+      patch.className = "dot-patch";
+      const size = 60 + Math.random() * 90;
+      patch.style.width = `${size}px`;
+      patch.style.height = `${size}px`;
+      patch.style.left = `${Math.random() * 78}%`;
+      patch.style.top = `${Math.random() * 78}%`;
+      patch.style.animationDuration = `${(2.2 + Math.random() * 1.6).toFixed(2)}s`;
+      patch.addEventListener("animationend", () => patch.remove());
+      bubble.appendChild(patch);
+    };
+    spawn();
+    window.setTimeout(spawn, 500);
+    bubble.miyuDotsTimer = window.setInterval(spawn, 700);
+  }
+
+  function stopImageGenDots(bubble) {
+    if (bubble?.miyuDotsTimer) {
+      window.clearInterval(bubble.miyuDotsTimer);
+      bubble.miyuDotsTimer = null;
+    }
   }
 
   function createTool(live, data) {
@@ -7302,6 +6259,9 @@
     const icon = document.createElement("span");
     icon.className = "tool-icon";
     const toolName = String(data?.name || "");
+    // 生图/打图走 GPT 式点阵占位气泡,芯片隐藏(失败时再露出来给细节)。
+    const isImageTool = toolName === "generate_image" || toolName === "print_image";
+    if (isImageTool) card.classList.add("image-tool-chip");
     icon.appendChild(makeIconSlot(toolIconName(toolName)));
     const title = document.createElement("span");
     title.className = "tool-title";
@@ -7389,6 +6349,8 @@
       startedAt: performance.now(),
       finishedAt: null,
       imageCount: 0,
+      isImageTool,
+      imagePlaceholder: null,
       finished: false,
       collapseTimer: null
     };
@@ -7406,6 +6368,18 @@
     updateToolSummary(tool);
     live.tools.set(toolId, tool);
     live.blocks.appendChild(card);
+    if (isImageTool) {
+      const bubble = document.createElement("div");
+      bubble.className = "image-gen-bubble";
+      const label = document.createElement("span");
+      label.className = "image-gen-label";
+      label.textContent = toolName === "print_image" ? "正在加载图片" : "正在生成图片";
+      if (subjectText) bubble.title = subjectText;
+      bubble.appendChild(label);
+      live.blocks.appendChild(bubble);
+      startImageGenDots(bubble);
+      tool.imagePlaceholder = bubble;
+    }
     syncBubbleWidth(live.article);
     contentAdded(live);
     return tool;
@@ -7420,7 +6394,7 @@
   // daemon older than this asset.
   function preparingToolLabel(name, phase) {
     if (phase) return String(phase);
-    if (name === "apply_patch" || name === "apply_artifact_patch") return "准备编辑";
+    if (["edit", "artifact", "kb", "apply_patch", "apply_artifact_patch"].includes(name)) return "准备编辑";
     if (name === "run_command") return "准备执行";
     if (name === "ask_question") return "准备问题";
     return "准备工具";
@@ -7513,7 +6487,14 @@
           finalizeLiveReasoning(live);
           live.contextOperation = null;
           live.assets.push(asset);
-          live.blocks.appendChild(createConversationMedia(asset, { eager: true }));
+          const media = createConversationMedia(asset, { eager: true });
+          if (tool.imagePlaceholder) {
+            stopImageGenDots(tool.imagePlaceholder);
+            tool.imagePlaceholder.replaceWith(media);
+            tool.imagePlaceholder = null;
+          } else {
+            live.blocks.appendChild(media);
+          }
           // 不自动进 artifact:图片已经在气泡里画出来了,再塞进面板等于同一张
           // 图占两个位置,还会把面板自动切过去盖住用户正在看的东西——表情包
           // 也会。要在工作区看，气泡上有「在预览工作区打开」按钮。
@@ -7611,16 +6592,21 @@
       const ok = Boolean(data?.ok);
       resetPreparingWindow(live);
       // 只刷正在看的那个会话——后台会话的 todowrite 不该改屏幕上这块面板。
-      if (ok && window.MiyuTodos?.isTodoTool(tool.name)
-        && runSessionId(live.runId) === String(state.viewSessionId || "")) {
-        renderStageTodos(window.MiyuTodos.parse(output));
-      }
-      // 与回看那份同构（`createPersistedToolCard`）：待办列表挂在签外面。
-      // 只在这里画会让实时和刷新后长得不一样,那正是工具签之前踩过的坑。
+      // 08-21 token-diet:新版 todowrite 输出是一行文本(不再回显整表 JSON),
+      // parse 不出来时改从会话 todos API 取当前清单;旧 JSON 输出走原路。
       if (ok && window.MiyuTodos?.isTodoTool(tool.name)) {
-        const todos = window.MiyuTodos.render(output);
-        tool.card.querySelector(".todo-panel")?.remove();
-        if (todos) tool.card.appendChild(todos);
+        const parsed = window.MiyuTodos.parse(output);
+        const sameSession = runSessionId(live.runId) === String(state.viewSessionId || "");
+        if (parsed) {
+          if (sameSession) renderStageTodos(parsed);
+          // 与回看那份同构（`createPersistedToolCard`）：待办列表挂在签外面。
+          // 只在这里画会让实时和刷新后长得不一样,那正是工具签之前踩过的坑。
+          const todos = window.MiyuTodos.renderList(parsed);
+          tool.card.querySelector(".todo-panel")?.remove();
+          if (todos) tool.card.appendChild(todos);
+        } else {
+          attachLiveTodoPanel(tool, live, sameSession);
+        }
       }
       // 分享附件同坑同修:实时完成时也要挂,否则只有刷新后才能看到卡片。
       if (ok && window.MiyuShared?.isShareTool(tool.name)) {
@@ -7629,6 +6615,15 @@
         if (shared) tool.card.appendChild(shared);
       }
       scheduleCommandOutputPreview(tool, data?.preview);
+      if (tool.imagePlaceholder) {
+        stopImageGenDots(tool.imagePlaceholder);
+        // 失败不留空气泡(08-22 用户反馈):撤占位、露芯片,错误细节在芯片里。
+        tool.imagePlaceholder.remove();
+        tool.imagePlaceholder = null;
+      }
+      if (tool.isImageTool && !ok) {
+        tool.card.classList.remove("image-tool-chip");
+      }
       updateToolStatus(tool, ok ? "完成" : "失败", ok ? "check" : "circle-alert", ok ? "is-success" : "is-failure");
       updateToolSummary(tool);
       if (tool.liveProgress) {
@@ -9588,6 +8583,9 @@
     stats: null,
     loadSeq: 0,
     platformTab: null,
+    // 用途筛选:按来源分桶(src → all|main|<kind>)。全局一个值时,选中某个
+    // 细项会把没有该细项的另一张卡清空(08-26 审查)。
+    kindFilters: new Map(),
     modelColors: new Map(),
   };
   const USAGE_COLOR_VARS = ["var(--chart-1)", "var(--chart-2)", "var(--chart-4)", "var(--chart-3)"];
@@ -9619,6 +8617,7 @@
   }
 
   function usageFmt(value) {
+    if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
     if (value >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
     if (value >= 1e3) return `${(value / 1e3).toFixed(1)}k`;
     return String(value);
@@ -9627,6 +8626,22 @@
     if (src === "agent") return "智能体";
     if (src === "qq" || src === "onebot") return "QQ";
     return src;
+  }
+
+  // 来源内细项(后端 kinds):已含在来源合计里,只是拆出来看得见。
+  function usageKindName(kind) {
+    if (kind === "judge") return "主动回复判断";
+    if (kind === "affection") return "好感度更新";
+    if (kind === "group_join") return "入群审批";
+    return kind;
+  }
+
+  // 明细表列窄,用短名;没有短名就退回全名。
+  function usageKindShortName(kind) {
+    if (kind === "judge") return "判断";
+    if (kind === "affection") return "好感度";
+    if (kind === "group_join") return "入群";
+    return usageKindName(kind);
   }
 
   /* ── 图表色派生:跟随当前主题(含 matugen /theme.css 覆盖)──
@@ -9771,6 +8786,8 @@
       usageTipHide();
     }
     if (panel === "settings" && !state.configLoaded && !state.configLoading) loadConfigDraft();
+    // 插件 dashboard 面板各自独立文件,首次进入挂载、之后只刷新。
+    if (window.MiyuDash?.has(panel)) window.MiyuDash.open(panel);
   }
 
   async function loadUsageStats() {
@@ -10086,6 +9103,30 @@
       }
       head.appendChild(seg);
     }
+    const filterKinds = (source.kinds || []).filter((kind) => Number(kind.total || 0) > 0);
+    if (filterKinds.length) {
+      const seg = document.createElement("div");
+      seg.className = "con-segmented";
+      seg.style.marginLeft = platformTabs && platformTabs.length ? "8px" : "auto";
+      const active = usageState.kindFilters.get(source.src) || "all";
+      const choices = [["all", "全部"], ["main", "其它"]];
+      for (const kind of filterKinds) choices.push([kind.kind, usageKindName(kind.kind)]);
+      for (const [value, label] of choices) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = label;
+        button.title = value === "main"
+          ? "未标注用途的调用:主线回复,以及好感度、入群审批等尚未打标的辅助调用"
+          : label;
+        button.classList.toggle("on", active === value);
+        button.addEventListener("click", () => {
+          usageState.kindFilters.set(source.src, value);
+          renderUsageSources(usageState.stats);
+        });
+        seg.appendChild(button);
+      }
+      head.appendChild(seg);
+    }
     card.appendChild(head);
 
     const body = document.createElement("div");
@@ -10114,12 +9155,73 @@
     body.appendChild(scroll);
     card.appendChild(body);
 
-    const aggregate = source;
-    const models = source.models || [];
+    // 细项(主动回复判断等)摊进饼图与模型表:每个模型先扣掉细项占用的部分
+    // 作为"主线",细项再各自成段——细项只当页脚摆着就看不出它吃掉了多少。
+    const kinds = (source.kinds || []).filter((kind) => Number(kind.total || 0) > 0);
+    const kindShare = new Map();
+    for (const kind of kinds) {
+      for (const model of kind.models || []) {
+        const key = `${model.provider}\u0000${model.model}`;
+        const prev = kindShare.get(key) || { total: 0, requests: 0, prompt: 0, completion: 0, cost: 0, cache_read: 0 };
+        kindShare.set(key, {
+          total: prev.total + Number(model.total || 0),
+          requests: prev.requests + Number(model.requests || 0),
+          prompt: prev.prompt + Number(model.prompt || 0),
+          completion: prev.completion + Number(model.completion || 0),
+          cache_read: prev.cache_read + Number(model.cache_read || 0),
+          cost: prev.cost + Number(model.cost || 0),
+        });
+      }
+    }
+    const models = [];
+    for (const model of source.models || []) {
+      const taken = kindShare.get(`${model.provider}\u0000${model.model}`);
+      if (!taken) {
+        models.push(model);
+        continue;
+      }
+      const rest = {
+        ...model,
+        total: Number(model.total || 0) - taken.total,
+        requests: Number(model.requests || 0) - taken.requests,
+        prompt: Number(model.prompt || 0) - taken.prompt,
+        completion: Number(model.completion || 0) - taken.completion,
+        cache_read: Number(model.cache_read || 0) - taken.cache_read,
+        cost: Number(model.cost || 0) - taken.cost,
+      };
+      if (rest.total > 0 || rest.requests > 0) models.push(rest);
+    }
+    for (const kind of kinds) {
+      for (const model of kind.models || []) {
+        if (!Number(model.total || 0)) continue;
+        models.push({ ...model, kindId: kind.kind, kindLabel: usageKindName(kind.kind) });
+      }
+    }
+    models.sort((a, b) => Number(b.total || 0) - Number(a.total || 0));
+    // 筛选只在有细项的卡上生效;合计随筛选重算,否则占比会拿全量当分母。
+    const filter = filterKinds.length
+      ? usageState.kindFilters.get(source.src) || "all"
+      : "all";
+    const visible = models.filter((model) => {
+      if (filter === "all") return true;
+      if (filter === "main") return !model.kindLabel;
+      return model.kindId === filter;
+    });
+    const aggregate = filter === "all"
+      ? source
+      : visible.reduce((sum, model) => ({
+          requests: sum.requests + Number(model.requests || 0),
+          prompt: sum.prompt + Number(model.prompt || 0),
+          completion: sum.completion + Number(model.completion || 0),
+          cache_read: sum.cache_read + Number(model.cache_read || 0),
+          total: sum.total + Number(model.total || 0),
+          cost: sum.cost + Number(model.cost || 0),
+        }), { requests: 0, prompt: 0, completion: 0, cache_read: 0, total: 0, cost: 0 });
     const requests = Number(aggregate.requests || 0);
-    const defCenter = `<div><b>${requests.toLocaleString()}</b><small>次请求</small></div>`;
+    const defCenter = `<div><b>${usageFmt(aggregate.total || 0)}</b><small>token 合计</small>
+      <span class="u-donut-sub">${requests.toLocaleString()} 次请求</span></div>`;
     center.innerHTML = defCenter;
-    if (!models.length || !aggregate.total) {
+    if (!visible.length || !aggregate.total) {
       tbody.innerHTML = `<tr><td colspan="7"><div class="u-empty">暂无记录</div></td></tr>`;
       return card;
     }
@@ -10140,16 +9242,23 @@
     const CIRCUM = 2 * Math.PI * RADIUS;
     // 单段就是完整圆环;分段间隙只在真的有多段时存在,且不超过最小段
     // 的一半,防止小切片被间隙吃掉。
-    const minShare = Math.min(...models.map((model) => model.total / aggregate.total));
-    const GAP = models.length > 1 ? Math.min(3, Math.max(0.5, (minShare * CIRCUM) / 2)) : 0;
+    const minShare = Math.min(...visible.map((model) => model.total / aggregate.total));
+    const GAP = visible.length > 1 ? Math.min(3, Math.max(0.5, (minShare * CIRCUM) / 2)) : 0;
     let accumulated = 0;
-    models.forEach((model, index) => {
+    visible.forEach((model, index) => {
       const share = model.total / aggregate.total;
-      const modelName = model.model || "(未标模型)";
+      const baseName = model.model || "(未标模型)";
+      const modelName = model.kindLabel ? `${baseName} · ${model.kindLabel}` : baseName;
       const color = usageModelColor(model.provider, model.model);
       const hit = usageCacheRate(model.cache_read || 0, model.prompt || 0);
       const row = document.createElement("tr");
-      row.innerHTML = `<td class="u-model-name"><b><i class="u-dot" style="background:${color}"></i>${modelName}</b>
+      // 细项行:同模型同色(全页同色规则),用虚线点与徽章区分用途。
+      const dot = model.kindLabel
+        ? `<i class="u-dot u-dot-kind" style="background:${color}"></i>`
+        : `<i class="u-dot" style="background:${color}"></i>`;
+      row.innerHTML = `<td class="u-model-name"><b>${dot}${baseName}${
+          model.kindLabel ? `<span class="u-kind-tag">${model.kindLabel}</span>` : ""
+        }</b>
           <small><i class="u-dot" style="visibility:hidden"></i>${model.provider || "—"}</small></td>
         <td class="num">${Math.round(share * 100)}%</td>
         <td class="num">${model.requests}</td>
@@ -10167,6 +9276,7 @@
       circle.setAttribute("fill", "none");
       circle.setAttribute("stroke", color);
       circle.setAttribute("stroke-width", "18");
+      if (model.kindLabel) circle.setAttribute("stroke-opacity", "0.5");
       circle.setAttribute("stroke-dasharray", `${length.toFixed(2)} ${(CIRCUM - length).toFixed(2)}`);
       circle.setAttribute("stroke-dashoffset", `${(-(accumulated * CIRCUM + GAP / 2)).toFixed(2)}`);
       circle.setAttribute("transform", "rotate(-90 60 60)");
@@ -10233,7 +9343,9 @@
         <td class="num">${usageFmt(record.completion || 0)}</td>
         <td class="num">${usageFmtCost(record.cost) ? `≈${usageFmtCost(record.cost)}` : "—"}</td>
         <td>${hit == null ? "—" : `<span class="u-cache-pill">${hit}%</span>`}</td>
-        <td><span class="u-type-pill ${record.aux ? "t-aux" : "t-chat"}">${record.aux ? "辅助" : "对话"}</span></td>`;
+        <td><span class="u-type-pill ${record.kind ? "t-kind" : record.aux ? "t-aux" : "t-chat"}">${
+          record.kind ? usageKindShortName(record.kind) : record.aux ? "辅助" : "对话"
+        }</span></td>`;
       tbody.appendChild(row);
     }
   }
@@ -10258,6 +9370,25 @@
       updateChartColors();
       loadUsageStats();
       loadUsageRecords();
+    });
+    elements.usageClear.addEventListener("click", async () => {
+      // 本页(卡片/热力/每日/模型明细/最近调用)全部派生自 usage-history.jsonl,
+      // 删它就是清空整页;usage.json 只喂聊天界面的会话累计,不在本页上。
+      if (!window.confirm("清空数据统计？\n\n本页所有数据（总消耗、热力图、每日 token、模型明细、最近调用）都会归零，且不可恢复。")) {
+        return;
+      }
+      elements.usageClear.disabled = true;
+      try {
+        await apiRequest("/api/usage/clear", { method: "POST" });
+        usageState.kindFilters.clear();
+        usageState.platformTab = null;
+        loadUsageStats();
+        loadUsageRecords();
+      } catch (error) {
+        elements.usageStamp.textContent = `清空失败:${error.message || error}`;
+      } finally {
+        elements.usageClear.disabled = false;
+      }
     });
     elements.usageSrcFilter.addEventListener("change", () => loadUsageRecords());
     elements.usageModelFilter.addEventListener("change", () => loadUsageRecords());
@@ -10332,25 +9463,24 @@
     elements.settingsNav.querySelectorAll("[data-settings-view]").forEach((button) => {
       button.addEventListener("click", () => setSettingsView(button.dataset.settingsView));
     });
-    elements.qqHistoryForm.addEventListener("submit", (event) => {
-      event.preventDefault();
-      loadQqHistory();
-    });
-    elements.addProviderButton.addEventListener("click", () => {
-      if (!state.configDraft) return;
-      state.configDraft.providers = Array.isArray(state.configDraft.providers) ? state.configDraft.providers : [];
-      state.configDraft.providers.push(ensureProviderDefaults());
-      state.providerSecretStates.push(false);
-      refreshProviderSecretStates();
-      markConfigDirty();
-      renderConfigEditors();
-      setSettingsView("providers");
-      const cards = elements.providerEditor.querySelectorAll(".provider-card");
-      const card = cards[cards.length - 1];
-      if (card) {
-        card.open = true;
-        card.scrollIntoView({ block: "nearest" });
-      }
+    document.getElementById("openGroupsPanel")?.addEventListener("click", () => setConsolePanel("groups"));
+    window.MiyuSettings?.init({
+      state,
+      configValue,
+      setConfigValue,
+      markConfigDirty,
+      updateAdvancedConfigEditor,
+      updateSettingsControls,
+      refreshProviderSecretStates,
+      clearProviderSecretChanges,
+      apiRequest,
+      showToast,
+      renderModelMenu,
+      setSettingsView,
+      DEFAULT_BOARD_TITLE,
+      DEFAULT_BOARD_SUBTITLE,
+      defaultComposerPlaceholder,
+      DEFAULT_STARTER_PROMPTS
     });
     elements.reloadConfigButton.addEventListener("click", loadConfigDraft);
     elements.saveConfigButton.addEventListener("click", saveConfigDraft);
@@ -10415,6 +9545,7 @@
     });
     elements.composerInput.addEventListener("blur", () => window.MiyuCommands?.hide());
     elements.attachButton.addEventListener("click", () => elements.attachmentInput.click());
+    wireMicButton();
     elements.attachmentInput.addEventListener("change", () => {
       addComposerFiles(elements.attachmentInput.files);
       elements.attachmentInput.value = "";

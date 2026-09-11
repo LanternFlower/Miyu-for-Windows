@@ -1,7 +1,7 @@
 //! 平台绑定、授权与插件存储的并发正确性。
 
-use crate::state::*;
 use super::shared::*;
+use crate::state::*;
 
 #[test]
 fn platform_access_grants_are_cached_persisted_and_audited() {
@@ -104,13 +104,7 @@ fn platform_access_grants_are_cached_persisted_and_audited() {
         )
         .unwrap();
     assert_eq!(denied, PlatformAccessMutationResult::Unauthorized);
-    assert!(!store.has_platform_access_grant(
-        "onebot",
-        "10000",
-        "private_whitelist",
-        "user",
-        "99"
-    ));
+    assert!(!store.has_platform_access_grant("onebot", "10000", "private_whitelist", "user", "99"));
 
     let conn = rusqlite::Connection::open(paths.state_dir.join("conversation.db")).unwrap();
     let audit_count: i64 = conn
@@ -120,7 +114,6 @@ fn platform_access_grants_are_cached_persisted_and_audited() {
         .unwrap();
     assert_eq!(audit_count, 2);
 }
-
 
 #[test]
 fn platform_bindings_survive_rename_and_isolate_personas() {
@@ -387,7 +380,6 @@ fn concurrent_platform_plugin_updates_do_not_lose_values() {
     values.sort_unstable();
     assert_eq!(values, (0..8).collect::<Vec<_>>());
 }
-
 
 #[test]
 fn platform_meme_refs_are_ordered_isolated_upserted_and_cleaned_by_ref() {

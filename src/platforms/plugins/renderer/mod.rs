@@ -8,8 +8,8 @@ use layout::*;
 use markdown::*;
 use paint::*;
 // main 要判断自己是不是被当成渲染子进程拉起来的
-pub(crate) use worker::{renderer_worker_requested, run_renderer_worker};
 use worker::*;
+pub(crate) use worker::{renderer_worker_requested, run_renderer_worker};
 
 use anyhow::{anyhow, bail, Context, Result};
 use cosmic_text::{

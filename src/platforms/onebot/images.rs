@@ -10,7 +10,8 @@ use crate::platforms::onebot::*;
 
 pub(in crate::platforms::onebot) const IMAGE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15);
 
-pub(in crate::platforms::onebot) const QUOTED_MESSAGE_LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
+pub(in crate::platforms::onebot) const QUOTED_MESSAGE_LOOKUP_TIMEOUT: Duration =
+    Duration::from_secs(3);
 
 pub(in crate::platforms::onebot) fn value_id_string(value: &Value) -> Option<String> {
     match value {
@@ -106,7 +107,10 @@ pub(in crate::platforms::onebot) async fn merge_quoted_message_images(
     Ok(parsed.images.len().saturating_sub(before))
 }
 
-pub(in crate::platforms::onebot) async fn resolve_current_message_images(conn: &ConnectionHandle, parsed: &mut InboundMessage) {
+pub(in crate::platforms::onebot) async fn resolve_current_message_images(
+    conn: &ConnectionHandle,
+    parsed: &mut InboundMessage,
+) {
     let unresolved = std::mem::take(&mut parsed.unresolved_image_files);
     let lookups = unresolved.into_iter().map(|file| async move {
         let result = conn
@@ -136,7 +140,10 @@ pub(in crate::platforms::onebot) async fn resolve_current_message_images(conn: &
     }
 }
 
-pub(in crate::platforms::onebot) fn append_resolved_quoted_image(parsed: &mut InboundMessage, data: &Value) -> bool {
+pub(in crate::platforms::onebot) fn append_resolved_quoted_image(
+    parsed: &mut InboundMessage,
+    data: &Value,
+) -> bool {
     let before = parsed.images.len();
     push_inbound_image_source(
         parsed,

@@ -1,7 +1,7 @@
 //! 分栏、表格与排版。
 
-use crate::platforms::plugins::renderer::*;
 use super::shared::*;
+use crate::platforms::plugins::renderer::*;
 
 #[test]
 fn html_only_output_is_not_rendered_as_a_blank_page() {
@@ -106,8 +106,7 @@ fn table_continuation_repeats_header_and_never_splits_rows() {
     }
     for placement in columns.iter().flat_map(|column| &column.placements) {
         assert!(
-            placement.source_start == 0
-                || layouts[0].boundaries.contains(&placement.source_start)
+            placement.source_start == 0 || layouts[0].boundaries.contains(&placement.source_start)
         );
         assert!(layouts[0].boundaries.contains(&placement.source_end));
     }

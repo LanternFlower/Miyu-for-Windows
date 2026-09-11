@@ -3,13 +3,17 @@
 //! 原本是一个三千多行的 `mod tests`。三套线路协议（chat / responses / anthropic）
 //! 各有各的流式事件形态，混在一起看不出哪条守着哪个契约。
 
-mod shared;
-mod responses;
 mod anthropic;
+mod antigravity;
 mod chat_stream;
 mod claude_code;
-mod failover;
-mod thinking;
-mod tool_schema;
-mod extra_body;
+mod codex;
 mod endpoint_retry;
+mod extra_body;
+mod failover;
+mod responses;
+mod shared;
+mod thinking;
+mod tier_pool;
+mod tool_schema;
+mod zen_headers;

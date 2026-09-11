@@ -51,7 +51,10 @@ mod tests {
         assert!(!art.lines.is_empty());
         assert!(art.cols > 10 && art.cols <= 100);
         assert!(art.lines[0].contains("\u{1b}[")); // 真彩 ANSI
-        assert!(art.lines.iter().any(|line| line.contains('▀') || line.contains('▄')));
+        assert!(art
+            .lines
+            .iter()
+            .any(|line| line.contains('▀') || line.contains('▄')));
     }
 
     /// 回归：块级公式此前行数写死为 9，简单式子也被撑满，而且垂直方向
@@ -103,7 +106,11 @@ mod tests {
         for max_rows in [2usize, 4, 8] {
             let art = render_math_chafa(r"\int_{0}^{\infty} e^{-x^2}\,dx", 60, max_rows)
                 .expect("chafa 应当渲染成功");
-            println!("  上限 {max_rows} → {} 行 / {} 列", art.lines.len(), art.cols);
+            println!(
+                "  上限 {max_rows} → {} 行 / {} 列",
+                art.lines.len(),
+                art.cols
+            );
             assert!(
                 art.lines.len() <= max_rows,
                 "上限 {max_rows} 却出了 {} 行",
@@ -146,11 +153,36 @@ mod tests {
     #[ignore]
     fn dump_preview_artifacts() {
         let cases = [
-            ("attention", r"\operatorname{Attention}(Q,K,V)=\operatorname{softmax}\left(\frac{QK^\top}{\sqrt{d_k}}\right)V", MathMode::Block, 9),
-            ("newton", r"x_{n+1}=x_n-\frac{f(x_n)}{f'(x_n)}", MathMode::Cell, 2),
-            ("newton3", r"x_{n+1}=x_n-\frac{f(x_n)}{f'(x_n)}", MathMode::Cell, 3),
-            ("golden", r"q=\frac{1+\sqrt5}{2}\approx 1.618", MathMode::Cell, 3),
-            ("gauss", r"\int_{-\infty}^{\infty} e^{-x^2}\,dx=\sqrt{\pi}", MathMode::Block, 8),
+            (
+                "attention",
+                r"\operatorname{Attention}(Q,K,V)=\operatorname{softmax}\left(\frac{QK^\top}{\sqrt{d_k}}\right)V",
+                MathMode::Block,
+                9,
+            ),
+            (
+                "newton",
+                r"x_{n+1}=x_n-\frac{f(x_n)}{f'(x_n)}",
+                MathMode::Cell,
+                2,
+            ),
+            (
+                "newton3",
+                r"x_{n+1}=x_n-\frac{f(x_n)}{f'(x_n)}",
+                MathMode::Cell,
+                3,
+            ),
+            (
+                "golden",
+                r"q=\frac{1+\sqrt5}{2}\approx 1.618",
+                MathMode::Cell,
+                3,
+            ),
+            (
+                "gauss",
+                r"\int_{-\infty}^{\infty} e^{-x^2}\,dx=\sqrt{\pi}",
+                MathMode::Block,
+                8,
+            ),
         ];
         for (name, tex, mode, rows) in cases {
             let png = ratex_png(tex, mode).expect(name);
@@ -188,43 +220,164 @@ fn to_script(content: &str, table: &[(char, char)], marker: char) -> String {
 
 fn symbol_for(name: &str) -> Option<&'static str> {
     Some(match name {
-        "alpha" => "α", "beta" => "β", "gamma" => "γ", "delta" => "δ", "epsilon" => "ε",
-        "varepsilon" => "ε", "zeta" => "ζ", "eta" => "η", "theta" => "θ", "vartheta" => "ϑ",
-        "iota" => "ι", "kappa" => "κ", "lambda" => "λ", "mu" => "μ", "nu" => "ν", "xi" => "ξ",
-        "pi" => "π", "rho" => "ρ", "sigma" => "σ", "tau" => "τ", "upsilon" => "υ", "phi" => "φ",
-        "varphi" => "φ", "chi" => "χ", "psi" => "ψ", "omega" => "ω",
-        "Gamma" => "Γ", "Delta" => "Δ", "Theta" => "Θ", "Lambda" => "Λ", "Xi" => "Ξ",
-        "Pi" => "Π", "Sigma" => "Σ", "Upsilon" => "Υ", "Phi" => "Φ", "Psi" => "Ψ",
+        "alpha" => "α",
+        "beta" => "β",
+        "gamma" => "γ",
+        "delta" => "δ",
+        "epsilon" => "ε",
+        "varepsilon" => "ε",
+        "zeta" => "ζ",
+        "eta" => "η",
+        "theta" => "θ",
+        "vartheta" => "ϑ",
+        "iota" => "ι",
+        "kappa" => "κ",
+        "lambda" => "λ",
+        "mu" => "μ",
+        "nu" => "ν",
+        "xi" => "ξ",
+        "pi" => "π",
+        "rho" => "ρ",
+        "sigma" => "σ",
+        "tau" => "τ",
+        "upsilon" => "υ",
+        "phi" => "φ",
+        "varphi" => "φ",
+        "chi" => "χ",
+        "psi" => "ψ",
+        "omega" => "ω",
+        "Gamma" => "Γ",
+        "Delta" => "Δ",
+        "Theta" => "Θ",
+        "Lambda" => "Λ",
+        "Xi" => "Ξ",
+        "Pi" => "Π",
+        "Sigma" => "Σ",
+        "Upsilon" => "Υ",
+        "Phi" => "Φ",
+        "Psi" => "Ψ",
         "Omega" => "Ω",
-        "infty" => "∞", "partial" => "∂", "nabla" => "∇", "pm" => "±", "mp" => "∓",
-        "times" => "×", "div" => "÷", "cdot" => "·", "bullet" => "•", "circ" => "∘",
-        "approx" => "≈", "neq" => "≠", "ne" => "≠", "leq" => "≤", "le" => "≤",
-        "geq" => "≥", "ge" => "≥", "ll" => "≪", "gg" => "≫", "sim" => "∼", "simeq" => "≃",
-        "equiv" => "≡", "propto" => "∝", "to" => "→", "gets" => "←", "mapsto" => "↦",
-        "Rightarrow" => "⇒", "Leftarrow" => "⇐", "Leftrightarrow" => "⇔",
-        "rightarrow" => "→", "leftarrow" => "←", "leftrightarrow" => "↔",
-        "uparrow" => "↑", "downarrow" => "↓",
-        "in" => "∈", "notin" => "∉", "ni" => "∋", "subset" => "⊂", "supset" => "⊃",
-        "subseteq" => "⊆", "supseteq" => "⊇", "cup" => "∪", "cap" => "∩",
-        "emptyset" => "∅", "varnothing" => "∅", "setminus" => "∖",
-        "forall" => "∀", "exists" => "∃", "nexists" => "∄", "neg" => "¬", "lnot" => "¬",
-        "land" => "∧", "wedge" => "∧", "lor" => "∨", "vee" => "∨",
-        "sum" => "Σ", "prod" => "Π", "int" => "∫", "iint" => "∬", "iiint" => "∭",
-        "oint" => "∮", "bigcup" => "⋃", "bigcap" => "⋂",
+        "infty" => "∞",
+        "partial" => "∂",
+        "nabla" => "∇",
+        "pm" => "±",
+        "mp" => "∓",
+        "times" => "×",
+        "div" => "÷",
+        "cdot" => "·",
+        "bullet" => "•",
+        "circ" => "∘",
+        "approx" => "≈",
+        "neq" => "≠",
+        "ne" => "≠",
+        "leq" => "≤",
+        "le" => "≤",
+        "geq" => "≥",
+        "ge" => "≥",
+        "ll" => "≪",
+        "gg" => "≫",
+        "sim" => "∼",
+        "simeq" => "≃",
+        "equiv" => "≡",
+        "propto" => "∝",
+        "to" => "→",
+        "gets" => "←",
+        "mapsto" => "↦",
+        "Rightarrow" => "⇒",
+        "Leftarrow" => "⇐",
+        "Leftrightarrow" => "⇔",
+        "rightarrow" => "→",
+        "leftarrow" => "←",
+        "leftrightarrow" => "↔",
+        "uparrow" => "↑",
+        "downarrow" => "↓",
+        "in" => "∈",
+        "notin" => "∉",
+        "ni" => "∋",
+        "subset" => "⊂",
+        "supset" => "⊃",
+        "subseteq" => "⊆",
+        "supseteq" => "⊇",
+        "cup" => "∪",
+        "cap" => "∩",
+        "emptyset" => "∅",
+        "varnothing" => "∅",
+        "setminus" => "∖",
+        "forall" => "∀",
+        "exists" => "∃",
+        "nexists" => "∄",
+        "neg" => "¬",
+        "lnot" => "¬",
+        "land" => "∧",
+        "wedge" => "∧",
+        "lor" => "∨",
+        "vee" => "∨",
+        "sum" => "Σ",
+        "prod" => "Π",
+        "int" => "∫",
+        "iint" => "∬",
+        "iiint" => "∭",
+        "oint" => "∮",
+        "bigcup" => "⋃",
+        "bigcap" => "⋂",
         // 文字函数:两侧留空隙,对应 TeX 的算子间距。
-        "sin" => " sin ", "cos" => " cos ", "tan" => " tan ", "log" => " log ", "ln" => " ln ",
-        "exp" => " exp ", "lim" => " lim ", "max" => " max ", "min" => " min ", "sup" => " sup ",
-        "inf" => " inf ", "arg" => " arg ", "det" => " det ", "gcd" => " gcd ", "mod" => " mod ",
-        "bmod" => " mod ", "pmod" => " mod ",
-        "ldots" => "…", "cdots" => "⋯", "dots" => "…", "vdots" => "⋮", "ddots" => "⋱",
-        "prime" => "′", "dagger" => "†", "ddagger" => "‡", "star" => "⋆", "ast" => "*",
-        "oplus" => "⊕", "otimes" => "⊗", "ominus" => "⊖", "odot" => "⊙",
-        "perp" => "⊥", "parallel" => "∥", "angle" => "∠", "triangle" => "△",
-        "top" => "⊤", "bot" => "⊥", "vdash" => "⊢", "dashv" => "⊣", "models" => "⊨",
-        "hbar" => "ℏ", "ell" => "ℓ", "Re" => "ℜ", "Im" => "ℑ", "aleph" => "ℵ",
-        "wp" => "℘", "degree" => "°", "prec" => "≺", "succ" => "≻",
-        "langle" => "⟨", "rangle" => "⟩", "lceil" => "⌈", "rceil" => "⌉",
-        "lfloor" => "⌊", "rfloor" => "⌋", "|" => "‖", "colon" => ":",
+        "sin" => " sin ",
+        "cos" => " cos ",
+        "tan" => " tan ",
+        "log" => " log ",
+        "ln" => " ln ",
+        "exp" => " exp ",
+        "lim" => " lim ",
+        "max" => " max ",
+        "min" => " min ",
+        "sup" => " sup ",
+        "inf" => " inf ",
+        "arg" => " arg ",
+        "det" => " det ",
+        "gcd" => " gcd ",
+        "mod" => " mod ",
+        "bmod" => " mod ",
+        "pmod" => " mod ",
+        "ldots" => "…",
+        "cdots" => "⋯",
+        "dots" => "…",
+        "vdots" => "⋮",
+        "ddots" => "⋱",
+        "prime" => "′",
+        "dagger" => "†",
+        "ddagger" => "‡",
+        "star" => "⋆",
+        "ast" => "*",
+        "oplus" => "⊕",
+        "otimes" => "⊗",
+        "ominus" => "⊖",
+        "odot" => "⊙",
+        "perp" => "⊥",
+        "parallel" => "∥",
+        "angle" => "∠",
+        "triangle" => "△",
+        "top" => "⊤",
+        "bot" => "⊥",
+        "vdash" => "⊢",
+        "dashv" => "⊣",
+        "models" => "⊨",
+        "hbar" => "ℏ",
+        "ell" => "ℓ",
+        "Re" => "ℜ",
+        "Im" => "ℑ",
+        "aleph" => "ℵ",
+        "wp" => "℘",
+        "degree" => "°",
+        "prec" => "≺",
+        "succ" => "≻",
+        "langle" => "⟨",
+        "rangle" => "⟩",
+        "lceil" => "⌈",
+        "rceil" => "⌉",
+        "lfloor" => "⌊",
+        "rfloor" => "⌋",
+        "|" => "‖",
+        "colon" => ":",
         _ => return None,
     })
 }
@@ -236,8 +389,14 @@ mod unicode_tests {
     #[test]
     fn converts_common_inline_formulas() {
         assert_eq!(unicode_math(r"E=mc^2"), "E=mc²");
-        assert_eq!(unicode_math(r"x_{n+1}=x_n-\frac{f(x_n)}{f'(x_n)}"), "xₙ₊₁=xₙ-(f(xₙ))/(f′(xₙ))");
-        assert_eq!(unicode_math(r"q=\frac{1+\sqrt5}{2}\approx 1.618"), "q=(1+√5)/2≈1.618");
+        assert_eq!(
+            unicode_math(r"x_{n+1}=x_n-\frac{f(x_n)}{f'(x_n)}"),
+            "xₙ₊₁=xₙ-(f(xₙ))/(f′(xₙ))"
+        );
+        assert_eq!(
+            unicode_math(r"q=\frac{1+\sqrt5}{2}\approx 1.618"),
+            "q=(1+√5)/2≈1.618"
+        );
         assert_eq!(unicode_math(r"\alpha\in(0,1)"), "α∈(0,1)");
         assert_eq!(unicode_math(r"\sqrt{d_k}"), "√dₖ");
         assert_eq!(unicode_math(r"O(n\log n)"), "O(n log n)");
@@ -344,8 +503,17 @@ pub(crate) struct KittyMath {
 
 /// kitty 家族终端(原生 kitty / ghostty)才用图形协议;其余走半块。
 pub(crate) fn kitty_graphics_supported() -> bool {
+    // 单元测试一律走半块:测试断言的是半块文本产物,而这里读的是**开发者
+    // 终端**的 TERM——在 kitty 里跑 cargo test 会让三个 math 测试改走图形
+    // 协议路径而挂掉(08-21 验收实测)。kitty 序列生成要测就直接调
+    // render_math_kitty,不经此探测。
+    if cfg!(test) {
+        return false;
+    }
     crate::terminal::kitty::is_native_kitty_terminal()
-        || std::env::var("TERM").map(|term| term.contains("ghostty")).unwrap_or(false)
+        || std::env::var("TERM")
+            .map(|term| term.contains("ghostty"))
+            .unwrap_or(false)
         || std::env::var_os("GHOSTTY_RESOURCES_DIR").is_some()
 }
 
@@ -384,7 +552,11 @@ pub(crate) fn render_math_kitty(tex: &str, max_cols: usize) -> Option<KittyMath>
     for y in 0..draw_h {
         for x in 0..draw_w {
             let pixel = sample(&raster, x, y, draw_w, draw_h);
-            padded.put_pixel((offset_x + x) as u32, (offset_y + y) as u32, image::Rgba(pixel));
+            padded.put_pixel(
+                (offset_x + x) as u32,
+                (offset_y + y) as u32,
+                image::Rgba(pixel),
+            );
         }
     }
     let sequence = crate::terminal::kitty::kitty_sequence_with_grid(
@@ -411,17 +583,33 @@ struct MathTextBox {
 impl MathTextBox {
     fn text(content: &str) -> Self {
         let width = text_display_width(content);
-        Self { lines: vec![content.to_string()], baseline: 0, width }
+        Self {
+            lines: vec![content.to_string()],
+            baseline: 0,
+            width,
+        }
     }
 
     fn empty() -> Self {
-        Self { lines: vec![String::new()], baseline: 0, width: 0 }
+        Self {
+            lines: vec![String::new()],
+            baseline: 0,
+            width: 0,
+        }
     }
 }
 
 fn text_display_width(text: &str) -> usize {
     text.chars()
-        .map(|ch| if ch.is_ascii() { 1 } else if (ch as u32) >= 0x2e80 { 2 } else { 1 })
+        .map(|ch| {
+            if ch.is_ascii() {
+                1
+            } else if (ch as u32) >= 0x2e80 {
+                2
+            } else {
+                1
+            }
+        })
         .sum()
 }
 
@@ -445,13 +633,24 @@ fn hcat(left: MathTextBox, right: MathTextBox) -> MathTextBox {
     let below = (left.lines.len() - left.baseline).max(right.lines.len() - right.baseline);
     let mut lines = Vec::with_capacity(above + below);
     for row in 0..(above + below) {
-        let left_row = (row + left.baseline).checked_sub(above).and_then(|i| left.lines.get(i));
-        let right_row = (row + right.baseline).checked_sub(above).and_then(|i| right.lines.get(i));
+        let left_row = (row + left.baseline)
+            .checked_sub(above)
+            .and_then(|i| left.lines.get(i));
+        let right_row = (row + right.baseline)
+            .checked_sub(above)
+            .and_then(|i| right.lines.get(i));
         let mut line = pad_to_width(left_row.map(String::as_str).unwrap_or(""), left.width);
-        line.push_str(&pad_to_width(right_row.map(String::as_str).unwrap_or(""), right.width));
+        line.push_str(&pad_to_width(
+            right_row.map(String::as_str).unwrap_or(""),
+            right.width,
+        ));
         lines.push(line);
     }
-    MathTextBox { lines, baseline: above, width: left.width + right.width }
+    MathTextBox {
+        lines,
+        baseline: above,
+        width: left.width + right.width,
+    }
 }
 
 fn frac_box(numerator: MathTextBox, denominator: MathTextBox) -> MathTextBox {
@@ -465,7 +664,11 @@ fn frac_box(numerator: MathTextBox, denominator: MathTextBox) -> MathTextBox {
     for line in &denominator.lines {
         lines.push(center_to_width(line, width));
     }
-    MathTextBox { lines, baseline, width }
+    MathTextBox {
+        lines,
+        baseline,
+        width,
+    }
 }
 
 /// 多行转写入口:含 `\frac` 的公式排成上下结构,单行公式与
@@ -566,7 +769,10 @@ fn sequence_box(chars: &[char], cursor: &mut usize, stop: Option<char>) -> MathT
 /// 只窥探命令名(字母串+吃尾空格),游标停在参数处。
 fn peek_command_name(chars: &[char], cursor: &mut usize) -> Option<String> {
     let start = *cursor;
-    while chars.get(*cursor).is_some_and(|ch| ch.is_ascii_alphabetic()) {
+    while chars
+        .get(*cursor)
+        .is_some_and(|ch| ch.is_ascii_alphabetic())
+    {
         *cursor += 1;
     }
     if *cursor == start {
@@ -626,7 +832,10 @@ mod box_tests {
         assert_eq!(lines.len(), 3, "{lines:?}");
         assert!(lines[0].contains("∂f"));
         assert!(lines[1].starts_with('─'));
-        assert!(lines[1].contains("─── ="), "baseline row carries the rest: {lines:?}");
+        assert!(
+            lines[1].contains("─── ="),
+            "baseline row carries the rest: {lines:?}"
+        );
         assert!(lines[2].contains("∂x"));
     }
 

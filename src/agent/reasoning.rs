@@ -197,6 +197,24 @@ where
             }
             on_event(AgentEvent::Chunk(chunk))?;
         }
+        // 中转侧「工具名已解码、入参还在流」:与本地 ToolCall 分片同一判据
+        // (工具自己有提示词,或批量兜底),批量标志由流侧按消息边界算好。
+        ChatStreamKind::RemoteToolPreparing => {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&chunk.text) {
+                let name = value
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let batch = value
+                    .get("batch")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                if !name.is_empty() && (batch || crate::tools::preparing_phase(&name).is_some()) {
+                    on_event(AgentEvent::ToolPreparing { name, batch })?;
+                }
+            }
+        }
         // 中转侧闭环执行的工具活动:翻成标准卡片事件。执行不在 Miyu 的
         // 回合循环里,started/finished 都由流侧给,不产生本地执行。
         ChatStreamKind::RemoteToolStarted => {
@@ -229,9 +247,10 @@ where
                 };
                 let name = text_of("name");
                 let output = text_of("output");
-                // 原生 Bash 的输出走命令输出块(与 run_command 同一渲染路),
-                // 否则 REPL 摘要只有一行 ok,命令打了什么全看不见。
-                if name == "Bash" && !output.is_empty() {
+                // 中转侧的命令家族(claude 的 Bash / agy 的 run_command)输出走
+                // 命令输出块(与本地 run_command 同一渲染路),否则 REPL 摘要
+                // 只有一行 ok,命令打了什么全看不见。
+                if crate::render::is_command_tool(&name) && !output.is_empty() {
                     on_event(AgentEvent::CommandOutput {
                         call_id: text_of("id"),
                         name: name.clone(),

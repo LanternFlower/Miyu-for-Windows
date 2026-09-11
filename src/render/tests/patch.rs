@@ -1,7 +1,7 @@
 //! 补丁 diff 的渲染。
 
-use crate::render::*;
 use super::shared::*;
+use crate::render::*;
 
 #[test]
 fn patch_diff_uses_muted_change_backgrounds() {

@@ -6,48 +6,58 @@ use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
+/// 三个存储域各一件补丁工具(08-21 二次裁定):`edit`=文件系统、`artifact`=
+/// Artifact 库、`kb`=知识库。第一版把三域折进 edit 的路径前缀,实测模型对
+/// "存进知识库"想不起 kb: 前缀,反被 remember_fact 的名字劫走——工具名才是
+/// 最强的能力广告,域内聚合、域间分名。
 pub fn register(registry: &mut ToolRegistry) {
     registry.register(ToolSpec::new_with_progress(
-        "apply_patch",
+        "edit",
         "Apply a batch patch to files. Prefer this for complex edits and multiple changes in the same file.",
-        json!({
-            "type": "object",
-            "properties": {
-                "patchText": {
-                    "type": "string",
-                    "description": "Full patch text wrapped in *** Begin Patch / *** End Patch."
-                }
-            },
-            "required": ["patchText"],
-            "additionalProperties": false
-        }),
-        |args, progress| async move {
+        patch_parameters(),
+        move |args, progress| async move {
             progress.report(format!(
                 "__tool_phase__~ {}",
                 t("prepare patch", "准备修改")
             ));
             tokio::task::yield_now().await;
-            apply_patch(args, progress)
+            edit_filesystem(args, progress)
         },
     ).writes());
 }
 
+/// 知识库补丁工具。写入全部路由 KnowledgeBase(元数据/语义索引不绕过)。
+pub fn register_kb(
+    registry: &mut ToolRegistry,
+    config: crate::config::AppConfig,
+    paths: crate::paths::MiyuPaths,
+) {
+    registry.register(ToolSpec::new_with_progress(
+        "kb",
+        "Write knowledge-base files: create, update, or delete via patch. Paths are knowledge-base relative. The knowledge base holds persistent reference documents, not Miyu's memories (those go through remember_fact). Read entries with read using kb: paths; search with search_knowledge_base.",
+        patch_parameters(),
+        move |args, progress| {
+            let config = config.clone();
+            let paths = paths.clone();
+            async move {
+                progress.report(format!(
+                    "__tool_phase__~ {}",
+                    t("prepare patch", "准备修改")
+                ));
+                tokio::task::yield_now().await;
+                apply_kb_patch(args, progress, &config, &paths)
+            }
+        },
+    ).writes());
+}
+
+/// Artifact 库补丁工具(WebUI 会话注册)。
 pub fn register_artifact(registry: &mut ToolRegistry, root: PathBuf, session_id: &str) {
     let session_id = session_id.to_string();
     registry.register(ToolSpec::new_with_progress(
-        "apply_artifact_patch",
-        "Apply a patch to files in the current managed Artifact workspace. Paths must be plain Artifact file names. Supports Add File, Update File, and Delete File.",
-        json!({
-            "type": "object",
-            "properties": {
-                "patchText": {
-                    "type": "string",
-                    "description": "Full patch text wrapped in *** Begin Patch / *** End Patch. Use plain Artifact file names in headers."
-                }
-            },
-            "required": ["patchText"],
-            "additionalProperties": false
-        }),
+        "artifact",
+        "Create or edit deliverable files in the WebUI Artifact workspace via patch. Paths are plain artifact file names. Use for reports, documents, and standalone files the user should inspect; publish an existing local file with present_artifact; read entries with read using artifact: paths.",
+        patch_parameters(),
         move |args, progress| {
             let root = root.clone();
             let session_id = session_id.clone();
@@ -61,6 +71,20 @@ pub fn register_artifact(registry: &mut ToolRegistry, root: PathBuf, session_id:
             }
         },
     ).presentation());
+}
+
+fn patch_parameters() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "patchText": {
+                "type": "string",
+                "description": "Full patch text wrapped in *** Begin Patch / *** End Patch."
+            }
+        },
+        "required": ["patchText"],
+        "additionalProperties": false
+    })
 }
 
 fn apply_patch(args: Value, progress: ToolProgress) -> Result<String> {
@@ -77,9 +101,141 @@ fn apply_artifact_patch(
     apply_patch_with(
         args,
         progress,
-        |value| artifact_patch_path(&session_dir, value),
+        |value| {
+            // artifact: 前缀可写可不写:工具名已选域,前缀只是容错。
+            let name = value.strip_prefix("artifact:").unwrap_or(value);
+            artifact_patch_path(&session_dir, name)
+        },
         true,
     )
+}
+
+#[derive(PartialEq)]
+enum PatchNamespace {
+    Filesystem,
+    Artifact,
+    KnowledgeBase,
+}
+
+/// 扫描补丁头分类命名空间;混用直接拒绝,错误比静默猜测便宜。
+fn detect_patch_namespace(patch_text: &str) -> Result<PatchNamespace> {
+    let mut namespace: Option<PatchNamespace> = None;
+    for line in patch_text.lines() {
+        let value = header_value(line, "*** Add File: ")
+            .or_else(|| header_value(line, "*** Update File: "))
+            .or_else(|| header_value(line, "*** Delete File: "));
+        let Some(value) = value else { continue };
+        let current = if value.starts_with("artifact:") {
+            PatchNamespace::Artifact
+        } else if value.starts_with("kb:") {
+            PatchNamespace::KnowledgeBase
+        } else {
+            PatchNamespace::Filesystem
+        };
+        match &namespace {
+            None => namespace = Some(current),
+            Some(existing) if *existing == current => {}
+            Some(_) => bail!(
+                "patch rejected: one patch must target a single namespace (filesystem, artifact:, or kb:)"
+            ),
+        }
+    }
+    Ok(namespace.unwrap_or(PatchNamespace::Filesystem))
+}
+
+/// edit 只管文件系统;带前缀的补丁给出指路错误而不是静默走错域。
+fn edit_filesystem(args: Value, progress: ToolProgress) -> Result<String> {
+    let patch_text = args
+        .get("patchText")
+        .or_else(|| args.get("patch_text"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    match detect_patch_namespace(&patch_text)? {
+        PatchNamespace::Filesystem => apply_patch(args, progress),
+        PatchNamespace::Artifact => {
+            bail!("artifact files are edited with the `artifact` tool; edit only touches the filesystem")
+        }
+        PatchNamespace::KnowledgeBase => {
+            bail!("knowledge-base files are edited with the `kb` tool; edit only touches the filesystem")
+        }
+    }
+}
+
+/// kb: 命名空间:解析与预检复用补丁引擎(读的是知识库里的真实文件),写入
+/// 全部路由回 KnowledgeBase——直接 fs 写会绕过元数据库与语义索引。
+fn apply_kb_patch(
+    args: Value,
+    progress: ToolProgress,
+    config: &crate::config::AppConfig,
+    paths: &crate::paths::MiyuPaths,
+) -> Result<String> {
+    if !config.plugins.knowledge_base.enabled {
+        bail!("knowledge base plugin is disabled");
+    }
+    let kb = crate::tools::knowledge_base::KnowledgeBase::new(config.clone(), paths.clone())?;
+    kb.init()?;
+    let patch_text = args
+        .get("patchText")
+        .or_else(|| args.get("patch_text"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("patchText is required"))?;
+    let rel_by_path = std::cell::RefCell::new(HashMap::<PathBuf, String>::new());
+    let operations = parse_patch_with(patch_text, &|value: &str| {
+        let rel = value.strip_prefix("kb:").unwrap_or(value);
+        let path = kb.safe_file_path(rel)?;
+        rel_by_path
+            .borrow_mut()
+            .insert(path.clone(), rel.to_string());
+        Ok(path)
+    })?;
+    if operations.is_empty() {
+        bail!("patch rejected: empty patch")
+    }
+    let changes = preflight_operations(operations)?;
+    let rel_by_path = rel_by_path.into_inner();
+    let mut files = Vec::new();
+    for change in changes {
+        let rel = rel_by_path
+            .get(&change.path)
+            .cloned()
+            .unwrap_or_else(|| change.path.display().to_string());
+        match change.kind {
+            ChangeKind::Delete => {
+                kb.remove(&rel)?;
+                report_delete_preview(&progress, &change.path, &change.before)?;
+            }
+            ChangeKind::Add | ChangeKind::Update => {
+                // 旧 upload 工具的内容守卫(技能/人格/记忆类内容不进知识库)
+                // 原样保留,别因换了入口就放开。
+                crate::tools::knowledge_base::reject_non_kb_upload(&change.after, "", &rel)?;
+                let temp = tempfile::NamedTempFile::new()?;
+                std::fs::write(temp.path(), change.after.as_bytes())?;
+                kb.import_file(temp.path(), &rel)?;
+                let diff = crate::tools::patch_preview::patch_result_json(
+                    &change.path,
+                    &change.before,
+                    &change.after,
+                );
+                let payload = serde_json::to_string(&json!({
+                    "path": format!("kb:{rel}"),
+                    "diff": diff,
+                }))?;
+                progress.report(format!("__patch_preview__{payload}"));
+            }
+        }
+        files.push(json!({
+            "path": format!("kb:{rel}"),
+            "operation": change.kind.as_str(),
+        }));
+    }
+    kb.spawn_embedding_reindex()?;
+    Ok(serde_json::to_string_pretty(&json!({
+        "ok": true,
+        "operation": "kb",
+        "files_changed": files.len(),
+        "files": files,
+    }))?)
 }
 
 fn apply_patch_with<F>(
@@ -715,7 +871,9 @@ fn path_arg(value: &str) -> Result<PathBuf> {
         bail!("path is required")
     }
     if let Some(rest) = value.strip_prefix("~/") {
-        if let Some(home) = crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+        if let Some(home) =
+            crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
+        {
             return Ok(home.join(rest));
         }
     }
@@ -780,6 +938,70 @@ fn display_path_for_progress(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// kb 补丁三操作全链路:写入/更新/删除都必须落到 KnowledgeBase
+    /// (kb_meta.db 有行、文件在 kb 根下),而不是裸 fs 写。
+    #[tokio::test]
+    async fn kb_patch_routes_writes_through_the_knowledge_base() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = crate::tools::tests::test_paths(temp.path());
+        let config = crate::config::AppConfig::default();
+        let kb = crate::tools::knowledge_base::KnowledgeBase::new(config.clone(), paths.clone())
+            .unwrap();
+        kb.init().unwrap();
+
+        let add = "*** Begin Patch\n*** Add File: notes/demo.md\n+# demo\n+hello kb\n*** End Patch";
+        let output = apply_kb_patch(
+            json!({ "patchText": add }),
+            ToolProgress::default(),
+            &config,
+            &paths,
+        )
+        .unwrap();
+        assert!(output.contains("kb:notes/demo.md"), "{output}");
+        let stored = kb.safe_file_path("notes/demo.md").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&stored).unwrap(),
+            "# demo\nhello kb\n"
+        );
+
+        let update = "*** Begin Patch\n*** Update File: notes/demo.md\n@@ # demo\n-hello kb\n+hello again\n*** End Patch";
+        apply_kb_patch(
+            json!({ "patchText": update }),
+            ToolProgress::default(),
+            &config,
+            &paths,
+        )
+        .unwrap();
+        assert!(std::fs::read_to_string(&stored)
+            .unwrap()
+            .contains("hello again"));
+
+        let delete = "*** Begin Patch\n*** Delete File: notes/demo.md\n*** End Patch";
+        apply_kb_patch(
+            json!({ "patchText": delete }),
+            ToolProgress::default(),
+            &config,
+            &paths,
+        )
+        .unwrap();
+        assert!(!stored.exists());
+    }
+
+    /// edit 收到带域前缀的补丁必须指路而不是走错域。
+    #[test]
+    fn edit_rejects_prefixed_patches_with_a_pointer() {
+        let patch = "*** Begin Patch\n*** Add File: kb:notes/x.md\n+x\n*** End Patch";
+        let error = edit_filesystem(json!({ "patchText": patch }), ToolProgress::default())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("`kb` tool"), "{error}");
+        let patch = "*** Begin Patch\n*** Add File: artifact:r.md\n+x\n*** End Patch";
+        let error = edit_filesystem(json!({ "patchText": patch }), ToolProgress::default())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("`artifact` tool"), "{error}");
+    }
 
     #[test]
     fn parses_add_update_delete_patch() {

@@ -60,12 +60,16 @@ pub(crate) async fn print_image(
     );
     if progress.prepare_for_external_output().await {
         print_image_file(&path, print_size(&args, print_config)).await?;
+        Ok(format!("printed image in terminal: {}", path.display()))
+    } else {
+        // 无终端会话(WebUI/桥/平台)里谎报 "printed in terminal" 会让模型
+        // 以为用户看到了图(08-21 生图 bug 的帮凶);说真话:图已 emit,
+        // 由宿主决定怎么展示。
+        Ok(format!(
+            "image emitted to the host for display: {}",
+            path.display()
+        ))
     }
-    Ok(format!(
-        "{}: {}",
-        "printed image in terminal",
-        path.display()
-    ))
 }
 
 pub async fn print_image_file(path: &Path, size: Option<String>) -> Result<()> {
