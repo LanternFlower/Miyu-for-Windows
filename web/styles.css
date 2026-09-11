@@ -1564,14 +1564,34 @@ body[data-theme="graphite"] .session-unread-dot {
 .job-chip-label {
   flex: 1 1 auto;
 }
-.job-chip-chevron {
+/* 左侧标记槽:spinner 与展开箭头叠在同一格,平时显 spinner,悬浮显箭头
+   (09-12 #8b)。 */
+.job-chip-marker-slot {
+  position: relative;
   flex: none;
-  width: 16px;
-  height: 16px;
-  opacity: 0.6;
+  width: 1.3em;
+  height: 1.3em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.job-chip-marker-slot .job-chip-chevron {
+  display: none;
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 15px;
+  height: 15px;
+  opacity: 0.7;
   transition: transform 140ms ease;
 }
-.job-chip.is-open .job-chip-chevron {
+.job-chip:hover > .job-chip-marker-slot > .job-braille {
+  visibility: hidden;
+}
+.job-chip:hover > .job-chip-marker-slot > .job-chip-chevron {
+  display: block;
+}
+.job-chip.is-open > .job-chip-marker-slot > .job-chip-chevron {
   transform: rotate(180deg);
 }
 /* 展开后的子过程流:限高可滚,不许顶满全屏(09-11 用户报)。 */
@@ -1613,7 +1633,10 @@ body[data-theme="graphite"] .session-unread-dot {
 .job-chip-label {
   flex: 0 1 auto;
 }
-.job-chip-peek {
+/* .reasoning-peek(文件后段)会用同特异度的 flex:0 1 auto 盖掉这里,
+   所以用 .job-chip 前缀提高特异度,确保窥视撑开、把 token/时间/✕ 顶到最右
+   (09-12 #8c:命令行 token/时间/✕ 没右对齐)。 */
+.job-chip .job-chip-peek {
   display: flex;
   flex: 1 1 auto;
   min-width: 0;
@@ -10018,6 +10041,24 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   max-height: 220px;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+/* 前台子代理行的 token 消耗 + 读秒(09-12 #6):等宽小字,贴在状态前面。 */
+.tool-card.is-task .tool-head > .tool-task-token,
+.tool-card.is-task .tool-head > .tool-task-seconds {
+  flex: none;
+  margin-left: 6px;
+  color: var(--proc-soft, var(--text-soft));
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: auto;
+}
+.tool-card.is-task .tool-head > .tool-task-token:empty {
+  display: none;
+}
+/* peek 撑开,把 token/读秒/状态推到最右 */
+.tool-card.is-task .tool-head > .tool-peek {
+  flex: 1 1 auto;
 }
 /* 放不下了:尾部对齐(文字从左边溢出被裁),再加一层左侧渐隐,新字从右边推进来 */
 .reasoning-peek.is-overflow {

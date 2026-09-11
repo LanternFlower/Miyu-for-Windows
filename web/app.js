@@ -5918,10 +5918,43 @@
     if (sink.think) {
       sink.think.title.textContent = "已思考";
       sink.think.element.classList.remove("is-live");
+      // 冻结读秒(09-12 #4:子过程思考读秒一直停在 0s)。startedAt 是创建时的
+      // performance.now();收尾时算出最终耗时定格,ticker 靠 is-live 判活,收尾即停。
+      const ls = sink.think.liveStatus;
+      if (ls && sink.think.startedAt != null) {
+        ls.textContent = `${((performance.now() - sink.think.startedAt) / 1000).toFixed(1)}s`;
+      }
       sink.think = null;
       sink.thinkAccum = "";
     }
   }
+
+  // 子过程时间线里「正在思考」的读秒 ticker:主对话那份有各自的 live 计时器,
+  // 子过程这份没有,所以读秒永远停在 0s。这个全局 ticker 按 is-live 更新所有
+  // 子过程思考块的读秒(用 dataset.subStart 存的起点)。
+  setInterval(() => {
+    if (document.hidden) return;
+    const nodes = document.querySelectorAll(".sub-blocks .reasoning-block.is-live .reasoning-live-status[data-sub-start]");
+    for (const ls of nodes) {
+      const start = Number(ls.dataset.subStart);
+      if (!Number.isFinite(start)) continue;
+      ls.textContent = `${Math.max(0, Math.floor((performance.now() - start) / 1000))}s`;
+    }
+    // 前台子代理行的读秒(09-12 #6):跑着时逐秒走,卡片进入成功/失败即定格。
+    for (const el of document.querySelectorAll(".tool-card.is-task .tool-task-seconds[data-task-start]")) {
+      const start = Number(el.dataset.taskStart);
+      if (!Number.isFinite(start)) continue;
+      const card = el.closest(".tool-card");
+      const done = card && (card.classList.contains("is-success") || card.classList.contains("is-failure"));
+      const secs = (performance.now() - start) / 1000;
+      if (done) {
+        el.textContent = formatJobDuration(secs);
+        delete el.dataset.taskStart;
+      } else {
+        el.textContent = formatJobDuration(secs);
+      }
+    }
+  }, 1000);
 
   function renderSubagentProgress(sink, message) {
     const ev = parseSubagentEvent(message);
@@ -5941,6 +5974,10 @@
       if (!sink.think) {
         sink.think = createReasoningBlock("", "正在思考", true);
         sink.thinkAccum = "";
+        // 读秒 ticker 靠这个起点更新(见 subEndReasoning 上方的 setInterval)。
+        if (sink.think.liveStatus && sink.think.startedAt != null) {
+          sink.think.liveStatus.dataset.subStart = String(sink.think.startedAt);
+        }
         procLineAttach(sink.blocks, sink.think.element);
       }
       sink.thinkAccum += ev.text;
@@ -7608,12 +7645,22 @@
     // 子代理:标题行里放一条单行窥视(和「已思考」标题右侧尾巴同款),收起态
     // 显示子代理当前在做什么;不再用带底色的方块(那读起来像独立 tag,09-11)。
     let taskPeek = null;
+    let taskToken = null;
     if (isTask) {
       const peekSlot = document.createElement("span");
       peekSlot.className = "reasoning-peek tool-peek";
       taskPeek = document.createElement("span");
       peekSlot.appendChild(taskPeek);
-      head.append(icon, title, peekSlot, status, chevron);
+      // 前台子代理行也带 token 消耗 + 读秒(09-12 #6,与后台任务条同口径)。
+      // token 由 renderSubagentProgress 解析 stats 后写进 taskToken;读秒由全局
+      // ticker 按 data-task-start 更新,卡片进入 is-success/is-failure 即定格。
+      taskToken = document.createElement("span");
+      taskToken.className = "job-chip-token tool-task-token";
+      const seconds = document.createElement("span");
+      seconds.className = "tool-task-seconds";
+      seconds.dataset.taskStart = String(performance.now());
+      seconds.textContent = "0s";
+      head.append(icon, title, peekSlot, taskToken, seconds, status, chevron);
     } else {
       head.append(icon, title, status, chevron);
     }
@@ -7685,6 +7732,7 @@
       isTask,
       liveProgress,
       taskPeek,
+      taskToken,
       blocks: subBlocks,
       think: null,
       thinkAccum: "",
@@ -8582,10 +8630,16 @@
   let jobBrailleFrame = 0;
 
   function makeJobSpinner() {
+    // 左侧标记槽:默认点阵 spinner,鼠标悬浮时原地换成展开/收起箭头
+    //(09-12 #8b 用户要求,和子代理一样)。展开态箭头旋转 180°。
+    const slot = document.createElement("span");
+    slot.className = "job-chip-marker-slot";
     const s = document.createElement("span");
     s.className = "job-chip-marker job-braille";
     s.textContent = JOB_BRAILLE[jobBrailleFrame];
-    return s;
+    slot.appendChild(s);
+    slot.appendChild(makeIconSlot("chevron-down", "job-chip-chevron"));
+    return slot;
   }
 
   setInterval(() => {
@@ -8620,7 +8674,10 @@
     const entry = state.commandLogs.get(jobId);
     if (!entry) return;
     try {
-      const data = await apiRequest(`/api/jobs/${encodeURIComponent(jobId)}/log`);
+      // apiRequest 返回的是 Response,得再 .json()(09-12 #8a 命令永远「暂无输出」
+      // 的真凶:直接把 Response 当 JSON 用,data.log 恒为 undefined)。
+      const resp = await apiRequest(`/api/jobs/${encodeURIComponent(jobId)}/log`);
+      const data = await resp.json();
       const atBottom = entry.pre.scrollTop + entry.pre.clientHeight >= entry.pre.scrollHeight - 8;
       entry.pre.textContent = data?.log || "(暂无输出)";
       if (atBottom) entry.pre.scrollTop = entry.pre.scrollHeight;
@@ -8655,7 +8712,7 @@
       const label = document.createElement("span");
       label.className = "job-chip-label";
       label.textContent = `后台任务 ×${jobs.length}`;
-      toggle.append(makeJobSpinner(), label, makeIconSlot("chevron-down", "job-chip-chevron"));
+      toggle.append(makeJobSpinner(), label);
       toggle.addEventListener("click", () => {
         state.jobsStripOpen = !state.jobsStripOpen;
         localStorage.setItem("miyu.web.jobsStripOpen", state.jobsStripOpen ? "1" : "0");
@@ -8710,8 +8767,8 @@
 
       // 布局:spinner 标题 窥视(撑开) 展开箭头 token 时间 ✕
       //(09-12 用户:箭头悬在状态行之后、token 在时间左侧)。
-      const chevron = makeIconSlot("chevron-down", "job-chip-chevron");
-      row.append(makeJobSpinner(), label, peekSlot, chevron, token, time, stop);
+      // 展开箭头合进左侧标记槽(悬浮替换 spinner),这里不再单独放一枚。
+      row.append(makeJobSpinner(), label, peekSlot, token, time, stop);
 
       if (isSubagent) {
         const sink = jobStreamSink(jid);
@@ -8848,7 +8905,12 @@
     procLineBreak(live.blocks);
     setLiveEndpoint(live, data?.provider_id, data?.model);
     if (live.headerStatus) live.headerStatus.textContent = "";
-    if (live.meta) live.meta.textContent = "已完成";
+    // followup 插在步与步之间时,前一段末尾不再打「已完成」那条带背景的小字
+    // (09-12 用户报没必要):中间段没有独立用量可报,留空并隐藏那行。
+    if (live.meta) {
+      live.meta.textContent = "";
+      live.meta.hidden = true;
+    }
 
     const ids = new Set((Array.isArray(data?.prompt_ids) ? data.prompt_ids : []).map(String));
     const consumed = state.queuedPrompts.filter((prompt) => ids.has(String(prompt?.id)));
@@ -9884,6 +9946,10 @@
     const sessionId = state.viewSessionId;
     const queueing = conversationRunning();
     const updateTarget = queueing ? activeTurnUpdateTarget(sessionId) : null;
+    // 只有确定了追加目标才走 /api/queue;否则(在跑但目标不唯一/还没定,常见于
+    // 子代理执行中——手机端尤甚)改走 /api/turns,由后端按会话排进当前在跑的轮
+    // (09-12 #10:手机端子代理执行时新消息/followup 发不出)。
+    const canQueue = queueing && !!updateTarget;
     const content = elements.composerInput.value.trim();
     // 命中命令表就当命令执行，不当消息发。不命中的 `/xxx` 照常发给模型
     // ——与 REPL 同一语义（slash_commands::parse_repl_input）。
@@ -9964,26 +10030,21 @@
       elements.composerState.classList.add("is-error");
       return;
     }
-    if (queueing && !updateTarget) {
-      elements.composerState.textContent = "当前存在多个回复或回复仍在启动，无法确定追加目标";
-      elements.composerState.classList.add("is-error");
-      return;
-    }
     state.submitting = true;
     if (!queueing) state.pendingSubmission = { content, attachments: sentAttachments };
     clearInlineError();
     updateControlState();
     try {
-      const body = queueing
+      const body = canQueue
         ? { content, run_id: updateTarget.runId, turn_id: updateTarget.turnId, attachment_ids: attachmentIds }
         : { content, attachment_ids: attachmentIds };
       if (sessionId) body.session_id = sessionId;
-      const response = await apiRequest(queueing ? "/api/queue" : "/api/turns", {
+      const response = await apiRequest(canQueue ? "/api/queue" : "/api/turns", {
         method: "POST",
         body: JSON.stringify(body)
       });
       const payload = await response.json();
-      const queuedPrompt = queueing ? payload : payload?.queued ? payload.prompt : null;
+      const queuedPrompt = canQueue ? payload : payload?.queued ? payload.prompt : null;
       if (queuedPrompt) {
         if (!state.queuedPrompts.some((prompt) => String(prompt?.id) === String(queuedPrompt?.id))) {
           state.queuedPrompts.push(queuedPrompt);
@@ -10042,7 +10103,7 @@
       // 排队请求 409 = 盯着的那条轮已经跑完/被顶替,会话此刻空闲。别再弹
       // 「再发一次」让用户重来——直接改走 /api/turns 起一条新轮,消息不丢
       // (/api/turns 会自动排队或新建,09-12 用户报「排队消息却提示要等」)。
-      if (queueing && error.status === 409) {
+      if (canQueue && error.status === 409) {
         try {
           const body = { content, attachment_ids: attachmentIds };
           if (sessionId) body.session_id = sessionId;

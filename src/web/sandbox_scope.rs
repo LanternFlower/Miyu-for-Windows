@@ -53,7 +53,13 @@ pub(in crate::web) fn member_scope(
     .collect();
     read_only.push(paths.scripts_dir.clone());
     read_only.push(paths.system_scripts_dir.clone());
-    if let Ok(exe) = std::env::current_exe() {
+    // 用 miyu_executable()(剥掉 `/proc/self/exe` 的「 (deleted)」后缀)而不是裸
+    // current_exe():部署/重建把二进制换掉后,运行中 daemon 的 current_exe() 读成
+    // `.../miyu (deleted)`,那条会被下面 retain(exists) 剔掉→沙盒不放行真二进制的
+    // EXECUTE;而 CLI 后端(claude-code 等)起的 `miyu mcp-serve` 用的正是剥过后缀
+    // 的真路径,exec 被 Landlock 挡下→claude 报 CONNECTION_CLOSED、MCP 用不了
+    // (09-12 坐实的 MCP 桥连不上真凶)。两处取同一条路径。
+    if let Ok(exe) = crate::paths::miyu_executable() {
         read_only.push(exe);
     }
     // 成员自己家里的只读产出目录:文档、图片(vision/print_image 读得到自己
