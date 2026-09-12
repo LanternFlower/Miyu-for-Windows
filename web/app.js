@@ -6144,20 +6144,20 @@
     if (!c || c === document.body) c = el;
     return c;
   }
+  // 贴底跟随:先量「改内容之前是不是贴着底」,mutate 完只在原本贴底时才拉回底。
+  // 不靠区分程序/用户滚动(那套 pinnedUp 会被程序自己的归位清掉、导致往上翻又被拽回 #139),
+  // 就一条:你原本在底我才跟,你往上翻了(改前就不在底)我一步都不动。
+  function subStickBottom(sink, mutate) {
+    const c = subScrollContainer(sink);
+    const atBottom = c ? (c.scrollHeight - c.scrollTop - c.clientHeight) < 30 : false;
+    mutate();
+    if (c && atBottom) c.scrollTop = c.scrollHeight;
+  }
   function subAutoScroll(sink) {
+    // 内容已经加完了才调它(工具卡/结果那种低频路径):当前离底 <30 就跟,否则不动。
     const c = subScrollContainer(sink);
     if (!c) return;
-    // 用户往上滚了就别把他拽回底(#4:正在思考、窥视刷新时没法向上翻)。给容器挂一次
-    // 滚动监听:离底 >24px 记「用户在上面看」,回到底部才恢复自动跟随。程序自身的
-    // scrollTop 归位也会触发 scroll,把标记清回 false,不会误锁。
-    if (!c.__subScrollBound) {
-      c.__subScrollBound = true;
-      c.addEventListener("scroll", () => {
-        c.__pinnedUp = (c.scrollHeight - c.scrollTop - c.clientHeight) > 24;
-      }, { passive: true });
-    }
-    if (c.__pinnedUp) return;
-    c.scrollTop = c.scrollHeight;
+    if (c.scrollHeight - c.scrollTop - c.clientHeight < 30) c.scrollTop = c.scrollHeight;
   }
 
   function renderSubagentProgress(sink, message) {
@@ -6209,8 +6209,7 @@
       if (!sink.contentFrame) {
         sink.contentFrame = window.requestAnimationFrame(() => {
           sink.contentFrame = null;
-          renderMarkdown(block, block.__subAcc || "");
-          subAutoScroll(sink);
+          subStickBottom(sink, () => renderMarkdown(block, block.__subAcc || ""));
         });
       }
       sink.peekLine = sink.contentAccum;
@@ -6240,12 +6239,13 @@
       if (!sink.thinkFrame) {
         sink.thinkFrame = window.requestAnimationFrame(() => {
           sink.thinkFrame = null;
-          think.body.textContent = think.__acc || "";
-          setReasoningPeek(think.peek, think.__acc || "");
-          // 行窥视也合进这一帧:每 token 各测一次 scrollWidth 会引发同步重排,连带把
-          // 已完成的「已思考」行窥视一起抖(#3 疯狂抖动)。一帧只测一次。
-          if (sink.taskPeek) setReasoningPeek(sink.taskPeek, think.__acc || "");
-          subAutoScroll(sink);
+          subStickBottom(sink, () => {
+            think.body.textContent = think.__acc || "";
+            setReasoningPeek(think.peek, think.__acc || "");
+            // 行窥视也合进这一帧:每 token 各测一次 scrollWidth 会引发同步重排,连带把
+            // 已完成的「已思考」行窥视一起抖(#3 疯狂抖动)。一帧只测一次。
+            if (sink.taskPeek) setReasoningPeek(sink.taskPeek, think.__acc || "");
+          });
         });
       }
       sink.peekLine = sink.thinkAccum;
