@@ -6160,6 +6160,8 @@
       return;
     }
     if (ev.kind === "content") {
+      // 空 delta 直接丢:否则会造一个空正文块并 procLineBreak 切断时间线(「串」的根)。
+      if (!ev.text) return;
       // 子代理正文逐 token 增量(#6:光有 timeline,正文没流出来)。先收思考,再把
       // 正文累加到一个活的正文块;新起一段正文时切断当前时间线,正文落在段间,
       // 之后的工具/思考会另起一条 proc-line——和主对话交错渲染同构。
@@ -6190,6 +6192,8 @@
       return;
     }
     if (ev.kind === "reasoning") {
+      // 空 delta 直接丢:否则会造一个空思考块(「串」尤其是思考的根)。
+      if (!ev.text) return;
       // 思考逐 token 增量,累加到一个活的思考块(不能覆盖,否则只剩最后一个 token)。
       subEndContent(sink);
       if (!sink.think) {

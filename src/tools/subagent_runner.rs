@@ -203,6 +203,11 @@ impl SubagentProgress {
     }
 
     pub fn reasoning(&self, text: &str) {
+        // 空 delta 不发:模型常在步末尾吐一个空 reasoning/content 块,UI 据此会造一个
+        // 空的思考/正文块并切断时间线(用户报的「串」:空块把时间线切得七零八落)。
+        if text.is_empty() {
+            return;
+        }
         if self.enabled && self.tool_mode == ProgressMode::Full {
             self.progress
                 .report(format!("__subagent_reasoning__{}", text));
@@ -213,6 +218,9 @@ impl SubagentProgress {
     /// 只在 Full 档流,和 reasoning 一样;UI 把它渲成子过程时间线里的一段正文,
     /// 中间输出与最终输出都能实时看到(#6:光有 timeline、正文没流出来)。
     pub fn content(&self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
         if self.enabled && self.tool_mode == ProgressMode::Full {
             self.progress
                 .report(format!("__subagent_content__{}", text));
