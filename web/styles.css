@@ -9927,13 +9927,8 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   background: none;
   color: var(--proc-soft);
   gap: var(--proc-gap);
-  /* 判定收到文字本身:整行不接指针,只有节点、文字、耗时接 */
-  pointer-events: none;
-}
-.assistant-blocks .proc-steps > .tool-card > .tool-head > .tool-icon,
-.assistant-blocks .proc-steps > .tool-card > .tool-head > .tool-title,
-.assistant-blocks .proc-steps > .tool-card > .tool-head > .tool-status {
-  pointer-events: auto;
+  /* 整行可点展开(#11):不再只让 节点/文字/耗时 接指针 */
+  cursor: pointer;
 }
 .assistant-blocks .proc-steps > .tool-card > .tool-head > .tool-title {
   min-width: 0;

@@ -7861,6 +7861,18 @@
     head.addEventListener("click", () => {
       const collapsed = card.classList.toggle("collapsed");
       head.setAttribute("aria-expanded", String(!collapsed));
+      // 收起子代理状态行时,把里面已展开的思考/工具也一并收起,下次展开是干净的
+      // 收起态(#5),不然收起只是把外层折了、里面还留着上次的展开。
+      if (collapsed) {
+        card.querySelectorAll(".sub-blocks details[open]").forEach((d) => {
+          d.open = false;
+        });
+        card.querySelectorAll(".sub-blocks .tool-card:not(.collapsed)").forEach((inner) => {
+          inner.classList.add("collapsed");
+          const innerHead = inner.querySelector(".tool-head");
+          if (innerHead) innerHead.setAttribute("aria-expanded", "false");
+        });
+      }
       railSnapFit(card);
       syncBubbleWidth(live.article);
       if (!collapsed) {
