@@ -66,6 +66,11 @@ pub(in crate::web) fn member_scope(
     // 生成的图)。会话库、profile 这些不放行,「沙盒外读取也禁」的口径不变。
     read_only.push(home.join("documents"));
     read_only.push(home.join("pictures"));
+    // 成员私有人格的脚本/技能就在 `home/<user>/personas/<人格>/` 下(见
+    // web::member_persona)。read_only 给的是 FS_EXECUTE|FS_READ:不放行这条,成员
+    // 注册的脚本一调用就被 Landlock 挡在 exec 上(「脚本一调用就被拒」的真凶)。
+    // 是成员自己家里的东西,只读执行不越权。
+    read_only.push(home.join("personas"));
     // Landlock 对打不开的授权根是失败关闭:不存在的目录先剔掉。
     read_only.retain(|path| path.exists());
     // daemon 的运行时目录(IPC socket core.sock 在里面):成员用 claude-code 等

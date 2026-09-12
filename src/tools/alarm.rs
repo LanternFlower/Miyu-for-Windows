@@ -13,7 +13,7 @@ use tokio::process::Command;
 pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
     registry.register(ToolSpec::new(
         "alarm",
-        "Manage local alarms. action=set schedules one (time accepts 30s, 10m, 1h 30m, or 14:30); action=list shows scheduled and ringing alarms; action=cancel removes one by id. Alarms run in a background Miyu process with Miyu's embedded sound.",
+        "Manage local alarms. action=set schedules one (time accepts a duration — 30s, 10m, 1h30m, 2d, or Chinese/English words like 5分钟, 2小时后, 半小时, in 90 minutes — or a clock time HH:MM like 14:30); action=list shows scheduled and ringing alarms; action=cancel removes one by id. Alarms run in a background Miyu process with Miyu's embedded sound.",
         json!({
             "type": "object",
             "properties": {
@@ -22,7 +22,7 @@ pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
                     "enum": ["set", "list", "cancel"],
                     "description": "set schedules, list shows, cancel removes."
                 },
-                "time": { "type": "string", "description": "Required for set: duration or clock time." },
+                "time": { "type": "string", "description": "Required for set: a duration (30s, 10m, 1h30m, 2d, 5分钟, 2小时后, 半小时, in 90 minutes) or a clock time HH:MM (14:30)." },
                 "label": { "type": "string", "description": "Optional alarm label for set." },
                 "audio_file": { "type": "string", "description": "Optional local .wav or .mp3 for set, replacing Miyu's built-in sound." },
                 "id": { "type": "string", "description": "Required for cancel: alarm id from set or list." }
