@@ -8980,10 +8980,13 @@
   document.addEventListener("visibilitychange", () => {
     if (document.hidden || state.blocked) return;
     const src = state.eventSource;
-    if (!src || src.readyState === EventSource.CLOSED) {
-      connectEventSource(state.lastEventId || 0);
-    }
+    const dead = !src || src.readyState === EventSource.CLOSED;
+    if (dead) connectEventSource(state.lastEventId || 0);
     seedJobsStrip();
+    // 只有 SSE 真的断过(切走太久被系统掐了)才补同步会话:SSE 一直连着就没漏事件,
+    // 没必要重建整个对话。长对话整段 loadSessionView 很重,每次切回前台都重建正是
+    // 「滚动中切回来渲染丢失/卡死」的诱因(09-12 #13:visibilitychange 无条件重建)。
+    if (!dead) return;
     const now = Date.now();
     if (now - lastVisibleResync < 1500) return;
     lastVisibleResync = now;
