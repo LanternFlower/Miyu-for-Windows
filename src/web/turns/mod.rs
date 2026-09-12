@@ -261,19 +261,16 @@ pub(in crate::web) fn queue_into_running_session(
     display_content: &str,
     uploaded_attachment_ids: &[String],
 ) -> std::result::Result<Option<TurnUpdateReceipt>, ApiError> {
-    // 会话按人分库:成员的会话在成员库里,盯着管理员库看永远「没在跑」,成员
-    // 在 AI 输出时发的消息就排不进队(09-11 成员实测)。
-    if !state
-        .stores
-        .for_session(session_id)
-        .pinned(session_id)
-        .has_running_turns()
-        .map_err(ApiError::internal)?
-    {
-        return Ok(None);
-    }
     let target = {
         let manager = state.manager.lock().unwrap();
+        // 判「会话在不在跑」必须和 create_turn 的 busy 闸同一个真相源(管理器的
+        // active_runs),否则回合刚起、run 已进 active_runs 但会话库还没落「运行中」的
+        // 那一瞬发 followup,这里读库=没在跑→返回 None→create_turn 读管理器=在跑→
+        // 直接报「Miyu is busy」(#11「我明明发的是 followup,代码运行顺序错了吧」的真凶)。
+        // active_runs 是全局的、按 session_id 建索引,成员会话同样认得,不必再盯分库。
+        if !manager.session_has_runs(session_id) {
+            return Ok(None);
+        }
         if !manager.session_runs_match_audience(session_id, PromptAudience::External)
             && !manager.session_runs_are_goal_rounds(session_id)
         {

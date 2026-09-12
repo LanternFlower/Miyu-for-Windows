@@ -835,28 +835,13 @@
 
   // 展开/收起时间线里某一项(思考块/工具卡)是瞬间的,但 proc-rail 靠 ResizeObserver
   // + 0.45s transition 平滑跟随,不同步就抖一下(09-12 #3)。让细线立即贴合、这次不过渡。
-  // 展开/收起时让细线跟着内容的高度动画逐帧走(#8/#9):内容用 height 过渡平滑
-  // 展开(~0.3s),这段时间关掉线自己的 transition、每帧重量一次节点位置,线就贴着
-  // 内容一起长/缩,不会拖在后面盖住下文;动画结束再恢复线的默认过渡。
+  // 展开/收起时把细线重贴一次内容(#8/#9):内容用 grid-rows fold 平滑展开(~0.3s),
+  // 而 .proc-rail 已去掉自己的 transition,靠 proc-line 的 ResizeObserver 在动画每一帧
+  // 重量节点位置、瞬时跟着内容长/缩。这里再补一次即时 fit 兜底(有些位移不改 proc-line
+  // 高度、ResizeObserver 不触发),不再跑 360ms rAF 循环(那是长页面卡死/崩溃的隐患)。
   function railSnapFit(el) {
     const line = el?.closest?.(".proc-line");
-    if (!line?.miyuProc) return;
-    const proc = line.miyuProc;
-    const rail = proc.rail;
-    if (proc.snapPrevTransition == null) proc.snapPrevTransition = rail.style.transition;
-    rail.style.transition = "none";
-    window.cancelAnimationFrame(proc.snapRaf);
-    const start = performance.now();
-    const tick = () => {
-      procLineFit(line);
-      if (performance.now() - start < 360) {
-        proc.snapRaf = window.requestAnimationFrame(tick);
-      } else {
-        rail.style.transition = proc.snapPrevTransition || "";
-        proc.snapPrevTransition = null;
-      }
-    };
-    proc.snapRaf = window.requestAnimationFrame(tick);
+    if (line?.miyuProc) procLineFit(line);
   }
 
   function procLineSetOpen(line, open) {
@@ -7527,9 +7512,12 @@
     title.className = "tool-title";
     const displayName = document.createElement("strong");
     displayName.textContent = String(call?.display_name || name || "工具");
-    // 开发模式子代理显示「开发中」(与实时行同口径,09-11)。
-    if (isSubagentTool(name) && parsedToolArguments(call?.arguments)?.dev === true) {
-      displayName.textContent = "开发中";
+    // 子代理:显示「子代理 / 开发中」,不显裸的 `subagent:xxx`(刷新回看时历史里存的
+    // display_name 是技术名,和实时的「子代理」不一致,#97 刷新后变回原始名)。任务
+    // 标题走下面的 summary(toolSubject → description)。
+    if (isSubagentTool(name)) {
+      displayName.textContent =
+        parsedToolArguments(call?.arguments)?.dev === true ? "开发中" : "子代理";
     }
     // 名字被芯片截断时,悬浮还能看全(load_tools 一次点名几个工具就会超长)。
     displayName.title = displayName.textContent;
@@ -7574,7 +7562,10 @@
       detail.wrapper.hidden = false;
       body.appendChild(detail.wrapper);
     }
-    card.append(head, body);
+    const fold = document.createElement("div");
+    fold.className = "tool-fold";
+    fold.appendChild(body);
+    card.append(head, fold);
     // 待办列表挂在签外面,收起态也看得见——那是给人看的产出,不是调试信息。
     const todos = window.MiyuTodos?.isTodoTool(name) ? window.MiyuTodos.render(output) : null;
     if (todos) card.appendChild(todos);
@@ -7836,13 +7827,19 @@
         argumentsDetail.wrapper.hidden = true;
         briefBuilt = true;
       }
-      card.append(head, body);
+      const fold = document.createElement("div");
+      fold.className = "tool-fold";
+      fold.appendChild(body);
+      card.append(head, fold);
       if (taskPeek) taskPeek.textContent = reasoningPeekText(subjectText || "正在启动子代理…");
     } else {
       card.append(head);
       if (commandPreview) card.appendChild(commandPreview);
       if (commandOutputPreview) card.appendChild(commandOutputPreview);
-      card.appendChild(body);
+      const fold = document.createElement("div");
+      fold.className = "tool-fold";
+      fold.appendChild(body);
+      card.appendChild(fold);
     }
     const tool = {
       id: toolId,
@@ -8149,9 +8146,8 @@
       const output = String(data?.output || "");
       tool.resultDetail.raw = output.length > MAX_TOOL_OUTPUT_CHARS ? `[较早输出已省略]\n${output.slice(-MAX_TOOL_OUTPUT_CHARS)}` : output;
       tool.resultDetail.content.textContent = tool.resultDetail.raw;
-      // 子代理展开只保留两块:任务简介 + 子过程时间线(#5/#6)。最终输出是子代理的
-      // 返回(父流程里已给出),再单列一个大「结果」块反而让人困惑「第三个块是什么」。
-      tool.resultDetail.wrapper.hidden = tool.isTask || !tool.resultDetail.raw;
+      // 子代理的最终输出要显示出来(#6:用户要看 AI 的最终输出,上批误删了)。
+      tool.resultDetail.wrapper.hidden = !tool.resultDetail.raw;
       if (tool.commandPreview && tool.resultDetail.raw) {
         tool.stdoutDetail.wrapper.hidden = true;
         tool.stderrDetail.wrapper.hidden = true;

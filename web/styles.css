@@ -1,7 +1,5 @@
 :root {
   color-scheme: dark;
-  /* 让 height:auto 也能参与过渡(展开收起平滑动画 #9);不支持的浏览器优雅退回瞬时。 */
-  interpolate-size: allow-keywords;
   --font-ui: Inter, "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --serif: "Source Han Serif SC", "Noto Serif CJK SC", "Noto Serif SC", "Songti SC", "SimSun", Georgia, serif;
@@ -1696,9 +1694,9 @@ body[data-theme="graphite"] .session-unread-dot {
 /* 标题撑开占左边、优先完整显示;窥视靠右、只占一小块、和标题之间留足间距,
    永远不压标题(09-12 #1 后台标题被窥视覆盖)。token/时间/✕ 被撑开的标题顶到最右。 */
 .job-chip > .job-chip-label {
-  /* 标题贴左 hug、不再 flex 撑开(#12:撑开会把窥视顶到最右留大空档);
-     内容过长才省略。 */
-  flex: 0 1 auto;
+  /* 标题优先完整显示(#3/#10:不被窥视盖住/挤掉):不缩、最多占 60%,超了才省略。 */
+  flex: 0 0 auto;
+  max-width: 60%;
   min-width: 3.6em;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1709,12 +1707,13 @@ body[data-theme="graphite"] .session-unread-dot {
   flex: none;
 }
 .job-chip > .job-chip-peek {
-  /* 窥视占满标题右边余下空间、右对齐滚动、左侧淡出过渡(#2)。 */
-  flex: 1 1 auto;
+  /* 用户 #98 定的规格:左边 title+token+秒数固定,秒数右侧做淡出过渡,右侧是窥视区域。
+     窥视填右边余下空间、内容右对齐(贴着右侧),左边缘淡入过渡。标题封顶不缩,永远不被盖。 */
+  flex: 1 1 0;
   min-width: 0;
   justify-content: flex-end;
-  -webkit-mask-image: linear-gradient(to right, transparent, #000 28px);
-  mask-image: linear-gradient(to right, transparent, #000 28px);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 24px);
+  mask-image: linear-gradient(to right, transparent, #000 24px);
 }
 .job-chip.is-open > .job-chip-peek {
   display: none;
@@ -9751,7 +9750,9 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   height: 0;
   background: color-mix(in srgb, var(--line-strong) 75%, var(--line));
   pointer-events: none;
-  transition: height 0.45s var(--proc-ease), top 0.45s var(--proc-ease);
+  /* 不给线自己的过渡:它靠 ResizeObserver 在内容(grid-rows fold)动画的每一帧
+     重量节点位置、瞬时贴着内容长/缩(#8 线拖后盖字的真因就是这条 0.45s 过渡在追赶)。
+     新节点淡入时线瞬时到位、节点淡上来,观感也对。 */
 }
 .proc-head,
 .proc-wrap {
@@ -10019,32 +10020,36 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 .assistant-blocks .proc-steps > .tool-card > .tool-live-progress {
   margin: 0 0 6px var(--proc-indent);
 }
-/* 详情:一个面板,细边,参数在前、空一行、结果在后;不再有「参数 / 结果」小标 */
-.assistant-blocks .proc-steps > .tool-card > .tool-body {
-  width: auto;
-  margin: 2px 0 8px var(--proc-indent);
-  padding: 9px 10px;
-  border: 0;
-  background: var(--surface-1);
-  box-shadow: var(--bubble-shadow);
-  gap: 1em;
-  /* 展开收起平滑高度动画(#9):不再瞬间显隐。 */
-  overflow: hidden;
-  height: auto;
-  transition: height 0.3s var(--proc-ease), opacity 0.22s ease, margin 0.3s var(--proc-ease);
+/* 展开区平滑高度动画(#7/#9):tool-body 外套一层 grid 容器 .tool-fold,靠
+   grid-template-rows 0fr↔1fr 过渡——所有现代浏览器双向都平滑(和「Worked for」的
+   proc-wrap 同一招),不像 height:auto 那样不被支持时收起就瞬间。垂直外边距也一起
+   过渡到 0,收起后不留空档。 */
+.assistant-blocks .proc-steps > .tool-card > .tool-fold {
+  display: grid;
+  grid-template-rows: 1fr;
+  margin: 2px 0 8px 0;
+  transition: grid-template-rows 0.32s var(--proc-ease), margin 0.32s var(--proc-ease);
 }
-/* 收起改用 height:0 参与过渡,不再 display:none(那样是瞬时的)。高特异度盖过
-   `.tool-card.collapsed .tool-body{display:none}`。 */
-.assistant-blocks .proc-steps > .tool-card.collapsed > .tool-body {
-  display: block;
-  height: 0;
+.assistant-blocks .proc-steps > .tool-card.collapsed > .tool-fold {
+  grid-template-rows: 0fr;
   margin-top: 0;
   margin-bottom: 0;
-  padding-top: 0;
-  padding-bottom: 0;
-  opacity: 0;
-  box-shadow: none;
 }
+.assistant-blocks .proc-steps > .tool-card > .tool-fold > .tool-body {
+  min-height: 0;
+  overflow: hidden;
+}
+/* 详情:一个面板,细边,参数在前、空一行、结果在后;不再有「参数 / 结果」小标。
+   底色改暖柔(#82/#9b:原来 surface-1 亮色下是刺眼白)。 */
+.assistant-blocks .proc-steps > .tool-card > .tool-fold > .tool-body {
+  width: auto;
+  margin: 0 0 0 var(--proc-indent);
+  padding: 9px 10px;
+  border: 0;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  gap: 1em;
+}
+/* 旧的 collapsed display:none 只在没套 fold 的兜底路径生效;套了 fold 就靠 grid 收。 */
 .assistant-blocks .proc-steps > .tool-card .tool-detail-label {
   display: none;
 }
@@ -10068,17 +10073,21 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   max-width: 100%;
   min-height: 30px;
   padding: 4px 0;
-  border-radius: 0;
+  border-radius: 6px;
   background: none;
   color: var(--text);
   gap: var(--proc-gap);
-  pointer-events: none;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
 }
-.assistant-blocks .proc-steps > .reasoning-block > summary > * {
-  pointer-events: auto;
-}
+/* 整行 hover 高亮(#5:思考行原来悬浮无反馈);流光字标题在上层、自己带
+   background-clip:text,行底色在它后面不影响。图标遮线块也跟色免得露出小方块。 */
 .assistant-blocks .proc-steps > .reasoning-block > summary:hover {
-  background: none;
+  background: var(--surface-2);
+}
+.assistant-blocks .proc-steps > .reasoning-block > summary:hover > .reasoning-icon {
+  background: var(--surface-2);
+  box-shadow: 0 -2px 0 var(--surface-2), 0 2px 0 var(--surface-2);
 }
 .assistant-blocks .proc-steps > .reasoning-block > summary .reasoning-title {
   padding: 1px 4px;
@@ -10128,6 +10137,7 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   margin-bottom: 8px;
   max-height: 220px;
   overflow-y: auto;
+  overflow-x: hidden;
   overscroll-behavior: contain;
 }
 /* 子代理任务简介(展开区最上方,09-12 #6):标题 + 整段 prompt,不再让人读裸 JSON。 */
@@ -10157,15 +10167,20 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 .sub-blocks .tool-card > .tool-head {
   position: sticky;
   top: 0;
-  z-index: 1;
-  background: var(--app-bg, var(--surface-1));
+  z-index: 2;
+  /* 不透明背景(用 app-bg 兑 5% 正文色,和暖色面板同视觉但不透明),否则往上滚时
+     下面的文字会透上来和吸顶那行重叠(#8 文字重叠 / #4 tag 背景色不对)。 */
+  background: color-mix(in srgb, var(--text) 5%, var(--app-bg));
 }
 /* sticky 之前不生效的真因(#13):吸顶元素被中间的 `.proc-wrap > div{overflow:hidden}`
    截住,吸到了那个不滚动的裁剪容器上而不是真正滚动的 .sub-blocks/.job-stream-panel。
-   子过程时间线恒 open、没有开合动画,把它这层裁剪解开,sticky 才吸到滚动容器。 */
+   子过程时间线恒 open、没有开合动画,把这层的**纵向**裁剪解开,sticky 才吸到滚动容器;
+   横向仍用 clip 裁掉,否则长思考文本(nowrap)会撑出横向滚动条、tag 能横向拖动(#96)。
+   `overflow-x:clip + overflow-y:visible` 两个都是非滚动值,不会互相被强制成 auto。 */
 .sub-blocks .proc-wrap,
 .sub-blocks .proc-wrap > div {
-  overflow: visible;
+  overflow-x: clip;
+  overflow-y: visible;
 }
 /* 前台子代理行在手机端太长(09-12 #8):收起时不显那条单行窥视,活动去展开区看;
    token/读秒也让位,标题+状态就够窄。 */
@@ -10192,15 +10207,18 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 /* 前台子代理行布局(#2):子代理·title 贴左 hug、token/秒数紧跟,窥视占满余下、
    右对齐滚动、左侧淡出过渡;标题在左永远完整(#7),窥视不再压标题。 */
 .tool-card.is-task .tool-head > .tool-title {
+  /* 标题固定在左、封顶 60% 不缩,永远完整可见,超了才省略(#3/#7 不被窥视盖)。 */
   flex: 0 1 auto;
+  max-width: 60%;
+  min-width: 0;
 }
 .tool-card.is-task .tool-head > .tool-peek {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
   margin-left: 8px;
   justify-content: flex-end;
-  -webkit-mask-image: linear-gradient(to right, transparent, #000 28px);
-  mask-image: linear-gradient(to right, transparent, #000 28px);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 24px);
+  mask-image: linear-gradient(to right, transparent, #000 24px);
 }
 /* 放不下了:尾部对齐(文字从左边溢出被裁),再加一层左侧渐隐,新字从右边推进来 */
 .reasoning-peek.is-overflow {
