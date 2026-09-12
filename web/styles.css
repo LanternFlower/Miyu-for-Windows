@@ -2555,11 +2555,11 @@ body[data-theme="graphite"] {
 }
 .diff-file {
   min-width: 0;
-  /* 不要描边(用户 #156):改用柔和阴影 + 一层浅表面把 diff 抬成一张卡,
-     和 artifact 面板同款 --artifact-shadow(随主题,暖米上是暖棕投影)。 */
+  /* 不要描边(用户 #156):改用柔和阴影 + 一层浅表面把 diff 抬成一张卡。
+     阴影收到 --bubble-shadow 那档(0 1px 4px,随主题),artifact 那档太散(用户嫌大)。 */
   background: var(--surface-1);
   border-radius: var(--radius);
-  box-shadow: var(--artifact-shadow);
+  box-shadow: var(--bubble-shadow);
   overflow: hidden;
 }
 .diff-file-head {
