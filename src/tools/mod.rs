@@ -31,6 +31,9 @@ mod registry;
 mod scripts;
 mod skills;
 mod subagent;
+pub(crate) use subagent::{
+    is_subagent_marker, peek_subagent_trace, record_subagent_trace, take_subagent_trace,
+};
 pub(crate) mod subagent_runner;
 mod todowrite;
 pub(crate) mod voice_chat;

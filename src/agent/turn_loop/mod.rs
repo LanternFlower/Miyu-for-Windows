@@ -884,12 +884,14 @@ impl Agent {
                             break match result {
                                 Ok(output) => {
                                     while let Ok(progress) = progress_rx.try_recv() {
+                                        parallel::tee_subagent_trace(&call_id, &progress);
                                         emit_tool_progress(on_event, &call_id, &event_name, progress)?;
                                     }
                                     (output, true)
                                 }
                                 Err(err) => {
                                     while let Ok(progress) = progress_rx.try_recv() {
+                                        parallel::tee_subagent_trace(&call_id, &progress);
                                         emit_tool_progress(on_event, &call_id, &event_name, progress)?;
                                     }
                                     let output = attach_contract(format!("tool error: {err}"));
@@ -904,6 +906,7 @@ impl Agent {
                             };
                         }
                         Some(progress) = progress_rx.recv() => {
+                            parallel::tee_subagent_trace(&call_id, &progress);
                             emit_tool_progress(on_event, &call_id, &event_name, progress)?;
                         }
                         _ = spinner_interval.tick() => {
@@ -1172,7 +1175,7 @@ impl Agent {
     /// 把一个正在跑的回合掐掉,比丢掉这份检查点糟得多——回合结束时那次写入仍然
     /// 是 `?`,真有持久化问题跑不掉。
     fn checkpoint_tool_flow(&self, turn_id: &str, messages: &[ChatMessage], replay_start: usize) {
-        let mut tool_flow = derive_tool_flow(messages, replay_start);
+        let mut tool_flow = derive_tool_flow(messages, replay_start, false);
         prune_tool_flow(&mut tool_flow, &self.config.context);
         self.append_remote_tool_flow(&mut tool_flow);
         if tool_flow.is_empty() {
@@ -1239,6 +1242,7 @@ pub(in crate::agent) fn record_remote_tool_chunk(
                 output: String::new(),
                 started_ms: None,
                 finished_ms: None,
+                sub_trace: None,
             });
             None
         }

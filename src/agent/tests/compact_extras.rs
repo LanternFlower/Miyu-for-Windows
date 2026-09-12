@@ -13,6 +13,7 @@ fn call(name: &str, arguments: &str) -> ToolFlowCall {
         output: "ok".to_string(),
         started_ms: None,
         finished_ms: None,
+        sub_trace: None,
     }
 }
 

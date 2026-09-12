@@ -7758,6 +7758,21 @@
       detail.wrapper.hidden = false;
       body.appendChild(detail.wrapper);
     }
+    // 子代理:回看/刷新时把落库的子过程标记流回放成时间线(#9)。放在参数/结果之前,
+    // 和实时展开态一个样。用一个一次性 sink 走同款 renderSubagentProgress。
+    if (isSubagentTool(name) && Array.isArray(call?.sub_trace) && call.sub_trace.length) {
+      const subBlocks = document.createElement("div");
+      subBlocks.className = "sub-blocks assistant-blocks";
+      const sink = {
+        blocks: subBlocks, brief: false, think: null, thinkAccum: "", contentBlock: null,
+        contentAccum: "", pendingCall: null, taskPeek: null, taskToken: null, peekLine: "",
+      };
+      for (const marker of call.sub_trace) renderSubagentProgress(sink, String(marker));
+      subEndReasoning(sink);
+      subEndContent(sink);
+      body.insertBefore(subBlocks, body.firstChild);
+      card.classList.add("is-task");
+    }
     const fold = document.createElement("div");
     fold.className = "tool-fold";
     fold.appendChild(body);

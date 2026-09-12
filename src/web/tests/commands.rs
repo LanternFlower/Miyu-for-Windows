@@ -175,6 +175,7 @@ fn turn_payload_carries_the_tools_that_ran() {
                     output: "a.txt\nb.txt".to_string(),
                     started_ms: None,
                     finished_ms: None,
+                    sub_trace: None,
                 }],
             }],
         )

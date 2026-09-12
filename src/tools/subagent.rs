@@ -6,8 +6,61 @@ use crate::llm::OpenAiCompatibleClient;
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 const SUBAGENT_SYSTEM_PROMPT: &str = include_str!("../prompts/subagent-general.md");
+
+/// 前台子代理的原始进度标记流,按工具调用 id 暂存。回合收尾 derive_tool_flow 时取走
+/// 挂到那次调用上落库,网页端刷新/回看时回放子过程时间线(#9:刷新丢内容)。
+/// 进程内、封顶,取走即清;后台子代理走 jobs 的 trace,不走这。
+fn subagent_traces() -> &'static Mutex<HashMap<String, Vec<String>>> {
+    static TRACES: std::sync::OnceLock<Mutex<HashMap<String, Vec<String>>>> =
+        std::sync::OnceLock::new();
+    TRACES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+const MAX_CALL_TRACE: usize = 4000;
+
+/// 一条子代理进度标记(`__subagent_*` / `__subtool_*`)入某次调用的缓冲。
+pub fn record_subagent_trace(call_id: &str, marker: &str) {
+    if call_id.is_empty() {
+        return;
+    }
+    let mut map = subagent_traces().lock().unwrap();
+    let buf = map.entry(call_id.to_string()).or_default();
+    buf.push(marker.to_string());
+    if buf.len() > MAX_CALL_TRACE {
+        let overflow = buf.len() - MAX_CALL_TRACE;
+        buf.drain(0..overflow);
+    }
+}
+
+/// 取走某次调用的标记流(回合最终落库时用,取完清掉,避免长会话堆积)。
+pub fn take_subagent_trace(call_id: &str) -> Vec<String> {
+    subagent_traces()
+        .lock()
+        .unwrap()
+        .remove(call_id)
+        .unwrap_or_default()
+}
+
+/// 只读某次调用的标记流,不清空。回合中途的检查点(`checkpoint_tool_flow`)用它:
+/// 检查点在一个回合里会跑多次,若也用 `take` 会把标记流提前抽干,等回合收尾真正
+/// 落库时(`stream.rs`)就只剩空的了(#5a:前台子代理刷新丢子过程的真因)。
+pub fn peek_subagent_trace(call_id: &str) -> Vec<String> {
+    subagent_traces()
+        .lock()
+        .unwrap()
+        .get(call_id)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// 一条进度是不是子代理子过程标记(据此决定要不要留进 trace)。
+pub fn is_subagent_marker(message: &str) -> bool {
+    message.starts_with("__subagent") || message.starts_with("__subtool")
+}
 
 /// dev 子代理的系统提示词由三段拼成:用户的 dev 提示词(与 dev 会话同一份
 /// 真相源)、主机环境块、这一句交付约定。三段都是同一会话内的常量,拼出的

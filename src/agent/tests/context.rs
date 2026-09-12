@@ -27,6 +27,7 @@ fn consecutive_identical_history_rounds_collapse_on_replay() {
             output: output.to_string(),
             started_ms: None,
             finished_ms: None,
+            sub_trace: None,
         }],
     };
     state
@@ -85,6 +86,7 @@ fn seed_inline_media_turn(state: &StateStore) {
                         output: inline_output.to_string(),
                         started_ms: None,
                         finished_ms: None,
+                        sub_trace: None,
                     },
                     crate::state::ToolFlowCall {
                         id: "c2".to_string(),
@@ -93,6 +95,7 @@ fn seed_inline_media_turn(state: &StateStore) {
                         output: "r".to_string(),
                         started_ms: None,
                         finished_ms: None,
+                        sub_trace: None,
                     },
                 ],
             }],
@@ -992,7 +995,7 @@ fn derive_tool_flow_reconstructs_rounds_from_live_messages() {
     // c2 悬空(崩溃/中断) → 必须补占位,回放绝不发无应答的 tool_calls
     messages.push(ChatMessage::assistant("完事", None));
 
-    let flow = derive_tool_flow(&messages, live_start);
+    let flow = derive_tool_flow(&messages, live_start, true);
     assert_eq!(flow.len(), 2);
     assert_eq!(flow[0].assistant_content, "先查一下");
     assert_eq!(flow[0].assistant_reasoning.as_deref(), Some("想想"));
@@ -1190,6 +1193,7 @@ async fn compaction_restores_recent_files_behind_the_checkpoint() {
                     output: "(old contents)".to_string(),
                     started_ms: None,
                     finished_ms: None,
+                    sub_trace: None,
                 }],
             }],
         )

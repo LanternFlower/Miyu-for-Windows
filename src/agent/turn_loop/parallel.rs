@@ -128,6 +128,7 @@ impl Agent {
                 match event {
                     WaveEvent::Spinner => on_event(AgentEvent::SpinnerTick)?,
                     WaveEvent::Progress(position, progress) => {
+                        tee_subagent_trace(&slots[position].call_id, &progress);
                         emit_tool_progress(
                             on_event,
                             &slots[position].call_id,
@@ -138,6 +139,7 @@ impl Agent {
                     WaveEvent::Done(position, result) => {
                         remaining -= 1;
                         while let Ok(progress) = slots[position].progress.try_recv() {
+                            tee_subagent_trace(&slots[position].call_id, &progress);
                             emit_tool_progress(
                                 on_event,
                                 &slots[position].call_id,
@@ -309,6 +311,16 @@ impl Agent {
                 tracing::warn!(error = %error, "persona reminder distillation failed");
                 None
             }
+        }
+    }
+}
+
+/// 把一条子代理子过程标记留进该次调用的 trace(供回合收尾落库、刷新回放 #9)。
+/// 只留 `__subagent_*`/`__subtool_*` 那类标记,别的进度不进。
+pub(super) fn tee_subagent_trace(call_id: &str, progress: &tools::ToolProgressEvent) {
+    if let tools::ToolProgressEvent::Message(message) = progress {
+        if tools::is_subagent_marker(message) {
+            tools::record_subagent_trace(call_id, message);
         }
     }
 }

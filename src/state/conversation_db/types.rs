@@ -143,6 +143,10 @@ pub struct ToolFlowCall {
     pub started_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_ms: Option<u64>,
+    /// 子代理的子过程原始标记流(思考/工具/正文)。网页端刷新/回看时据它回放子过程
+    /// 时间线(#9:刷新丢内容)。只有 subagent 调用有;旧记录/别的工具为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_trace: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]

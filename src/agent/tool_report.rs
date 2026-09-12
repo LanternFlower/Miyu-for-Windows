@@ -486,9 +486,13 @@ pub(in crate::agent) fn replay_rounds(
     kept
 }
 
+/// `drain_sub_trace`:回合最终落库时传 `true`,把子代理暂存的子过程标记流取走
+/// (取完清掉,避免长会话堆积);回合中途的检查点传 `false`,只读不清——否则
+/// 检查点会把标记流提前抽干,等收尾真正落库时只剩空的(#5a 刷新丢子过程真因)。
 pub(in crate::agent) fn derive_tool_flow(
     messages: &[ChatMessage],
     live_start: usize,
+    drain_sub_trace: bool,
 ) -> Vec<crate::state::ToolFlowRound> {
     let mut rounds: Vec<crate::state::ToolFlowRound> = Vec::new();
     for message in &messages[live_start.min(messages.len())..] {
@@ -507,13 +511,30 @@ pub(in crate::agent) fn derive_tool_flow(
                         .filter(|reasoning| !reasoning.is_empty()),
                     calls: calls
                         .iter()
-                        .map(|call| crate::state::ToolFlowCall {
-                            id: call.id.clone(),
-                            name: call.function.name.clone(),
-                            arguments: call.function.arguments.clone(),
-                            output: String::new(),
-                            started_ms: None,
-                            finished_ms: None,
+                        .map(|call| {
+                            // 子代理调用:取走这次调用暂存的子过程标记流,挂上去落库,
+                            // 刷新/回看时回放(#9)。别的工具没有,为 None。
+                            let sub_trace = if call.function.name == "subagent"
+                                || call.function.name == "task"
+                            {
+                                let trace = if drain_sub_trace {
+                                    crate::tools::take_subagent_trace(&call.id)
+                                } else {
+                                    crate::tools::peek_subagent_trace(&call.id)
+                                };
+                                (!trace.is_empty()).then_some(trace)
+                            } else {
+                                None
+                            };
+                            crate::state::ToolFlowCall {
+                                id: call.id.clone(),
+                                name: call.function.name.clone(),
+                                arguments: call.function.arguments.clone(),
+                                output: String::new(),
+                                started_ms: None,
+                                finished_ms: None,
+                                sub_trace,
+                            }
                         })
                         .collect(),
                 });

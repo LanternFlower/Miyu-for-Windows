@@ -111,6 +111,9 @@ pub(in crate::web) struct SafeToolCall {
     pub(in crate::web) started_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(in crate::web) finished_ms: Option<u64>,
+    /// 子代理子过程标记流,刷新/回看回放用(#9)。只有 subagent 调用有。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(in crate::web) sub_trace: Option<Vec<String>>,
 }
 
 /// 从落库的输出反推成败。
@@ -156,6 +159,7 @@ impl From<crate::state::ToolFlowRound> for SafeToolRound {
                     output: call.output,
                     started_ms: call.started_ms,
                     finished_ms: call.finished_ms,
+                    sub_trace: call.sub_trace,
                 })
                 .collect(),
         }
