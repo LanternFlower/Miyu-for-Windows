@@ -6240,11 +6240,13 @@
           sink.thinkFrame = null;
           think.body.textContent = think.__acc || "";
           setReasoningPeek(think.peek, think.__acc || "");
+          // 行窥视也合进这一帧:每 token 各测一次 scrollWidth 会引发同步重排,连带把
+          // 已完成的「已思考」行窥视一起抖(#3 疯狂抖动)。一帧只测一次。
+          if (sink.taskPeek) setReasoningPeek(sink.taskPeek, think.__acc || "");
           subAutoScroll(sink);
         });
       }
       sink.peekLine = sink.thinkAccum;
-      if (sink.taskPeek) setReasoningPeek(sink.taskPeek, sink.thinkAccum);
       return;
     }
     if (ev.kind === "call") {

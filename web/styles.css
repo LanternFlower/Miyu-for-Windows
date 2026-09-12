@@ -1602,12 +1602,17 @@ body[data-theme="graphite"] .session-unread-dot {
 }
 /* 展开后的子过程流:限高可滚,不许顶满全屏(09-11 用户报)。 */
 .job-stream-panel {
-  /* 不要左侧竖线(#116):timeline 的细线本身已经起区分作用了。 */
+  /* 不要左侧竖线(#116):timeline 的细线本身已经起区分作用了。给一层柔和暖底做外框
+     (和前台子代理的活区域同款):节点遮线块用的就是这个暖底,面板不上底的话节点那点
+     暖色会浮在纯页面底色上、露出方块(#122 后台展开里 logo 底色和面板不符)。 */
   margin: 2px 0 8px 24px;
-  padding-left: 10px;
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
   max-height: 42vh;
   overflow-y: auto;
   overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .job-chip-stop {
@@ -3461,11 +3466,11 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
 }
 
 .tool-title strong {
-  /* 工具名优先完整显示(#110:名字不该被后面的命令/主语盖住/挤没):不缩、封顶
-     62%,超了才省略。load_tools 那种「加载：A、B、C、D」也在这段里,靠 62% 封顶。 */
+  /* 工具名优先完整显示、不被主语挤没(#110):不缩(flex 0 0),靠下面的主语先让位
+     腾空间。不再封 62%——那会在窄面板里把「后台任务」截成「后」(#123);极长的
+     load_tools 名超出时由 .tool-title 的 overflow 兜底裁掉,不会画到圆角外。 */
   flex: 0 0 auto;
-  max-width: 62%;
-  min-width: 4em;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 11.5px;
@@ -3476,19 +3481,18 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   display: none;
 }
 
-/* 参数 / 命令外显(= 这一行的「窥视」):等宽小字,填名字右边的余下空间,超长向右
-   淡出(#110 用户要的「工具名 <虚化过渡> 窥视」),不再用省略号一刀切。 */
+/* 参数 / 命令外显:等宽小字,填名字右边余下空间,先于名字让位、超长省略号(不加淡出
+   遮罩——那会把还没溢出的主语文字也虚掉,读不清 #121)。 */
 .tool-title .tool-summary {
   flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-soft);
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 400;
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
-  mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
 }
 
 .tool-status {
@@ -5449,7 +5453,8 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
 }
 .composer-info .ctx-nums #contextNumbers {
   font-family: var(--font-mono);
-  color: var(--text);
+  /* 和「上下文」三个字同色(#130),整行统一。 */
+  color: inherit;
   font-variant-numeric: tabular-nums;
 }
 /* 窄屏:累计/速度可省,模型和上下文优先(#2 手机端要能看到模型)。 */
@@ -10037,7 +10042,8 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   background: var(--surface-2);
 }
 .proc-summary b {
-  color: var(--text);
+  /* 「Worked for x s」和后面的「1 tool · 1 thought」同色(#129),不再更深一档。 */
+  color: inherit;
   font-weight: 600;
 }
 .proc-summary .proc-err {
@@ -10353,6 +10359,8 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   overflow-x: hidden;
   overscroll-behavior: contain;
   scroll-behavior: smooth;
+  /* 预留滚动条槽:思考流增长时滚动条忽隐忽现会让整块宽度一跳一跳,连带窥视抖(#3)。 */
+  scrollbar-gutter: stable;
 }
 /* 前台子代理的活区域外框(tool-body)收紧内边距:刚开只有 1 行 brief 时,原来
    9px 上下 padding + 8px 外边距让这块看着有两行多(#113)。子过程区不是详情面板,
