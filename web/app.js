@@ -395,6 +395,8 @@
     expandedJobs: new Set(),
     jobStreamSinks: new Map(),
     commandLogs: new Map(),
+    commandPeekLine: new Map(),
+    commandPeekTimers: new Map(),
     bootId: null,
     latestEventId: 0,
     lastEventId: 0,
@@ -9049,6 +9051,37 @@
     }
   }
 
+  // 后台命令的窥视(#120):轮询日志尾行,取最后一条非空行喂给状态行窥视。命令没有
+  // 进度流,但输出全在日志里,尾行就是「它现在在干嘛」。行会随任务条重建而换元素,
+  // 所以 timer 里每次都从当前 DOM 找回该 job 的窥视 span。
+  function trackCommandPeek(jobId) {
+    if (state.commandPeekTimers.has(jobId)) return;
+    const tick = async () => {
+      const job = state.backgroundJobs.get(jobId);
+      const running = job && job.running;
+      try {
+        const resp = await apiRequest(`/api/jobs/${encodeURIComponent(jobId)}/log`);
+        const data = await resp.json();
+        const lines = String(data?.log || "").split("\n").map((l) => l.trimEnd()).filter(Boolean);
+        const last = lines.length ? lines[lines.length - 1] : "";
+        if (last) {
+          state.commandPeekLine.set(jobId, last);
+          const el = elements.jobsStrip?.querySelector(`.job-chip[data-job-id="${CSS.escape(jobId)}"] .job-chip-peek > span`);
+          if (el) setReasoningPeek(el, last);
+        }
+        if (data?.running === false) stop();
+      } catch { /* 忽略,下次再试 */ }
+      if (!running) stop();
+    };
+    const stop = () => {
+      const t = state.commandPeekTimers.get(jobId);
+      if (t) clearInterval(t);
+      state.commandPeekTimers.delete(jobId);
+    };
+    tick();
+    state.commandPeekTimers.set(jobId, setInterval(tick, 1500));
+  }
+
   function renderJobsStrip() {
     const strip = elements.jobsStrip;
     if (!strip) return;
@@ -9148,6 +9181,11 @@
         sink.taskToken = token;
         if (sink.peekLine) setReasoningPeek(peek, sink.peekLine);
         if (sink.tokenText) token.textContent = sink.tokenText;
+      } else {
+        // 后台命令没有进度流,但有输出日志(#120):把日志尾行当窥视,轮询刷新;
+        // 先用已缓存的尾行填上(重建行时不闪)。
+        if (state.commandPeekLine?.has(jid)) setReasoningPeek(peek, state.commandPeekLine.get(jid));
+        if (job.running) trackCommandPeek(jid, peek);
       }
 
       const expanded = state.expandedJobs.has(jid);

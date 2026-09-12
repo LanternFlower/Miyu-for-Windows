@@ -1601,11 +1601,11 @@ body[data-theme="graphite"] .session-unread-dot {
   transform: rotate(180deg);
 }
 /* 展开后的子过程流:限高可滚,不许顶满全屏(09-11 用户报)。 */
-.job-stream-panel {
-  /* 不要左侧竖线(#116):timeline 的细线本身已经起区分作用了。给一层柔和暖底做外框
-     (和前台子代理的活区域同款):节点遮线块用的就是这个暖底,面板不上底的话节点那点
-     暖色会浮在纯页面底色上、露出方块(#122 后台展开里 logo 底色和面板不符)。 */
-  margin: 2px 0 8px 24px;
+/* 后台【子代理】展开面板(不含命令日志面板,它自带一层框、别叠成两层框 #134):
+   不要左侧竖线(#116);给一层柔和暖底做外框(和前台活区域同款),节点遮线块用的就是
+   这暖底,面板不上底时节点暖色会浮在纯页面底上露方块(#122)。左缩进从 24 收到 6(#133)。 */
+.job-stream-panel:not(.job-log-panel) {
+  margin: 2px 0 8px 6px;
   padding: 5px 8px;
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--text) 5%, transparent);
@@ -1722,13 +1722,11 @@ body[data-theme="graphite"] .session-unread-dot {
   flex: none;
 }
 .job-chip > .job-chip-peek {
-  /* 窥视填右边余下空间,左对齐紧跟秒数(#2 用户改主意:右对齐不合理),超长向右淡出。
-     标题封顶不缩,永远不被盖(#3)。 */
+  /* 窥视填右边余下空间,左对齐紧跟秒数。淡出只在真的放不下时才加(见 .is-overflow),
+     内容短、空间够时不加遮罩(#132:短内容被无谓地虚掉了)。 */
   flex: 1 1 0;
   min-width: 0;
   justify-content: flex-start;
-  -webkit-mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 24px), transparent);
-  mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 24px), transparent);
 }
 .job-chip.is-open > .job-chip-peek {
   display: none;
@@ -10525,8 +10523,11 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   flex: 1 1 0;
   min-width: 0;
   margin-left: 8px;
-  /* 左对齐紧跟秒数,超长向右淡出(#2:右对齐不合理);0,3,0 压过 .reasoning-peek.is-overflow。 */
+  /* 左对齐紧跟秒数;淡出只在放不下时加(#132)。 */
   justify-content: flex-start;
+}
+/* 真的放不下才加左右淡出(0,4,0 压过 .reasoning-peek.is-overflow 的 0,2,0)。 */
+.tool-card.is-task .tool-head > .tool-peek.is-overflow {
   -webkit-mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 24px), transparent);
   mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 24px), transparent);
 }
