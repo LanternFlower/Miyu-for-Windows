@@ -9108,7 +9108,10 @@
 
   async function seedJobsStrip() {
     try {
-      const data = await apiRequest("/api/jobs");
+      // apiRequest 返回 Response,得再 .json()(与 #8a 命令日志同一坑:直接把
+      // Response 当 JSON,data.jobs 恒为 undefined → 刷新后一个后台任务都存不进,
+      // 状态行整条消失。job.started 只在开跑那一刻发,刷新后不重放,全靠这里补拉)。
+      const data = await (await apiRequest("/api/jobs")).json();
       state.backgroundJobs.clear();
       for (const job of data?.jobs || []) {
         state.backgroundJobs.set(String(job.job_id), { ...job, receivedAt: Date.now() });
