@@ -1560,6 +1560,12 @@ body[data-theme="graphite"] .session-unread-dot {
 }
 .job-chip.is-expandable {
   cursor: pointer;
+  transition: background 140ms ease;
+}
+/* 可点开的任务行悬浮要有「选中」反馈(#5:悬浮没有选中效果)——chip 本身已是
+   surface-2,再叠一层正文色兑亮一档,和工具行整行悬浮同一套语言。 */
+.job-chip.is-expandable:hover {
+  background: color-mix(in srgb, var(--text) 8%, var(--surface-2));
 }
 .job-chip-label {
   flex: 1 1 auto;
