@@ -243,30 +243,11 @@
             <div class="queue-tray" id="queueTray" aria-label="排队中的消息" hidden></div>
             <div class="attachment-tray" id="attachmentTray" aria-label="待发送附件" hidden></div>
             <!-- 首屏兜底:人格加载完由 applyPersona 换成配置值(或按人格名生成的默认句)。 -->
-            <textarea id="composerInput" rows="2" placeholder="给 Miyu 发消息" aria-label="消息" disabled></textarea>
-            <input id="attachmentInput" type="file" multiple hidden>
-            <div class="composer-footer">
-              <div class="composer-controls">
-                <div class="model-menu-wrap" id="modelMenuWrap">
-                  <button class="model-button" id="modelButton" type="button" aria-haspopup="menu" aria-expanded="false" disabled>
-                    <span class="model-label" id="modelLabel">正在载入</span>
-                    <span class="icon-slot" data-icon="chevron-down" aria-hidden="true"><span class="icon-fallback">⌄</span></span>
-                  </button>
-                </div>
-                <span class="typing-indicator is-composer" id="composerRunIndicator" aria-hidden="true" hidden><i></i><i></i><i></i></span>
-                <span class="composer-state" id="composerState">正在载入</span>
-              </div>
-              <div class="composer-submit">
+            <!-- 输入行:框内只留交互按钮(面板/语音/附件/发送);其余信息移到框下的 composer-info。 -->
+            <div class="composer-input-row">
+              <textarea id="composerInput" rows="2" placeholder="给 Miyu 发消息" aria-label="消息" disabled></textarea>
+              <div class="composer-actions">
                 <div class="live-stop-rail" id="liveStopRail" aria-label="正在运行的回复" hidden></div>
-                <div class="composer-context">
-                  <div class="context-heading">
-                    <span>上下文</span>
-                    <span id="contextNumbers">-- / --</span>
-                  </div>
-                  <div class="context-track" id="contextTrack" role="progressbar" aria-label="上下文使用情况" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-                    <i id="contextBar"></i>
-                  </div>
-                </div>
                 <span class="character-count" id="characterCount" hidden>0 / 20,000</span>
                 <button class="icon-button artifact-toggle-button" id="artifactToggleButton" type="button" title="打开预览" aria-label="打开预览" hidden>
                   <span class="icon-slot" data-icon="panel-right" aria-hidden="true"><span class="icon-fallback">▥</span></span>
@@ -282,7 +263,30 @@
                 </button>
               </div>
             </div>
+            <input id="attachmentInput" type="file" multiple hidden>
           </form>
+          <!-- 输入框下方信息行:模型 / 状态 / 每秒 toks / 累计 / 上下文(用户 #99)。 -->
+          <div class="composer-info" id="composerInfo">
+            <div class="model-menu-wrap" id="modelMenuWrap">
+              <button class="model-button" id="modelButton" type="button" aria-haspopup="menu" aria-expanded="false" disabled>
+                <span class="model-label" id="modelLabel">正在载入</span>
+                <span class="icon-slot" data-icon="chevron-down" aria-hidden="true"><span class="icon-fallback">⌄</span></span>
+              </button>
+            </div>
+            <span class="typing-indicator is-composer" id="composerRunIndicator" aria-hidden="true" hidden><i></i><i></i><i></i></span>
+            <span class="composer-state" id="composerState">正在载入</span>
+            <span class="composer-info-spacer"></span>
+            <span class="composer-speed" id="composerSpeed" hidden><span class="k">每秒</span> <b id="composerSpeedValue">--</b> <span class="k">toks</span></span>
+            <span class="composer-cumulative" id="composerCumulative" hidden><span class="k">累计</span> <b id="composerCumulativeValue">--</b></span>
+            <div class="composer-context" id="contextTrack" role="progressbar" aria-label="上下文使用情况" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" title="上下文使用">
+              <svg class="ctx-ring" viewBox="0 0 24 24" aria-hidden="true">
+                <circle class="ctx-ring-bg" cx="12" cy="12" r="9"></circle>
+                <circle class="ctx-ring-fg" cx="12" cy="12" r="9" id="contextRing"></circle>
+              </svg>
+              <span class="ctx-nums"><span class="k">上下文</span> <span id="contextNumbers">-- / --</span></span>
+              <i id="contextBar" hidden></i>
+            </div>
+          </div>
           <!-- 模型菜单挂在 dock 上而不是 form 里：`.composer` 为了圆角开了
                overflow: hidden，菜单在它里面会被裁成半截。定位由
                positionModelMenu() 按按钮实际位置算。 -->

@@ -217,6 +217,11 @@
     contextNumbers: document.getElementById("contextNumbers"),
     contextTrack: document.getElementById("contextTrack"),
     contextBar: document.getElementById("contextBar"),
+    contextRing: document.getElementById("contextRing"),
+    composerSpeed: document.getElementById("composerSpeed"),
+    composerSpeedValue: document.getElementById("composerSpeedValue"),
+    composerCumulative: document.getElementById("composerCumulative"),
+    composerCumulativeValue: document.getElementById("composerCumulativeValue"),
     consoleButton: document.getElementById("consoleButton"),
     sidebarSettingsButton: document.getElementById("sidebarSettingsButton"),
     consoleView: document.getElementById("consoleView"),
@@ -1580,6 +1585,15 @@
     return `每秒 ${rate >= 10 ? formatInteger(Math.round(rate)) : rate.toFixed(1)} toks`;
   }
 
+  // 只取速度数字(给输入框下方信息行的「每秒 __ toks」用,模板已带「每秒/toks」)。
+  function generationSpeedValue(tokens, millis) {
+    const count = asFiniteNumber(tokens, 0);
+    const duration = asFiniteNumber(millis, 0);
+    if (count <= 0 || duration <= 0) return null;
+    const rate = (count * 1000) / duration;
+    return rate >= 10 ? formatInteger(Math.round(rate)) : rate.toFixed(1);
+  }
+
   function formatUsageMeta({ turnTotal, turnPrompt, turnCached, estimated, cumulative, cumulativePrompt, cumulativeCached, generationTokens, generationMs }) {
     const parts = [];
     const speed = formatGenerationSpeed(generationTokens, generationMs);
@@ -1715,13 +1729,43 @@
   function updateContext() {
     const tokens = Math.max(0, asFiniteNumber(state.context?.tokens));
     const windowSize = state.context?.window == null ? null : Math.max(0, asFiniteNumber(state.context.window));
-    elements.contextNumbers.textContent = windowSize ? `${formatTokens(tokens)} / ${formatTokens(windowSize)}` : `${formatTokens(tokens)} / --`;
+    if (elements.contextNumbers) {
+      elements.contextNumbers.textContent = windowSize ? `${formatTokens(tokens)} / ${formatTokens(windowSize)}` : `${formatTokens(tokens)} / --`;
+    }
     const percent = windowSize > 0 ? Math.min(100, Math.max(0, (tokens / windowSize) * 100)) : 0;
-    elements.contextBar.style.width = `${percent}%`;
-    elements.contextTrack.setAttribute("aria-valuenow", String(Math.round(percent)));
-    elements.contextTrack.setAttribute("aria-label", windowSize ? `上下文使用 ${Math.round(percent)}%` : `上下文 ${formatInteger(tokens)} tokens`);
-    elements.contextTrack.classList.toggle("is-high", percent >= 75 && percent < 90);
-    elements.contextTrack.classList.toggle("is-critical", percent >= 90);
+    // 上下文占用画成一个小圆环(比长条优雅,用户反馈原展示不美观):r=9,周长≈56.55,
+    // 按占用比例设 dashoffset;高/临界用配色区分。
+    if (elements.contextRing) {
+      const circ = 2 * Math.PI * 9;
+      elements.contextRing.style.strokeDasharray = `${circ.toFixed(2)}`;
+      elements.contextRing.style.strokeDashoffset = `${(circ * (1 - percent / 100)).toFixed(2)}`;
+    }
+    if (elements.contextTrack) {
+      elements.contextTrack.setAttribute("aria-valuenow", String(Math.round(percent)));
+      elements.contextTrack.setAttribute("aria-label", windowSize ? `上下文使用 ${Math.round(percent)}%` : `上下文 ${formatInteger(tokens)} tokens`);
+      elements.contextTrack.classList.toggle("is-high", percent >= 75 && percent < 90);
+      elements.contextTrack.classList.toggle("is-critical", percent >= 90);
+    }
+  }
+
+  // 输入框下方信息行的「每秒 toks」「累计」:取最新一轮的样本,回合结束/round_usage 时更新。
+  function setComposerUsage({ speed, cumulative } = {}) {
+    if (elements.composerSpeed) {
+      if (speed) {
+        elements.composerSpeedValue.textContent = speed;
+        elements.composerSpeed.hidden = false;
+      } else {
+        elements.composerSpeed.hidden = true;
+      }
+    }
+    if (elements.composerCumulative) {
+      if (cumulative) {
+        elements.composerCumulativeValue.textContent = cumulative;
+        elements.composerCumulative.hidden = false;
+      } else {
+        elements.composerCumulative.hidden = true;
+      }
+    }
   }
 
   function updateRuntimeUsage() {}
@@ -6576,6 +6620,17 @@
         state.cumulativeByTurn.set(String(turn?.id || ""), { total, prompt, cached });
       }
     }
+    // 刷新/切会话后,输入框下方信息行按最后一轮回填(速度 + 累计),不然刷新就空了(#99)。
+    {
+      const lastTurn = state.turns[state.turns.length - 1];
+      const lastCum = lastTurn ? state.cumulativeByTurn.get(String(lastTurn.id || "")) : null;
+      setComposerUsage({
+        speed: lastTurn ? generationSpeedValue(lastTurn.generation_tokens, lastTurn.generation_ms) : null,
+        cumulative: lastCum && lastCum.total > 0
+          ? `${formatTokens(lastCum.total)}${cacheSuffix(lastCum.cached, lastCum.prompt)}`
+          : null,
+      });
+    }
     // 回合运行期间每秒轮询都可能整段重建（refreshViewSnapshot）。用户正往回
     // 翻历史时不能每秒被拽回底部：只有明确导航（换会话/启动）或用户本来就
     // 跟着输出走时才滚到底，否则原地恢复滚动位置。
@@ -9258,6 +9313,13 @@
         });
         live.meta.textContent = usage || "已完成";
       }
+      // 输入框下方信息行:最新一轮的输出速度 + 会话累计 token(#99)。
+      setComposerUsage({
+        speed: generationSpeedValue(data?.usage?.generation_tokens, data?.usage?.generation_ms),
+        cumulative: asFiniteNumber(data?.cumulative_tokens) > 0
+          ? `${formatTokens(data.cumulative_tokens)}${cacheSuffix(data?.cumulative_cache_read_tokens, data?.cumulative_prompt_tokens)}`
+          : null,
+      });
     } else if (kind === "cancelled") {
       markUnfinishedTools(live);
       endPendingQuestions(live, "本轮已停止，无法再提交回答");

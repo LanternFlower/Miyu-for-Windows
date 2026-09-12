@@ -5262,6 +5262,103 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   color: var(--text-soft);
 }
 
+/* ── 输入框:框内只留交互按钮,模型/状态/tok·s/累计/上下文移到框下一行(#99) ── */
+.composer-input-row {
+  display: flex;
+  align-items: flex-end;
+  width: 100%;
+  min-width: 0;
+  gap: 6px;
+  padding-right: 10px;
+}
+.composer-input-row > textarea {
+  flex: 1 1 auto;
+}
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding-bottom: 8px;
+}
+.composer-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 8px 12px 2px;
+  font-size: var(--fs-micro);
+  color: var(--text-soft);
+}
+.composer-info-spacer {
+  flex: 1 1 auto;
+  min-width: 8px;
+}
+.composer-info .k {
+  color: var(--text-faint);
+}
+.composer-info b {
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+}
+.composer-speed,
+.composer-cumulative {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  white-space: nowrap;
+}
+/* 上下文:小圆环 + 数字(替代原来的长条,用户觉得不美观) */
+.composer-info .composer-context {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.composer-info .ctx-ring {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  transform: rotate(-90deg);
+}
+.composer-info .ctx-ring-bg {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text) 14%, transparent);
+  stroke-width: 3;
+}
+.composer-info .ctx-ring-fg {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.4s ease, stroke 0.3s ease;
+}
+.composer-info .composer-context.is-high .ctx-ring-fg {
+  stroke: var(--gold, #e9b64a);
+}
+.composer-info .composer-context.is-critical .ctx-ring-fg {
+  stroke: var(--danger);
+}
+.composer-info .ctx-nums {
+  display: inline-flex;
+  gap: 5px;
+  align-items: baseline;
+}
+.composer-info .ctx-nums #contextNumbers {
+  font-family: var(--font-mono);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+/* 窄屏:累计/速度可省,别把信息行挤爆(模型和上下文优先)。 */
+@media (max-width: 640px) {
+  .composer-cumulative { display: none; }
+}
+
 .attachment-tray {
   display: flex;
   width: 100%;
