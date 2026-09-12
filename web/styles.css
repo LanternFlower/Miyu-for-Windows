@@ -1602,9 +1602,9 @@ body[data-theme="graphite"] .session-unread-dot {
 }
 /* 展开后的子过程流:限高可滚,不许顶满全屏(09-11 用户报)。 */
 .job-stream-panel {
+  /* 不要左侧竖线(#116):timeline 的细线本身已经起区分作用了。 */
   margin: 2px 0 8px 24px;
   padding-left: 10px;
-  border-left: 2px solid var(--rule-soft, rgba(128, 128, 128, 0.25));
   max-height: 42vh;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -3461,10 +3461,13 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
 }
 
 .tool-title strong {
-  /* 可缩:load_tools 一次点名四五个工具时,「加载：A、B、C、D」全在这一段里。
-     下限同 .reasoning-title —— 不给下限的话,窄气泡里连工具名都会被挤没。 */
-  flex: 0 1 auto;
+  /* 工具名优先完整显示(#110:名字不该被后面的命令/主语盖住/挤没):不缩、封顶
+     62%,超了才省略。load_tools 那种「加载：A、B、C、D」也在这段里,靠 62% 封顶。 */
+  flex: 0 0 auto;
+  max-width: 62%;
   min-width: 4em;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 11.5px;
   font-weight: 600;
 }
@@ -3473,16 +3476,19 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   display: none;
 }
 
-/* 参数 / 命令外显:等宽小字 */
+/* 参数 / 命令外显(= 这一行的「窥视」):等宽小字,填名字右边的余下空间,超长向右
+   淡出(#110 用户要的「工具名 <虚化过渡> 窥视」),不再用省略号一刀切。 */
 .tool-title .tool-summary {
+  flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-soft);
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 400;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
 }
 
 .tool-status {
@@ -5387,12 +5393,13 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   max-width: 100%;
 }
 .composer-info .k {
-  color: var(--text-faint);
+  /* 标签和数值同色(#111:不加粗后颜色还不一样),整行统一用 --text-soft。 */
+  color: inherit;
 }
 .composer-info b {
-  /* 数值不加粗(#1:没必要),只靠颜色比标签深一档区分。 */
+  /* 数值不加粗、也不换色(#1/#111):和标签一个色,只靠等宽字形和位置区分。 */
   font-weight: 400;
-  color: var(--text);
+  color: inherit;
   font-variant-numeric: tabular-nums;
   font-family: var(--font-mono);
 }
@@ -10340,12 +10347,18 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
    不许顶满全屏(09-11 用户报)。 */
 .tool-card.is-task .sub-blocks {
   /* 前台子代理:一块约四行高的活区域,子过程在里面流式滚动/窥视(用户拍板)。 */
-  margin-bottom: 8px;
+  margin-bottom: 2px;
   max-height: 124px;
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
   scroll-behavior: smooth;
+}
+/* 前台子代理的活区域外框(tool-body)收紧内边距:刚开只有 1 行 brief 时,原来
+   9px 上下 padding + 8px 外边距让这块看着有两行多(#113)。子过程区不是详情面板,
+   不需要那么厚的留白。特异度对齐上面那条详情面板规则(0,5,0)才压得过。 */
+.assistant-blocks .proc-steps > .tool-card.is-task > .tool-fold > .tool-body {
+  padding: 5px 8px;
 }
 /* 子代理任务简介(展开区最上方,09-12 #6):标题 + 整段 prompt,不再让人读裸 JSON。 */
 /* 任务简介:一个可展开 tag,收起只显任务标题,展开才看整段 prompt(prompt 太长会刷屏)。 */
@@ -10456,27 +10469,19 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 .sub-content table {
   background: color-mix(in srgb, var(--text) 6%, transparent);
 }
-/* 子过程时间线里,思考/工具那一行(tag)在展开内容超出可用高度、往下滚时粘在
-   顶部,滚长内容也看得到它是哪一项、方便就地收起(09-12 #4/#12)。sticky 需要
-   实心背景,否则下面的文字会透上来。 */
+/* 子过程时间线不再吸顶(#112/#117:吸顶行反复透出下面的文字、盖字,做了三版都不稳;
+   这块本就只有约 5 行、滚不远,吸顶收益小于它带来的重叠问题)。行随内容正常滚动。
+   留一层柔和暖底(和面板同视觉),纯为节点遮线用,不再靠它盖住透上来的字。 */
 .sub-blocks .reasoning-block > summary,
 .sub-blocks .tool-card > .tool-head {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  /* 不透明背景(用 app-bg 兑 5% 正文色,和暖色面板同视觉但不透明),否则往上滚时
-     下面的文字会透上来和吸顶那行重叠(#8 文字重叠 / #4 tag 背景色不对)。 */
   background: color-mix(in srgb, var(--text) 5%, var(--app-bg));
 }
-/* sticky 之前不生效的真因(#13):吸顶元素被中间的 `.proc-wrap > div{overflow:hidden}`
-   截住,吸到了那个不滚动的裁剪容器上而不是真正滚动的 .sub-blocks/.job-stream-panel。
-   子过程时间线恒 open、没有开合动画,把这层的**纵向**裁剪解开,sticky 才吸到滚动容器;
-   横向仍用 clip 裁掉,否则长思考文本(nowrap)会撑出横向滚动条、tag 能横向拖动(#96)。
-   `overflow-x:clip + overflow-y:visible` 两个都是非滚动值,不会互相被强制成 auto。 */
+/* 不吸顶后横向仍用 clip 裁掉长思考文本(nowrap),纵向交给外层 .sub-blocks/.job-stream-panel
+   的滚动容器(不再需要 overflow-y:visible 去让 sticky 吸到滚动容器)。 */
 .sub-blocks .proc-wrap,
 .sub-blocks .proc-wrap > div {
   overflow-x: clip;
-  overflow-y: visible;
+  overflow-y: clip;
 }
 /* 前台子代理行在手机端太长(09-12 #8):收起时不显那条单行窥视,活动去展开区看;
    token/读秒也让位,标题+状态就够窄。 */

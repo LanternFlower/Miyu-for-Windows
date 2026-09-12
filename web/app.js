@@ -6064,6 +6064,14 @@
   // proc-line;sink.think 是当前正累加的思考块。
   function subEndReasoning(sink) {
     if (sink.think) {
+      // 冲掉未触发的 rAF,把最终全文渲一遍,再释放帧句柄给下一个思考块。
+      if (sink.thinkFrame) {
+        window.cancelAnimationFrame(sink.thinkFrame);
+        sink.thinkFrame = null;
+      }
+      const finalText = sink.think.__acc != null ? sink.think.__acc : sink.thinkAccum;
+      sink.think.body.textContent = finalText || "";
+      setReasoningPeek(sink.think.peek, finalText || "");
       sink.think.title.textContent = "已思考";
       sink.think.element.classList.remove("is-live");
       // 冻结读秒(09-12 #4:子过程思考读秒一直停在 0s)。startedAt 是创建时的
@@ -6223,11 +6231,20 @@
       }
       sink.thinkAccum += ev.text;
       sink.think.raw = sink.thinkAccum;
-      sink.think.body.textContent = sink.thinkAccum;
-      setReasoningPeek(sink.think.peek, sink.thinkAccum);
+      // 正文体逐 token 全量重写 textContent,展开态下每个 token 都重排,长思考会卡死
+      // (#114:打开正在思考的行特别卡)。按 rAF 合并:一帧只写一次当前全文。
+      const think = sink.think;
+      think.__acc = sink.thinkAccum;
+      if (!sink.thinkFrame) {
+        sink.thinkFrame = window.requestAnimationFrame(() => {
+          sink.thinkFrame = null;
+          think.body.textContent = think.__acc || "";
+          setReasoningPeek(think.peek, think.__acc || "");
+          subAutoScroll(sink);
+        });
+      }
       sink.peekLine = sink.thinkAccum;
       if (sink.taskPeek) setReasoningPeek(sink.taskPeek, sink.thinkAccum);
-      subAutoScroll(sink);
       return;
     }
     if (ev.kind === "call") {
