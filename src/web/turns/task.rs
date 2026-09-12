@@ -313,6 +313,7 @@ async fn run_turn_task_inner(
         // 成员的档案(阶段 6):`home/<用户名>/profile.md` 顶替管理员的属主档案。
         // 只改 Agent 手里的配置副本,资源缓存键不变;通讯平台受众本就不注入档案。
         let mut agent_config = config.clone();
+        let mut member_username: Option<String> = None;
         if platform_context.is_none() && !store.usage_account().is_empty() {
             if let Some(account) = base_store
                 .account_by_id(store.usage_account())
@@ -324,20 +325,28 @@ async fn run_turn_task_inner(
                     .display()
                     .to_string();
                 agent_config.prompt.active_identity.clear();
+                // 09-13 #162:成员的思考档位是自己的,回填这一回合的 client。
+                member_username = Some(account.username.clone());
             }
+        }
+        // A platform turn buffers a whole round and posts it as one
+        // message, so a stream that dies mid-round showed the group
+        // nothing and can be retried on another endpoint — or the same
+        // one — without anybody seeing a false start.
+        let mut turn_client = resources
+            .client
+            .clone()
+            .with_buffered_delivery(platform_context.is_some());
+        if let Some(username) = member_username.as_ref() {
+            // 共享 client 带的是管理员的全局档位;换成成员家里的偏好(没设 =
+            // 模型默认档),不改共享 client、不影响别的成员/管理员。
+            turn_client.reload_thinking_variants(&paths.member_thinking_view(username));
         }
         let mut agent = Agent::new_for_audience(
             agent_config,
             &paths,
             store.clone(),
-            // A platform turn buffers a whole round and posts it as one
-            // message, so a stream that dies mid-round showed the group
-            // nothing and can be retried on another endpoint — or the same
-            // one — without anybody seeing a false start.
-            resources
-                .client
-                .clone()
-                .with_buffered_delivery(platform_context.is_some()),
+            turn_client,
             active_tools,
             mode,
             audience,

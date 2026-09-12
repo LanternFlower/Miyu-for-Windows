@@ -95,6 +95,45 @@ pub(in crate::web) fn apply_thinking_variant_updates(
     Ok(())
 }
 
+/// 成员改自己的思考档位:校验同管理员路径(档位可选项只看供应商元数据),但读
+/// 写的是成员视图的偏好文件(`member_paths` 的 state_dir 已指向成员家)。不碰共享
+/// agent——成员的每回合 client 现造时会从这份偏好回填(见 turns::task)。
+pub(in crate::web) fn persist_member_thinking_variants(
+    config: &AppConfig,
+    member_paths: &MiyuPaths,
+    updates: &[ThinkingVariantUpdate],
+) -> std::result::Result<(), AdminFailure> {
+    let options = active_thinking_variant_options(config, member_paths)
+        .map_err(|error| AdminFailure::Internal(safe_error_message(error)))?;
+    for update in updates {
+        let option = options
+            .iter()
+            .find(|option| option.provider_id == update.provider_id && option.model == update.model)
+            .ok_or_else(|| {
+                AdminFailure::Invalid(format!(
+                    "inactive model: {} / {}",
+                    update.provider_id, update.model
+                ))
+            })?;
+        if let Some(selected) = &update.selected {
+            if !option.variants.iter().any(|variant| variant == selected) {
+                return Err(AdminFailure::Invalid(format!(
+                    "thinking variant is unavailable for {} / {}: {}",
+                    update.provider_id, update.model, selected
+                )));
+            }
+        }
+    }
+    let mut preferences = ThinkingVariantPreferences::load(member_paths);
+    for update in updates {
+        preferences.set(&update.provider_id, &update.model, update.selected.clone());
+    }
+    preferences
+        .save(member_paths)
+        .map_err(|error| AdminFailure::Internal(safe_error_message(error)))?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(in crate::web) fn rebuild_for_models(
     agent: &mut Option<Agent>,

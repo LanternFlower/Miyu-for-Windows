@@ -201,11 +201,16 @@ pub(in crate::web) async fn get_thinking_variants(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Response, ApiError> {
-    // 只读:成员的模型菜单也要显示档位;改档位仍是管理员的事。
-    require_auth(&headers, &state)?;
+    // 成员的模型菜单显示的是**自己**的档位(读成员家里的偏好);管理员看全局。
+    let identity = require_identity(&headers, &state)?;
     let config = state.manager.lock().unwrap().config.clone();
+    let prefs_paths = if identity.admin {
+        state.paths.clone()
+    } else {
+        state.paths.member_thinking_view(&identity.username)
+    };
     let options =
-        active_thinking_variant_options(&config, &state.paths).map_err(ApiError::internal)?;
+        active_thinking_variant_options(&config, &prefs_paths).map_err(ApiError::internal)?;
     let mut response = Json(ThinkingVariantsResponse { options }).into_response();
     response
         .headers_mut()
@@ -218,8 +223,37 @@ pub(in crate::web) async fn set_thinking_variants(
     headers: HeaderMap,
     Json(request): Json<SetThinkingVariantsRequest>,
 ) -> std::result::Result<Json<ThinkingVariantsResponse>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
+    // 09-13 #162:改 effort 不再 admin only。成员改的是**自己**的档位——只落在
+    // 成员家里的偏好、不动共享 agent(成员每回合 client 现造时回填);仍要身份 +
+    // 来源校验。管理员照旧走 actor、改全局在跑的 agent。
+    let identity = require_identity(&headers, &state)?;
+    if !origin_is_allowed(&headers) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "request origin is not allowed",
+        ));
+    }
     let updates = validate_thinking_variant_updates(request.updates)?;
+    if !identity.admin {
+        let config = state.manager.lock().unwrap().config.clone();
+        let member_paths = state.paths.member_thinking_view(&identity.username);
+        match persist_member_thinking_variants(&config, &member_paths, &updates) {
+            Ok(()) => {}
+            Err(AdminFailure::Invalid(message)) => {
+                return Err(ApiError::new(StatusCode::BAD_REQUEST, message));
+            }
+            Err(AdminFailure::Internal(message)) => {
+                tracing::error!(error = %message, "member thinking variant update failed");
+                return Err(ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    safe_error_message(&message),
+                ));
+            }
+        }
+        let options = active_thinking_variant_options(&config, &member_paths)
+            .map_err(ApiError::internal)?;
+        return Ok(Json(ThinkingVariantsResponse { options }));
+    }
     reserve_admin(&state.manager)?;
     let (reply, receiver) = oneshot::channel();
     if state

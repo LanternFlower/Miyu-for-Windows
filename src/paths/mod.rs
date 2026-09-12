@@ -336,6 +336,16 @@ impl MiyuPaths {
         self.homes_dir().join(username)
     }
 
+    /// 成员的「思考档位偏好」视图:偏好/锁文件唯一取自 `state_dir`,把它换成成员
+    /// 家目录,成员改 effort 只落在 `home/<user>/thinking-variants.json`,既不碰
+    /// 管理员的全局档位,也不改缓存/日志(那些取 cache_dir,不动)。09-13 #162:
+    /// 模型 effort 不再是 admin only,成员各有各的档位。
+    pub fn member_thinking_view(&self, username: &str) -> MiyuPaths {
+        let mut scoped = self.clone();
+        scoped.state_dir = self.user_home_dir(username);
+        scoped
+    }
+
     pub fn admin_home_dir(&self) -> Option<PathBuf> {
         self.home_admin().map(|admin| self.user_home_dir(&admin))
     }

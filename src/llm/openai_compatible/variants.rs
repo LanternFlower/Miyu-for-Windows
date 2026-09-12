@@ -67,6 +67,14 @@ impl OpenAiCompatibleClient {
         }
     }
 
+    /// 用某份偏好(通常是成员家目录里的 thinking-variants.json)整体替换当前档
+    /// 位:先清空(否则从共享 client 克隆来的管理员档位会残留、成员没设的模型会
+    /// 继承管理员的),再按 paths 里的偏好回填。成员没设的模型 = 模型默认档。
+    pub(crate) fn reload_thinking_variants(&mut self, paths: &MiyuPaths) {
+        self.thinking_variants.clear();
+        self.restore_saved_thinking_variants(paths);
+    }
+
     pub(crate) fn restore_saved_thinking_variants(&mut self, paths: &MiyuPaths) {
         crate::llm::request_log::install_dir(paths.logs_dir());
         let preferences = load_thinking_variant_preferences(paths);
