@@ -250,6 +250,7 @@
                 <button class="attach-button" id="attachButton" type="button" title="添加附件" aria-label="添加附件" disabled>
                   <span class="icon-slot" data-icon="paperclip" aria-hidden="true"><span class="icon-fallback">+</span></span>
                 </button>
+                <span class="typing-indicator is-composer" id="composerRunIndicator" aria-hidden="true" hidden><i></i><i></i><i></i></span>
                 <span class="character-count" id="characterCount" hidden>0 / 20,000</span>
                 <span class="composer-inbox-right">
                   <div class="live-stop-rail" id="liveStopRail" aria-label="正在运行的回复" hidden></div>
@@ -275,7 +276,6 @@
                 <span class="icon-slot" data-icon="chevron-down" aria-hidden="true"><span class="icon-fallback">⌄</span></span>
               </button>
             </div>
-            <span class="typing-indicator is-composer" id="composerRunIndicator" aria-hidden="true" hidden><i></i><i></i><i></i></span>
             <span class="composer-state" id="composerState">正在载入</span>
             <span class="composer-info-spacer"></span>
             <span class="composer-speed" id="composerSpeed" hidden><span class="k">每秒</span> <b id="composerSpeedValue">--</b> <span class="k">toks</span></span>
