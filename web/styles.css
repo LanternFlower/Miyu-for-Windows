@@ -1617,7 +1617,10 @@ body[data-theme="graphite"] .session-unread-dot {
   padding: 5px 8px;
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--text) 5%, transparent);
-  max-height: 42vh;
+  /* 后台子代理展开区约 5 行高就够,超出滚动(#4:限高丢了顶到全屏)。
+     这条 :not() 特异度比下面那条裸 .job-stream-panel 高,所以限高得写在这里,
+     不然那条 150px 压不过来、又退回了大高度。 */
+  max-height: 150px;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
@@ -4383,8 +4386,9 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
 @media (prefers-reduced-motion: reduce) {
   .miyu-run .mr-spin, .miyu-run i { animation-duration: 0s; }
 }
-/* AI 输出气泡里那份「加载中」:留一点上下留白,别贴着头像行。 */
-.miyu-run.typing-run { margin: 5px 0 7px 2px; }
+/* AI 输出气泡里那份「加载中」:留一点上下留白,别贴着头像行。
+   整体缩小一点(用户觉得偏大):等比缩到 0.7,左对齐锚点不动。 */
+.miyu-run.typing-run { margin: 3px 0 5px 2px; transform: scale(0.7); transform-origin: left center; }
 
 .artifact-toggle-button {
   position: relative;

@@ -878,6 +878,15 @@ impl Agent {
                 let mut spinner_interval = tokio::time::interval(self.spinner_interval);
                 spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 spinner_interval.tick().await;
+                // 前台子代理跑到一半刷新页面就丢子过程(#5a 续:子过程只在内存里,
+                // 回合收尾才落库,而单个前台子代理走的就是这条串行路,收尾在它
+                // 整个跑完之后)。这里在子过程标记流上限流打检查点:此刻
+                // `messages` 里已有那条调子代理的 assistant 消息(见上面 push),
+                // checkpoint_tool_flow 走 peek 把当前累积的 sub_trace 落库,刷新时
+                // renderPersistedTurn 就能把在跑的子过程时间线画出来,不再是空。
+                // None = 还没落过,第一条子过程标记就立刻落一次(子代理常是先爆一小段
+                // 标记再钻进一次长 LLM 应答里安静好一会儿,若等满 1.5s 那一窗就全错过了)。
+                let mut last_sub_checkpoint: Option<std::time::Instant> = None;
                 let (output, tool_succeeded) = loop {
                     tokio::select! {
                         result = &mut tool_future => {
@@ -906,8 +915,27 @@ impl Agent {
                             };
                         }
                         Some(progress) = progress_rx.recv() => {
+                            let is_sub_marker = matches!(
+                                &progress,
+                                tools::ToolProgressEvent::Message(message)
+                                    if tools::is_subagent_marker(message)
+                            );
                             parallel::tee_subagent_trace(&call_id, &progress);
                             emit_tool_progress(on_event, &call_id, &event_name, progress)?;
+                            // 限流:首条立刻落,之后每 ~1.5s 一次(peek 不清空,幂等),
+                            // 避免逐 token 写库。
+                            if is_sub_marker
+                                && last_sub_checkpoint.map_or(true, |at| {
+                                    at.elapsed() >= std::time::Duration::from_millis(1500)
+                                })
+                            {
+                                last_sub_checkpoint = Some(std::time::Instant::now());
+                                self.checkpoint_tool_flow(
+                                    current_turn_id,
+                                    messages,
+                                    replay_start,
+                                );
+                            }
                         }
                         _ = spinner_interval.tick() => {
                             on_event(AgentEvent::SpinnerTick)?;
