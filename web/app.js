@@ -50,6 +50,7 @@
     "arrow-down": [["path", { d: "M12 5v14" }], ["path", { d: "m19 12-7 7-7-7" }]],
     "arrow-up": [["path", { d: "m5 12 7-7 7 7" }], ["path", { d: "M12 19V5" }]],
     atom: [["circle", { cx: "12", cy: "12", r: "1" }], ["path", { d: "M20.2 20.2c2.04-2.03.02-7.37-4.5-11.9-4.52-4.52-9.87-6.54-11.9-4.5-2.04 2.03-.02 7.37 4.5 11.9 4.52 4.52 9.87 6.54 11.9 4.5Z" }], ["path", { d: "M15.7 15.7c4.52-4.52 6.54-9.87 4.5-11.9-2.03-2.04-7.37-.02-11.9 4.5-4.52 4.52-6.54 9.87-4.5 11.9 2.03 2.04 7.37.02 11.9-4.5Z" }]],
+    lightbulb: [["path", { d: "M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5" }], ["path", { d: "M9 18h6" }], ["path", { d: "M10 22h4" }]],
     brain: [["path", { d: "M9.5 4A2.5 2.5 0 0 1 12 6.5v11a2.5 2.5 0 0 1-4.96.44A2.5 2.5 0 0 1 5.5 13a3 3 0 0 1 .34-5.98A2.5 2.5 0 0 1 9.5 4Z" }], ["path", { d: "M14.5 4A2.5 2.5 0 0 0 12 6.5v11a2.5 2.5 0 0 0 4.96.44A2.5 2.5 0 0 0 18.5 13a3 3 0 0 0-.34-5.98A2.5 2.5 0 0 0 14.5 4Z" }]],
     check: [["path", { d: "M20 6 9 17l-5-5" }]],
     "chevron-down": [["path", { d: "m6 9 6 6 6-6" }]],
@@ -6140,7 +6141,7 @@
     details.classList.toggle("is-live", live);
     details.open = state.reasoningExpanded === true;
     const summary = document.createElement("summary");
-    const atom = makeIconSlot("atom", "reasoning-icon");
+    const atom = makeIconSlot("lightbulb", "reasoning-icon");
     if (live) for (let index = 0; index < 3; index += 1) atom.appendChild(document.createElement("i"));
     const titleNode = document.createElement("span");
     titleNode.className = "reasoning-title";
@@ -7687,7 +7688,7 @@
     }
   }
 
-  function createTool(live, data) {
+  function createTool(live, data, opts = {}) {
     ensureLiveArticle(live);
     clearTypingIndicator(live, { waitingOnly: true });
     breakLiveText(live);
@@ -7872,6 +7873,10 @@
     updateToolSummary(tool);
     card.miyuTiming = tool;
     live.tools.set(toolId, tool);
+    // 顶替「准备 xx」占位签时不重放淡入:占位签已经平滑滑入,这里只是原地
+    // 把文字换成正式工具名,再滑一次会显得整行错位(#17,只在会发 preparing
+    // 的中转线后端出现)。
+    if (opts.staticEnter) card.style.animation = "none";
     procLineAttach(live.blocks, card);
     if (isImageTool) {
       const bubble = document.createElement("div");
@@ -7977,8 +7982,9 @@
     if (name === "tool.started") {
       // 只撤标签,不清 `preparingSince`：同一批里下一个工具的准备提示紧接着
       // 到来,那还是同一个等待窗口。
+      const morphing = !!live.preparingTool;
       clearPreparingTool(live);
-      createTool(live, data);
+      createTool(live, data, { staticEnter: morphing });
       return;
     }
     const tool = ensureTool(live, data);

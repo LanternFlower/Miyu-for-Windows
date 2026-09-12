@@ -9866,7 +9866,7 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 
 /* 「准备 xx」占位签:时间线上的一行,转圈图标就是节点,文字和工具行同款 */
 .assistant-blocks .proc-steps > .tool-preparing-tag {
-  animation: none;
+  /* 和其它节点一样走 proc-fadein 平滑滑入;顶替它的正式卡不再重放动画(#17) */
   display: flex;
   width: 100%;
   max-width: 100%;
