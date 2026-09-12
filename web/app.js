@@ -835,14 +835,28 @@
 
   // 展开/收起时间线里某一项(思考块/工具卡)是瞬间的,但 proc-rail 靠 ResizeObserver
   // + 0.45s transition 平滑跟随,不同步就抖一下(09-12 #3)。让细线立即贴合、这次不过渡。
+  // 展开/收起时让细线跟着内容的高度动画逐帧走(#8/#9):内容用 height 过渡平滑
+  // 展开(~0.3s),这段时间关掉线自己的 transition、每帧重量一次节点位置,线就贴着
+  // 内容一起长/缩,不会拖在后面盖住下文;动画结束再恢复线的默认过渡。
   function railSnapFit(el) {
     const line = el?.closest?.(".proc-line");
     if (!line?.miyuProc) return;
-    const rail = line.miyuProc.rail;
-    const prev = rail.style.transition;
+    const proc = line.miyuProc;
+    const rail = proc.rail;
+    if (proc.snapPrevTransition == null) proc.snapPrevTransition = rail.style.transition;
     rail.style.transition = "none";
-    procLineFit(line);
-    window.requestAnimationFrame(() => { rail.style.transition = prev; });
+    window.cancelAnimationFrame(proc.snapRaf);
+    const start = performance.now();
+    const tick = () => {
+      procLineFit(line);
+      if (performance.now() - start < 360) {
+        proc.snapRaf = window.requestAnimationFrame(tick);
+      } else {
+        rail.style.transition = proc.snapPrevTransition || "";
+        proc.snapPrevTransition = null;
+      }
+    };
+    proc.snapRaf = window.requestAnimationFrame(tick);
   }
 
   function procLineSetOpen(line, open) {
@@ -850,6 +864,16 @@
     const proc = line.miyuProc;
     if (!proc) return;
     proc.head.setAttribute("aria-expanded", String(open));
+    // 收起「Worked for」整条时间线时,把里面已展开的思考块/工具卡(含子代理里的)
+    // 一并收起(#10),下次展开是干净收起态,不保留上次翻开的。
+    if (!open) {
+      proc.steps.querySelectorAll("details[open]").forEach((d) => { d.open = false; });
+      proc.steps.querySelectorAll(".tool-card:not(.collapsed)").forEach((c) => {
+        c.classList.add("collapsed");
+        const innerHead = c.querySelector(".tool-head");
+        if (innerHead) innerHead.setAttribute("aria-expanded", "false");
+      });
+    }
     // 开合期间线逐帧跟裁剪边走,不自己再走一遍 transition(两条曲线叠起来就是线拖在内容后面)。
     // 收起时节点仍算数,只是被裁剪边钳住;裁剪到头线也就到头了。
     proc.rail.style.transition = "none";
@@ -6141,7 +6165,7 @@
     details.classList.toggle("is-live", live);
     details.open = state.reasoningExpanded === true;
     const summary = document.createElement("summary");
-    const atom = makeIconSlot("lightbulb", "reasoning-icon");
+    const atom = makeIconSlot("atom", "reasoning-icon");
     if (live) for (let index = 0; index < 3; index += 1) atom.appendChild(document.createElement("i"));
     const titleNode = document.createElement("span");
     titleNode.className = "reasoning-title";
@@ -7759,7 +7783,9 @@
       seconds.className = "tool-task-seconds";
       seconds.dataset.taskStart = String(performance.now());
       seconds.textContent = "0s";
-      head.append(icon, title, peekSlot, taskToken, seconds, status, chevron);
+      // 布局(#2):子代理·title · token 秒数 · <淡出过渡> 窥视(撑开)。token/秒数紧跟标题,
+      // 窥视占满余下、左侧淡出,不再夹在标题和 token 之间把标题顶开。
+      head.append(icon, title, taskToken, seconds, peekSlot, status, chevron);
     } else {
       head.append(icon, title, status, chevron);
     }
@@ -8117,10 +8143,15 @@
     } else if (name === "tool.finished") {
       tool.finished = true;
       tool.finishedAt = performance.now();
+      // 子代理跑完了,把最后停在「正在思考」的那块思考收尾成「已思考」(#4/#7)——
+      // subEndReasoning 平时只在下一个工具调用到来时触发,子代理以思考结尾就没人收。
+      if (tool.isTask) subEndReasoning(tool);
       const output = String(data?.output || "");
       tool.resultDetail.raw = output.length > MAX_TOOL_OUTPUT_CHARS ? `[较早输出已省略]\n${output.slice(-MAX_TOOL_OUTPUT_CHARS)}` : output;
       tool.resultDetail.content.textContent = tool.resultDetail.raw;
-      tool.resultDetail.wrapper.hidden = !tool.resultDetail.raw;
+      // 子代理展开只保留两块:任务简介 + 子过程时间线(#5/#6)。最终输出是子代理的
+      // 返回(父流程里已给出),再单列一个大「结果」块反而让人困惑「第三个块是什么」。
+      tool.resultDetail.wrapper.hidden = tool.isTask || !tool.resultDetail.raw;
       if (tool.commandPreview && tool.resultDetail.raw) {
         tool.stdoutDetail.wrapper.hidden = true;
         tool.stderrDetail.wrapper.hidden = true;
@@ -8825,6 +8856,11 @@
     const strip = elements.jobsStrip;
     if (!strip) return;
     const jobs = visibleBackgroundJobs();
+    // 并行任务数首次达到收缩阈值(≥3)时自动收起成「后台任务 ×N」一行(#11):
+    // 从 <3 跨到 ≥3 的那一刻强制收起(刷新时 prev=0 也算跨越),之后用户手动展开保留。
+    const prevJobCount = state.prevJobCount || 0;
+    state.prevJobCount = jobs.length;
+    if (jobs.length >= 3 && prevJobCount < 3) state.jobsStripOpen = false;
     if (!jobs.length) {
       strip.hidden = true;
       strip.replaceChildren();
@@ -8904,10 +8940,10 @@
         }
       });
 
-      // 布局:spinner 标题 窥视(撑开) 展开箭头 token 时间 ✕
-      //(09-12 用户:箭头悬在状态行之后、token 在时间左侧)。
-      // 展开箭头合进左侧标记槽(悬浮替换 spinner),这里不再单独放一枚。
-      row.append(makeJobSpinner(), label, peekSlot, token, time, stop);
+      // 布局(09-12 #2):节点 · 标题 · token 秒数 · <淡出过渡> 窥视(撑开右对齐) · ✕。
+      // 标题贴左 hug、token/时间紧跟其后,窥视占满余下空间、左侧淡出滚动,不再让标题
+      // flex 撑开把窥视顶到最右留下大空档(#12)。展开箭头合进左侧标记槽。
+      row.append(makeJobSpinner(), label, token, time, peekSlot, stop);
 
       if (isSubagent) {
         const sink = jobStreamSink(jid);

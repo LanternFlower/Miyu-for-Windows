@@ -1,5 +1,7 @@
 :root {
   color-scheme: dark;
+  /* 让 height:auto 也能参与过渡(展开收起平滑动画 #9);不支持的浏览器优雅退回瞬时。 */
+  interpolate-size: allow-keywords;
   --font-ui: Inter, "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --serif: "Source Han Serif SC", "Noto Serif CJK SC", "Noto Serif SC", "Songti SC", "SimSun", Georgia, serif;
@@ -1694,17 +1696,25 @@ body[data-theme="graphite"] .session-unread-dot {
 /* 标题撑开占左边、优先完整显示;窥视靠右、只占一小块、和标题之间留足间距,
    永远不压标题(09-12 #1 后台标题被窥视覆盖)。token/时间/✕ 被撑开的标题顶到最右。 */
 .job-chip > .job-chip-label {
-  flex: 1 1 auto;
+  /* 标题贴左 hug、不再 flex 撑开(#12:撑开会把窥视顶到最右留大空档);
+     内容过长才省略。 */
+  flex: 0 1 auto;
   min-width: 3.6em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.job-chip > .job-chip-token,
+.job-chip > .job-chip-time {
+  flex: none;
+}
 .job-chip > .job-chip-peek {
-  flex: 0 1 auto;
-  max-width: 42%;
+  /* 窥视占满标题右边余下空间、右对齐滚动、左侧淡出过渡(#2)。 */
+  flex: 1 1 auto;
   min-width: 0;
-  margin-left: 14px;
+  justify-content: flex-end;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 28px);
+  mask-image: linear-gradient(to right, transparent, #000 28px);
 }
 .job-chip.is-open > .job-chip-peek {
   display: none;
@@ -2014,6 +2024,7 @@ body[data-theme="graphite"] .session-unread-dot {
   background: transparent;
   color: var(--text-faint);
   cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .message-actions button,
@@ -3624,8 +3635,21 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
 }
 
 /* 子代理(task)签:标题行只留 字形 + task:标题 + 状态 */
-.tool-card.is-task .tool-summary {
+/* 子代理行显示任务标题(#2:子代理 · title),用「·」和「子代理」隔开、常规字体不用等宽。 */
+.tool-card.is-task .tool-title .tool-summary {
+  display: inline;
+  font-family: inherit;
+  color: var(--text-soft);
+}
+.tool-card.is-task .tool-title .tool-summary::before {
+  content: "· ";
+  color: var(--text-faint);
+}
+.tool-card.is-task .tool-title .tool-summary:empty {
   display: none;
+}
+.tool-card.is-task .tool-title .tool-summary:empty::before {
+  content: "";
 }
 
 /* 子代理实时进度面板:签正下方常驻(收起态也可见),tool.progress 原地刷新;
@@ -3690,7 +3714,8 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   margin: 0;
   padding: 8px 10px;
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--code-bg) 85%, var(--surface-2));
+  /* 展开详情面板统一用柔和暖色(用户 #82/#83:原来 code-bg 亮色下太白) */
+  background: color-mix(in srgb, var(--text) 5%, transparent);
   color: var(--text-soft);
   font-size: 11.5px;
   line-height: 1.6;
@@ -3707,7 +3732,8 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   overflow: auto;
   border: 0;
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--code-bg) 85%, var(--surface-2));
+  /* 展开详情面板统一用柔和暖色(用户 #82/#83:原来 code-bg 亮色下太白) */
+  background: color-mix(in srgb, var(--text) 5%, transparent);
   color: var(--text-soft);
   font-family: var(--font-mono);
   font-size: 11.5px;
@@ -9940,12 +9966,24 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   gap: 5px;
   transition: background-color 0.18s ease;
 }
-.assistant-blocks .proc-steps > .tool-card > .tool-head > .tool-title:hover {
+/* 悬浮高亮覆盖整行(#3),不再只高亮标题那一小块 tag;圆角贴合行,图标遮线块
+   在 hover 时也跟成 surface-2,免得中间露出一块 app-bg 小方块。 */
+.assistant-blocks .proc-steps > .tool-card > .tool-head {
+  border-radius: 6px;
+  transition: background-color 0.15s ease;
+}
+.assistant-blocks .proc-steps > .tool-card > .tool-head:hover {
   background: var(--surface-2);
+}
+.assistant-blocks .proc-steps > .tool-card > .tool-head:hover > .tool-icon {
+  background: var(--surface-2);
+  box-shadow: 0 -2px 0 var(--surface-2), 0 2px 0 var(--surface-2);
 }
 .assistant-blocks .proc-steps > .tool-card .tool-title strong {
   color: var(--text);
   transition: color 0.35s ease;
+  /* 时间线全宽,工具名不必留 4em 下限(那让「Bash」这种短名后面空一截,#15)。 */
+  min-width: 0;
 }
 .assistant-blocks .proc-steps > .tool-card .tool-title .tool-summary {
   color: var(--proc-soft);
@@ -9990,6 +10028,22 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   background: var(--surface-1);
   box-shadow: var(--bubble-shadow);
   gap: 1em;
+  /* 展开收起平滑高度动画(#9):不再瞬间显隐。 */
+  overflow: hidden;
+  height: auto;
+  transition: height 0.3s var(--proc-ease), opacity 0.22s ease, margin 0.3s var(--proc-ease);
+}
+/* 收起改用 height:0 参与过渡,不再 display:none(那样是瞬时的)。高特异度盖过
+   `.tool-card.collapsed .tool-body{display:none}`。 */
+.assistant-blocks .proc-steps > .tool-card.collapsed > .tool-body {
+  display: block;
+  height: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+  box-shadow: none;
 }
 .assistant-blocks .proc-steps > .tool-card .tool-detail-label {
   display: none;
@@ -10106,6 +10160,13 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   z-index: 1;
   background: var(--app-bg, var(--surface-1));
 }
+/* sticky 之前不生效的真因(#13):吸顶元素被中间的 `.proc-wrap > div{overflow:hidden}`
+   截住,吸到了那个不滚动的裁剪容器上而不是真正滚动的 .sub-blocks/.job-stream-panel。
+   子过程时间线恒 open、没有开合动画,把它这层裁剪解开,sticky 才吸到滚动容器。 */
+.sub-blocks .proc-wrap,
+.sub-blocks .proc-wrap > div {
+  overflow: visible;
+}
 /* 前台子代理行在手机端太长(09-12 #8):收起时不显那条单行窥视,活动去展开区看;
    token/读秒也让位,标题+状态就够窄。 */
 @media (max-width: 836px) {
@@ -10128,15 +10189,18 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 .tool-card.is-task .tool-head > .tool-task-token:empty {
   display: none;
 }
-/* 前台子代理:标题撑开优先完整显示,窥视靠右、只占一小块、留足间距,不压标题
-   (09-12 #7 前台标题被窥视覆盖)。 */
+/* 前台子代理行布局(#2):子代理·title 贴左 hug、token/秒数紧跟,窥视占满余下、
+   右对齐滚动、左侧淡出过渡;标题在左永远完整(#7),窥视不再压标题。 */
 .tool-card.is-task .tool-head > .tool-title {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
 }
 .tool-card.is-task .tool-head > .tool-peek {
-  flex: 0 1 auto;
-  max-width: 42%;
-  margin-left: 14px;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: 8px;
+  justify-content: flex-end;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 28px);
+  mask-image: linear-gradient(to right, transparent, #000 28px);
 }
 /* 放不下了:尾部对齐(文字从左边溢出被裁),再加一层左侧渐隐,新字从右边推进来 */
 .reasoning-peek.is-overflow {
