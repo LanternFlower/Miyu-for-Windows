@@ -5281,6 +5281,60 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   flex: none;
   padding-bottom: 8px;
 }
+/* 输入框内按钮统一一套(用户嫌旧的丑):副按钮幽灵(透明+悬浮底色),发送填充强调色
+   作主操作,停止红调;都是 36px 圆角、图标 18px。 */
+.composer-actions button {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.12s ease;
+}
+.composer-actions button > .icon-slot,
+.composer-actions button > .icon-slot svg {
+  width: 18px;
+  height: 18px;
+}
+.composer-actions button:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.composer-actions button:active:not(:disabled) {
+  transform: scale(0.9);
+}
+.composer-actions button:disabled {
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+.composer-actions .send-button {
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--md-sys-color-on-primary, #12131b);
+}
+.composer-actions .send-button:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--md-sys-color-on-primary, #12131b);
+  filter: brightness(1.1);
+}
+.composer-actions .send-button:disabled {
+  background: var(--surface-2);
+  color: var(--text-faint);
+}
+.composer-actions .live-stop-button {
+  background: color-mix(in srgb, var(--ribbon) 20%, transparent);
+  color: var(--ribbon);
+  border: 0;
+}
+.composer-actions .live-stop-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ribbon) 34%, transparent);
+  color: var(--ribbon);
+}
 .composer-info {
   display: flex;
   align-items: center;
@@ -10272,17 +10326,50 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   scroll-behavior: smooth;
 }
 /* 子代理任务简介(展开区最上方,09-12 #6):标题 + 整段 prompt,不再让人读裸 JSON。 */
+/* 任务简介:一个可展开 tag,收起只显任务标题,展开才看整段 prompt(prompt 太长会刷屏)。 */
 .subagent-brief {
   margin: 2px 0 8px;
-  padding: 8px 10px;
+}
+.subagent-brief > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  list-style: none;
+  cursor: pointer;
+  padding: 5px 9px;
   border-radius: 8px;
   background: color-mix(in srgb, var(--text) 5%, transparent);
-}
-.subagent-brief-title {
   font-weight: 600;
   font-size: var(--fs-meta);
   color: var(--text);
-  margin-bottom: 4px;
+  transition: background-color 0.15s ease;
+}
+.subagent-brief > summary::-webkit-details-marker { display: none; }
+.subagent-brief > summary:hover {
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+}
+.subagent-brief-icon {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  color: var(--text-faint);
+}
+.subagent-brief-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subagent-brief-chevron {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  color: var(--text-faint);
+  transition: transform 0.25s ease;
+}
+.subagent-brief[open] > summary > .subagent-brief-chevron {
+  transform: rotate(90deg);
 }
 .subagent-brief-prompt {
   white-space: pre-wrap;
@@ -10290,6 +10377,9 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   font-size: var(--fs-meta);
   line-height: 1.55;
   color: var(--text-soft);
+  margin: 6px 4px 2px;
+  padding-left: 6px;
+  border-left: 2px solid color-mix(in srgb, var(--line-strong) 60%, transparent);
 }
 /* 子过程时间线里,思考/工具那一行(tag)在展开内容超出可用高度、往下滚时粘在
    顶部,滚长内容也看得到它是哪一项、方便就地收起(09-12 #4/#12)。sticky 需要

@@ -5948,23 +5948,31 @@
   // 子代理任务简介 DOM(展开区最上方):标题 + 整段 prompt。前台从工具参数直接建;
   // 后台经 __subagent_brief__ marker 建(后台事件流里没有参数,09-12 #9)。
   function buildSubagentBrief(title, prompt) {
-    const brief = document.createElement("div");
-    brief.className = "subagent-brief";
     const t = String(title || "").trim();
     const p = String(prompt || "").trim();
-    if (t) {
-      const h = document.createElement("div");
-      h.className = "subagent-brief-title";
-      h.textContent = t;
-      brief.appendChild(h);
-    }
+    if (!t && !p) return null;
+    // prompt 做成默认收起的可展开 tag:子代理自动展开活区域时整段 prompt 会刷屏,
+    // 收成一行「任务标题」,想看再点开(用户反馈)。
+    const brief = document.createElement("details");
+    brief.className = "subagent-brief";
+    const summary = document.createElement("summary");
+    summary.className = "subagent-brief-title";
+    const label = document.createElement("span");
+    label.className = "subagent-brief-name";
+    label.textContent = t || "任务 prompt";
+    summary.append(
+      makeIconSlot("clipboard", "subagent-brief-icon"),
+      label,
+      makeIconSlot("chevron-right", "subagent-brief-chevron"),
+    );
+    brief.appendChild(summary);
     if (p) {
       const body = document.createElement("div");
       body.className = "subagent-brief-prompt";
       body.textContent = p;
       brief.appendChild(body);
     }
-    return brief.childElementCount ? brief : null;
+    return brief;
   }
 
   function parseSubagentEvent(message) {
