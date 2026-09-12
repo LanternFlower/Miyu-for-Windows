@@ -832,6 +832,18 @@
     proc.rail.style.height = `${Math.max(0, last - first)}px`;
   }
 
+  // 展开/收起时间线里某一项(思考块/工具卡)是瞬间的,但 proc-rail 靠 ResizeObserver
+  // + 0.45s transition 平滑跟随,不同步就抖一下(09-12 #3)。让细线立即贴合、这次不过渡。
+  function railSnapFit(el) {
+    const line = el?.closest?.(".proc-line");
+    if (!line?.miyuProc) return;
+    const rail = line.miyuProc.rail;
+    const prev = rail.style.transition;
+    rail.style.transition = "none";
+    procLineFit(line);
+    window.requestAnimationFrame(() => { rail.style.transition = prev; });
+  }
+
   function procLineSetOpen(line, open) {
     line.classList.toggle("is-open", open);
     const proc = line.miyuProc;
@@ -6190,6 +6202,7 @@
         return;
       }
       block.userToggled = true;
+      railSnapFit(details);
     });
     return block;
   }
@@ -7517,6 +7530,7 @@
     head.addEventListener("click", () => {
       const collapsed = card.classList.toggle("collapsed");
       head.setAttribute("aria-expanded", String(!collapsed));
+      railSnapFit(card);
     });
 
     const body = document.createElement("div");
@@ -7846,6 +7860,7 @@
     head.addEventListener("click", () => {
       const collapsed = card.classList.toggle("collapsed");
       head.setAttribute("aria-expanded", String(!collapsed));
+      railSnapFit(card);
       syncBubbleWidth(live.article);
       if (!collapsed) {
         window.requestAnimationFrame(() => {
@@ -9464,6 +9479,10 @@
   }
 
   function handleSseEvent(name, event) {
+    // 登录态没了(blocked)时,一律不再处理 SSE 事件:否则一边弹登录界面、一边还
+    // 触发 loadBootstrap/「正在重新同步」的会话重载提示,两个提示重复(09-12 #18)。
+    // showBlockedState 已经关了 SSE,这里挡住任何残留在途的事件。
+    if (state.blocked) return;
     let data;
     try {
       data = event.data ? JSON.parse(event.data) : {};
