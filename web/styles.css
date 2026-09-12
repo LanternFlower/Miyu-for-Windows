@@ -4383,6 +4383,8 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
 @media (prefers-reduced-motion: reduce) {
   .miyu-run .mr-spin, .miyu-run i { animation-duration: 0s; }
 }
+/* AI 输出气泡里那份「加载中」:留一点上下留白,别贴着头像行。 */
+.miyu-run.typing-run { margin: 5px 0 7px 2px; }
 
 .artifact-toggle-button {
   position: relative;

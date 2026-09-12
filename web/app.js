@@ -7093,10 +7093,19 @@
   }
 
   function createTypingIndicator() {
+    // AI 输出的「加载中」用编排点动效(用户拍板):三点走三角·顺时针→聚合→三角→
+    // 逆时针→聚合→水平跳动,6s 循环。输入框那份仍是旧的匀速三点。
     const indicator = document.createElement("div");
-    indicator.className = "typing-indicator";
+    indicator.className = "miyu-run typing-run";
     indicator.setAttribute("aria-hidden", "true");
-    for (let index = 0; index < 3; index += 1) indicator.appendChild(document.createElement("i"));
+    const spin = document.createElement("span");
+    spin.className = "mr-spin";
+    for (const cls of ["mr1", "mr2", "mr3"]) {
+      const dot = document.createElement("i");
+      dot.className = cls;
+      spin.appendChild(dot);
+    }
+    indicator.appendChild(spin);
     return indicator;
   }
 
