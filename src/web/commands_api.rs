@@ -273,34 +273,49 @@ pub(in crate::web) async fn reset_memory_http(
     headers: HeaderMap,
     Json(request): Json<ResetMemoryRequest>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
-    let config = reset_memory_config(&state, request.mode.as_deref());
+    // 清的是「这个会话/这个人格给这个人记下的长期记忆」——是发命令的人自己的东西,
+    // 不该 admin only(#137)。改成任意登录成员可清、但只清自己会话的那份:身份校验 +
+    // 会话归属校验 + 用会话作用域的配置(成员则套上其家目录/私有人格,memory 落对库)。
+    require_mutation(&headers, &state)?;
     let session_id = match request.session_id {
         Some(session_id) if !session_id.trim().is_empty() => session_id,
         _ => state.state_store.session_id().to_string(),
     };
+    require_local_web_session(&state, &headers, &session_id)?;
+    let config = reset_memory_config(&state, &session_id, request.mode.as_deref());
     let summary = crate::memory::MemoryStore::new(&config, &state.paths)
         .reset_session(&session_id)
         .map_err(|error| ApiError::internal(safe_error_message(&error)))?;
     Ok(Json(json!({ "ok": true, "text": summary.describe() })))
 }
 
-/// `/reset-all-memory`：清空当前模式的全部长期记忆。
+/// `/reset-all-memory`：清空当前模式（发命令者自己的人格）的全部长期记忆。
 pub(in crate::web) async fn reset_all_memory_http(
     State(state): State<DaemonState>,
     headers: HeaderMap,
     Json(request): Json<ResetMemoryRequest>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
-    let config = reset_memory_config(&state, request.mode.as_deref());
+    require_mutation(&headers, &state)?;
+    let session_id = match request.session_id {
+        Some(session_id) if !session_id.trim().is_empty() => session_id,
+        _ => state.state_store.session_id().to_string(),
+    };
+    require_local_web_session(&state, &headers, &session_id)?;
+    let config = reset_memory_config(&state, &session_id, request.mode.as_deref());
     crate::memory::MemoryStore::new(&config, &state.paths)
         .reset_all(false)
         .map_err(|error| ApiError::internal(safe_error_message(&error)))?;
     Ok(Json(json!({ "ok": true })))
 }
 
-fn reset_memory_config(state: &DaemonState, mode: Option<&str>) -> crate::config::AppConfig {
-    let config = state.manager.lock().unwrap().config.clone();
+/// 会话作用域配置:成员会话套上其家目录 + 私有人格(memory 才落到自己那份);
+/// dev 模式再叠 dev_scoped()。管理员/终端会话回落全局配置。
+fn reset_memory_config(
+    state: &DaemonState,
+    session_id: &str,
+    mode: Option<&str>,
+) -> crate::config::AppConfig {
+    let config = crate::web::session_scoped_config(state, session_id);
     if mode == Some("dev") {
         config.dev_scoped()
     } else {
