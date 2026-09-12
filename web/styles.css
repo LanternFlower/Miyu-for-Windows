@@ -10435,6 +10435,18 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 }
 .sub-content > :first-child { margin-top: 0; }
 .sub-content > :last-child { margin-bottom: 0; }
+/* 子代理正文里的代码块/表格底色:默认 --code-bg 在亮色主题是近白(255,253,246),
+   落在暖米面板上像块白斑(#9「还是白色的底」)。统一改成和工具详情面板同款的柔和暖底。 */
+.sub-content .code-block {
+  --code-bg: color-mix(in srgb, var(--text) 6%, transparent);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  box-shadow: none;
+}
+.sub-content .code-block pre,
+.sub-content .markdown-table-scroll,
+.sub-content table {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
 /* 子过程时间线里,思考/工具那一行(tag)在展开内容超出可用高度、往下滚时粘在
    顶部,滚长内容也看得到它是哪一项、方便就地收起(09-12 #4/#12)。sticky 需要
    实心背景,否则下面的文字会透上来。 */
