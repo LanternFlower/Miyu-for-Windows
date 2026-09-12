@@ -126,7 +126,13 @@ async fn search_web_images(
         })
         .to_string());
     }
-    let cache_dir = paths.pictures_dir.join("web-images");
+    // 成员跑时存到成员自己家(home/<user>/pictures),而不是管理员的 data/pictures
+    // ——后者成员被 Landlock 挡在外面,下载既落错地方又读不回(用户报)。
+    let pictures_base = match config.member_home_dir() {
+        Some(home) => home.join("pictures"),
+        None => paths.pictures_dir.clone(),
+    };
+    let cache_dir = pictures_base.join("web-images");
     let download_result = download_and_store_images(
         &config,
         &paths,
