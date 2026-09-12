@@ -11745,21 +11745,29 @@
       await apiRequest("/api/account", { method: "PATCH", body: JSON.stringify({ profile }) });
       await apiRequest("/api/account/active-persona", { method: "PUT", body: JSON.stringify({ slug, oobe_done: true }) });
       accountState.profile = profile;
-      elements.oobeDoneTitle.textContent = oobeState.editing ? `${displayName} 已更新` : `${displayName} 准备好了`;
-      elements.oobeDoneText.textContent = oobeState.mode === "private"
-        ? "接下来的会话用这个人格。改设定、换头像在控制台的账号页。"
-        : "你用的是共享的 Miyu;想要自己的人格,随时在账号页里创建。";
-      const avatar = oobeState.avatarFile ? URL.createObjectURL(oobeState.avatarFile) : (slug ? `/api/persona/avatar?scope=${encodeURIComponent(slug)}` : "/assets/miyu-logo.png");
-      elements.oobeDoneAvatar.onerror = () => { elements.oobeDoneAvatar.hidden = true; };
-      elements.oobeDoneAvatar.src = avatar;
-      elements.oobeDoneAvatar.hidden = false;
-      oobeSetStep(4);
       await loadBootstrap();
-      window.setTimeout(() => {
+      if (oobeState.editing) {
+        // 编辑现有人格=直接保存关闭,不走 onboarding 的「已准备好」庆祝页(#146:
+        // 编辑不该重新进 OOBE 的那套开场/收尾)。
         closeOobe();
         if (consoleIsOpen()) loadAccountPanel();
-        else if (state.sessions.length) focusComposerIfDesktop();
-      }, 1400);
+        showToast(`${displayName} 已更新`, "success");
+      } else {
+        elements.oobeDoneTitle.textContent = `${displayName} 准备好了`;
+        elements.oobeDoneText.textContent = oobeState.mode === "private"
+          ? "接下来的会话用这个人格。改设定、换头像在控制台的账号页。"
+          : "你用的是共享的 Miyu;想要自己的人格,随时在账号页里创建。";
+        const avatar = oobeState.avatarFile ? URL.createObjectURL(oobeState.avatarFile) : (slug ? `/api/persona/avatar?scope=${encodeURIComponent(slug)}` : "/assets/miyu-logo.png");
+        elements.oobeDoneAvatar.onerror = () => { elements.oobeDoneAvatar.hidden = true; };
+        elements.oobeDoneAvatar.src = avatar;
+        elements.oobeDoneAvatar.hidden = false;
+        oobeSetStep(4);
+        window.setTimeout(() => {
+          closeOobe();
+          if (consoleIsOpen()) loadAccountPanel();
+          else if (state.sessions.length) focusComposerIfDesktop();
+        }, 1400);
+      }
     } catch (error) {
       oobeShowError(error.message || "保存失败");
     } finally {
