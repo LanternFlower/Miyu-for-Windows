@@ -2862,17 +2862,64 @@
     connectEventSource(0);
   }
 
+  // 把落库的这一回合(含回合中途检查点写下的子代理子过程)按实时事件的**同一套
+  // handler** 回放进一个 live run:刷新/切会话重连时用它给 live 气泡「播种」,让后续
+  // 实时事件无缝接上,不再另起空壳、也不再画重复卡(#5b 重连渲染重做)。用真 handler
+  // 回放而不是自己搭 DOM,是为了让 live.tools/live.blocks/正文累计等内部状态和正常
+  // 流式时完全一致——尤其正在跑的那次子代理调用不喂 tool.finished,留着让实时续。
+  function seedLiveFromPersistedTurn(live, turn) {
+    ensureLiveArticle(live);
+    const rounds = Array.isArray(turn?.tool_flow) ? turn.tool_flow : [];
+    for (const round of rounds) {
+      const reasoning = String(round?.assistant_reasoning || "");
+      if (reasoning.trim() && !reasoningHidden()) {
+        handleReasoningEvent("reasoning.start", live, {});
+        handleReasoningEvent("reasoning.delta", live, { delta: reasoning });
+        handleReasoningEvent("reasoning.part_end", live, {});
+      }
+      const content = String(round?.assistant_content || "");
+      if (content.trim()) appendAssistantDelta(live, content);
+      for (const call of Array.isArray(round?.calls) ? round.calls : []) {
+        handleToolEvent("tool.started", live, {
+          tool_id: call?.id, name: call?.name,
+          display_name: call?.display_name, arguments: call?.arguments,
+        });
+        if (isSubagentTool(call?.name) && Array.isArray(call?.sub_trace)) {
+          for (const marker of call.sub_trace) {
+            handleToolEvent("tool.progress", live, {
+              tool_id: call?.id, name: call?.name, message: String(marker),
+            });
+          }
+        }
+        const output = String(call?.output || "");
+        // 有真实输出 = 这次调用已完成才收尾;检查点里在跑的那次 output 是空的(或
+        // 派生时的占位「(tool result unavailable)」),不收尾——让它保持运行态,实时
+        // 事件到了继续更新同一张卡。
+        if (output && output !== "(tool result unavailable)") {
+          handleToolEvent("tool.finished", live, {
+            tool_id: call?.id, name: call?.name, output, ok: call?.ok !== false,
+          });
+        }
+      }
+    }
+  }
+
   function restoreLiveRuns(runs) {
     // 只有全新空壳需要事件重放;离屏保活切回来的 live 内容都在,重放反而
     // 会把正文写两遍。
     const fresh = new Set();
+    let seededConnect = false;
+    // 正在跑的那条回合:create 的 runs 不带 turn_id,靠回合状态兜底认它。
+    const runningTurn = state.turns.find((turn) => turn?.status === "running");
     for (const run of runs) {
       const runId = String(run?.run_id || "");
       if (!runId || state.terminalRunIds.has(runId)) continue;
       const kept = state.liveRuns.has(runId);
+      const turnId = String(run?.turn_id || "") || (runningTurn ? String(runningTurn.id) : "");
+      const turn = turnId ? state.turns.find((t) => String(t?.id) === turnId) : null;
       const live = createLiveForRun(runId, "", {
         operation: String(run?.operation || "create"),
-        turnId: String(run?.turn_id || "") || null,
+        turnId: turnId || null,
         inputId: String(run?.input_id || "") || null
       });
       if (live.operation === "redo" && state.turns.some((turn) => {
@@ -2880,22 +2927,47 @@
       })) {
         live.redoCommitted = true;
       }
-      // 立刻把气泡建出来,不等下一个事件。
-      //
-      // 事件环只留 4096 条,而一次流式回复光 delta 就能把它冲掉,所以
-      // `beginRunReplay()` 从 0 重放几乎必然撞上 resync——两轮之后放弃,
-      // 恢复的 run 就只剩一个空壳:没有气泡、没有停止按钮,要等下一个
-      // delta 才有东西可看。模型正在思考或跑长工具时,这段空白能有几十秒,
-      // 用户看到的是「明明在跑却什么都没有,也停不掉」。
-      //
-      // 气泡先立起来,停止按钮和等待动效就都回来了;正文由后续事件续上。
-      if (live.operation !== "redo") {
+      // 这条重连回合已被 renderConversation 按落库快照画成了持久气泡,而且快照里有回合
+      // 中途检查点写下的内容(#5a 起,子代理子过程也在)。这种情况把内容「播种」进
+      // live 气泡、删掉那张持久气泡,而不是另起一个空壳叠上去(#5b:刷新后一个空
+      // 「开发中」壳压在有内容的持久泡旁边);也不从 0 重放服务端事件(环缓冲早滚过
+      // →resync→bootstrap 死循环,几十秒空白还停不掉——#3)。改增量续上。
+      const canSeed = !kept && live.operation !== "redo" && turn && turn.status === "running"
+        && ((Array.isArray(turn.tool_flow) && turn.tool_flow.length)
+          || String(turn.assistant_content || "").trim());
+      if (live.operation === "redo") {
+        // redo 走原路(它自己会提交/重挂)。
+      } else if (canSeed) {
+        const persisted = [...elements.timeline.querySelectorAll(
+          `article.assistant-message[data-turn-id="${turnId}"]`
+        )].find((n) => !n.classList.contains("live-assistant"));
+        ensureLiveArticle(live);
+        seedLiveFromPersistedTurn(live, turn);
+        showTypingIndicator(live);
+        if (persisted) {
+          // 把 live 气泡挪到持久气泡原位再删持久气泡,保持时间线顺序。
+          if (persisted.parentNode === elements.timeline && live.article) {
+            elements.timeline.insertBefore(live.article, persisted);
+          }
+          persisted.remove();
+        }
+        seededConnect = true;
+      } else {
+        // 立刻把气泡建出来,不等下一个事件。停止按钮和等待动效就都回来了。
         ensureLiveArticle(live);
         showTypingIndicator(live);
+        if (!kept) fresh.add(runId);
       }
-      if (!kept) fresh.add(runId);
     }
-    if (fresh.size) beginRunReplay(fresh);
+    if (fresh.size) {
+      beginRunReplay(fresh);
+    } else if (seededConnect) {
+      // 播种过、没有需要从 0 重放的空壳:仍要连上事件流看后续与收尾(applySessionView
+      // 只在 liveRuns 为空时连,这里已非空)。从当前最新事件增量续上,不撞 resync。
+      state.replayRunIds = null;
+      state.lastEventId = Math.max(state.lastEventId, state.latestEventId);
+      connectEventSource(state.lastEventId);
+    }
   }
 
   async function openFallbackSessionView(excludedSessionId) {

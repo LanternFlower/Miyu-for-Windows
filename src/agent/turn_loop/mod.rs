@@ -886,7 +886,12 @@ impl Agent {
                 // renderPersistedTurn 就能把在跑的子过程时间线画出来,不再是空。
                 // None = 还没落过,第一条子过程标记就立刻落一次(子代理常是先爆一小段
                 // 标记再钻进一次长 LLM 应答里安静好一会儿,若等满 1.5s 那一窗就全错过了)。
+                // `sub_dirty`:上次落库后又来过标记但被节流跳过了。子代理典型节奏是「爆一段
+                // 标记 → 钻进长 LLM 应答安静十几秒」:首条落库只抓到爆发的第一条,后面几条
+                // 全在 1.5s 窗内被跳过,然后一安静就再没有 recv 触发——那段就只活在实时流里、
+                // 刷新即丢。所以工具空转的 spinner tick 上补一刀:脏了且过了节流窗就把尾巴落了。
                 let mut last_sub_checkpoint: Option<std::time::Instant> = None;
+                let mut sub_dirty = false;
                 let (output, tool_succeeded) = loop {
                     tokio::select! {
                         result = &mut tool_future => {
@@ -923,22 +928,39 @@ impl Agent {
                             parallel::tee_subagent_trace(&call_id, &progress);
                             emit_tool_progress(on_event, &call_id, &event_name, progress)?;
                             // 限流:首条立刻落,之后每 ~1.5s 一次(peek 不清空,幂等),
-                            // 避免逐 token 写库。
-                            if is_sub_marker
+                            // 避免逐 token 写库。跳过的标记记脏,交给下面 spinner tick 补落。
+                            if is_sub_marker {
+                                sub_dirty = true;
+                                if last_sub_checkpoint.map_or(true, |at| {
+                                    at.elapsed() >= std::time::Duration::from_millis(1500)
+                                }) {
+                                    last_sub_checkpoint = Some(std::time::Instant::now());
+                                    sub_dirty = false;
+                                    self.checkpoint_tool_flow(
+                                        current_turn_id,
+                                        messages,
+                                        replay_start,
+                                    );
+                                }
+                            }
+                        }
+                        _ = spinner_interval.tick() => {
+                            on_event(AgentEvent::SpinnerTick)?;
+                            // 子代理安静下来(钻进长应答)后,把爆发尾巴那几条被节流跳过的
+                            // 标记补落一次,不然刷新只剩爆发首条。
+                            if sub_dirty
                                 && last_sub_checkpoint.map_or(true, |at| {
                                     at.elapsed() >= std::time::Duration::from_millis(1500)
                                 })
                             {
                                 last_sub_checkpoint = Some(std::time::Instant::now());
+                                sub_dirty = false;
                                 self.checkpoint_tool_flow(
                                     current_turn_id,
                                     messages,
                                     replay_start,
                                 );
                             }
-                        }
-                        _ = spinner_interval.tick() => {
-                            on_event(AgentEvent::SpinnerTick)?;
                         }
                     }
                 };
