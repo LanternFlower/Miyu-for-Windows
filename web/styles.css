@@ -5241,8 +5241,8 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   width: 100%;
   min-width: 0;
   max-width: 100%;
-  /* 输入框整体降一点(09-12 #11):min-height 72→48,行高 1.7→1.5。 */
-  min-height: 48px;
+  /* 输入框高度:太矮不好写(09-12 用户反馈),回到 60。 */
+  min-height: 60px;
   max-height: 200px;
   resize: none;
   padding: 10px 15px 6px;
@@ -5295,6 +5295,26 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
 .composer-info-spacer {
   flex: 1 1 auto;
   min-width: 8px;
+}
+/* 模型选择器不被挤没:不收缩,标题过长才在自己内部省略(#2 手机端只剩「▾」的真因)。 */
+.composer-info .model-menu-wrap {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.composer-info .model-button {
+  /* 覆盖旧的手机端「只显 ▾」规则(那是模型还在框内时为省地方做的;现在模型移到
+     框下信息行、有空间,手机端也要看得到模型名,#2)。 */
+  width: auto;
+  max-width: 46vw;
+  justify-content: flex-start;
+  padding: 4px 10px;
+}
+.composer-info .model-label {
+  display: inline;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
 }
 .composer-info .k {
   color: var(--text-faint);
@@ -5354,9 +5374,12 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
-/* 窄屏:累计/速度可省,别把信息行挤爆(模型和上下文优先)。 */
+/* 窄屏:累计/速度可省,模型和上下文优先(#2 手机端要能看到模型)。 */
 @media (max-width: 640px) {
-  .composer-cumulative { display: none; }
+  .composer-cumulative,
+  .composer-speed { display: none; }
+  .composer-info { gap: 8px; }
+  .composer-info .model-button { max-width: 60vw; }
 }
 
 .attachment-tray {
@@ -5899,20 +5922,19 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
 
 /* Compact per-reply stop controls above the composer send button. */
 .live-stop-rail {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 8px);
-  z-index: 12;
-  display: grid;
-  justify-items: end;
-  gap: 6px;
+  /* 停止按钮内联在输入框右侧按钮区里(和发送并排),不再绝对定位浮在框上方错位(#1)。 */
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
+.live-stop-rail[hidden] { display: none; }
 
 .live-stop-button {
   position: relative;
   display: grid;
   width: 38px;
   height: 38px;
+  flex: 0 0 38px;
   place-items: center;
   border: 1px solid color-mix(in srgb, var(--ribbon) 42%, transparent);
   border-radius: var(--radius);
@@ -9879,6 +9901,16 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   box-shadow: 0 -2px 0 var(--app-bg), 0 2px 0 var(--app-bg);
   color: var(--proc-soft);
 }
+/* 子过程时间线在暖色面板里:节点遮线块要用面板的底色,不能用页面 app-bg(那样
+   在暖底上露出一块深色方块),也不能没有背景(那样细线从图标里穿过去)。图标在
+   什么背景上就是什么背景(#4)。 */
+.sub-blocks .proc-steps > .tool-card > .tool-head > .tool-icon,
+.sub-blocks .proc-steps > .reasoning-block > summary > .reasoning-icon {
+  background: color-mix(in srgb, var(--text) 5%, var(--app-bg));
+  box-shadow:
+    0 -2px 0 color-mix(in srgb, var(--text) 5%, var(--app-bg)),
+    0 2px 0 color-mix(in srgb, var(--text) 5%, var(--app-bg));
+}
 .assistant-blocks .proc-steps > .tool-card > .tool-head > .tool-icon .icon-slot,
 .assistant-blocks .proc-steps > .reasoning-block > summary > .reasoning-icon svg,
 .proc-node .icon-slot {
@@ -10231,11 +10263,13 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 /* 展开后的子过程时间线容器:proc-line(和主对话过程区同款)挂在里面;限高可滚,
    不许顶满全屏(09-11 用户报)。 */
 .tool-card.is-task .sub-blocks {
+  /* 前台子代理:一块约四行高的活区域,子过程在里面流式滚动/窥视(用户拍板)。 */
   margin-bottom: 8px;
-  max-height: 220px;
+  max-height: 124px;
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
+  scroll-behavior: smooth;
 }
 /* 子代理任务简介(展开区最上方,09-12 #6):标题 + 整段 prompt,不再让人读裸 JSON。 */
 .subagent-brief {

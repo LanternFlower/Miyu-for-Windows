@@ -7774,7 +7774,12 @@
     const isTask =
       isSubagentTool(data?.name) ||
       /^(subagent|task)[:：]/i.test(String(data?.display_name || ""));
-    if (isTask) card.classList.add("is-task");
+    if (isTask) {
+      card.classList.add("is-task");
+      // 前台子代理:运行时自动展开那块四行活区域,子过程实时流入(用户拍板);
+      // 跑完(tool.finished)再收起成一行。head 的 aria-expanded 也置真。
+      card.classList.remove("collapsed");
+    }
     const subjectText = toolSubject(data?.name, data?.arguments);
     const commandArguments = isCommand ? parsedToolArguments(data?.arguments) : null;
     const commandText = isCommand ? String(commandArguments?.command || commandArguments?.cmd || "").trim() : "";
@@ -8197,7 +8202,13 @@
       tool.finishedAt = performance.now();
       // 子代理跑完了,把最后停在「正在思考」的那块思考收尾成「已思考」(#4/#7)——
       // subEndReasoning 平时只在下一个工具调用到来时触发,子代理以思考结尾就没人收。
-      if (tool.isTask) subEndReasoning(tool);
+      // 跑完把那块四行活区域平滑收起成一行(用户拍板:运行时展开、完成后收起,可再点开)。
+      if (tool.isTask) {
+        subEndReasoning(tool);
+        tool.card.classList.add("collapsed");
+        tool.head.setAttribute("aria-expanded", "false");
+        railSnapFit(tool.card);
+      }
       const output = String(data?.output || "");
       tool.resultDetail.raw = output.length > MAX_TOOL_OUTPUT_CHARS ? `[较早输出已省略]\n${output.slice(-MAX_TOOL_OUTPUT_CHARS)}` : output;
       tool.resultDetail.content.textContent = tool.resultDetail.raw;
