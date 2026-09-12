@@ -5872,19 +5872,44 @@
     call: "__subtool_call__",
     result: "__subtool_result__",
     stats: "__subagent_stats__",
-    detach: "__subagent_detach__"
+    detach: "__subagent_detach__",
+    brief: "__subagent_brief__"
   };
+
+  // 子代理任务简介 DOM(展开区最上方):标题 + 整段 prompt。前台从工具参数直接建;
+  // 后台经 __subagent_brief__ marker 建(后台事件流里没有参数,09-12 #9)。
+  function buildSubagentBrief(title, prompt) {
+    const brief = document.createElement("div");
+    brief.className = "subagent-brief";
+    const t = String(title || "").trim();
+    const p = String(prompt || "").trim();
+    if (t) {
+      const h = document.createElement("div");
+      h.className = "subagent-brief-title";
+      h.textContent = t;
+      brief.appendChild(h);
+    }
+    if (p) {
+      const body = document.createElement("div");
+      body.className = "subagent-brief-prompt";
+      body.textContent = p;
+      brief.appendChild(body);
+    }
+    return brief.childElementCount ? brief : null;
+  }
 
   function parseSubagentEvent(message) {
     const text = String(message || "");
     if (text.startsWith(SUBAGENT_MARKERS.reasoning)) {
-      return { kind: "reasoning", text: text.slice(SUBAGENT_MARKERS.reasoning.length).trim() };
+      // 不要 trim:逐 token 的 reasoning delta 前后的空格是词间空格,trim 掉就成了
+      // 「Actuallythetails」这种连成一坨(09-12 #8 思考内容没空格没换行的真因)。
+      return { kind: "reasoning", text: text.slice(SUBAGENT_MARKERS.reasoning.length) };
     }
     if (text.startsWith(SUBAGENT_MARKERS.call)) {
       try {
         const payload = JSON.parse(text.slice(SUBAGENT_MARKERS.call.length));
         const args = typeof payload.args === "string" ? payload.args : JSON.stringify(payload.args ?? {});
-        return { kind: "call", name: String(payload.name || ""), args, subject: toolSubject(payload.name, args) };
+        return { kind: "call", name: String(payload.name || ""), display: String(payload.display || ""), args, subject: toolSubject(payload.name, args) };
       } catch {
         return { kind: "plain", text: text.slice(SUBAGENT_MARKERS.call.length).trim() };
       }
@@ -5893,12 +5918,20 @@
       try {
         const payload = JSON.parse(text.slice(SUBAGENT_MARKERS.result.length));
         const args = typeof payload.args === "string" ? payload.args : JSON.stringify(payload.args ?? {});
-        return { kind: "result", name: String(payload.name || ""), args, ok: payload.ok !== false, output: String(payload.output ?? "") };
+        return { kind: "result", name: String(payload.name || ""), display: String(payload.display || ""), args, ok: payload.ok !== false, output: String(payload.output ?? "") };
       } catch {
         return { kind: "plain", text: text.slice(SUBAGENT_MARKERS.result.length).trim() };
       }
     }
     if (text.startsWith(SUBAGENT_MARKERS.stats)) return { kind: "stats", text: text.slice(SUBAGENT_MARKERS.stats.length).trim() };
+    if (text.startsWith(SUBAGENT_MARKERS.brief)) {
+      try {
+        const p = JSON.parse(text.slice(SUBAGENT_MARKERS.brief.length));
+        return { kind: "brief", description: String(p.description || ""), prompt: String(p.prompt || "") };
+      } catch {
+        return { kind: "plain", text: "" };
+      }
+    }
     if (text.startsWith(SUBAGENT_MARKERS.detach)) return { kind: "plain", text: text.slice(SUBAGENT_MARKERS.detach.length).trim() };
     return { kind: "plain", text: text.trim() };
   }
@@ -5987,6 +6020,18 @@
       return;
     }
     if (!sink.blocks) return;
+    if (ev.kind === "brief") {
+      // 后台子代理展开区顶部补任务简介(09-12 #9;前台已在 createTool 里建好并置
+      // sink.brief,不会重复)。插在子过程时间线容器之前。
+      if (!sink.brief) {
+        const brief = buildSubagentBrief(ev.description, ev.prompt);
+        if (brief && sink.blocks.parentElement) {
+          sink.blocks.parentElement.insertBefore(brief, sink.blocks);
+          sink.brief = true;
+        }
+      }
+      return;
+    }
     if (ev.kind === "reasoning") {
       // 思考逐 token 增量,累加到一个活的思考块(不能覆盖,否则只剩最后一个 token)。
       if (!sink.think) {
@@ -6010,16 +6055,16 @@
     if (ev.kind === "call") {
       subEndReasoning(sink);
       // Full 档:call 先记着,result 到了再落一张完成卡(带 args + output)。
-      sink.pendingCall = { name: ev.name, args: ev.args, subject: ev.subject };
+      sink.pendingCall = { name: ev.name, display: ev.display, args: ev.args, subject: ev.subject };
       sink.peekLine = ev.subject ? ev.name + " · " + ev.subject : "调用 " + ev.name;
       if (sink.taskPeek) setReasoningPeek(sink.taskPeek, sink.peekLine);
       return;
     }
     if (ev.kind === "result") {
       subEndReasoning(sink);
-      const call = sink.pendingCall || { name: ev.name, args: ev.args };
+      const call = sink.pendingCall || { name: ev.name, display: ev.display, args: ev.args };
       sink.pendingCall = null;
-      const card = createPersistedToolCard({ name: call.name, arguments: call.args != null ? call.args : ev.args, output: ev.output, ok: ev.ok });
+      const card = createPersistedToolCard({ name: call.name, display_name: call.display, arguments: call.args != null ? call.args : ev.args, output: ev.output, ok: ev.ok });
       procLineAttach(sink.blocks, card, true);
       sink.peekLine = call.name + " " + (ev.ok ? "完成" : "出错");
       if (sink.taskPeek) setReasoningPeek(sink.taskPeek, sink.peekLine);
@@ -7731,6 +7776,7 @@
     // 思考与工具流,和主智能体的过程区同款渲染(09-11 用户要求)。不再用方块。
     let liveProgress = null;
     let subBlocks = null;
+    let briefBuilt = false;
     if (isTask) {
       // 子过程时间线的承载容器:proc-line 挂进这里(和主对话过程区同构)。
       subBlocks = document.createElement("div");
@@ -7740,25 +7786,11 @@
       //(09-12 #6):标题=description,正文=prompt(整段保留换行)。裸参数那栏
       // 对子代理收起来(信息都在简介里了)。
       const taskArgs = parsedToolArguments(data?.arguments);
-      const briefTitle = String(taskArgs.description || "").trim();
-      const briefPrompt = String(taskArgs.prompt || "").trim();
-      if (briefTitle || briefPrompt) {
-        const brief = document.createElement("div");
-        brief.className = "subagent-brief";
-        if (briefTitle) {
-          const h = document.createElement("div");
-          h.className = "subagent-brief-title";
-          h.textContent = briefTitle;
-          brief.appendChild(h);
-        }
-        if (briefPrompt) {
-          const pp = document.createElement("div");
-          pp.className = "subagent-brief-prompt";
-          pp.textContent = briefPrompt;
-          brief.appendChild(pp);
-        }
+      const brief = buildSubagentBrief(taskArgs.description, taskArgs.prompt);
+      if (brief) {
         body.insertBefore(brief, subBlocks);
         argumentsDetail.wrapper.hidden = true;
+        briefBuilt = true;
       }
       card.append(head, body);
       if (taskPeek) taskPeek.textContent = reasoningPeekText(subjectText || "正在启动子代理…");
@@ -7793,6 +7825,7 @@
       liveProgress,
       taskPeek,
       taskToken,
+      brief: briefBuilt,
       blocks: subBlocks,
       think: null,
       thinkAccum: "",
@@ -8686,7 +8719,9 @@
 
   // 盲文点阵转圈 spinner(09-12 用户指定):一个全局 ticker 刷所有 .job-braille
   // 的字符,避免每行各自 CSS 动画在任务条重建时被打回起点。
-  const JOB_BRAILLE = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
+  // 空心盲文点阵转圈(和会话列表 BRAILLE_FRAMES 同款),不是之前那组实心的
+  // ⣾⣽⣻…(09-12 #2 用户指出实心不对)。
+  const JOB_BRAILLE = BRAILLE_FRAMES;
   let jobBrailleFrame = 0;
 
   function makeJobSpinner() {
@@ -8775,6 +8810,14 @@
       toggle.append(makeJobSpinner(), label);
       toggle.addEventListener("click", () => {
         state.jobsStripOpen = !state.jobsStripOpen;
+        // 收起「后台任务 ×N」合并行时,把里面所有已展开的状态行 + 思考/工具卡
+        // 一并收起(09-12 #15),不留展开残留。
+        if (!state.jobsStripOpen) {
+          state.expandedJobs.clear();
+          for (const sink of state.jobStreamSinks.values()) {
+            sink.panel?.querySelectorAll("details[open]").forEach((d) => { d.open = false; });
+          }
+        }
         localStorage.setItem("miyu.web.jobsStripOpen", state.jobsStripOpen ? "1" : "0");
         renderJobsStrip();
       });
@@ -8843,8 +8886,17 @@
       row.setAttribute("aria-expanded", String(expanded));
       row.addEventListener("click", (event) => {
         if (event.target.closest(".job-chip-stop")) return;
-        if (state.expandedJobs.has(jid)) state.expandedJobs.delete(jid);
-        else state.expandedJobs.add(jid);
+        if (state.expandedJobs.has(jid)) {
+          state.expandedJobs.delete(jid);
+          // 收起状态行时,把里面已展开的思考/工具卡也一并收起(09-12 #5),
+          // 下次展开是收起态,而不是保留上次的展开。
+          const sink = state.jobStreamSinks.get(jid);
+          if (sink?.panel) {
+            sink.panel.querySelectorAll("details[open]").forEach((d) => { d.open = false; });
+          }
+        } else {
+          state.expandedJobs.add(jid);
+        }
         renderJobsStrip();
       });
 

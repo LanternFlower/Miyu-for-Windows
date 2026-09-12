@@ -473,6 +473,16 @@ async fn run_core(
     let enabled = context.config.plugins.deep_research.show_progress;
     let sa_progress = SubagentProgress::new(progress, mode, enabled);
 
+    // 子过程展开区最上方的任务简介(09-12 #9:后台子代理展开后没有 prompt)。
+    // 只在 Full 档(WebUI)发;前台子代理前端从工具参数直接建 brief、并置 sink.brief,
+    // 收到这条 marker 会跳过不重复,后台没有参数就靠这条把 prompt 显示出来。
+    if mode == ProgressMode::Full {
+        sa_progress.phase(format!(
+            "__subagent_brief__{}",
+            serde_json::json!({ "description": &description, "prompt": &prompt })
+        ));
+    }
+
     // dev 子代理 = 开发模式的三件套,与 dev 会话同源:保留人格 "dev" 的
     // 作用域(记忆整套关)、那份 core_only 的工具面、以及中转线的 dev 工具
     // 作用域。少任何一件都会漂移成「名字叫 dev、其实是普通子代理」。

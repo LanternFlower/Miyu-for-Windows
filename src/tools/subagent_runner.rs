@@ -232,7 +232,7 @@ impl SubagentProgress {
         if self.enabled && self.tool_mode == ProgressMode::Full && name != "run_command" {
             self.progress.report(format!(
                 "__subtool_call__{}",
-                json!({ "name": name, "args": args })
+                json!({ "name": name, "display": readable_tool_name(name), "args": args })
             ));
         }
     }
@@ -261,7 +261,7 @@ impl SubagentProgress {
         if self.tool_mode == ProgressMode::Full {
             self.progress.report(format!(
                 "__subtool_result__{}",
-                json!({ "name": name, "args": args, "ok": ok, "output": output })
+                json!({ "name": name, "display": readable_tool_name(name), "args": args, "ok": ok, "output": output })
             ));
         }
     }

@@ -1691,13 +1691,20 @@ body[data-theme="graphite"] .session-unread-dot {
 /* 09-12 二轮修 #2/#4/#5/#10:标题永远优先(至少放得下「开发中/子代理/命令」),
    窥视只是次要、可缩、定宽 token 槽减少抖动;展开(is-open)只显标题不显窥视;
    命令日志面板去掉左侧竖线。用 `.job-chip >` 直接子选择器压过前面几条同名规则。 */
+/* 标题撑开占左边、优先完整显示;窥视靠右、只占一小块、和标题之间留足间距,
+   永远不压标题(09-12 #1 后台标题被窥视覆盖)。token/时间/✕ 被撑开的标题顶到最右。 */
 .job-chip > .job-chip-label {
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-width: 3.6em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .job-chip > .job-chip-peek {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
+  max-width: 42%;
   min-width: 0;
+  margin-left: 14px;
 }
 .job-chip.is-open > .job-chip-peek {
   display: none;
@@ -1819,8 +1826,9 @@ body[data-theme="graphite"] .session-unread-dot {
 }
 
 .revision-editor textarea:focus-visible {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+  /* 聚焦高亮改中性(09-12 #14):不再是那圈强调色边线,和消息气泡一致。 */
+  border-color: var(--line-strong);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 10%, transparent);
 }
 
 .revision-editor-footer {
@@ -10079,7 +10087,6 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   padding: 8px 10px;
   border-radius: 8px;
   background: color-mix(in srgb, var(--text) 5%, transparent);
-  border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
 }
 .subagent-brief-title {
   font-weight: 600;
@@ -10093,6 +10100,16 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   font-size: var(--fs-meta);
   line-height: 1.55;
   color: var(--text-soft);
+}
+/* 子过程时间线里,思考/工具那一行(tag)在展开内容超出可用高度、往下滚时粘在
+   顶部,滚长内容也看得到它是哪一项、方便就地收起(09-12 #4/#12)。sticky 需要
+   实心背景,否则下面的文字会透上来。 */
+.sub-blocks .reasoning-block > summary,
+.sub-blocks .tool-card > .tool-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--app-bg, var(--surface-1));
 }
 /* 前台子代理行在手机端太长(09-12 #8):收起时不显那条单行窥视,活动去展开区看;
    token/读秒也让位,标题+状态就够窄。 */
@@ -10116,9 +10133,15 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 .tool-card.is-task .tool-head > .tool-task-token:empty {
   display: none;
 }
-/* peek 撑开,把 token/读秒/状态推到最右 */
-.tool-card.is-task .tool-head > .tool-peek {
+/* 前台子代理:标题撑开优先完整显示,窥视靠右、只占一小块、留足间距,不压标题
+   (09-12 #7 前台标题被窥视覆盖)。 */
+.tool-card.is-task .tool-head > .tool-title {
   flex: 1 1 auto;
+}
+.tool-card.is-task .tool-head > .tool-peek {
+  flex: 0 1 auto;
+  max-width: 42%;
+  margin-left: 14px;
 }
 /* 放不下了:尾部对齐(文字从左边溢出被裁),再加一层左侧渐隐,新字从右边推进来 */
 .reasoning-peek.is-overflow {
