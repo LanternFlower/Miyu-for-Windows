@@ -423,6 +423,7 @@ impl RunEventMapper {
             AgentEvent::RoundUsage {
                 round,
                 turn,
+                cumulative,
                 speed,
                 estimated,
                 provider_id,
@@ -444,6 +445,10 @@ impl RunEventMapper {
                         "turn_total": turn.total,
                         "turn_prompt": turn.prompt,
                         "turn_cache_read": turn.cache_read,
+                        // 会话实时累计:WebUI 据此逐请求刷新输入框那个「累计」(#131)。
+                        "cumulative_tokens": cumulative.total,
+                        "cumulative_prompt_tokens": cumulative.prompt,
+                        "cumulative_cache_read_tokens": cumulative.cache_read,
                         "turn_generation_tokens": speed.tokens,
                         "turn_generation_ms": speed.millis,
                         "estimated": estimated,

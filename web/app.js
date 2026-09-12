@@ -432,6 +432,10 @@
     // 「未读」才是——产生于回合结束，消失于用户切进那个会话。
     unreadSessions: new Set(),
     liveRuns: new Map(),
+    // 输入框「累计」合成用(#131):cumulativeBase = 后端给的会话实时累计基线;
+    // liveSubagentTokens = 正在跑的子代理各自的实时 token 估算,按 tool_id 存。
+    cumulativeBase: null,
+    liveSubagentTokens: new Map(),
     sessionMenuFor: null,
     sessionRenaming: null,
     sessionDragId: null,
@@ -1769,7 +1773,8 @@
 
   // 输入框下方信息行的「每秒 toks」「累计」:取最新一轮的样本,回合结束/round_usage 时更新。
   function setComposerUsage({ speed, cumulative } = {}) {
-    if (elements.composerSpeed) {
+    // undefined = 不动这一项(只想刷累计时别把速度顺手藏了);null/"" = 清空隐藏。
+    if (elements.composerSpeed && speed !== undefined) {
       if (speed) {
         elements.composerSpeedValue.textContent = speed;
         elements.composerSpeed.hidden = false;
@@ -1777,7 +1782,7 @@
         elements.composerSpeed.hidden = true;
       }
     }
-    if (elements.composerCumulative) {
+    if (elements.composerCumulative && cumulative !== undefined) {
       if (cumulative) {
         elements.composerCumulativeValue.textContent = cumulative;
         elements.composerCumulative.hidden = false;
@@ -2869,6 +2874,16 @@
   // 流式时完全一致——尤其正在跑的那次子代理调用不喂 tool.finished,留着让实时续。
   function seedLiveFromPersistedTurn(live, turn) {
     ensureLiveArticle(live);
+    // 播种是回放历史,不该喂「累计」的实时子代理估算(否则已完成子代理会和后端基线
+    // 重复计;#131)。置旗让 tool.progress 里那段 liveSubagentTokens 更新跳过。
+    state.seedingLive = true;
+    try {
+      seedLiveRounds(live, turn);
+    } finally {
+      state.seedingLive = false;
+    }
+  }
+  function seedLiveRounds(live, turn) {
     const rounds = Array.isArray(turn?.tool_flow) ? turn.tool_flow : [];
     for (const round of rounds) {
       const reasoning = String(round?.assistant_reasoning || "");
@@ -6828,6 +6843,11 @@
     {
       const lastTurn = state.turns[state.turns.length - 1];
       const lastCum = lastTurn ? state.cumulativeByTurn.get(String(lastTurn.id || "")) : null;
+      // 回填也给「累计」定基线,重连后若正跑子代理,refreshComposerCumulative 有基线可
+      // 加(不然会短暂空掉);下一个主回合 RoundUsage 会用带子代理的权威值纠正(#131)。
+      state.cumulativeBase = lastCum && lastCum.total > 0
+        ? { total: lastCum.total, prompt: lastCum.prompt, cached: lastCum.cached }
+        : null;
       setComposerUsage({
         speed: lastTurn ? generationSpeedValue(lastTurn.generation_tokens, lastTurn.generation_ms) : null,
         cumulative: lastCum && lastCum.total > 0
@@ -8401,8 +8421,19 @@
       updateToolSummary(tool);
     } else if (name === "tool.progress" && tool.isTask) {
       // 子代理:标题行单行窥视 + 展开后的子过程时间线,不再用带底色的方块。
-      renderSubagentProgress(tool, String(data?.message || ""));
+      const message = String(data?.message || "");
+      renderSubagentProgress(tool, message);
       if (!tool.finished) updateToolStatus(tool, "运行中", "loader-circle");
+      // 子代理每步都会报一次 __subagent_stats__(含实时 token 估算)。把它汇进输入框
+      // 那个「累计」:估算先顶上,子代理跑完由下个主回合的权威基线接管(#131)。
+      const subTokens = state.seedingLive ? null : parseSubagentStatsTokens(message);
+      if (subTokens != null) {
+        const toolId = String(data?.tool_id || tool.id || "");
+        if (toolId) {
+          state.liveSubagentTokens.set(toolId, { tokens: subTokens, done: false });
+          refreshComposerCumulative();
+        }
+      }
     } else if (name === "tool.progress") {
       let message = String(data?.message || "");
       // 文件编辑(edit/kb/artifact):diff 卡已由 patchText 参数在建卡时画好,「准备修改」
@@ -8462,6 +8493,11 @@
         tool.card.classList.add("collapsed");
         tool.head.setAttribute("aria-expanded", "false");
         railSnapFit(tool.card);
+        // 子代理跑完:它的实时估算先「冻住」保留(别立刻抽走,否则基线还没把它算进来
+        // 之前累计会掉一下),等下个主回合的权威基线接管时再删(见 handleRoundUsage)。
+        const doneId = String(data?.tool_id || tool.id || "");
+        const entry = doneId && state.liveSubagentTokens.get(doneId);
+        if (entry) { entry.done = true; refreshComposerCumulative(); }
       }
       const output = String(data?.output || "");
       tool.resultDetail.raw = output.length > MAX_TOOL_OUTPUT_CHARS ? `[较早输出已省略]\n${output.slice(-MAX_TOOL_OUTPUT_CHARS)}` : output;
@@ -9589,12 +9625,64 @@
       });
       if (usage) live.meta.textContent = usage;
     }
+    // 输入框下方那个「累计」逐请求刷新(#131:以前只有 run.completed 才刷,子代理跑
+    // 完的花销要等整回合结束才体现)。后端现在每个主回合都带会话实时累计。
+    state.cumulativeBase = {
+      total: asFiniteNumber(data?.cumulative_tokens),
+      prompt: asFiniteNumber(data?.cumulative_prompt_tokens),
+      cached: asFiniteNumber(data?.cumulative_cache_read_tokens),
+    };
+    // 已跑完的子代理:它的花销这会儿已进了后端基线(子会话行记好了),把那份冻住的
+    // 估算删掉,不然基线 + 估算就重复算了(#131 不丢数据也不重复)。
+    for (const [id, entry] of state.liveSubagentTokens) {
+      if (entry?.done) state.liveSubagentTokens.delete(id);
+    }
+    refreshComposerCumulative({
+      speed: generationSpeedValue(data?.turn_generation_tokens, data?.turn_generation_ms),
+    });
     const round = data?.usage;
     const contextTokens = asFiniteNumber(round?.prompt_tokens, 0) + asFiniteNumber(round?.completion_tokens, 0);
     if (contextTokens > 0) {
       state.context.tokens = contextTokens;
       updateContext();
     }
+  }
+
+  // 输入框「累计」的合成:基线(后端每回合 / 收尾给的会话实时累计)+ 正在跑的子代理
+  // 的实时估算之和(#131)。子代理还没落库的花销靠估算先顶上、跑完由下个主回合的
+  // 基线接管;并行子代理各自更新自己那一份,这里只求个和、按 rAF 合并刷,不会鬼畜抖。
+  function composerCumulativeTokens() {
+    const base = state.cumulativeBase || null;
+    if (!base || !(base.total > 0)) return null;
+    let extra = 0;
+    for (const v of state.liveSubagentTokens?.values() || []) extra += asFiniteNumber(v?.tokens);
+    const total = base.total + extra;
+    return { total, prompt: base.prompt, cached: base.cached };
+  }
+  function refreshComposerCumulative(opts = {}) {
+    const cum = composerCumulativeTokens();
+    const payload = {};
+    if ("speed" in opts) payload.speed = opts.speed;
+    payload.cumulative = cum
+      ? `${formatTokens(cum.total)}${cacheSuffix(cum.cached, cum.prompt)}`
+      : null;
+    setComposerUsage(payload);
+  }
+  // 从 __subagent_stats__「消耗词元 ≈1.2k」这类文本里抠出数值估算(带 k/m/万 单位)。
+  // 不是 stats 标记就返回 null。是估算,精度到 k,足够撑「累计」逐步涨,收尾由基线纠正。
+  function parseSubagentStatsTokens(message) {
+    const text = String(message || "");
+    if (!text.startsWith("__subagent_stats__")) return null;
+    const m = text.match(/(?:词元|cost)\s*[：:]?\s*≈?\s*([\d.]+)\s*([kKmMbB万]?)/);
+    if (!m) return null;
+    let n = parseFloat(m[1]);
+    if (!Number.isFinite(n)) return null;
+    const unit = (m[2] || "").toLowerCase();
+    if (unit === "k") n *= 1e3;
+    else if (unit === "m") n *= 1e6;
+    else if (unit === "b") n *= 1e9;
+    else if (m[2] === "万") n *= 1e4;
+    return Math.round(n);
   }
 
   function finishLiveRun(kind, data, live) {
@@ -9638,12 +9726,17 @@
         });
         live.meta.textContent = usage || "已完成";
       }
-      // 输入框下方信息行:最新一轮的输出速度 + 会话累计 token(#99)。
-      setComposerUsage({
+      // 输入框下方信息行:最新一轮的输出速度 + 会话累计 token(#99/#131)。收尾时
+      // 会话累计是权威值(所有子代理都跑完、子会话都记好了),直接当基线,把中途的
+      // 子代理实时估算清空(已被基线接管)。
+      state.cumulativeBase = {
+        total: asFiniteNumber(data?.cumulative_tokens),
+        prompt: asFiniteNumber(data?.cumulative_prompt_tokens),
+        cached: asFiniteNumber(data?.cumulative_cache_read_tokens),
+      };
+      state.liveSubagentTokens.clear();
+      refreshComposerCumulative({
         speed: generationSpeedValue(data?.usage?.generation_tokens, data?.usage?.generation_ms),
-        cumulative: asFiniteNumber(data?.cumulative_tokens) > 0
-          ? `${formatTokens(data.cumulative_tokens)}${cacheSuffix(data?.cumulative_cache_read_tokens, data?.cumulative_prompt_tokens)}`
-          : null,
       });
     } else if (kind === "cancelled") {
       markUnfinishedTools(live);

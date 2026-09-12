@@ -461,9 +461,20 @@ impl Agent {
                             ..Usage::default()
                         }
                     });
+                let turn_tokens = TurnTokens::from_usage(Some(&turn_usage));
+                // 会话实时累计 = 已落库(往轮 + 已完成子代理子会话)+ 本回合至今。
+                // session_cumulative_token_totals 不含当前回合(回合末才 add_usage),所以
+                // 这里补上 turn_tokens;子代理跑完那一刻它的子会话行已记好,下一个主回合
+                // 读这个总数就把子代理花销带进来了(#131)。
+                let mut cumulative = self
+                    .state
+                    .session_cumulative_token_totals()
+                    .unwrap_or_default();
+                cumulative.add(turn_tokens);
                 on_event(AgentEvent::RoundUsage {
                     round: Box::new(round),
-                    turn: TurnTokens::from_usage(Some(&turn_usage)),
+                    turn: turn_tokens,
+                    cumulative,
                     speed: usage_accumulator.generation_speed(),
                     estimated: usage_accumulator.estimated,
                     provider_id: result.provider_id.clone(),

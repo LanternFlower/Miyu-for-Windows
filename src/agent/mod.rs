@@ -167,6 +167,10 @@ pub enum AgentEvent {
     RoundUsage {
         round: Box<Usage>,
         turn: TurnTokens,
+        /// 会话实时累计:已落库的各回合 + 已完成的子代理子会话 + 本回合至今的 `turn`。
+        /// WebUI 据它逐请求刷新输入框那个「累计」,不必等整回合结束(#131:子代理跑
+        /// 完的花销也随之在下一个主回合体现)。
+        cumulative: TurnTokens,
         /// 回合至今的输出速度样本(见 `Usage::generation_ms`)。
         speed: GenerationSpeed,
         estimated: bool,
