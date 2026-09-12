@@ -88,7 +88,12 @@ pub async fn print_image_file(path: &Path, size: Option<String>) -> Result<()> {
     }
     let mut command = Command::new("chafa");
     if crossterm::terminal::is_raw_mode_enabled().unwrap_or(false) {
-        command.args(["--probe", "off", "--relative", "off"]);
+        // REPL 的 raw 模式下,`--probe off` 会让 chafa 完全不探测终端能力,于是
+        // 在 xterm 这类终端上退回符号画(用户报「直接跑 chafa 正常、miyu 里不正常」
+        // 的真因,09-12 #20)。改用 `--probe-mode ctty`(经控制终端探测,不受 raw
+        // 模式下 stdin 被 REPL 占用的影响)+ `--polite on`(探测查询不污染终端),
+        // 与公式渲染(render_math_chafa)同款,让 chafa 用 xterm 支持的最佳格式。
+        command.args(["--probe-mode", "ctty", "--polite", "on", "--relative", "off"]);
     }
     if let Some(size) = size {
         command.arg("--size").arg(size);

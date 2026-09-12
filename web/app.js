@@ -5787,9 +5787,12 @@
         image.remove();
         fallback.hidden = false;
         figure.classList.add("is-error");
-        contentAdded(figure);
+        if (eager) contentAdded(figure);
       }, { once: true });
-      image.addEventListener("load", contentAdded, { once: true });
+      // 只有实时流的新图(eager)加载完才跟随滚动;历史重建(刷新)的图不该在
+      // 逐张加载时把视图一路拉到底——那正是「打印图片刷新后跳到 AI 输出尾部」
+      // 的原因(09-12 #19)。有 aspect-ratio 占位,历史图加载也不跳。
+      if (eager) image.addEventListener("load", contentAdded, { once: true });
       image.src = url;
       visual.append(image, fallback);
     } else {
@@ -6065,7 +6068,7 @@
       const call = sink.pendingCall || { name: ev.name, display: ev.display, args: ev.args };
       sink.pendingCall = null;
       const card = createPersistedToolCard({ name: call.name, display_name: call.display, arguments: call.args != null ? call.args : ev.args, output: ev.output, ok: ev.ok });
-      procLineAttach(sink.blocks, card, true);
+      procLineAttach(sink.blocks, card);
       sink.peekLine = call.name + " " + (ev.ok ? "完成" : "出错");
       if (sink.taskPeek) setReasoningPeek(sink.taskPeek, sink.peekLine);
       subAutoScroll(sink);
@@ -6094,7 +6097,7 @@
         const nm = at >= 0 ? label.slice(0, at) : label;
         const subj = at >= 0 ? label.slice(at + 3) : "";
         const card = createPersistedToolCard({ name: nm, arguments: subj, output: "", ok: !errored });
-        procLineAttach(sink.blocks, card, true);
+        procLineAttach(sink.blocks, card);
       }
     }
   }
