@@ -209,6 +209,16 @@ impl SubagentProgress {
         }
     }
 
+    /// 子代理的正文(assistant content)增量:模型在工具轮之间/收尾时说的话。
+    /// 只在 Full 档流,和 reasoning 一样;UI 把它渲成子过程时间线里的一段正文,
+    /// 中间输出与最终输出都能实时看到(#6:光有 timeline、正文没流出来)。
+    pub fn content(&self, text: &str) {
+        if self.enabled && self.tool_mode == ProgressMode::Full {
+            self.progress
+                .report(format!("__subagent_content__{}", text));
+        }
+    }
+
     pub fn tool_start(&self, step: usize, name: &str, args: &str) {
         if !self.enabled || self.tool_mode == ProgressMode::Hidden {
             return;
@@ -581,8 +591,10 @@ impl SubagentRunner {
                     messages.to_vec(),
                     definitions.to_vec(),
                     |chunk: ChatStreamChunk| {
-                        if chunk.kind == ChatStreamKind::Reasoning {
-                            self.progress.reasoning(&chunk.text);
+                        match chunk.kind {
+                            ChatStreamKind::Reasoning => self.progress.reasoning(&chunk.text),
+                            ChatStreamKind::Content => self.progress.content(&chunk.text),
+                            _ => {}
                         }
                         Ok(())
                     },

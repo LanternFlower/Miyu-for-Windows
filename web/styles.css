@@ -10415,6 +10415,17 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   margin: 2px 8px 6px var(--proc-indent);
   padding: 0;
 }
+/* 子代理正文(#6):模型在工具轮之间/收尾说的话,流式累加并按 markdown 渲染。
+   是正文不是思考,所以用常规正文色、和时间线内容左缘对齐。 */
+.sub-content {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+  margin: 2px 8px 8px var(--proc-indent);
+  padding: 0;
+}
+.sub-content > :first-child { margin-top: 0; }
+.sub-content > :last-child { margin-bottom: 0; }
 /* 子过程时间线里,思考/工具那一行(tag)在展开内容超出可用高度、往下滚时粘在
    顶部,滚长内容也看得到它是哪一项、方便就地收起(09-12 #4/#12)。sticky 需要
    实心背景,否则下面的文字会透上来。 */

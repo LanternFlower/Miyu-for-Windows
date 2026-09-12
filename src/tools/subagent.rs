@@ -403,6 +403,13 @@ fn readable_subagent_log_line(message: &str) -> String {
         }
         return format!("[思考] {text}");
     }
+    if let Some(text) = message.strip_prefix("__subagent_content__") {
+        let text = text.trim();
+        if text.is_empty() {
+            return String::new();
+        }
+        return format!("[正文] {text}");
+    }
     if let Some(text) = message.strip_prefix("__subtool_call__") {
         return format!("[工具] {}", text.trim());
     }

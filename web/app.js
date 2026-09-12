@@ -5963,6 +5963,7 @@
   // __subtool_result__ / __subagent_reasoning__(用于展开后的子过程时间线)。
   const SUBAGENT_MARKERS = {
     reasoning: "__subagent_reasoning__",
+    content: "__subagent_content__",
     call: "__subtool_call__",
     result: "__subtool_result__",
     stats: "__subagent_stats__",
@@ -6011,6 +6012,10 @@
       // 「Actuallythetails」这种连成一坨(09-12 #8 思考内容没空格没换行的真因)。
       return { kind: "reasoning", text: text.slice(SUBAGENT_MARKERS.reasoning.length) };
     }
+    if (text.startsWith(SUBAGENT_MARKERS.content)) {
+      // 同 reasoning:不 trim,逐 token 的正文 delta 词间空格要留住。
+      return { kind: "content", text: text.slice(SUBAGENT_MARKERS.content.length) };
+    }
     if (text.startsWith(SUBAGENT_MARKERS.call)) {
       try {
         const payload = JSON.parse(text.slice(SUBAGENT_MARKERS.call.length));
@@ -6044,6 +6049,7 @@
 
   function subagentPeekLine(ev) {
     if (ev.kind === "reasoning") return ev.text;
+    if (ev.kind === "content") return ev.text;
     if (ev.kind === "call") return `调用 ${ev.name}${ev.subject ? " · " + ev.subject : ""}`;
     if (ev.kind === "result") return `${ev.name} ${ev.ok ? "完成" : "出错"}`;
     return ev.text || "";
@@ -6065,6 +6071,21 @@
       }
       sink.think = null;
       sink.thinkAccum = "";
+    }
+  }
+
+  // 子代理正文段收尾:把当前正在累加的正文块定格(内容留在时间线里),
+  // 下一段正文会另起一块,中间穿插思考/工具卡——和主对话的交错渲染同构。
+  function subEndContent(sink) {
+    if (sink.contentBlock) {
+      // 收尾时把最终全文渲一遍(可能有帧还没触发),再释放帧句柄,让下一段正文能重新调度。
+      if (sink.contentFrame) {
+        window.cancelAnimationFrame(sink.contentFrame);
+        sink.contentFrame = null;
+      }
+      renderMarkdown(sink.contentBlock, sink.contentBlock.__subAcc || sink.contentAccum || "");
+      sink.contentBlock = null;
+      sink.contentAccum = "";
     }
   }
 
@@ -6138,8 +6159,39 @@
       }
       return;
     }
+    if (ev.kind === "content") {
+      // 子代理正文逐 token 增量(#6:光有 timeline,正文没流出来)。先收思考,再把
+      // 正文累加到一个活的正文块;新起一段正文时切断当前时间线,正文落在段间,
+      // 之后的工具/思考会另起一条 proc-line——和主对话交错渲染同构。
+      subEndReasoning(sink);
+      if (!sink.contentBlock) {
+        procLineBreak(sink.blocks);
+        const div = document.createElement("div");
+        div.className = "sub-content markdown-body";
+        sink.blocks.appendChild(div);
+        sink.contentBlock = div;
+        sink.contentAccum = "";
+      }
+      sink.contentAccum += ev.text;
+      // markdown 渲染按 rAF 合并:逐 token 全量重解析太费,一帧渲一次就够顺。
+      // 累加文本挂在块元素上,帧触发时读它当前值(而非调度那刻的旧值),避免同一
+      // 帧内后到的 token 被丢。
+      const block = sink.contentBlock;
+      block.__subAcc = sink.contentAccum;
+      if (!sink.contentFrame) {
+        sink.contentFrame = window.requestAnimationFrame(() => {
+          sink.contentFrame = null;
+          renderMarkdown(block, block.__subAcc || "");
+          subAutoScroll(sink);
+        });
+      }
+      sink.peekLine = sink.contentAccum;
+      if (sink.taskPeek) setReasoningPeek(sink.taskPeek, sink.contentAccum);
+      return;
+    }
     if (ev.kind === "reasoning") {
       // 思考逐 token 增量,累加到一个活的思考块(不能覆盖,否则只剩最后一个 token)。
+      subEndContent(sink);
       if (!sink.think) {
         sink.think = createReasoningBlock("", "正在思考", true);
         sink.thinkAccum = "";
@@ -6160,6 +6212,7 @@
     }
     if (ev.kind === "call") {
       subEndReasoning(sink);
+      subEndContent(sink);
       // Full 档:call 先记着,result 到了再落一张完成卡(带 args + output)。
       sink.pendingCall = { name: ev.name, display: ev.display, args: ev.args, subject: ev.subject };
       sink.peekLine = ev.subject ? ev.name + " · " + ev.subject : "调用 " + ev.name;
@@ -6168,6 +6221,7 @@
     }
     if (ev.kind === "result") {
       subEndReasoning(sink);
+      subEndContent(sink);
       const call = sink.pendingCall || { name: ev.name, display: ev.display, args: ev.args };
       sink.pendingCall = null;
       const card = createPersistedToolCard({ name: call.name, display_name: call.display, arguments: call.args != null ? call.args : ev.args, output: ev.output, ok: ev.ok });
