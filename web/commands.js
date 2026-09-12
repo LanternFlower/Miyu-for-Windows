@@ -220,9 +220,12 @@ window.MiyuCommands = (() => {
         return done(text);
       }
       if (spec.name === "/reset-all-memory") {
+        // 和 /reset-memory 一样必须带 session_id:服务端据它做身份/归属校验 + 把配置
+        // 套到发命令成员的家目录/私有人格(memory 才落对库)。不带就回落全局会话指针,
+        // 成员并不拥有它 → require_local_web_session 报「session not found」(用户 #157)。
         await ctx.apiRequest("/api/memory/reset-all", {
           method: "POST",
-          body: JSON.stringify({ mode: ctx.mode }),
+          body: JSON.stringify({ mode: ctx.mode, session_id: ctx.sessionId }),
         });
         return done("已清空全部长期记忆");
       }
