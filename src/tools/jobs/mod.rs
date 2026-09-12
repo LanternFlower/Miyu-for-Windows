@@ -109,7 +109,14 @@ struct JobEntry {
     finished: Option<Instant>,
     log_path: PathBuf,
     state: JobState,
+    /// 子代理的原始进度标记流(`__subagent_reasoning__`/`__subtool_call__`…)。网页端
+    /// 刷新后据它回放子过程时间线(#9:刷新丢内容)。封顶保存最近若干条,进程内、
+    /// daemon 重启即清(那时任务多半也没了)。命令任务用日志文件回看,不走这。
+    trace: Vec<String>,
 }
+
+/// trace 环形缓冲上限:子代理一步就几十条标记,4000 条够回放好几十步的展开区。
+const MAX_TRACE: usize = 4000;
 
 /// Completion details handed to the host hook (daemon: model wake-up).
 #[derive(Clone, Debug)]
@@ -200,9 +207,30 @@ pub fn set_progress_hook(hook: ProgressHook) {
 
 /// 后台任务的一条实时进度上 SSE(如已安装 hook)。子代理进度桥调用它。
 pub fn publish_job_progress(job_id: &str, message: &str) {
+    // 顺手把这条标记留进任务的 trace 缓冲,网页端刷新后据它回放(#9)。
+    {
+        let mut jobs = jobs().lock().unwrap();
+        if let Some(job) = jobs.get_mut(job_id) {
+            job.trace.push(message.to_string());
+            if job.trace.len() > MAX_TRACE {
+                let overflow = job.trace.len() - MAX_TRACE;
+                job.trace.drain(0..overflow);
+            }
+        }
+    }
     if let Some(hook) = progress_hook().lock().unwrap().clone() {
         hook(job_id, message);
     }
+}
+
+/// 某后台子代理任务到目前为止的原始进度标记流,给网页端刷新后回放(#9)。
+pub fn job_trace(job_id: &str) -> Vec<String> {
+    jobs()
+        .lock()
+        .unwrap()
+        .get(job_id)
+        .map(|job| job.trace.clone())
+        .unwrap_or_default()
 }
 
 /// 某后台任务归属的会话 id(事件按它做归属过滤:成员只收到自己那份)。
@@ -407,6 +435,7 @@ pub async fn spawn_background(
         finished: None,
         log_path: log_path.clone(),
         state: JobState::Running,
+        trace: Vec::new(),
     };
     let started = overview_of(&entry);
     jobs().lock().unwrap().insert(job_id.clone(), entry);
@@ -507,6 +536,7 @@ where
         finished: None,
         log_path: log_path.clone(),
         state: JobState::Running,
+        trace: Vec::new(),
     };
     let started = overview_of(&entry);
     jobs().lock().unwrap().insert(job_id.clone(), entry);

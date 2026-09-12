@@ -533,6 +533,17 @@ pub(in crate::web) async fn list_jobs_http(
     Ok(Json(json!({ "jobs": tools::jobs::overview() })).into_response())
 }
 
+/// 后台子代理到目前为止的原始进度标记流,网页端刷新后据它回放子过程时间线(#9)。
+pub(in crate::web) async fn job_trace_http(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Path(job_id): Path<String>,
+) -> std::result::Result<Response, ApiError> {
+    require_auth(&headers, &state)?;
+    let trace = tools::jobs::job_trace(&job_id);
+    Ok(Json(json!({ "job_id": job_id, "trace": trace })).into_response())
+}
+
 pub(in crate::web) async fn job_log_http(
     State(state): State<DaemonState>,
     headers: HeaderMap,

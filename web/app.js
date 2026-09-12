@@ -9250,11 +9250,29 @@
       const data = await (await apiRequest("/api/jobs")).json();
       state.backgroundJobs.clear();
       for (const job of data?.jobs || []) {
-        state.backgroundJobs.set(String(job.job_id), { ...job, receivedAt: Date.now() });
+        const jid = String(job.job_id);
+        state.backgroundJobs.set(jid, { ...job, receivedAt: Date.now() });
+        // 刷新后子代理展开区是空的(子过程只在内存里,#9)。补拉这个任务到目前为止的
+        // 原始标记流回放进它的 sink,展开就能看到之前的思考/工具/正文;之后的实时进度
+        // 继续往同一个 sink 追加。每个 sink 只回放一次。
+        if (job.kind === "subagent") seedJobTrace(jid);
       }
       renderJobsStrip();
     } catch {
       /* daemon may predate the jobs API */
+    }
+  }
+
+  async function seedJobTrace(jid) {
+    const sink = jobStreamSink(jid);
+    if (sink.__replayed) return;
+    sink.__replayed = true;
+    try {
+      const data = await (await apiRequest(`/api/jobs/${encodeURIComponent(jid)}/trace`)).json();
+      for (const marker of data?.trace || []) renderSubagentProgress(sink, String(marker));
+      if ((data?.trace || []).length) renderJobsStrip();
+    } catch {
+      sink.__replayed = false; /* 拉失败下次再试 */
     }
   }
 
