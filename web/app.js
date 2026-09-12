@@ -3341,8 +3341,13 @@
     if (!button) return;
     apiRequest("/api/voice/status")
       .then((response) => response.json())
-      .then((status) => { button.hidden = !status?.enabled; })
-      .catch(() => { button.hidden = true; });
+      .then((status) => {
+        // 语音按钮只在 miyu voice 可用时才存在(用户);具体显 mic 还是 send 由
+        // updateComposerControls 按有没有输入切换(空+语音可用=麦,有输入=发送)。
+        state.voiceEnabled = Boolean(status?.enabled);
+        updateControlState();
+      })
+      .catch(() => { state.voiceEnabled = false; updateControlState(); });
   }
 
   function wireMicButton() {
@@ -3537,6 +3542,12 @@
     elements.sendButton.setAttribute("aria-label", elements.sendButton.title);
     elements.sendButton.disabled = state.blocked || state.adminBusy || state.submitting || hasPendingQuestion()
       || (inputCount === 0 && !attachmentReady) || inputCount > MAX_CONTENT_CHARS || attachmentUploading || attachmentError;
+    // 语音与发送合并成同一个位置(用户):miyu voice 可用、且没有输入、且不在排队/运行时
+    // 显麦克风(点了走语音),否则显发送。voice 不可用就永远是发送。
+    const hasDraft = inputCount > 0 || attachmentReady;
+    const showMic = state.voiceEnabled === true && !hasDraft && !running && !state.submitting;
+    elements.micButton.hidden = !showMic;
+    elements.sendButton.hidden = showMic;
     document.querySelectorAll(".edit-action, .redo-action").forEach((button) => {
       button.disabled = !revisionEligible();
     });

@@ -5241,8 +5241,8 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   width: 100%;
   min-width: 0;
   max-width: 100%;
-  /* 输入框高度:太矮不好写(09-12 用户反馈),回到 60。 */
-  min-height: 60px;
+  /* 输入框三行高(用户要求)。 */
+  min-height: 84px;
   max-height: 200px;
   resize: none;
   padding: 10px 15px 6px;
@@ -5262,28 +5262,32 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   color: var(--text-soft);
 }
 
-/* ── 输入框:框内只留交互按钮,模型/状态/tok·s/累计/上下文移到框下一行(#99) ── */
+/* ── 输入框:三行文本区 + 底部一栏(附件左下角,面板/语音/发送右下角);信息移到框下(#99) ── */
 .composer-input-row {
   display: flex;
-  align-items: flex-end;
+  flex-direction: column;
+  align-items: stretch;
   width: 100%;
   min-width: 0;
-  gap: 6px;
-  padding-right: 10px;
 }
 .composer-input-row > textarea {
-  flex: 1 1 auto;
+  width: 100%;
 }
-.composer-actions {
+.composer-inbox-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 8px 10px;
+}
+.composer-inbox-right {
+  margin-left: auto;
   display: flex;
   align-items: center;
   gap: 4px;
-  flex: none;
-  padding-bottom: 8px;
 }
-/* 输入框内按钮统一一套(用户嫌旧的丑):副按钮幽灵(透明+悬浮底色),发送填充强调色
-   作主操作,停止红调;都是 36px 圆角、图标 18px。 */
-.composer-actions button {
+/* 框内按钮统一一套:副按钮幽灵(透明+悬浮底色),发送圆形强调色作主操作,停止红调;
+   36px 圆角、图标 18px。 */
+.composer-inbox-bar button {
   width: 36px;
   height: 36px;
   flex: 0 0 36px;
@@ -5296,42 +5300,42 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease, transform 0.12s ease;
 }
-.composer-actions button > .icon-slot,
-.composer-actions button > .icon-slot svg {
+.composer-inbox-bar button > .icon-slot,
+.composer-inbox-bar button > .icon-slot svg {
   width: 18px;
   height: 18px;
 }
-.composer-actions button:hover:not(:disabled) {
+.composer-inbox-bar button:hover:not(:disabled) {
   background: var(--surface-2);
   color: var(--text);
 }
-.composer-actions button:active:not(:disabled) {
+.composer-inbox-bar button:active:not(:disabled) {
   transform: scale(0.9);
 }
-.composer-actions button:disabled {
+.composer-inbox-bar button:disabled {
   color: var(--text-faint);
   cursor: not-allowed;
 }
-.composer-actions .send-button {
+.composer-inbox-bar .send-button {
   border-radius: 50%;
   background: var(--accent);
   color: var(--md-sys-color-on-primary, #12131b);
 }
-.composer-actions .send-button:hover:not(:disabled) {
+.composer-inbox-bar .send-button:hover:not(:disabled) {
   background: var(--accent);
   color: var(--md-sys-color-on-primary, #12131b);
   filter: brightness(1.1);
 }
-.composer-actions .send-button:disabled {
+.composer-inbox-bar .send-button:disabled {
   background: var(--surface-2);
   color: var(--text-faint);
 }
-.composer-actions .live-stop-button {
+.composer-inbox-bar .live-stop-button {
   background: color-mix(in srgb, var(--ribbon) 20%, transparent);
   color: var(--ribbon);
   border: 0;
 }
-.composer-actions .live-stop-button:hover:not(:disabled) {
+.composer-inbox-bar .live-stop-button:hover:not(:disabled) {
   background: color-mix(in srgb, var(--ribbon) 34%, transparent);
   color: var(--ribbon);
 }
