@@ -238,6 +238,7 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         // "task" 是 09-11 改名前的旧名:历史记录里存着的调用照样要显示成
         // 「子代理」,不然翻旧会话看到的是裸工具名。
         "subagent" | "task" => t("Subagent", "子代理"),
+        "send_subagent_message" => t("Message subagent", "给子代理留言"),
         "read" | "read_file" => t("Read file", "读取文件"),
         "write_file" => t("Write file", "写入文件"),
         "edit_file" => t("Edit file", "编辑文件"),
