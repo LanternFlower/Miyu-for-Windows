@@ -10331,32 +10331,72 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 }
 /* 子代理任务简介(展开区最上方,09-12 #6):标题 + 整段 prompt,不再让人读裸 JSON。 */
 /* 任务简介:一个可展开 tag,收起只显任务标题,展开才看整段 prompt(prompt 太长会刷屏)。 */
+/* 任务简介=时间线的开头(和其它步同构):summary 一行,无背景,marker 是坐在细线上的
+   节点(平时 📋、悬浮换展开箭头),点开在下面缩进显整段 prompt。 */
 .subagent-brief {
-  margin: 2px 0 8px;
+  margin: 0;
 }
 .subagent-brief > summary {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--proc-gap, 4px);
   list-style: none;
   cursor: pointer;
-  padding: 5px 9px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--text) 5%, transparent);
+  min-height: 26px;
+  padding: 3px 0;
   font-weight: 600;
-  font-size: var(--fs-meta);
-  color: var(--text);
+  font-size: 11.5px;
+  color: var(--proc-soft);
+  border-radius: 6px;
   transition: background-color 0.15s ease;
 }
 .subagent-brief > summary::-webkit-details-marker { display: none; }
 .subagent-brief > summary:hover {
-  background: color-mix(in srgb, var(--text) 9%, transparent);
+  background: var(--surface-2);
 }
-.subagent-brief-icon {
+/* 节点:和时间线其它图标同一列、坐在细线上,遮线块用面板暖底(#4)。平时 📋,
+   悬浮原地换成展开箭头(不在右侧另起,用户要求)。 */
+.subagent-brief-marker {
+  position: relative;
+  flex: 0 0 var(--proc-col, 16px);
+  width: var(--proc-col, 16px);
+  height: var(--proc-col, 16px);
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--text) 5%, var(--app-bg));
+  box-shadow:
+    0 -2px 0 color-mix(in srgb, var(--text) 5%, var(--app-bg)),
+    0 2px 0 color-mix(in srgb, var(--text) 5%, var(--app-bg));
+  color: var(--proc-soft);
+}
+.subagent-brief > summary:hover > .subagent-brief-marker {
+  background: var(--surface-2);
+  box-shadow: 0 -2px 0 var(--surface-2), 0 2px 0 var(--surface-2);
+}
+.subagent-brief-marker .subagent-brief-icon,
+.subagent-brief-marker .subagent-brief-chevron {
+  position: absolute;
+  inset: 0;
+  margin: auto;
   width: 13px;
   height: 13px;
-  flex: none;
-  color: var(--text-faint);
+}
+.subagent-brief-chevron {
+  opacity: 0;
+  transition: transform 0.25s ease, opacity 0.12s ease;
+}
+.subagent-brief > summary:hover .subagent-brief-icon {
+  opacity: 0;
+}
+.subagent-brief > summary:hover .subagent-brief-chevron {
+  opacity: 1;
+}
+.subagent-brief[open] > summary .subagent-brief-icon {
+  opacity: 0;
+}
+.subagent-brief[open] > summary .subagent-brief-chevron {
+  opacity: 1;
+  transform: rotate(90deg);
 }
 .subagent-brief-name {
   flex: 1 1 auto;
@@ -10364,26 +10404,16 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.subagent-brief-chevron {
-  width: 12px;
-  height: 12px;
-  flex: none;
-  color: var(--text-faint);
-  transition: transform 0.25s ease;
-}
-.subagent-brief[open] > summary > .subagent-brief-chevron {
-  transform: rotate(90deg);
+  color: var(--text);
 }
 .subagent-brief-prompt {
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: var(--fs-meta);
+  font-size: 11.5px;
   line-height: 1.55;
-  color: var(--text-soft);
-  margin: 6px 4px 2px;
-  padding-left: 6px;
-  border-left: 2px solid color-mix(in srgb, var(--line-strong) 60%, transparent);
+  color: var(--proc-think, var(--text-soft));
+  margin: 2px 8px 6px var(--proc-indent);
+  padding: 0;
 }
 /* 子过程时间线里,思考/工具那一行(tag)在展开内容超出可用高度、往下滚时粘在
    顶部,滚长内容也看得到它是哪一项、方便就地收起(09-12 #4/#12)。sticky 需要

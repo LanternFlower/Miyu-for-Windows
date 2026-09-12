@@ -803,7 +803,7 @@
     return line;
   }
 
-  const PROC_NODE_SELECTOR = ":scope > .tool-head > .tool-icon, :scope > summary > .reasoning-icon, :scope.tool-preparing-tag > .icon-slot";
+  const PROC_NODE_SELECTOR = ":scope > .tool-head > .tool-icon, :scope > summary > .reasoning-icon, :scope > summary > .subagent-brief-marker, :scope.tool-preparing-tag > .icon-slot";
 
   function procLineFit(line) {
     const proc = line.miyuProc;
@@ -905,6 +905,20 @@
     }
     line.miyuProc.steps.appendChild(element);
     return line;
+  }
+
+  // 子代理任务简介作为「时间线的开头」插进去(用户:和 timeline 统一,不再是分离的一块)。
+  // 建一条 proc-line(若无),把 brief 放成第一个 step——它的 .subagent-brief-marker
+  // 会被 PROC_NODE_SELECTOR 认作节点,细线从它这里起头。
+  function attachSubBrief(blocks, brief) {
+    if (!blocks || !brief) return;
+    let line = blocks.lastElementChild;
+    if (!line?.classList?.contains("proc-line") || line.miyuProc?.closed) {
+      line = procLineCreate(false);
+      blocks.appendChild(line);
+    }
+    line.miyuProc.steps.insertBefore(brief, line.miyuProc.steps.firstChild);
+    procLineFit(line);
   }
 
   // 正文/媒体来了:把当前时间线切断
@@ -5968,14 +5982,18 @@
     brief.className = "subagent-brief";
     const summary = document.createElement("summary");
     summary.className = "subagent-brief-title";
+    // 节点:和时间线其它步同一列、坐在细线上(它是时间线的开头,不再是分离的一块)。
+    // 平时显 📋,鼠标悬浮时原地换成展开箭头(不在右侧另起一个,用户要求)。
+    const marker = document.createElement("span");
+    marker.className = "subagent-brief-marker";
+    marker.append(
+      makeIconSlot("clipboard", "subagent-brief-icon"),
+      makeIconSlot("chevron-right", "subagent-brief-chevron"),
+    );
     const label = document.createElement("span");
     label.className = "subagent-brief-name";
     label.textContent = t || "任务 prompt";
-    summary.append(
-      makeIconSlot("clipboard", "subagent-brief-icon"),
-      label,
-      makeIconSlot("chevron-right", "subagent-brief-chevron"),
-    );
+    summary.append(marker, label);
     brief.appendChild(summary);
     if (p) {
       const body = document.createElement("div");
@@ -6113,8 +6131,8 @@
       // sink.brief,不会重复)。插在子过程时间线容器之前。
       if (!sink.brief) {
         const brief = buildSubagentBrief(ev.description, ev.prompt);
-        if (brief && sink.blocks.parentElement) {
-          sink.blocks.parentElement.insertBefore(brief, sink.blocks);
+        if (brief) {
+          attachSubBrief(sink.blocks, brief);
           sink.brief = true;
         }
       }
@@ -7902,7 +7920,7 @@
       const taskArgs = parsedToolArguments(data?.arguments);
       const brief = buildSubagentBrief(taskArgs.description, taskArgs.prompt);
       if (brief) {
-        body.insertBefore(brief, subBlocks);
+        attachSubBrief(subBlocks, brief);
         argumentsDetail.wrapper.hidden = true;
         briefBuilt = true;
       }
