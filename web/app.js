@@ -6559,9 +6559,7 @@
     card.className = "answered-question-card";
     if (compact) card.classList.add("is-compact");
     const header = document.createElement("header");
-    const icon = document.createElement("span");
-    icon.className = "question-icon";
-    icon.appendChild(makeIconSlot("check"));
+    // 去掉左边那个大对钩(#143 用户嫌大):「已回答」二字已经表达状态了。
     const copy = document.createElement("div");
     const status = document.createElement("small");
     status.textContent = "已回答";
@@ -6569,7 +6567,7 @@
     const questions = Array.isArray(exchange?.questions) ? exchange.questions : [];
     title.textContent = questions.length === 1 ? String(questions[0]?.header || "补充确认") : `${questions.length} 项补充确认`;
     copy.append(status, title);
-    header.append(icon, copy);
+    header.append(copy);
     const list = document.createElement("dl");
     list.className = "answered-question-list";
     const answers = Array.isArray(exchange?.answers) ? exchange.answers : [];

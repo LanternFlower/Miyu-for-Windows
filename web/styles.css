@@ -1613,7 +1613,7 @@ body[data-theme="graphite"] .session-unread-dot {
    不要左侧竖线(#116);给一层柔和暖底做外框(和前台活区域同款),节点遮线块用的就是
    这暖底,面板不上底时节点暖色会浮在纯页面底上露方块(#122)。左缩进从 24 收到 6(#133)。 */
 .job-stream-panel:not(.job-log-panel) {
-  margin: 2px 0 8px 0;
+  margin: 2px 0 8px 8px;
   padding: 5px 8px;
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--text) 5%, transparent);
@@ -1689,7 +1689,7 @@ body[data-theme="graphite"] .session-unread-dot {
 }
 /* 后台命令展开:拉日志尾巴,限高约 5 行可滚(09-12)。 */
 .job-log-panel {
-  margin: 2px 0 8px 0;
+  margin: 2px 0 8px 8px;
 }
 .job-log-pre {
   margin: 0;
