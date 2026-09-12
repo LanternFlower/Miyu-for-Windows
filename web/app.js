@@ -6257,6 +6257,13 @@
     if (!c) return;
     if (c.scrollHeight - c.scrollTop - c.clientHeight < 30) c.scrollTop = c.scrollHeight;
   }
+  // 往子过程区加一个块(思考块头/工具卡)必须走「加之前先量在不在底,加完只在原本
+  // 贴底时才拉回底」——直接 procLineAttach 会把容器撑高却不滚,一次没滚就把整条贴底
+  // 跟随链打断,之后逐 token 的 subStickBottom 全测得「改前不在底」再不跟(#159/#160,
+  // 前台后台同此)。subAutoScroll 是「加完再量」,块一高就已经离底 >30px 也修不回来。
+  function subAttach(sink, el) {
+    subStickBottom(sink, () => procLineAttach(sink.blocks, el));
+  }
 
   function renderSubagentProgress(sink, message) {
     const ev = parseSubagentEvent(message);
@@ -6300,14 +6307,16 @@
       // 子代理正文逐 token 增量(#6:光有 timeline,正文没流出来)。先收思考,再把
       // 正文累加到一个活的正文块;新起一段正文时切断当前时间线,正文落在段间,
       // 之后的工具/思考会另起一条 proc-line——和主对话交错渲染同构。
-      subEndReasoning(sink);
       if (!sink.contentBlock) {
-        procLineBreak(sink.blocks);
-        const div = document.createElement("div");
-        div.className = "sub-content markdown-body";
-        sink.blocks.appendChild(div);
-        sink.contentBlock = div;
-        sink.contentAccum = "";
+        subStickBottom(sink, () => {
+          subEndReasoning(sink);
+          procLineBreak(sink.blocks);
+          const div = document.createElement("div");
+          div.className = "sub-content markdown-body";
+          sink.blocks.appendChild(div);
+          sink.contentBlock = div;
+          sink.contentAccum = "";
+        });
       }
       sink.contentAccum += ev.text;
       // markdown 渲染按 rAF 合并:逐 token 全量重解析太费,一帧渲一次就够顺。
@@ -6337,7 +6346,7 @@
         if (sink.think.liveStatus && sink.think.startedAt != null) {
           sink.think.liveStatus.dataset.subStart = String(sink.think.startedAt);
         }
-        procLineAttach(sink.blocks, sink.think.element);
+        subAttach(sink, sink.think.element);
       }
       sink.thinkAccum += ev.text;
       sink.think.raw = sink.thinkAccum;
@@ -6377,10 +6386,9 @@
       const call = sink.pendingCall || { name: ev.name, display: ev.display, args: ev.args };
       sink.pendingCall = null;
       const card = createPersistedToolCard({ name: call.name, display_name: call.display, arguments: call.args != null ? call.args : ev.args, output: ev.output, ok: ev.ok });
-      procLineAttach(sink.blocks, card);
+      subAttach(sink, card);
       sink.peekLine = (call.display || call.name) + " " + (ev.ok ? "完成" : "出错");
       if (sink.taskPeek) setReasoningPeek(sink.taskPeek, sink.peekLine);
-      subAutoScroll(sink);
       return;
     }
     if (ev.kind === "plain" && ev.text) {
@@ -6406,7 +6414,7 @@
         const nm = at >= 0 ? label.slice(0, at) : label;
         const subj = at >= 0 ? label.slice(at + 3) : "";
         const card = createPersistedToolCard({ name: nm, arguments: subj, output: "", ok: !errored });
-        procLineAttach(sink.blocks, card);
+        subAttach(sink, card);
       }
     }
   }
@@ -8742,7 +8750,9 @@
     questionState.card.removeAttribute("aria-label");
     questionState.card.setAttribute("aria-labelledby", questionState.titleId);
     questionState.status.textContent = "已回答";
-    questionState.icon.replaceChildren(makeIconSlot("check"));
+    // 去掉那个大对钩(#143/#161):和落库回看的已回答卡一致,「已回答」二字已够表达状态。
+    questionState.icon.replaceChildren();
+    questionState.icon.hidden = true;
     questionState.error.hidden = true;
     setQuestionControlsDisabled(questionState, true);
     renderQuestionAnswerSummary(questionState, answers);
@@ -11811,7 +11821,10 @@
     const last = step === 3;
     elements.oobeBack.hidden = step === 1 || step === 4;
     elements.oobeNext.hidden = step === 4;
-    elements.oobeSkip.hidden = step === 4 || oobeState.reason !== "first";
+    // 首启是「先跳过」(跳过建号引导);新建/编辑人格是「取消」(直接关掉不保存)——
+    // 之前这两种模式下这颗键整个藏了,于是新建人格没有任何退出口(用户 #164)。
+    elements.oobeSkip.hidden = step === 4;
+    elements.oobeSkip.textContent = oobeState.reason === "first" ? "先跳过" : "取消";
     elements.oobeNextLabel.textContent = last ? (oobeState.editing ? "保存" : "开始聊天") : "下一步";
     oobeShowError("");
     if (step === 1) window.requestAnimationFrame(() => elements.oobeName.focus());
@@ -12043,6 +12056,11 @@
       oobeFinish();
     });
     elements.oobeSkip.addEventListener("click", async () => {
+      // 新建/编辑人格模式:这颗是「取消」,直接关掉、什么都不动(#164)。
+      if (oobeState.reason !== "first") {
+        closeOobe();
+        return;
+      }
       try {
         await apiRequest("/api/account/active-persona", { method: "PUT", body: JSON.stringify({ slug: null, oobe_done: true }) });
       } catch (_) {}
