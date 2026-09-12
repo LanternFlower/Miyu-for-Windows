@@ -2555,13 +2555,18 @@ body[data-theme="graphite"] {
 }
 .diff-file {
   min-width: 0;
+  /* 不要描边(用户 #156):改用柔和阴影 + 一层浅表面把 diff 抬成一张卡,
+     和 artifact 面板同款 --artifact-shadow(随主题,暖米上是暖棕投影)。 */
+  background: var(--surface-1);
+  border-radius: var(--radius);
+  box-shadow: var(--artifact-shadow);
+  overflow: hidden;
 }
 .diff-file-head {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  padding: 0 2px 6px;
-  margin-bottom: 3px;
+  padding: 8px 12px 7px;
 }
 .diff-op {
   flex: none;
@@ -2601,7 +2606,7 @@ body[data-theme="graphite"] {
   overflow: hidden auto;
   overscroll-behavior: contain;
   line-height: 1.6;
-  border-radius: 6px;
+  padding-bottom: 4px;
 }
 .diff-hunk {
   padding: 3px 12px;
