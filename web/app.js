@@ -929,7 +929,10 @@
     proc.closed = true;
     line.classList.remove("is-live");
     procLineRefresh(line);
-    if (state.procCollapse) {
+    // 子过程时间线(前台/后台子代理展开区)恒展开,不做 procCollapse 折叠:那块本就是
+    // 限高滚动的紧凑区,折成「Thought / N tools」摘要既多余又会冒出一条怪「Thought」
+    // 顶在 prompt 上面(#2)。只有主对话的过程区才折。
+    if (state.procCollapse && !blocks.classList?.contains("sub-blocks")) {
       proc.head.hidden = false;
       procLineSetOpen(line, false);
     }
@@ -6119,9 +6122,9 @@
   // 子过程时间线增长时自动滚到底(09-12 #7:展开后 timeline 继续长不自动滚)。
   // 滚的是最近的可滚容器(前台=.sub-blocks 本身,后台=外层 .job-stream-panel);
   // 只有用户本来就贴着底才跟随,往上翻了就不抢。
-  function subAutoScroll(sink) {
+  function subScrollContainer(sink) {
     const el = sink && sink.blocks;
-    if (!el) return;
+    if (!el) return null;
     let c = el;
     while (c && c !== document.body) {
       const style = window.getComputedStyle(c);
@@ -6129,9 +6132,22 @@
       c = c.parentElement;
     }
     if (!c || c === document.body) c = el;
-    if (c.scrollHeight - c.scrollTop - c.clientHeight < 48) {
-      c.scrollTop = c.scrollHeight;
+    return c;
+  }
+  function subAutoScroll(sink) {
+    const c = subScrollContainer(sink);
+    if (!c) return;
+    // 用户往上滚了就别把他拽回底(#4:正在思考、窥视刷新时没法向上翻)。给容器挂一次
+    // 滚动监听:离底 >24px 记「用户在上面看」,回到底部才恢复自动跟随。程序自身的
+    // scrollTop 归位也会触发 scroll,把标记清回 false,不会误锁。
+    if (!c.__subScrollBound) {
+      c.__subScrollBound = true;
+      c.addEventListener("scroll", () => {
+        c.__pinnedUp = (c.scrollHeight - c.scrollTop - c.clientHeight) > 24;
+      }, { passive: true });
     }
+    if (c.__pinnedUp) return;
+    c.scrollTop = c.scrollHeight;
   }
 
   function renderSubagentProgress(sink, message) {
@@ -6219,7 +6235,9 @@
       subEndContent(sink);
       // Full 档:call 先记着,result 到了再落一张完成卡(带 args + output)。
       sink.pendingCall = { name: ev.name, display: ev.display, args: ev.args, subject: ev.subject };
-      sink.peekLine = ev.subject ? ev.name + " · " + ev.subject : "调用 " + ev.name;
+      // 窥视也用友好显示名(#7:展开是「运行命令」,窥视却还是裸的 run_command)。
+      const callLabel = ev.display || ev.name;
+      sink.peekLine = ev.subject ? callLabel + " · " + ev.subject : "调用 " + callLabel;
       if (sink.taskPeek) setReasoningPeek(sink.taskPeek, sink.peekLine);
       return;
     }
@@ -6230,7 +6248,7 @@
       sink.pendingCall = null;
       const card = createPersistedToolCard({ name: call.name, display_name: call.display, arguments: call.args != null ? call.args : ev.args, output: ev.output, ok: ev.ok });
       procLineAttach(sink.blocks, card);
-      sink.peekLine = call.name + " " + (ev.ok ? "完成" : "出错");
+      sink.peekLine = (call.display || call.name) + " " + (ev.ok ? "完成" : "出错");
       if (sink.taskPeek) setReasoningPeek(sink.taskPeek, sink.peekLine);
       subAutoScroll(sink);
       return;
@@ -8056,6 +8074,9 @@
       if (!collapsed) {
         window.requestAnimationFrame(() => {
           scrollToolOutputToEnd(tool);
+          // 展开从「当前进行中」看起,而不是从顶部(#8)。滚到底 = 最新那一步。
+          const sc = subScrollContainer(tool);
+          if (sc) { sc.__pinnedUp = false; sc.scrollTop = sc.scrollHeight; }
           contentAdded();
         });
       }

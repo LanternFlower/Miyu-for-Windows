@@ -1661,8 +1661,8 @@ body[data-theme="graphite"] .session-unread-dot {
    (0,2,0,那条是给主对话「已思考」尾巴用的右对齐+左淡出,保持不动)。 */
 .job-chip .job-chip-peek.is-overflow {
   justify-content: flex-start;
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
-  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 28px), transparent);
 }
 .job-chip-token {
   flex: none;
@@ -1694,7 +1694,8 @@ body[data-theme="graphite"] .session-unread-dot {
 }
 /* 09-12 item 6:展开的子过程区约 5 行就够,不再 42vh 顶到全屏。 */
 .job-stream-panel {
-  max-height: 220px;
+  /* 后台子代理展开区也固定约 5 行高(#10,和前台的活区域一个量级),超出滚动。 */
+  max-height: 150px;
 }
 
 /* 09-12 二轮修 #2/#4/#5/#10:标题永远优先(至少放得下「开发中/子代理/命令」),
@@ -1721,8 +1722,8 @@ body[data-theme="graphite"] .session-unread-dot {
   flex: 1 1 0;
   min-width: 0;
   justify-content: flex-start;
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
-  mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 24px), transparent);
 }
 .job-chip.is-open > .job-chip-peek {
   display: none;
@@ -5389,7 +5390,8 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   color: var(--text-faint);
 }
 .composer-info b {
-  font-weight: 600;
+  /* 数值不加粗(#1:没必要),只靠颜色比标签深一档区分。 */
+  font-weight: 400;
   color: var(--text);
   font-variant-numeric: tabular-nums;
   font-family: var(--font-mono);
@@ -9978,7 +9980,8 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
    在暖底上露出一块深色方块),也不能没有背景(那样细线从图标里穿过去)。图标在
    什么背景上就是什么背景(#4)。 */
 .sub-blocks .proc-steps > .tool-card > .tool-head > .tool-icon,
-.sub-blocks .proc-steps > .reasoning-block > summary > .reasoning-icon {
+.sub-blocks .proc-steps > .reasoning-block > summary > .reasoning-icon,
+.sub-blocks .proc-head > .proc-node {
   background: color-mix(in srgb, var(--text) 5%, var(--app-bg));
   box-shadow:
     0 -2px 0 color-mix(in srgb, var(--text) 5%, var(--app-bg)),
@@ -10511,8 +10514,8 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   margin-left: 8px;
   /* 左对齐紧跟秒数,超长向右淡出(#2:右对齐不合理);0,3,0 压过 .reasoning-peek.is-overflow。 */
   justify-content: flex-start;
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
-  mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 24px), transparent);
 }
 /* 放不下了:尾部对齐(文字从左边溢出被裁),再加一层左侧渐隐,新字从右边推进来 */
 .reasoning-peek.is-overflow {
