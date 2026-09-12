@@ -7744,15 +7744,25 @@
 
     const body = document.createElement("div");
     body.className = "tool-body";
-    const argumentText = prettyArguments(call?.arguments);
-    if (argumentText) {
-      const detail = createToolDetail("参数", true);
-      detail.content.textContent = argumentText;
-      detail.wrapper.hidden = false;
-      body.appendChild(detail.wrapper);
+    // 文件编辑:把 patchText 参数画成 diff(增删配色),而不是摊一坨补丁 JSON。
+    // patchText 随 tool_flow 落库,回看/刷新走同一份。渲不出(解析失败)再退回原始参数。
+    const diffView = window.MiyuDiff?.renderFromCall?.(call) || null;
+    if (diffView) {
+      body.appendChild(diffView);
+    } else {
+      const argumentText = prettyArguments(call?.arguments);
+      if (argumentText) {
+        const detail = createToolDetail("参数", true);
+        detail.content.textContent = argumentText;
+        detail.wrapper.hidden = false;
+        body.appendChild(detail.wrapper);
+      }
     }
     const output = String(call?.output || "");
-    if (output) {
+    // 编辑成功时,结果就是 `{ok:true, files:[…]}` 这类样板,和上面的 diff 重复——藏掉;
+    // 失败时结果是报错原文,留着(diffView 存在=是编辑工具且解析出了补丁)。
+    const hideEditOutput = diffView && ok;
+    if (output && !hideEditOutput) {
       const detail = createToolDetail("结果", true);
       detail.content.textContent = output;
       detail.wrapper.hidden = false;
@@ -8016,13 +8026,16 @@
     const stderrDetail = createToolDetail("错误输出", true);
     stderrDetail.wrapper.classList.add("is-stderr");
     const resultDetail = createToolDetail("结果", true);
-    const argumentText = prettyArguments(data?.arguments);
+    // 文件编辑:patchText 参数画成 diff,而不是摊一坨补丁 JSON(实时与刷新回看同一份)。
+    const diffView = window.MiyuDiff?.renderFromCall?.({ name: data?.name, arguments: data?.arguments }) || null;
+    const argumentText = diffView ? "" : prettyArguments(data?.arguments);
     if (argumentText) {
       argumentsDetail.raw = argumentText;
       argumentsDetail.content.textContent = argumentText;
       argumentsDetail.wrapper.hidden = false;
     }
     body.append(argumentsDetail.wrapper, progressDetail.wrapper, stdoutDetail.wrapper, stderrDetail.wrapper, resultDetail.wrapper);
+    if (diffView) body.insertBefore(diffView, argumentsDetail.wrapper);
     // 子代理:收起看标题行的窥视,展开看下面的「子过程时间线」——子代理自己的
     // 思考与工具流,和主智能体的过程区同款渲染(09-11 用户要求)。不再用方块。
     let liveProgress = null;
@@ -8320,6 +8333,9 @@
       if (!tool.finished) updateToolStatus(tool, "运行中", "loader-circle");
     } else if (name === "tool.progress") {
       let message = String(data?.message || "");
+      // 文件编辑(edit/kb/artifact):diff 卡已由 patchText 参数在建卡时画好,「准备修改」
+      // 这类阶段签、`__patch_preview__` 预览等中间进度都是噪点,一律丢弃,只留 diff + 结果。
+      if (message.startsWith("__patch_preview__") || window.MiyuDiff?.isEditTool?.(tool.name)) return;
       // 阶段签(「准备修改」这类)只描述过程,不是结果:工具失败后不该留在卡片上
       // 当错误说明(09-11 手机端实测 edit 被沙盒拒后还挂着「准备修改」)。
       tool.lastProgressWasPhase = message.startsWith("__tool_phase__");
@@ -8335,7 +8351,14 @@
       if (!tool.liveProgress && !tool.finished && message) {
         tool.liveProgress = document.createElement("div");
         tool.liveProgress.className = "tool-live-progress";
-        tool.card.insertBefore(tool.liveProgress, tool.body);
+        // body 在普通/命令卡里包在 .tool-fold 里,不是 card 的直接子节点,直接
+        // card.insertBefore(_, body) 会抛 NotFoundError(编辑工具的「准备修改」阶段
+        // 一直在悄悄抛,live 进度面板从来没真出现过)。挂到 body 顶部即可。
+        if (tool.body.parentNode === tool.card) {
+          tool.card.insertBefore(tool.liveProgress, tool.body);
+        } else {
+          tool.body.insertBefore(tool.liveProgress, tool.body.firstChild);
+        }
       }
       tool.progressDetail.raw = message;
       tool.progressDetail.content.textContent = message;
@@ -8372,7 +8395,10 @@
       tool.resultDetail.raw = output.length > MAX_TOOL_OUTPUT_CHARS ? `[较早输出已省略]\n${output.slice(-MAX_TOOL_OUTPUT_CHARS)}` : output;
       tool.resultDetail.content.textContent = tool.resultDetail.raw;
       // 子代理的最终输出要显示出来(#6:用户要看 AI 的最终输出,上批误删了)。
-      tool.resultDetail.wrapper.hidden = !tool.resultDetail.raw;
+      // 编辑工具成功时结果是 `{ok:true,files:[…]}` 样板,和 diff 卡重复——藏掉;失败留报错。
+      const hideEditOutput = Boolean(data?.ok) && window.MiyuDiff?.isEditTool?.(tool.name)
+        && tool.body.querySelector(".diff-view");
+      tool.resultDetail.wrapper.hidden = !tool.resultDetail.raw || Boolean(hideEditOutput);
       if (tool.commandPreview && tool.resultDetail.raw) {
         tool.stdoutDetail.wrapper.hidden = true;
         tool.stderrDetail.wrapper.hidden = true;

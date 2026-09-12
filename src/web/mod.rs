@@ -163,6 +163,8 @@ const TODOS_JS: &str = include_str!("../../web/todos.js");
 const HIGHLIGHT_JS: &str = include_str!("../../web/highlight.js");
 // 文件分享面板:独立文件,与 artifact 演示区无关。
 const SHARED_JS: &str = include_str!("../../web/shared.js");
+// 文件编辑工具的 diff 渲染:把 patchText 参数画成增删配色的 diff 卡。
+const DIFF_JS: &str = include_str!("../../web/diff.js");
 // 插件 dashboard 脚本走 assets.rs 的 DASH_SCRIPTS 静态表,加面板只改那一行。
 // KaTeX 0.18.4(vendored):公式渲染;字体只带 woff2(css 里 woff2 列首,
 // 现代浏览器不会去请求 woff/ttf 回退项)。

@@ -2533,6 +2533,106 @@ a.path-link {
   color: var(--tok-y);
 }
 
+/* 文件编辑工具(edit/kb/artifact)的 diff 卡(web/diff.js):把 patchText 画成
+   分文件、带增删配色的 diff,不再摊一坨补丁 JSON。增删色沿用上面高亮那套
+   --tok-s(增)/--tok-y(删),和代码块里的补丁一个观感。 */
+.diff-view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.diff-file {
+  border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+}
+.diff-file-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  font-size: var(--fs-micro);
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+}
+.diff-op {
+  flex: none;
+  font-weight: 600;
+  color: var(--text-soft);
+}
+.diff-file.is-add .diff-op { color: var(--tok-s); }
+.diff-file.is-delete .diff-op { color: var(--tok-y); }
+.diff-ns {
+  flex: none;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.diff-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  color: var(--text);
+}
+.diff-stat {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.diff-stat-add { color: var(--tok-s); }
+.diff-stat-del { color: var(--tok-y); }
+.diff-lines {
+  margin: 0;
+  max-height: 300px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: var(--fs-micro);
+  line-height: 1.5;
+}
+.diff-hunk {
+  padding: 2px 8px;
+  color: var(--text-faint);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.diff-line {
+  display: flex;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.diff-gutter {
+  flex: none;
+  width: 1.6em;
+  text-align: center;
+  user-select: none;
+  color: var(--text-faint);
+}
+.diff-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-right: 8px;
+}
+.diff-line.is-add {
+  background: color-mix(in srgb, var(--tok-s) 12%, transparent);
+}
+.diff-line.is-add .diff-gutter { color: var(--tok-s); }
+.diff-line.is-del {
+  background: color-mix(in srgb, var(--tok-y) 12%, transparent);
+}
+.diff-line.is-del .diff-gutter { color: var(--tok-y); }
+
 /* 思考签:气泡内小签,常驻极浅紫底;直播时换 live 底 + 标题流光 */
 .reasoning-block {
   min-width: 0;
