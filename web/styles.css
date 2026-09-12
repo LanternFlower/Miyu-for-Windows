@@ -1650,10 +1650,13 @@ body[data-theme="graphite"] .session-unread-dot {
   flex: none;
   white-space: nowrap;
 }
-.job-chip-peek.is-overflow {
-  justify-content: flex-end;
-  -webkit-mask-image: linear-gradient(to right, transparent, #000 32px);
-  mask-image: linear-gradient(to right, transparent, #000 32px);
+/* 用户改主意(#2「窥视右对齐不合理」):任务行窥视改左对齐、紧跟时间,超长向右淡出。
+   .job-chip 前缀把特异度抬到 0,3,0,压过文件后段的 `.reasoning-peek.is-overflow`
+   (0,2,0,那条是给主对话「已思考」尾巴用的右对齐+左淡出,保持不动)。 */
+.job-chip .job-chip-peek.is-overflow {
+  justify-content: flex-start;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
 }
 .job-chip-token {
   flex: none;
@@ -1707,13 +1710,13 @@ body[data-theme="graphite"] .session-unread-dot {
   flex: none;
 }
 .job-chip > .job-chip-peek {
-  /* 用户 #98 定的规格:左边 title+token+秒数固定,秒数右侧做淡出过渡,右侧是窥视区域。
-     窥视填右边余下空间、内容右对齐(贴着右侧),左边缘淡入过渡。标题封顶不缩,永远不被盖。 */
+  /* 窥视填右边余下空间,左对齐紧跟秒数(#2 用户改主意:右对齐不合理),超长向右淡出。
+     标题封顶不缩,永远不被盖(#3)。 */
   flex: 1 1 0;
   min-width: 0;
-  justify-content: flex-end;
-  -webkit-mask-image: linear-gradient(to right, transparent, #000 24px);
-  mask-image: linear-gradient(to right, transparent, #000 24px);
+  justify-content: flex-start;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
 }
 .job-chip.is-open > .job-chip-peek {
   display: none;
@@ -5241,8 +5244,8 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   width: 100%;
   min-width: 0;
   max-width: 100%;
-  /* 输入框三行高(用户要求)。 */
-  min-height: 84px;
+  /* 输入框两行高(用户要求再矮一行)。 */
+  min-height: 60px;
   max-height: 200px;
   resize: none;
   padding: 10px 15px 6px;
@@ -5284,6 +5287,8 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   display: flex;
   align-items: center;
   gap: 4px;
+  /* 停止按钮浮在发送按钮正上方(用户要求),需要相对定位作锚。 */
+  position: relative;
 }
 /* 框内按钮统一一套:副按钮幽灵(透明+悬浮底色),发送圆形强调色作主操作,停止红调;
    36px 圆角、图标 18px。 */
@@ -5980,10 +5985,14 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
 
 /* Compact per-reply stop controls above the composer send button. */
 .live-stop-rail {
-  /* 停止按钮内联在输入框右侧按钮区里(和发送并排),不再绝对定位浮在框上方错位(#1)。 */
+  /* 停止按钮浮在发送按钮正上方(用户要求):绝对定位、右缘对齐发送键、贴其上方一点。 */
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
   display: flex;
   align-items: center;
   gap: 4px;
+  z-index: 3;
 }
 .live-stop-rail[hidden] { display: none; }
 
@@ -10482,9 +10491,10 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   flex: 1 1 0;
   min-width: 0;
   margin-left: 8px;
-  justify-content: flex-end;
-  -webkit-mask-image: linear-gradient(to right, transparent, #000 24px);
-  mask-image: linear-gradient(to right, transparent, #000 24px);
+  /* 左对齐紧跟秒数,超长向右淡出(#2:右对齐不合理);0,3,0 压过 .reasoning-peek.is-overflow。 */
+  justify-content: flex-start;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
 }
 /* 放不下了:尾部对齐(文字从左边溢出被裁),再加一层左侧渐隐,新字从右边推进来 */
 .reasoning-peek.is-overflow {
