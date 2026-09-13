@@ -54,3 +54,19 @@ The application release remains tagged at `bc7087f4c4b03adcef7f8cc8fce64a1c1abb0
 
 - GitHub REST `/releases/tags/v0.6.0` returned HTTP 404 for the created draft, while the authenticated `/releases` list returned draft ID 387984893. The adapter now uses a complete paginated authenticated list only after the tag endpoint returns 404, still rejects authentication/network errors, and rejects ambiguous tag matches. Three new regression assertions failed before the fix; the updated full Python suite passes 70 tests. Upload resumed the existing draft, then read back all 21 assets and finalized the release.
 - `makepkg --printsrcinfo` rejected a read-only bind directory because BUILDDIR/PKGDEST defaulted there. An actual non-root container reproduced exit 11. Channel generation now points its temporary output directories and HOME at container `/tmp`; both generated .SRCINFO files then passed in the same read-only mount. Published asset hashes were downloaded and verified before applying the recipes to this worktree. Existing AUR checkouts with local changes were preserved.
+
+## Public attachment scope correction
+
+The user requested only distribution packages on the Release download page. The publisher had
+used every file in the complete verification bundle as its upload allowlist. A new regression
+failed against that implementation: internal JSON, SPDX, checksums, PNG and GNU tar files were
+all uploaded alongside the six native packages.
+
+Public names now come only from frozen assets with formats `archlinux`, `deb` and `rpm`.
+Both the publisher and dry-run use that selection. The publisher still verifies the entire
+bundle before any remote action; internal evidence tampering blocks publication. Existing
+unknown or internal remote attachments are rejected, as are extra assets introduced during
+upload or finalization. The complete Python suite passes 73 tests, including three new
+regressions and the existing retry/hash-conflict checks using complete bundle fixtures.
+Temporary fixture directories are cleaned by the tests. This correction makes no remote
+changes by itself and does not alter package bytes or the frozen build matrix.

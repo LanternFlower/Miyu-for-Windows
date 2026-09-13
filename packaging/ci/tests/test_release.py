@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import io
 from pathlib import Path
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ from lib.github_release import publish_verified
 from lib.matrix import release_matrix, selected_targets
 from lib.identity import build_identity
 from lib.release_bundle import bundle_checksums, output_name, sums_name, verify_bundle
+import publish
 from test_metadata import fixture
 from verify_release import aggregate
 
@@ -98,6 +100,47 @@ class BundleTests(unittest.TestCase):
         (self.root/'publish/secret-config.json').write_text('fixture secret')
         with self.assertRaises(ValueError):
             verify_bundle(self.manifest,self.root/'publish')
+
+    def test_only_distribution_packages_are_uploaded(self):
+        screenshots=self.root/'source/docs/releases/0.6.0/oobe'
+        screenshots.mkdir(parents=True)
+        (screenshots/'01-welcome.png').write_bytes(b'\x89PNG\r\n\x1a\nfixture')
+        self.aggregate()
+        folder=self.root/'publish'
+        backend=FakeGitHub(self.manifest['source_commit'])
+        publish_verified(self.manifest,folder,self.path,backend)
+        expected={asset['filename'] for asset in self.manifest['assets']
+                  if asset['format'] in ('archlinux','deb','rpm')}
+        self.assertEqual(len(expected),6)
+        self.assertEqual(set(backend.bytes),expected)
+        internal={path.name for path in folder.iterdir()}-expected
+        self.assertIn('01-welcome.png',internal)
+        self.assertIn(sums_name(self.manifest),internal)
+        self.assertTrue(any(name.endswith('.spdx.json') for name in internal))
+        self.assertTrue(any(name.endswith('.tar.gz') for name in internal))
+        self.assertGreater(len(internal),6)
+        verify_bundle(self.manifest,folder)
+
+    def test_dry_run_lists_only_six_public_packages(self):
+        self.aggregate()
+        output=io.StringIO()
+        with patch('sys.argv',['publish.py','--manifest',str(self.path),
+                              '--dir',str(self.root/'publish'),'--dry-run']), \
+                patch('sys.stdout',output):
+            self.assertEqual(publish.main(),0)
+        expected=sorted(asset['filename'] for asset in self.manifest['assets']
+                        if asset['format'] in ('archlinux','deb','rpm'))
+        self.assertEqual(output.getvalue().splitlines()[1:],expected)
+
+    def test_internal_evidence_tamper_blocks_public_upload(self):
+        self.aggregate()
+        folder=self.root/'publish'
+        (folder/'provenance-0.6.0-1.json').write_text('{}')
+        backend=FakeGitHub(self.manifest['source_commit'])
+        with self.assertRaisesRegex(ValueError,'hash mismatch'):
+            publish_verified(self.manifest,folder,self.path,backend)
+        self.assertIsNone(backend.state)
+        self.assertEqual(backend.bytes,{})
 
     def test_build_evidence_and_public_acceptance(self):
         result=self.aggregate()
@@ -248,60 +291,67 @@ class FakeGitHub:
 
 
 class PublisherTests(unittest.TestCase):
+    def setUp(self):
+        self.bundle=BundleTests()
+        self.bundle.setUp()
+        self.addCleanup(self.bundle.tearDown)
+        self.bundle.aggregate()
+        self.manifest=self.bundle.manifest
+        self.folder=self.bundle.root/'publish'
+        self.notes=self.bundle.path
+        self.names=sorted(asset['filename'] for asset in self.manifest['assets']
+                          if asset['format'] in ('archlinux','deb','rpm'))
+
+    def publish(self,backend):
+        return publish_verified(self.manifest,self.folder,self.notes,backend)
+
     def test_remote_extra_asset_rejected_before_upload_or_finalize(self):
-        manifest=fixture()
         for draft in (True,False):
-            with self.subTest(draft=draft),tempfile.TemporaryDirectory() as tmp:
-                folder=Path(tmp);(folder/'linux.tar.gz').write_bytes(b'verified linux')
-                backend=FakeGitHub(manifest['source_commit']);backend.state=draft
-                backend.bytes={'linux.tar.gz':b'verified linux','unverified-macos.tar.gz':b'extra'}
-                with self.assertRaisesRegex(ValueError,'allowlist'):
-                    publish_verified(manifest,folder,folder/'linux.tar.gz',backend)
-                self.assertEqual(backend.finalized,0)
-                self.assertEqual(backend.state,draft)
+            for extra in ('unverified-macos.tar.gz','provenance-0.6.0-1.json'):
+                with self.subTest(draft=draft,extra=extra):
+                    backend=FakeGitHub(self.manifest['source_commit']);backend.state=draft
+                    backend.bytes={name:(self.folder/name).read_bytes() for name in self.names}
+                    backend.bytes[extra]=b'extra'
+                    before=dict(backend.bytes)
+                    with self.assertRaisesRegex(ValueError,'allowlist'):
+                        self.publish(backend)
+                    self.assertEqual(backend.bytes,before)
+                    self.assertEqual(backend.finalized,0)
+                    self.assertEqual(backend.state,draft)
 
     def test_asset_added_during_upload_keeps_draft(self):
-        manifest=fixture()
-        backend=FakeGitHub(manifest['source_commit'])
+        backend=FakeGitHub(self.manifest['source_commit'])
         original=backend.upload
         def upload(tag,path):
             original(tag,path)
             backend.bytes['unverified-macos.tar.gz']=b'extra'
         backend.upload=upload
-        with tempfile.TemporaryDirectory() as tmp:
-            folder=Path(tmp);(folder/'linux.tar.gz').write_bytes(b'verified linux')
-            with self.assertRaisesRegex(ValueError,'allowlist'):
-                publish_verified(manifest,folder,folder/'linux.tar.gz',backend)
-            self.assertTrue(backend.state)
-            self.assertEqual(backend.finalized,0)
+        with self.assertRaisesRegex(ValueError,'allowlist'):
+            self.publish(backend)
+        self.assertTrue(backend.state)
+        self.assertEqual(backend.finalized,0)
 
     def test_asset_added_during_finalize_cannot_report_success(self):
-        manifest=fixture()
-        backend=FakeGitHub(manifest['source_commit'])
+        backend=FakeGitHub(self.manifest['source_commit'])
         original=backend.finalize
         def finalize(*args):
             original(*args)
             backend.bytes['unverified-macos.tar.gz']=b'extra'
         backend.finalize=finalize
-        with tempfile.TemporaryDirectory() as tmp:
-            folder=Path(tmp);(folder/'linux.tar.gz').write_bytes(b'verified linux')
-            with self.assertRaisesRegex(ValueError,'allowlist'):
-                publish_verified(manifest,folder,folder/'linux.tar.gz',backend)
+        with self.assertRaisesRegex(ValueError,'allowlist'):
+            self.publish(backend)
 
     def test_interrupted_upload_stays_draft_retry_and_conflict(self):
-        manifest=fixture()
-        backend=FakeGitHub(manifest['source_commit'])
-        with tempfile.TemporaryDirectory() as tmp:
-            folder=Path(tmp)
-            (folder/'a').write_bytes(b'first');(folder/'b').write_bytes(b'second')
-            backend.fail_upload='b'
-            with self.assertRaises(RuntimeError):publish_verified(manifest,folder,folder/'a',backend)
-            self.assertTrue(backend.state);self.assertEqual(backend.finalized,0)
-            backend.fail_upload=None
-            publish_verified(manifest,folder,folder/'a',backend)
-            self.assertFalse(backend.state);self.assertEqual(backend.finalized,1)
-            publish_verified(manifest,folder,folder/'a',backend)
-            self.assertEqual(backend.finalized,1)
-            (folder/'a').write_bytes(b'changed')
-            with self.assertRaises(ValueError):publish_verified(manifest,folder,folder/'a',backend)
-            self.assertEqual(backend.bytes['a'],b'first')
+        backend=FakeGitHub(self.manifest['source_commit'])
+        backend.fail_upload=self.names[1]
+        with self.assertRaises(RuntimeError):self.publish(backend)
+        self.assertTrue(backend.state);self.assertEqual(backend.finalized,0)
+        backend.fail_upload=None
+        self.publish(backend)
+        self.assertFalse(backend.state);self.assertEqual(backend.finalized,1)
+        self.publish(backend)
+        self.assertEqual(backend.finalized,1)
+        backend.bytes[self.names[0]]=b'changed remote bytes'
+        with self.assertRaisesRegex(ValueError,'Refusing overwrite'):
+            self.publish(backend)
+        self.assertEqual(backend.bytes[self.names[0]],b'changed remote bytes')

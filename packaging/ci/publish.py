@@ -8,7 +8,7 @@ import sys
 
 from lib.github_release import GitHubRelease, publish_verified
 from lib.manifest import read_manifest
-from lib.release_bundle import verify_bundle
+from lib.release_bundle import public_asset_names, verify_bundle
 
 
 def main():
@@ -25,11 +25,11 @@ def main():
         parser.error('Invalid repository name')
     try:
         manifest=read_manifest(args.manifest)
-        verify_bundle(manifest,args.dir)
         if not args.execute:
+            verify_bundle(manifest,args.dir)
             print(f'DRY RUN: {args.repository}, tag={manifest["tag"]}, profile={manifest["profile"]}')
-            for path in sorted(args.dir.iterdir()):
-                print(path.name)
+            for name in public_asset_names(manifest):
+                print(name)
             return 0
         if manifest['mode']!='release' or manifest['source_dirty']:
             raise ValueError('Publication requires release-mode metadata from a clean tagged source.')

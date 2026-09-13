@@ -8,7 +8,7 @@
 ## 范围与工作区
 
 0.6.0 使用 `linux-smoke`：Arch、Debian 13、Ubuntu 25.10、Ubuntu 26.04、Fedora 44，
-均为 Linux x86_64。主程序与 voice 各提供 Arch、DEB、RPM、GNU tar，共八个包。
+均为 Linux x86_64。公开附件仅为 Arch、DEB、RPM 的主程序与 voice，共六个包。GNU tar 仅保留内部验收。
 主程序要求真实安装、资源/版本校验及指定供应商正常回复；voice 要求实际安装和版本校验。
 GNU tar 使用独立安装前缀与 MIYU_HOME。物理麦克风、Mac 和完整升级恢复不在这次验收范围。
 
@@ -97,11 +97,11 @@ python3 packaging/ci/publish.py --manifest out/distribution/release-0.6.0/releas
 ```
 
 聚合生成精确资产清单、SHA256SUMS、文件清单 SPDX、实际构建来源和脱敏 acceptance JSON。
-OOBE 截图来自真实 PTY；图片与说明放 `docs/releases/<version>/`，PNG 随 Release 发布。
+OOBE 截图来自真实 PTY；图片与说明放 `docs/releases/<version>/`，图片使用仓库链接，不作为 Release 附件。校验值放在正文折叠区。
 文件清单 SPDX 不等于完整依赖 SBOM。
 
 全部验证成功后推送已批准的分支和 tag，再把 dry-run 换为 `--execute`，同时传
-`--notes docs/releases/0.6.0/release-notes.md`。上传先创建 draft，每个文件上传后下载回读
+`--notes docs/releases/0.6.0/release-notes.md`。内部 bundle 完整验证后，只选取六个发行版包。上传先创建 draft，每个文件上传后下载回读
 hash，完整 allowlist 再次核对后才转正式。已有同名异内容或额外远端资产会失败，禁止 clobber。
 
 ## 6. 同步渠道与收尾
@@ -119,8 +119,14 @@ published-url、空 out、builder-image；`--apply` 同步仓库 AUR 包装器�
 
 宿主升级、daemon 轮换和额外软件源同步属于独立部署步骤，本次容器发布不执行。
 
-## 补丁发布
+## 同版本重编（仅在用户明确要求替换发布包时）
 
-优先发布新的应用补丁版本。旧手册“tag 不动、偷偷换 source、直接向同一 Release 加 -2”
-不能沿用到此验证链：它会破坏 source/tag 绑定或远端精确 allowlist。确需同版本包修订时，
-先设计并验证完整的新旧资产及源码声明契约，不能靠覆盖旧资产或绕过发布检查实现。
+默认应发布新的应用补丁版本。用户明确要求同版本重编时，递增 package revision，
+重新提交源代码、构建全部包并执行真实安装验收。保留旧 tag commit 与原资产本地备份，
+发布说明写明重编原因、修订号和新源码。验证成功后才更新版本 tag（用旧远端值作为
+force-with-lease 条件），使自动源码下载对应实际构建源码；不得伪改构建记录复用旧二进制。
+
+先上传并回读新修订的六个包，再移除旧包和内部附件，最后验证远端精确六附件名单。
+替换期间暂停正常发布器的“远端不得有额外资产”步骤；这是人工执行的有旧新资产
+清单及 hash 校验的迁移，正常发布器继续拒绝冲突与额外资产。之后用正常发布器再次
+核验最终状态。按新 hash 更新仓库/AUR 配方和正文 SHA256，不能沿用旧校验值。

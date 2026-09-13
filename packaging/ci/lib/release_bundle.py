@@ -1,9 +1,18 @@
-"""Final publication allowlist and integrity checks."""
+"""Complete release evidence verification and the public package selection."""
 from pathlib import Path
 import re
 
 from .common import canonical_json, load_json, sha256_file
 from .source import safe_relative
+
+
+def public_asset_names(manifest):
+    """Only native distribution packages are GitHub Release attachments."""
+    names=[asset['filename'] for asset in manifest['assets']
+           if asset['format'] in ('archlinux','deb','rpm')]
+    if not names or len(names)!=len(set(names)):
+        raise ValueError('Public package allowlist is empty or duplicated.')
+    return sorted(names)
 
 
 def output_name(manifest):

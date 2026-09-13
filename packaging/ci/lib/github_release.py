@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 
 from .common import sha256_file
+from .release_bundle import public_asset_names, verify_bundle
 
 
 class GitHubRelease:
@@ -65,11 +66,15 @@ def verify_remote_allowlist(release,names,complete=False):
 
 
 def publish_verified(manifest,directory,notes,backend):
+    directory=Path(directory)
+    # Internal evidence remains mandatory even though it is not an attachment.
+    output=verify_bundle(manifest,directory)
+    names=public_asset_names(manifest)
+    local={record['filename']:record['sha256'] for record in output['files']
+           if record['filename'] in names}
     tag=manifest['tag']
     if backend.tag_commit(tag)!=manifest['source_commit']:
         raise ValueError('Remote tag does not resolve to the verified source commit.')
-    names=sorted(path.name for path in directory.iterdir())
-    local={name:sha256_file(directory/name) for name in names}
     release=backend.release(tag)
     if release is None:
         backend.create_draft(tag,f'Miyu {manifest["version"]}',notes,

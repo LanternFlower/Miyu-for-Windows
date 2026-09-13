@@ -35,10 +35,8 @@ use select::{decoration_of, highlight_columns, slice_columns};
 use std::io::Write;
 use term::Term;
 
-/// 全屏模式开关。默认关——inline 仍是默认前端。
-pub(in crate::cli) fn requested() -> bool {
-    std::env::var_os("MIYU_TUI").is_some_and(|value| value != "0")
-}
+mod preference;
+pub(in crate::cli) use preference::requested;
 
 /// 全屏是否已经生效。
 ///

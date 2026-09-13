@@ -34,10 +34,16 @@ Python 固定 3.11，发布 Rust 固定 1.96.1，MSRV 为 1.89.0。Cargo vendor 
 3. `metadata.py --mode release --profile linux-smoke` 冻结源码，再完整 `prepare.py`。
 4. GNU/Arch 原生容器构建 core/voice，stage 后打包。
 5. Arch 跑 `arch-x86_64`；GNU 跑 Debian 13、Ubuntu 25.10、Ubuntu 26.04、冻结 Fedora 版本这四个安装目标。每个目标都实际调用 `verify.py`，使用专用 opencodego/deepseek-v4.1-flash 配置。GNU tar 的验收由 manifest 固定到 Debian 目标，不能漏掉。
-6. `verify_release.py` 必须收到全部真实 PASS 报告，覆盖 final package hash；随后才能调用 `publish.py --dry-run` 检查最终 allowlist。
+6. `verify_release.py` 必须收到全部真实 PASS 报告，覆盖 final package hash；随后才能调用 `publish.py --dry-run` 检查公开附件名单，只列 Arch、DEB、RPM 主包与 voice 包，共六个。
 7. 单独 publish job 下载这份已校验 bundle，调用 `publish.py --execute`。唯一拥有 `contents: write` 的 job 是 publish。所有其他 job 默认只有 contents read；渠道 patch job 额外需要 actions read，以读取指定 run 的 artifact。
 
 `notes-path` 默认 `docs/releases/0.6.0/release-notes.md`。执行发布时，这个文件必须已经纳入所选源码提交且非空。路径必须位于 checkout 内。第一次正式远端运行仍需实际验证 runner 容量、上游源可达性和专用凭据；本地 actionlint 不能证明这些条件。
+
+`verified-publish` 是完整验证 bundle，不等于 GitHub Release 附件清单。GNU tar、截图、
+SHA256SUMS、验收 JSON、SBOM、provenance 和输入/输出 manifest 保留在 bundle/CI artifact
+中。发布器先完整校验所有这些证据，再只上传冻结资产中格式为 `archlinux`、`deb`、`rpm`
+的六个包。远端已有额外附件（包括这些内部文件）仍会拒绝发布，不会自动删除或覆盖。
+发布说明中的 OOBE 图片使用仓库资源链接，不依赖 Release 图片附件。
 
 ## 专用凭据契约
 

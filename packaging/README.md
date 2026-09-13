@@ -5,8 +5,15 @@
 资源随主包提供，voice 是可选包，不存在独立 assets 包。
 
 Linux 0.6.0 已发布并通过容器安装和真实模型输出验收：Arch x86_64、Debian 13、Ubuntu 25.10/26.04、固定的
-Fedora 稳定版；GNU tar 也有独立产物。macOS 尚未通过原生验收，本轮不发布 Mac 资产。
+Fedora 稳定版。macOS 尚未通过原生验收，本轮不发布 Mac 资产。
 具体输入、资产和必需检查以冻结的 release input 与报告为准。
+
+GitHub Release 附件只提供 Arch、DEB、RPM 三种格式的主包与可选 voice 包，共六个。
+Debian 与两个 Ubuntu 版本共用 DEB，不需要为每个发行版重复上传。GNU tar、OOBE
+截图、SHA256SUMS、验收 JSON、SBOM、provenance、release input 和 release manifest
+保留在完整验证 bundle 或 CI artifact 中，不上传 Release。OOBE 截图从仓库资源嵌入
+发布说明。公开附件名单由冻结资产清单中的 `archlinux`、`deb`、`rpm` 格式集中选出；
+内部文件仍须通过完整性和验收检查，`publish.py --dry-run` 只列实际公开的六个包。
 
 ## Arch 的四份真相源
 
