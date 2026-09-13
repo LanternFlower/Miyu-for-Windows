@@ -4230,7 +4230,10 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
 .answered-question-list {
   display: grid;
   margin: 0;
-  padding: 0 12px 11px 51px;
+  /* 左内边距对齐页眉文字(12px)。原来是 51px——那是给页眉左侧那枚 30px 图标
+     让位的(12+30+9),而已回答卡的大对钩早已去掉(#143),列表却还缩在右边,
+     和「已回答/N 项补充确认」不对齐(#166)。 */
+  padding: 0 12px 11px 12px;
   gap: 7px;
 }
 
