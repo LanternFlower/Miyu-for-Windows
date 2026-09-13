@@ -282,3 +282,29 @@ fn no_style_bytes_leak_into_text() {
         }
     }
 }
+
+/// 画屏时链接要跟着格子一起发出去：缓冲里存着 OSC 8 的目标，`spans_to_ansi` 得把
+/// `ESC ] 8 ; ; url ESC \` 再写出来，终端才认得这是个链接（悬停下划线、自己那套
+/// 点开）。原来这一层把它丢了——全屏里链接看着是普通文字（用户实测）。
+#[test]
+fn spans_to_ansi_emits_osc8_around_linked_text() {
+    let spans = [
+        AnsiSpan {
+            text: "点这里".to_string(),
+            style: Style::new(),
+            link: Some("https://x.test/a".to_string()),
+        },
+        AnsiSpan {
+            text: " 后面".to_string(),
+            style: Style::new(),
+            link: None,
+        },
+    ];
+    let out = spans_to_ansi(&spans);
+    assert!(
+        out.contains("\x1b]8;;https://x.test/a\x1b\\点这里\x1b]8;;\x1b\\ 后面"),
+        "链接没包上 OSC 8: {out:?}"
+    );
+    // 没有链接的行一个字节都不多。
+    assert_eq!(spans_to_ansi(&[AnsiSpan::raw("裸")]), "裸");
+}

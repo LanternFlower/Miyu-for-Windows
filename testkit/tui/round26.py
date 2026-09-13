@@ -185,6 +185,11 @@ def scenario_live_clicks(report):
             return
         row = next(i for i, l in enumerate(screen) if "编辑文件" in l)
         save("live-edit", screen)
+        # 命令跑完之后它的输出还留在抬头底下（连线穿过），不用点开
+        #（用户：完成后保留区域）。上面已经把展开收回去了，这几行是尾巴不是展开。
+        report["r26_06_finished_command_keeps_tail"] = any(
+            l.startswith("  │") and "out-two" in l for l in screen
+        )
         h.click(master, sink, 5, row, quiet=0.3, timeout=1.0)
         opened = h.render(bytes(sink))
         save("live-edit-open", opened)
@@ -342,6 +347,56 @@ def scenario_panel_spinner(report):
         stop(tui, daemon, stub)
 
 
+def scenario_links(report):
+    """全屏里的链接：画屏时把 OSC 8 发出去（终端认得是链接），点一下由我们自己
+    打开（全屏把鼠标捕获走了，终端自己那套失效）。用假的 xdg-open 收网址。"""
+    fakebin = h.OUT / "fakebin"
+    fakebin.mkdir(parents=True, exist_ok=True)
+    log = h.OUT / "xdg-open.log"
+    if log.exists():
+        log.unlink()
+    script = fakebin / "xdg-open"
+    script.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$1\" >> {log}\n", encoding="utf-8")
+    script.chmod(0o755)
+    saved_env = h.ENV
+    h.ENV = dict(h.ENV, PATH=f"{fakebin}:{os.environ.get('PATH', '')}")
+    stub, daemon, tui, master, sink = start({
+        "STUB_REPLY": "See [Miyu docs](https://example.com/miyu-doc) and https://example.org/bare done.",
+    })
+    try:
+        os.write(master, h.PROMPT.encode())
+        h.drain_until(master, sink, h.PROMPT, 3.0)
+        os.write(master, b"\r")
+        screen = wait_screen(master, sink, lambda s: any("done." in l for l in s), 30.0)
+        report["r26_07_reply_with_links_seen"] = screen is not None
+        if screen is None:
+            save("links-timeout", LAST["screen"] or [])
+            return
+        h.settle(master, sink, quiet=0.5, timeout=3.0)
+        screen = h.render(bytes(sink))
+        save("links", screen)
+        raw = bytes(sink)
+        report["r26_07_painter_emits_osc8"] = b"\x1b]8;;https://example.com/miyu-doc" in raw
+        row = next((i for i, l in enumerate(screen) if "Miyu docs" in l), None)
+        report["r26_07_markdown_link_title_shown"] = row is not None
+        if row is not None:
+            column = screen[row].index("Miyu docs") + 2
+            h.click(master, sink, column, row, quiet=0.3, timeout=2.0)
+            time.sleep(0.5)
+            opened = log.read_text(encoding="utf-8") if log.exists() else ""
+            report["r26_07_markdown_link_click_opens"] = "https://example.com/miyu-doc" in opened
+        row = next((i for i, l in enumerate(screen) if "example.org/bare" in l), None)
+        if row is not None:
+            column = screen[row].index("example.org/bare") + 3
+            h.click(master, sink, column, row, quiet=0.3, timeout=2.0)
+            time.sleep(0.5)
+            opened = log.read_text(encoding="utf-8") if log.exists() else ""
+            report["r26_07_bare_url_click_opens"] = "https://example.org/bare" in opened
+    finally:
+        h.ENV = saved_env
+        stop(tui, daemon, stub)
+
+
 def main():
     if not h.BIN.exists():
         print(f"! 先 cargo build：{h.BIN} 不存在", file=sys.stderr)
@@ -352,6 +407,7 @@ def main():
     scenario_live_clicks(report)
     scenario_interrupt(report)
     scenario_panel_spinner(report)
+    scenario_links(report)
     (h.OUT / "round26-report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )

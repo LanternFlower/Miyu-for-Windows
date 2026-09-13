@@ -508,10 +508,11 @@ impl StreamRenderer {
     fn interrupt_command_display(&mut self, mut display: CommandLiveDisplay) {
         let width = timeline::detail_width();
         display.set_result(false);
-        let detail = if self.timeline_static() {
-            display.static_detail(width, true)
+        let (detail, tail) = if self.timeline_static() {
+            (display.static_detail(width, true), Vec::new())
         } else {
-            display.timeline_detail(width)
+            let tail = display.detail_tail(width, true, timeline::LIVE_PREVIEW_ROWS);
+            (display.timeline_detail(width), tail)
         };
         // 命令工具在统计里叫什么名字（`run_command` / `Bash`）由事件决定，
         // 找那个还没跑完的就是它。
@@ -524,6 +525,7 @@ impl StreamRenderer {
             let stats = self.tool_stats_entry(&name);
             stats.elapsed = stats.started_at.map(|at| at.elapsed());
             stats.detail = detail;
+            stats.tail = tail;
         }
     }
 }

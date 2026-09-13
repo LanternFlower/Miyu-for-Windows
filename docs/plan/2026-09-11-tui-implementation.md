@@ -2193,6 +2193,38 @@ shellhook 走的是 `remote/one_shot.rs` + inline 渲染器（`live = None`）�
 出法（`miyu --output-format stream-json <prompt>` 对着桩 daemon）是坐实「没发
 `__subtool_call__`」的手段。
 
+### 26.15 第九批：命令尾巴六行且保留、全屏链接、shellhook 跟进走时间线、转轮同列、面板正文 markdown
+
+- **命令实时输出六行、跑完保留**：`LIVE_PREVIEW_ROWS` 4→6；跑完时从 `command_display`
+  再取一份尾巴（`detail_tail(width, failed, 6)`，和静态版同一个取法，跑砸了整段红）
+  存进 `ToolStats.tail` → `Step.tail`。`step_rows` 把抬头和尾巴排成一项（尾巴行带
+  `  │ ` 前缀），块的结束标记放尾巴之后——点开时展开内容把抬头和尾巴一起换掉，和
+  跑着的时候一个规矩。live 区、收进 `Worked for` 的展开内容都走它。
+- **全屏链接**：缓冲的格子上一直存着 OSC 8 的目标，`url_at` 也早就按它认点击，坏在
+  画屏那层：`spans_to_ansi` 只发 SGR，OSC 8 丢了——终端不知道那是链接（没悬停下划线、
+  kitty 自己那套 ctrl+click 也失效）。现在按 span 的 `link` 边界发 `ESC ] 8 ; ; url ESC \`
+  / 关闭序列。点开由我们自己 `xdg-open`（鼠标被全屏捕获）。round26 用假 `xdg-open`
+  收网址验证：markdown 链接标题、裸网址各点一次都开对。
+- **shellhook 跟进的渲染**：后台任务完成后 daemon 往发起它的 tty 回写那一轮，原来是
+  `job_wake.rs` 里手搓的 `✦ Miyu 后台任务跟进` / `∴ 标题` / `⚙ 工具 …` 行渲染。现在写线程
+  上跑一台和 shellhook 同款的 `StreamRenderer`（静态时间线档），事件原样从 async 侧转过去
+  （`TtyWriteOp::Event`，和 IPC 发给终端的 `(kind, data)` 同一份，`decode_ipc_event` +
+  `handle_agent_event` 对 crate 开放）。三件配套：daemon 的 stdout 不是终端，宽度按那个
+  tty `TIOCGWINSZ` 量、以线程局部 `set_cols_override` 报给渲染层（`terminal_cols` /
+  `content_cols` 先看它）；`WaitSpinner::supported()` 在报过宽度的线程上也为真；
+  `live_summary` 显式置真。抬头改成 REPL 那种 `⚙ 后台任务跟进 · 任务名`。
+  顺手揪出一个渲染器老 bug：排队跟进的第二轮开始思考时，上一轮正文最后那半行
+  （模型没给换行）还攒在 markdown 层，转轮先画上去、半行正文后来接在转轮那一行后面
+  ——`start_reasoning_phase` 现在先 `end_active_stream_line`。
+  测具 `testkit/static-timeline/wake.py`：pty 里跑真 bash，用 shellhook 形态触发一轮
+  （桩模型派后台命令），等提示符回来再等 daemon 回写，验抬头、时间线里的思考步、
+  正文、两段正文各占各行。
+- **shellhook 两个转轮不在同一列**：`render_frame_at_width` 点阵档退两格（第 2 列）而
+  时间线里的转轮在第 0 列。去掉那两格：转轮第 0 列、文字第 2 列，和跑着的那一行同列。
+- **面板正文没有 markdown**：前台 `seal_subagent_speech` / 正在说的那段、后台 `[正文]`
+  段都直接 `wrap_detail` 裸文本。新加 `render_speech_lines(text, width)`：
+  `MarkdownLineRenderer` 逐行渲染再按宽度折行（`wrap_display_text` 认转义），三处都走它。
+
 **opencode Zen 的 FreeUsageLimitError 不是客户端的事**（09-13 实测）：
 - 本机 opencode 1.18.29 指到本地假端点抓包，头与 Miyu 现发的一致
   （`x-opencode-client/project/session/request` + 同款 User-Agent）；

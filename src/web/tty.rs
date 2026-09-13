@@ -8,55 +8,64 @@
 //! 的可靠判据。
 
 pub(in crate::web) enum TtyWriteOp {
+    /// 原样写一段（抬头之类）。
     Write(String),
-    /// 正常收尾:flush 后给 shell 发 SIGWINCH 促使重绘提示符。
-    Finish,
+    /// 回合里的一条事件（和 IPC 发给终端的 `(kind, data)` 同一份），写线程上的
+    /// 渲染器把它画出来。
+    Event {
+        kind: String,
+        data: serde_json::Value,
+    },
+    /// 正常收尾:flush 后给 shell 发 SIGWINCH 促使重绘提示符。`interrupted` = 回合
+    /// 没正常跑完（失败/取消），末尾标一句。
+    Finish { interrupted: bool },
     /// 中途收笔(前台被占/超时):已写的留在屏上,不再动那个终端。
     Abort,
 }
 
-/// 回写行的三种笔触:正文走 Markdown 渲染;思考用与 REPL 正常思考一致的
-/// 绿色(write_full_reasoning_chunk 同款 ANSI 10);注记(工具行/中断标记)暗色。
-#[derive(Clone, Copy, PartialEq)]
-pub(in crate::web) enum WriteLineStyle {
-    Content,
-    Reasoning,
-    Note,
+/// 回写线程上那台渲染器的配置：档位照用户的配置，宽度按那个 tty 量。
+pub(in crate::web) struct TtyRenderSetup {
+    pub(in crate::web) reasoning_mode: crate::render::ReasoningDisplayMode,
+    pub(in crate::web) tool_call_mode: crate::render::ToolCallDisplayMode,
+    pub(in crate::web) readable_tool_names: bool,
+    pub(in crate::web) command_output_lines: usize,
+    pub(in crate::web) cols: u16,
+    /// 抬头上的任务名。
+    pub(in crate::web) title: String,
 }
 
-/// 行缓冲落盘:凑满整行才渲染。
-pub(in crate::web) fn drain_line_buf(buf: &mut String, style: WriteLineStyle, out: &mut String) {
-    while let Some(index) = buf.find('\n') {
-        let line: String = buf.drain(..=index).collect();
-        let line = line.trim_end_matches(['\n', '\r']);
-        push_rendered_line(line, style, out);
-    }
-}
-
-pub(in crate::web) fn flush_line_buf(buf: &mut String, style: WriteLineStyle, out: &mut String) {
-    if buf.trim().is_empty() {
-        buf.clear();
-        return;
-    }
-    let line = std::mem::take(buf);
-    push_rendered_line(line.trim_end(), style, out);
-}
-
-pub(in crate::web) fn push_rendered_line(line: &str, style: WriteLineStyle, out: &mut String) {
-    match style {
-        WriteLineStyle::Content => out.push_str(&crate::render::render_markdown_line(line)),
-        WriteLineStyle::Reasoning => {
-            if !line.is_empty() {
-                out.push_str(&format!("\x1b[38;5;10m{line}\x1b[0m"));
-            }
-        }
-        WriteLineStyle::Note => {
-            if !line.is_empty() {
-                out.push_str(&format!("\x1b[2m{line}\x1b[0m"));
-            }
+impl TtyRenderSetup {
+    pub(in crate::web) fn from_config(
+        config: &crate::config::AppConfig,
+        cols: u16,
+        title: String,
+    ) -> Self {
+        Self {
+            reasoning_mode: crate::render::ReasoningDisplayMode::from_config(
+                &config.display.reasoning,
+            ),
+            tool_call_mode: crate::render::ToolCallDisplayMode::from_config(
+                &config.display.tool_calls,
+            ),
+            readable_tool_names: config.display.readable_tool_names,
+            command_output_lines: config.display.command_output_lines,
+            cols,
+            title,
         }
     }
-    out.push_str("\r\n");
+}
+
+/// 那个 tty 有多宽（`TIOCGWINSZ`）。量不到就按 100 列——总比 daemon 自己那个
+/// 不存在的 stdout 靠谱。
+pub(in crate::web) fn tty_cols(tty: &std::fs::File) -> u16 {
+    use std::os::unix::io::AsRawFd;
+    let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+    let ok = unsafe { libc::ioctl(tty.as_raw_fd(), libc::TIOCGWINSZ, &mut size) } == 0;
+    if ok && size.ws_col > 0 {
+        size.ws_col
+    } else {
+        100
+    }
 }
 
 /// 三道闸的第 2、3 道:shell 活着、还挂在记录的 tty 上、且自己就是终端前台

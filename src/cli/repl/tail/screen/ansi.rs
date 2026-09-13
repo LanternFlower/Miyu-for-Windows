@@ -73,12 +73,30 @@ pub(in crate::cli) fn spans_text(spans: &[AnsiSpan]) -> String {
 pub(in crate::cli) fn spans_to_ansi(spans: &[AnsiSpan]) -> String {
     let mut out = String::new();
     let mut current = Style::new();
+    let mut link: Option<&str> = None;
     for span in spans {
         if span.style != current {
             out.push_str(&style_to_ansi(span.style));
             current = span.style;
         }
+        // 链接跟着格子走：缓冲里存着 OSC 8 的目标，画的时候得再发出去，终端
+        // 才认得这是个链接（悬停有下划线、自己那套点开也能用）。原来这一层把它
+        // 丢了——全屏里链接看着是普通文字（用户实测：真 TUI 链接无渲染）。
+        if span.link.as_deref() != link {
+            if link.is_some() {
+                out.push_str("\x1b]8;;\x1b\\");
+            }
+            if let Some(url) = span.link.as_deref() {
+                out.push_str("\x1b]8;;");
+                out.push_str(url);
+                out.push_str("\x1b\\");
+            }
+            link = span.link.as_deref();
+        }
         out.push_str(&span.text);
+    }
+    if link.is_some() {
+        out.push_str("\x1b]8;;\x1b\\");
     }
     if current != Style::new() {
         out.push_str("\x1b[0m");

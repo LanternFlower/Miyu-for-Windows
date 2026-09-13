@@ -398,8 +398,20 @@ impl CommandLiveDisplay {
     ///
     /// 跑砸了的命令整段标红：报错信息是要看的，但它得一眼认得出是报错。
     pub(crate) fn static_detail(&mut self, width: usize, failed: bool) -> Vec<String> {
+        let rows = self.max_output_rows;
+        self.detail_tail(width, failed, rows)
+    }
+
+    /// 输出的尾巴：最多 `max_rows` 行，装不下时首行换成省略标记；跑砸了整段红。
+    /// 静态时间线按配置的行数取，全屏跑完之后留在抬头底下的那几行也从这儿取。
+    pub(crate) fn detail_tail(
+        &mut self,
+        width: usize,
+        failed: bool,
+        max_rows: usize,
+    ) -> Vec<String> {
         self.output.finalize();
-        if !self.show_output || self.max_output_rows == 0 {
+        if !self.show_output || max_rows == 0 {
             return Vec::new();
         }
         let logical = self.output.logical_lines();
@@ -408,15 +420,15 @@ impl CommandLiveDisplay {
         } else {
             output_rows(&logical, width)
         };
-        let omitted = self.output.omitted_lines || rows.len() > self.max_output_rows;
-        let keep = if omitted && self.max_output_rows > 1 {
-            self.max_output_rows - 1
+        let omitted = self.output.omitted_lines || rows.len() > max_rows;
+        let keep = if omitted && max_rows > 1 {
+            max_rows - 1
         } else {
-            self.max_output_rows
+            max_rows
         };
         let start = rows.len().saturating_sub(keep);
         let mut lines = Vec::with_capacity(keep + 1);
-        if omitted && self.max_output_rows > 1 {
+        if omitted && max_rows > 1 {
             // 跑砸了的话省略标记也跟着红：整段红里夹一行灰，看着像两块东西。
             let style = if failed { "\x1b[31m" } else { "\x1b[2m" };
             lines.push(format!(

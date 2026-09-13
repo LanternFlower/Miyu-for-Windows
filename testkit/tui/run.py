@@ -44,7 +44,8 @@ PORT = int(os.environ.get("MIYU_TUI_PORT", "18433"))
 STUB_PORT = int(os.environ.get("STUB_PORT", "18499"))
 OUT = Path(os.environ.get("OUT", Path.home() / ".cache" / "miyu-tui-smoke"))
 BASE = f"http://127.0.0.1:{PORT}"
-COLS, ROWS = 110, 32
+# 32 行装不下带六行命令尾巴的展开时间线（`Worked for` 的抬头会滚出屏），加高。
+COLS, ROWS = 110, 50
 ENV = dict(os.environ, MIYU_HOME=str(HOME), XDG_RUNTIME_DIR=RUNTIME, MIYU_TUI="1")
 
 PROMPT = "走查一句"
@@ -782,10 +783,17 @@ def main():
                 # 子代理开口说正文之后，前面那几步会收成一行 `⌄ Worked for …`
                 #（和主线一个规矩）——面板里能点开的就是那一行。它还没说话时
                 # 则是平铺的步。两种都认。
+                # 只在面板自己的范围里找（标题栏到页脚之间）：面板上方的主线时间线
+                # 也有「运行命令」「已思考」，扫到那儿点到的是别人的块。收缩行合着
+                # 是 `›`、点开才是 `⌄`（和主线一样），两种都认。
+                top = next(
+                    (i for i, line in enumerate(panel) if "── 子代理" in line),
+                    None,
+                )
                 inner = None
-                if foot is not None:
-                    for i in range(foot - 1, max(foot - 20, 0), -1):
-                        if "⌄" in panel[i] or "运行命令" in panel[i] or "已思考" in panel[i]:
+                if foot is not None and top is not None:
+                    for i in range(foot - 1, top, -1):
+                        if any(mark in panel[i] for mark in ("›", "⌄", "运行命令", "已思考")):
                             inner = i
                             break
                 report["item17_subagent_step_expands"] = False

@@ -37,6 +37,31 @@ pub(crate) fn content_cols(fallback: usize) -> usize {
     if let Some((cols, _)) = crate::cli::content_viewport() {
         return usize::from(cols);
     }
+    terminal_cols(fallback)
+}
+
+thread_local! {
+    static COLS_OVERRIDE: std::cell::Cell<u16> = const { std::cell::Cell::new(0) };
+}
+
+/// 这条线程上的渲染宽度按这个数算。daemon 往别人的终端回写时，`terminal::size()`
+/// 量的是自己的 stdout（根本不是终端），得由调用方把那个 tty 的宽度报进来。
+/// 0 = 不覆盖。
+pub(crate) fn set_cols_override(cols: u16) {
+    COLS_OVERRIDE.with(|cell| cell.set(cols));
+}
+
+/// 本线程有没有报过宽度——报过就说明这条线程在往某个终端画（daemon 回写）。
+pub(crate) fn cols_override_active() -> bool {
+    COLS_OVERRIDE.with(|cell| cell.get()) > 0
+}
+
+/// 终端有多宽：先看本线程的覆盖值，再问 `terminal::size()`，都没有就用 `fallback`。
+pub(crate) fn terminal_cols(fallback: usize) -> usize {
+    let forced = COLS_OVERRIDE.with(|cell| cell.get());
+    if forced > 0 {
+        return usize::from(forced);
+    }
     terminal::size()
         .map(|(width, _)| usize::from(width))
         .unwrap_or(fallback)

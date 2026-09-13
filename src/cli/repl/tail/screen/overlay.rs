@@ -262,11 +262,14 @@ impl Overlay {
                     out.push(String::new());
                 }
                 previous = Previous::Speech;
+                // 过一遍 markdown 再折行——和前台面板、主线正文一个样子。
                 out.extend(
-                    step.body
-                        .iter()
-                        .flat_map(|line| crate::render::wrap_display_text(line, self.cols))
-                        .map(|piece| format!("{indent}{piece}")),
+                    crate::render::timeline::render_speech_lines(
+                        &step.body.join("\n"),
+                        self.cols.saturating_sub(indent.len()),
+                    )
+                    .into_iter()
+                    .map(|piece| format!("{indent}{piece}")),
                 );
                 continue;
             }

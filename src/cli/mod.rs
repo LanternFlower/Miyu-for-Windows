@@ -14,7 +14,7 @@ mod args;
 mod daemon_cmds;
 pub(crate) mod exit_code;
 mod inline_picker;
-mod ipc_event;
+pub(crate) mod ipc_event;
 mod localize;
 mod mcp_schema;
 mod mcp_serve;
@@ -1293,7 +1293,10 @@ fn join_message(parts: Vec<String>) -> String {
     parts.join(" ").trim().to_string()
 }
 
-fn handle_agent_event(renderer: &mut render::StreamRenderer, event: AgentEvent) -> Result<()> {
+pub(crate) fn handle_agent_event(
+    renderer: &mut render::StreamRenderer,
+    event: AgentEvent,
+) -> Result<()> {
     match event {
         AgentEvent::TurnStarted { .. } => Ok(()),
         AgentEvent::RawReasoning(_) => Ok(()),

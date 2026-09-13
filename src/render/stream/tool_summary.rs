@@ -127,17 +127,21 @@ impl StreamRenderer {
                 // 全屏：完整命令 + 完整输出，点开才看。静态版没处点开，就地
                 // 印输出的尾巴（命令本身已经在那一行上了）。
                 let static_timeline = self.timeline_static();
-                let detail = self
-                    .command_display
-                    .take()
-                    .map_or_else(Vec::new, |mut display| {
+                let (detail, tail) = self.command_display.take().map_or_else(
+                    || (Vec::new(), Vec::new()),
+                    |mut display| {
                         display.set_result(ok);
                         if static_timeline {
-                            display.static_detail(width, !ok)
+                            (display.static_detail(width, !ok), Vec::new())
                         } else {
-                            display.timeline_detail(width)
+                            // 全屏：跑完之后抬头底下留着几行输出（和跑着的时候
+                            // 一个量），点开才是全部（用户：完成后保留区域）。
+                            let tail =
+                                display.detail_tail(width, !ok, super::timeline::LIVE_PREVIEW_ROWS);
+                            (display.timeline_detail(width), tail)
                         }
-                    });
+                    },
+                );
                 let stats = self.tool_stats_entry(name);
                 if ok {
                     stats.ok += 1;
@@ -146,6 +150,7 @@ impl StreamRenderer {
                 }
                 stats.elapsed = stats.started_at.map(|at| at.elapsed());
                 stats.detail = detail;
+                stats.tail = tail;
                 return self.settle_tool_batch();
             }
             if let Some(mut display) = self.command_display.take() {

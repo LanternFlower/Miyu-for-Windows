@@ -1268,3 +1268,86 @@ fn a_subagent_command_step_opens_like_the_main_line() {
         );
     });
 }
+
+/// 全屏：命令跑完之后抬头底下留着六行输出（超出的换成省略标记），点开才是全部
+///（用户：实时输出调整为 6 行；完成后保留区域）。收成 `Worked for` 之后点开
+/// 那一块，这几行还在。
+#[test]
+fn a_finished_command_keeps_six_rows_of_output_under_its_head() {
+    with_blocks(|| {
+        let mut renderer = timeline_renderer();
+        renderer.use_buffered_output();
+        renderer
+            .write_tool_call("run_command", r#"{"command":"seq 1 8"}"#)
+            .unwrap();
+        for index in 1..=8 {
+            renderer
+                .write_command_output(
+                    "run_command",
+                    crate::tools::CommandOutputStream::Stdout,
+                    format!("line-{index}\n").as_bytes(),
+                )
+                .unwrap();
+        }
+        renderer
+            .write_tool_result("run_command", true, r#"{"success":true,"exit_code":0}"#)
+            .unwrap();
+        renderer.finalize_tools_summary().unwrap();
+        let (_, live) = renderer.timeline_live(Vec::new());
+        let live = crate::render::strip_ansi_text(&live.unwrap_or_default());
+        for kept in ["line-4", "line-8"] {
+            assert!(
+                live.contains(kept),
+                "跑完之后 {kept} 没留在抬头底下: {live:?}"
+            );
+        }
+        assert!(
+            live.contains("⋮") && !live.contains("line-2"),
+            "超出六行的没换成省略标记: {live:?}"
+        );
+        // 尾巴行从连线穿过：`  │ line-8`。
+        assert!(
+            live.lines().any(|line| line.starts_with("  │ line-8")),
+            "尾巴行没有连线前缀: {live:?}"
+        );
+        // 收成 Worked for 之后，点开那一块里这几行还在。
+        renderer.cut_timeline().unwrap();
+        let frame = String::from_utf8_lossy(&renderer.take_output_frame()).into_owned();
+        let id = block_id_in(&frame).expect("收缩行没挂块");
+        let detail = crate::render::blocks::get(id)
+            .unwrap_or_default()
+            .iter()
+            .map(|line| crate::render::strip_ansi_text(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            detail.contains("line-8") && detail.contains("⋮"),
+            "收缩之后尾巴丢了: {detail:?}"
+        );
+    });
+}
+
+/// 面板里它说的正文过 markdown：星号、反引号不再裸露（用户实测截图）。
+#[test]
+fn panel_speech_is_markdown_rendered() {
+    let lines = crate::render::timeline::render_speech_lines(
+        "**Phase 2** 与 `code` 完成\n\n- 一条\n- 两条",
+        60,
+    );
+    let text = lines.join("\n");
+    assert!(!text.contains("**"), "星号还裸着: {text:?}");
+    assert!(text.contains("\x1b[1m"), "没有加粗样式: {text:?}");
+    let plain = crate::render::strip_ansi_text(&text);
+    assert!(
+        plain.contains("Phase 2") && plain.contains("code"),
+        "内容丢了: {plain:?}"
+    );
+    assert!(
+        plain
+            .lines()
+            .filter(|line| line.contains("一条") || line.contains("两条"))
+            .count()
+            == 2,
+        "列表项没了: {plain:?}"
+    );
+}

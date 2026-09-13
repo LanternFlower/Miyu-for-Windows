@@ -29,6 +29,9 @@ pub(crate) struct ToolStats {
     /// 点开这一步看到的完整内容（命令块全文、工具输出）。只在全屏下填——
     /// inline 不需要，攥着它只是白占内存。
     pub(crate) detail: Vec<String>,
+    /// 全屏时间线里这一步跑完之后抬头底下留着的那几行（命令输出的尾巴）。
+    /// 点开看到的是 `detail`（全部），不点开也有这几行——和跑着的时候一个量。
+    pub(crate) tail: Vec<String>,
 }
 
 impl ToolStats {

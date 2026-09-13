@@ -2,7 +2,7 @@ use super::clip_to_display_width;
 use anyhow::Result;
 use crossterm::cursor::{MoveDown, MoveToColumn, MoveUp};
 use crossterm::execute;
-use crossterm::terminal::{self, Clear, ClearType};
+use crossterm::terminal::{Clear, ClearType};
 use std::io::{self, IsTerminal, Write};
 use std::time::Duration;
 
@@ -54,7 +54,9 @@ pub(crate) struct WaitSpinner {
 
 impl WaitSpinner {
     pub(crate) fn supported() -> bool {
-        io::stdout().is_terminal()
+        // daemon 往别人的 tty 回写时 stdout 不是终端，但那条线程报了宽度——
+        // 就是在往终端画，转轮照转。
+        io::stdout().is_terminal() || crate::render::cols_override_active()
     }
 
     pub(crate) fn start(phase: String, style: SpinnerStyle) -> Self {
@@ -87,9 +89,7 @@ impl WaitSpinner {
     }
 
     pub(crate) fn tick(&mut self, writer: &mut impl Write) -> Result<()> {
-        let terminal_width = terminal::size()
-            .map(|(width, _)| usize::from(width))
-            .unwrap_or(120);
+        let terminal_width = crate::render::terminal_cols(120);
         let (output, _) = render_frame_at_width(self.frame, self, terminal_width);
         if !output.is_empty() {
             let widths = output
@@ -113,9 +113,7 @@ impl WaitSpinner {
 
 #[cfg(test)]
 fn render_frame(frame: usize, state: &WaitSpinner) -> (String, u16) {
-    let width = terminal::size()
-        .map(|(width, _)| usize::from(width))
-        .unwrap_or(120);
+    let width = crate::render::terminal_cols(120);
     render_frame_at_width(frame, state, width)
 }
 
@@ -142,21 +140,16 @@ fn render_frame_at_width(
         SpinnerStyle::Braille => (paint_secondary(braille_frame(frame)), 1),
     };
     let usable = terminal_width.saturating_sub(1).max(1);
-    // 全屏下这一行也归装订边管：转轮贴着屏幕左边，而它下面每一行正文都从第 2 列
-    // 起——整屏只有"正在加载"那一个点阵不在线上，看着就是歪的。
-    // 静态时间线（点阵转轮那一档）同样退两格：时间线整体退了，它不退就歪。
-    let margin = if crate::render::blocks::enabled() || state.style == SpinnerStyle::Braille {
-        "  "
-    } else {
-        ""
-    };
-    let phase_width = usable.saturating_sub(spinner_width + 1 + margin.len());
+    // 转轮落在第 0 列、文字从第 2 列起——和时间线里跑着的那一行（转轮在左边距、
+    // logo 在第 2 列）同一列。原来点阵档退两格，一进时间线转轮就往左跳两格
+    //（用户实测：shellhook 最开始的转轮和进时间线后的不在同一列）。
+    let phase_width = usable.saturating_sub(spinner_width + 1);
     let phase = clip_to_display_width(&state.phase, phase_width);
     let main_line = if phase.is_empty() {
-        format!("{margin}{spinner_prefix}")
+        spinner_prefix
     } else {
         format!(
-            "{margin}{} {}",
+            "{} {}",
             spinner_prefix,
             paint_for_style(&phase, state.style)
         )
@@ -357,9 +350,7 @@ fn clear_spinner_lines(writer: &mut impl Write, widths: &[usize]) -> Result<()> 
     if widths.is_empty() {
         return Ok(());
     }
-    let terminal_width = terminal::size()
-        .map(|(width, _)| usize::from(width))
-        .unwrap_or(120);
+    let terminal_width = crate::render::terminal_cols(120);
     clear_spinner_lines_with_writer(writer, widths, terminal_width)?;
     writer.flush()?;
     Ok(())
@@ -441,6 +432,10 @@ mod tests {
         assert!(frame.contains("⠋"));
         assert!(frame.contains("\x1b[2m\x1b[36m"));
         assert_eq!(lines, 1);
+        // 转轮在第 0 列、文字从第 2 列起：和时间线里跑着的那一行同列。原来点阵
+        // 档退两格，一进时间线转轮就往左跳（用户实测：shellhook 两个转轮不在同一列）。
+        let plain = crate::render::strip_ansi_text(&frame);
+        assert!(plain.starts_with("⠋ ~"), "转轮没落在第 0 列: {plain:?}");
     }
 
     #[test]

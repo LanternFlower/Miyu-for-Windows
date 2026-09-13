@@ -208,30 +208,22 @@ pub(in crate::web) async fn stream_job_wake_to_origin_tty(
 
     let (ops_tx, ops_rx) = std::sync::mpsc::channel::<TtyWriteOp>();
     let shell_pid = origin.shell_pid;
+    let setup = TtyRenderSetup::from_config(&config, tty_cols(&tty), completion.title.clone());
     let writer = std::thread::Builder::new()
         .name("miyu-tty-writeback".to_string())
-        .spawn(move || origin_tty_writer(tty, shell_pid, ops_rx));
+        .spawn(move || origin_tty_writer(tty, shell_pid, ops_rx, setup));
     if writer.is_err() {
         notify_fallback("writer thread spawn failed");
         return;
     }
 
-    let reasoning_mode =
-        crate::render::ReasoningDisplayMode::from_config(&config.display.reasoning);
-    // 落笔即有反馈:头部先行,正文随事件到达逐行追加。
-    let _ = ops_tx.send(TtyWriteOp::Write(format!(
-        "\r\n\x1b[1m✦ Miyu 后台任务跟进\x1b[0m \x1b[2m· {}\x1b[0m\r\n\r\n",
-        completion.title
-    )));
-
+    // 抬头、转轮、正文都由写线程画（渲染器在它手里）。这儿只把回合的事件原样
+    // 转过去，落笔前重查前台闸。
     let mut subscription = state.events.subscribe_after(wake.events_after);
     let deadline = std::time::Instant::now() + Duration::from_secs(900);
-    let mut reasoning_buf = String::new();
-    let mut content_buf = String::new();
-    let mut wrote_reasoning = false;
-    let mut reasoning_open = false;
     let mut last_id = wake.events_after;
     let mut aborted = false;
+    let mut gate_checked_at = std::time::Instant::now();
     loop {
         if std::time::Instant::now() > deadline {
             aborted = true;
@@ -279,129 +271,33 @@ pub(in crate::web) async fn stream_job_wake_to_origin_tty(
             }
             continue;
         }
-
-        let mut chunk_out = String::new();
-        match record.kind.as_str() {
-            "reasoning.title" => {
-                if matches!(reasoning_mode, crate::render::ReasoningDisplayMode::Summary) {
-                    if let Some(title) = data.get("title").and_then(Value::as_str) {
-                        flush_line_buf(
-                            &mut reasoning_buf,
-                            WriteLineStyle::Reasoning,
-                            &mut chunk_out,
-                        );
-                        push_rendered_line(
-                            &format!("∴ {title}"),
-                            WriteLineStyle::Reasoning,
-                            &mut chunk_out,
-                        );
-                        wrote_reasoning = true;
-                        reasoning_open = true;
-                    }
-                }
-            }
-            "reasoning.delta" => {
-                if matches!(reasoning_mode, crate::render::ReasoningDisplayMode::Full) {
-                    if let Some(delta) = data.get("delta").and_then(Value::as_str) {
-                        reasoning_buf.push_str(delta);
-                        drain_line_buf(
-                            &mut reasoning_buf,
-                            WriteLineStyle::Reasoning,
-                            &mut chunk_out,
-                        );
-                        wrote_reasoning = true;
-                        reasoning_open = true;
-                    }
-                }
-            }
-            "reasoning.part_end" | "reasoning.reset" => {
-                flush_line_buf(
-                    &mut reasoning_buf,
-                    WriteLineStyle::Reasoning,
-                    &mut chunk_out,
-                );
-            }
-            "tool.started" => {
-                flush_line_buf(
-                    &mut reasoning_buf,
-                    WriteLineStyle::Reasoning,
-                    &mut chunk_out,
-                );
-                if reasoning_open {
-                    chunk_out.push_str("\r\n");
-                    reasoning_open = false;
-                }
-                let name = data
-                    .get("display_name")
-                    .or_else(|| data.get("name"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("工具");
-                push_rendered_line(&format!("⚙ {name} …"), WriteLineStyle::Note, &mut chunk_out);
-            }
-            "tool.finished" => {
-                if data.get("ok").and_then(Value::as_bool) == Some(false) {
-                    let name = data
-                        .get("display_name")
-                        .or_else(|| data.get("name"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("工具");
-                    push_rendered_line(
-                        &format!("⚙ {name} 失败"),
-                        WriteLineStyle::Note,
-                        &mut chunk_out,
-                    );
-                }
-            }
-            "assistant.delta" => {
-                flush_line_buf(
-                    &mut reasoning_buf,
-                    WriteLineStyle::Reasoning,
-                    &mut chunk_out,
-                );
-                if reasoning_open
-                    || (wrote_reasoning && content_buf.is_empty() && chunk_out.is_empty())
-                {
-                    chunk_out.push_str("\r\n");
-                    reasoning_open = false;
-                    wrote_reasoning = false;
-                }
-                if let Some(delta) = data.get("delta").and_then(Value::as_str) {
-                    content_buf.push_str(delta);
-                    drain_line_buf(&mut content_buf, WriteLineStyle::Content, &mut chunk_out);
-                }
-            }
-            "run.completed" | "run.failed" | "run.cancelled" => {
-                flush_line_buf(
-                    &mut reasoning_buf,
-                    WriteLineStyle::Reasoning,
-                    &mut chunk_out,
-                );
-                flush_line_buf(&mut content_buf, WriteLineStyle::Content, &mut chunk_out);
-                if record.kind != "run.completed" {
-                    push_rendered_line("(跟进中断)", WriteLineStyle::Note, &mut chunk_out);
-                }
-                // fish/zsh 收到 SIGWINCH 重绘提示符时,会从光标行向上清掉
-                // 自家提示符高度的行数再画(starship 双行提示符实测清 2 行)。
-                // 垫两行空白当牺牲品,免得清到正文末行。
-                chunk_out.push_str("\r\n\r\n\r\n");
-                let _ = ops_tx.send(TtyWriteOp::Write(chunk_out));
-                let _ = ops_tx.send(TtyWriteOp::Finish);
-                tracing::info!(
-                    job_id = %completion.job_id,
-                    outcome = %record.kind,
-                    "job wake reply streamed to the originating terminal"
-                );
-                return;
-            }
-            _ => {}
-        }
-        if !chunk_out.is_empty() {
-            // 落笔前重查前台闸:用户开了全屏程序就立即收笔,已写的留在屏上。
+        // 落笔前重查前台闸:用户开了全屏程序就立即收笔,已写的留在屏上。
+        // 一条 delta 一次 /proc 太勤,四分之一秒查一回够了。
+        if gate_checked_at.elapsed() >= Duration::from_millis(250) {
+            gate_checked_at = std::time::Instant::now();
             if !origin_shell_at_prompt(&origin) {
                 aborted = true;
                 break;
             }
-            let _ = ops_tx.send(TtyWriteOp::Write(chunk_out));
+        }
+        let terminal = matches!(
+            record.kind.as_str(),
+            "run.completed" | "run.failed" | "run.cancelled"
+        );
+        let _ = ops_tx.send(TtyWriteOp::Event {
+            kind: record.kind.clone(),
+            data,
+        });
+        if terminal {
+            let _ = ops_tx.send(TtyWriteOp::Finish {
+                interrupted: record.kind != "run.completed",
+            });
+            tracing::info!(
+                job_id = %completion.job_id,
+                outcome = %record.kind,
+                "job wake reply streamed to the originating terminal"
+            );
+            return;
         }
     }
     let _ = ops_tx.send(TtyWriteOp::Abort);
@@ -412,20 +308,98 @@ pub(in crate::web) async fn stream_job_wake_to_origin_tty(
 
 /// 专职写线程:tty 是同步阻塞设备(^S 流控可以永久卡住 write),隔离在自己
 /// 的线程里,卡死也只占一根线程,不拖累 daemon 的 async runtime。
+///
+/// 渲染也在这条线程上：事件原样转进来，喂给和 shellhook 自己那一轮**同一台**
+/// `StreamRenderer`（静态时间线那一档），画出来的字节写进 tty——跟进那一轮和
+/// 触发它的那一轮长得一样（用户实测：跟进后的渲染和 inline / 真 TUI 都不一样，
+/// 没有时间线）。渲染器量宽度问的是 `terminal::size()`，这儿得先把那个 tty 的
+/// 宽度报给它（线程局部）。
 pub(in crate::web) fn origin_tty_writer(
     mut tty: std::fs::File,
     shell_pid: u32,
     ops: std::sync::mpsc::Receiver<TtyWriteOp>,
+    setup: TtyRenderSetup,
 ) {
     use std::io::Write;
-    for op in ops {
-        match op {
-            TtyWriteOp::Write(text) => {
+    crate::render::set_cols_override(setup.cols);
+    let mut renderer = crate::render::StreamRenderer::new(
+        setup.reasoning_mode,
+        setup.tool_call_mode,
+        false,
+        setup.readable_tool_names,
+        setup.command_output_lines,
+    );
+    // 静态时间线要它为真。构造时它按「stdout 是不是终端」定——daemon 的不是。
+    renderer.live_summary = true;
+    renderer.use_external_cursor_control();
+    renderer.use_buffered_output();
+    fn flush(renderer: &mut crate::render::StreamRenderer, tty: &mut std::fs::File) -> bool {
+        let frame = renderer.take_output_frame();
+        if frame.is_empty() {
+            return true;
+        }
+        tty.write_all(&frame).is_ok() && tty.flush().is_ok()
+    }
+    // 抬头和 REPL 里后台任务完成那一行一个样子：暗色齿轮 + 任务名。
+    let header = format!(
+        "\r\n\x1b[2m⚙ {} · {}\x1b[0m\r\n\r\n",
+        t("background task follow-up", "后台任务跟进"),
+        setup.title
+    );
+    if tty.write_all(header.as_bytes()).is_err() {
+        return;
+    }
+    let _ = renderer.start_waiting();
+    if !flush(&mut renderer, &mut tty) {
+        return;
+    }
+    let mut finished = false;
+    loop {
+        match ops.recv_timeout(Duration::from_millis(80)) {
+            Ok(TtyWriteOp::Write(text)) => {
                 if tty.write_all(text.as_bytes()).is_err() {
                     return;
                 }
             }
-            TtyWriteOp::Finish => {
+            Ok(TtyWriteOp::Event { kind, data }) => {
+                tracing::debug!(kind = %kind, "tty writeback event");
+                match crate::cli::ipc_event::decode_ipc_event(&kind, &data) {
+                    crate::cli::ipc_event::DecodedIpc::Event(event) => {
+                        if crate::cli::handle_agent_event(&mut renderer, event).is_err() {
+                            return;
+                        }
+                    }
+                    crate::cli::ipc_event::DecodedIpc::RunCompleted => {
+                        if !finished {
+                            finished = true;
+                            let _ = renderer.finish();
+                        }
+                    }
+                    // 问题没法在别人的提示符上弹面板，图片也画不了：照旧跳过。
+                    _ => {}
+                }
+                if !flush(&mut renderer, &mut tty) {
+                    return;
+                }
+            }
+            Ok(TtyWriteOp::Finish { interrupted }) => {
+                if !finished {
+                    let _ = renderer.finish();
+                }
+                if !flush(&mut renderer, &mut tty) {
+                    return;
+                }
+                if interrupted {
+                    let note = format!(
+                        "\x1b[2m({})\x1b[0m\r\n",
+                        t("follow-up interrupted", "跟进中断")
+                    );
+                    let _ = tty.write_all(note.as_bytes());
+                }
+                // fish/zsh 收到 SIGWINCH 重绘提示符时,会从光标行向上清掉
+                // 自家提示符高度的行数再画(starship 双行提示符实测清 2 行)。
+                // 垫两行空白当牺牲品,免得清到正文末行。
+                let _ = tty.write_all(b"\r\n\r\n\r\n");
                 let _ = tty.flush();
                 // 提示符被我们的输出推到半空,SIGWINCH 让 shell(fish/zsh/新
                 // bash 的 readline 都处理)原地重绘一行干净的提示符。
@@ -434,7 +408,22 @@ pub(in crate::web) fn origin_tty_writer(
                 }
                 return;
             }
-            TtyWriteOp::Abort => return,
+            Ok(TtyWriteOp::Abort) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                // 中途收笔：转轮那几行擦掉，已写的正文留在屏上。
+                if !finished {
+                    let _ = renderer.finish();
+                }
+                let _ = flush(&mut renderer, &mut tty);
+                return;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if !finished {
+                    let _ = renderer.tick_spinner();
+                    if !flush(&mut renderer, &mut tty) {
+                        return;
+                    }
+                }
+            }
         }
     }
 }

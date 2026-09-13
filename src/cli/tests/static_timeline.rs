@@ -489,3 +489,105 @@ fn piped_output_keeps_the_plain_summary() {
     let text = String::from_utf8_lossy(&renderer.take_output_frame()).into_owned();
     assert!(text.contains("×1"), "管道里该还是老摘要: {text:?}");
 }
+
+/// daemon 往 shellhook 的终端回写那一轮：事件从 `decode_ipc_event` 进、
+/// `handle_agent_event` 出，中间按 80ms 走转轮——和写线程一模一样。思考收成一步
+/// 之后正文另起一行，转轮那一行不能留在正文前头（真机回写实测：
+/// `⠹ 󰝨 思考中 · 0.1s好的,收到。…` 粘成一行）。
+#[test]
+fn a_written_back_turn_keeps_the_reply_off_the_spinner_row() {
+    use crate::cli::ipc_event::{decode_ipc_event, DecodedIpc};
+    // 写线程报了宽度，转轮才认自己是在往终端画。
+    crate::render::set_cols_override(100);
+    let mut renderer = static_renderer();
+    let mut screen = Screen::new();
+    let feed = |renderer: &mut StreamRenderer, screen: &mut Screen| {
+        let frame = renderer.take_output_frame();
+        screen.feed(&frame);
+    };
+    renderer.start_waiting().unwrap();
+    feed(&mut renderer, &mut screen);
+    let events: Vec<(&str, serde_json::Value)> = vec![
+        ("reasoning.start", serde_json::json!({})),
+        (
+            "reasoning.delta",
+            serde_json::json!({"delta": "先看一眼需求,"}),
+        ),
+        (
+            "reasoning.delta",
+            serde_json::json!({"delta": "再决定怎么下手。"}),
+        ),
+        ("reasoning.part_end", serde_json::json!({})),
+        // 第一轮的正文**没有换行收尾**（模型常这样），markdown 那层攒着半行。
+        (
+            "assistant.delta",
+            serde_json::json!({"delta": "好的,收到。"}),
+        ),
+        (
+            "assistant.delta",
+            serde_json::json!({"delta": "这是回复。"}),
+        ),
+        ("chat.round_usage", serde_json::json!({})),
+        // 排队的跟进接着跑第二轮：新一段思考开始时那半行正文得先收掉。
+        ("queue.consumed", serde_json::json!({})),
+        ("reasoning.start", serde_json::json!({})),
+        ("reasoning.part_start", serde_json::json!({})),
+        (
+            "reasoning.delta",
+            serde_json::json!({"delta": "再想一下。"}),
+        ),
+        ("reasoning.part_end", serde_json::json!({})),
+        (
+            "assistant.delta",
+            serde_json::json!({"delta": "第二段回复。"}),
+        ),
+        ("run.completed", serde_json::json!({})),
+    ];
+    for (kind, data) in events {
+        // 每条事件之间转轮走两三帧（写线程 80ms 一帧）。
+        for _ in 0..3 {
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            renderer.tick_spinner().unwrap();
+            feed(&mut renderer, &mut screen);
+        }
+        match decode_ipc_event(kind, &data) {
+            DecodedIpc::Event(event) => {
+                crate::cli::handle_agent_event(&mut renderer, event).unwrap()
+            }
+            DecodedIpc::RunCompleted => renderer.finish().unwrap(),
+            _ => {}
+        }
+        feed(&mut renderer, &mut screen);
+    }
+    crate::render::set_cols_override(0);
+    let lines = screen.lines();
+    let text = lines.join("\n");
+    let reply = lines
+        .iter()
+        .find(|line| line.contains("好的,收到"))
+        .unwrap_or_else(|| panic!("正文没了: {text:?}"));
+    assert!(
+        !reply.contains(t("thinking", "思考中"))
+            && !reply
+                .trim_start()
+                .starts_with(|c: char| "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏".contains(c)),
+        "正文粘在转轮那一行后面: {text:?}"
+    );
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.starts_with("  ") && line.contains(t("thought", "已思考")))
+            .count(),
+        2,
+        "两段思考没各收成一步: {text:?}"
+    );
+    assert!(
+        !text.contains(t("thinking", "思考中")),
+        "转轮那一行没擦掉: {text:?}"
+    );
+    let second = lines
+        .iter()
+        .find(|line| line.contains("第二段回复"))
+        .unwrap_or_else(|| panic!("第二段正文没了: {text:?}"));
+    assert!(!second.contains("好的,收到"), "两段正文粘成一行: {text:?}");
+}

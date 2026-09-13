@@ -21,7 +21,7 @@ use serde_json::Value;
 use std::time::Instant;
 
 /// 一条 IPC 事件解码后的去向。
-pub(in crate::cli) enum DecodedIpc {
+pub(crate) enum DecodedIpc {
     /// 可以直接喂给渲染器 / UI 的事件。
     Event(AgentEvent),
     /// 需要调用方做异步副作用，原始 `data` 仍在调用方手里。
@@ -38,7 +38,7 @@ pub(in crate::cli) enum DecodedIpc {
 
 /// 需要调用方接手的异步副作用。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(in crate::cli) enum AsyncIpc {
+pub(crate) enum AsyncIpc {
     /// `tool.image`：`data` 里是落库后的资产而不是路径，要从库里取回来
     /// 再按本地终端的宽度画——daemon 量到的不是用户的终端。
     ToolImage,
@@ -200,6 +200,6 @@ pub(in crate::cli) fn decode_ipc_event_at(
 }
 
 /// `decode_ipc_event_at` 的常用形态：接收时刻即此刻。
-pub(in crate::cli) fn decode_ipc_event(kind: &str, data: &Value) -> DecodedIpc {
+pub(crate) fn decode_ipc_event(kind: &str, data: &Value) -> DecodedIpc {
     decode_ipc_event_at(kind, data, Instant::now())
 }

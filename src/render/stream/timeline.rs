@@ -193,6 +193,8 @@ struct PendingStep {
     /// 子代理烧了多少（短标）。见 `StreamRenderer::subagent_tokens_label`。
     tokens: Option<String>,
     detail: Vec<String>,
+    /// 抬头底下留着的那几行。见 [`Step::tail`]。
+    tail: Vec<String>,
     failed: bool,
     /// 收进来的时候还没跑完——只有回合被打断（Ctrl+C、断线）才会这样。
     interrupted: bool,
@@ -216,6 +218,9 @@ pub(crate) struct Step {
     /// 收缩行：`body` 是收起来的那几步（各自已经是整行、带缩进、连好线），点开时
     /// 不再缩进——和主线 `Worked for …` 展开成时间线一个样子。
     fold: bool,
+    /// 不点开也露在抬头底下的那几行（跑完的命令留着的输出尾巴，连线从它们中间
+    /// 穿过去）。块的结束标记放在它们之后：点开时展开内容把抬头和尾巴一起换掉。
+    tail: Vec<String>,
 }
 
 impl Step {
@@ -227,6 +232,7 @@ impl Step {
             block: None,
             speech: false,
             fold: false,
+            tail: Vec::new(),
         }
     }
 
@@ -238,6 +244,7 @@ impl Step {
             block: None,
             speech: true,
             fold: false,
+            tail: Vec::new(),
         }
     }
 }
@@ -332,8 +339,40 @@ fn seal_subagent_speech(log: &mut SubagentLog) {
     if text.trim().is_empty() {
         return;
     }
-    log.steps.push(Step::speech(wrap_detail(text.trim())));
+    log.steps.push(Step::speech(render_speech_lines(
+        text.trim(),
+        detail_width(),
+    )));
     trim_subagent(log);
+}
+
+/// 面板里它说的正文：先过一遍 markdown，再按宽度折行。原来是裸文本——`**加粗**`
+/// 的星号、反引号原样露着（用户实测截图：浮层里正文没有 md 渲染）。主线正文走的
+/// 是同一套行渲染器，两边长相才一致。
+pub(crate) fn render_speech_lines(text: &str, width: usize) -> Vec<String> {
+    let mut renderer = crate::render::MarkdownLineRenderer::new();
+    let mut rendered = String::new();
+    for line in text.lines() {
+        let piece = renderer.render_line(line);
+        if piece.is_empty() {
+            continue;
+        }
+        rendered.push_str(&piece);
+        if !piece.ends_with('\n') {
+            rendered.push('\n');
+        }
+    }
+    let rest = renderer.flush();
+    rendered.push_str(&rest);
+    rendered
+        .lines()
+        .flat_map(|line| {
+            if line.trim().is_empty() {
+                return vec![String::new()];
+            }
+            crate::render::wrap_display_text(line, width)
+        })
+        .collect()
 }
 
 /// 这一段过程从第几步开始：「提示词」那一行和已经说过的正文都不算过程。
@@ -598,7 +637,10 @@ fn subagent_lines(log: &mut SubagentLog) -> Vec<String> {
     // 还在说的那段话排在最底下——它是此刻正在发生的事。说完的会被
     // `seal_subagent_speech` 封成一步，按时序留在该在的位置上。
     if !log.speech.trim().is_empty() {
-        entries.push(PanelEntry::Text(wrap_detail(log.speech.trim())));
+        entries.push(PanelEntry::Text(render_speech_lines(
+            log.speech.trim(),
+            detail_width(),
+        )));
     }
     thread_panel(entries)
 }
@@ -745,8 +787,9 @@ pub(crate) fn tool_output_lines(output: &str) -> Vec<String> {
 /// 一步的详情最多留多少行。再多就不是「点开看看」而是把内存当日志用了。
 const MAX_DETAIL_LINES: usize = 400;
 
-/// 全屏下跑着的命令在抬头底下露几行输出（用户拍板四行）。
-const LIVE_PREVIEW_ROWS: usize = 4;
+/// 全屏下跑着的命令在抬头底下露几行输出；跑完之后这几行留着（用户拍板六行，
+/// 完成后保留区域）。
+pub(crate) const LIVE_PREVIEW_ROWS: usize = 6;
 
 /// 展开内容相对页边距再缩进多少。
 const DETAIL_INDENT: &str = "  ";
@@ -902,6 +945,25 @@ fn push_wrapped(out: &mut String, line: &str, width: usize) {
 ///
 /// 头行留着是因为它是把手（再点一次才收得回去）；上下各留一行空，否则展开的
 /// 内容会和上下两步的连线糊成一片。
+/// 时间线里一步占的那几行：抬头（挂着块的话包上标记），底下跟着它露出来的尾巴
+///（跑完的命令留着的那几行输出，连线从中间穿过）。块的结束标记放在尾巴之后：
+/// 点开时展开内容把抬头和尾巴**一起**换掉——和跑着的时候一个规矩。
+fn step_rows(step: &Step, id: Option<u64>) -> String {
+    let mut row = match id {
+        Some(id) => format!("{}{}", blocks::begin_marker(id), step.line),
+        None => step.line.clone(),
+    };
+    for extra in &step.tail {
+        row.push('\n');
+        row.push_str(&rail_prefix());
+        row.push_str(extra);
+    }
+    if id.is_some() {
+        row.push_str(blocks::END_MARKER);
+    }
+    row
+}
+
 fn step_detail(step: &Step) -> Vec<String> {
     let mut detail = Vec::with_capacity(step.body.len() + 3);
     if step.fold {
@@ -1101,6 +1163,7 @@ impl StreamRenderer {
                 },
                 // 没跑完就被收进来 = 回合被打断了。它没成功，但也不是"报错"——
                 // 抬头上要说清楚。
+                tail: stats.tail.clone(),
                 failed: stats.error > 0 || !stats.settled(),
                 interrupted: !stats.settled(),
                 // 不到十分之一秒的不报（`0.0s` 只是噪音）；交到后台的子代理是
@@ -1131,6 +1194,7 @@ impl StreamRenderer {
             interrupted,
             elapsed,
             overlay,
+            tail,
         } in entries
         {
             let glyph = if failed {
@@ -1165,7 +1229,9 @@ impl StreamRenderer {
             } else {
                 step_line(glyph, &label)
             };
-            self.timeline.steps.push(Step::new(line, detail, overlay));
+            let mut step = Step::new(line, detail, overlay);
+            step.tail = tail;
+            self.timeline.steps.push(step);
         }
         self.tool_stats.clear();
         self.last_tool_summary.clear();
@@ -1287,15 +1353,7 @@ impl StreamRenderer {
         // 收成 `Worked for …` 之后用的还是同一个，展开状态跟着走。
         let mut steps: Vec<String> = self.timeline.steps[self.timeline.committed..]
             .iter()
-            .map(|step| match step.overlay.or(step.block) {
-                Some(id) => format!(
-                    "{}{}{}",
-                    blocks::begin_marker(id),
-                    step.line,
-                    blocks::END_MARKER
-                ),
-                None => step.line.clone(),
-            })
+            .map(|step| step_rows(step, step.overlay.or(step.block)))
             .collect();
         let current_is_empty = current.is_empty();
         for LiveRow { line, target, tail } in current {
@@ -2204,7 +2262,7 @@ impl StreamRenderer {
         let mut steps = Vec::with_capacity(timeline.steps.len());
         for step in &timeline.steps {
             if step.overlay.is_none() && step.body.is_empty() {
-                steps.push(step.line.clone());
+                steps.push(step_rows(step, None));
                 continue;
             }
             // 展开这一步时**头行留着**：它是把手，再点一次才收得回去；
@@ -2215,15 +2273,7 @@ impl StreamRenderer {
                 // live 区里用的那块，收缩之后还是它：点开着的保持点开。
                 None => step.block.or_else(|| blocks::register(step_detail(step))),
             };
-            match target {
-                Some(id) => steps.push(format!(
-                    "{}{}{}",
-                    blocks::begin_marker(id),
-                    step.line,
-                    blocks::END_MARKER
-                )),
-                None => steps.push(step.line.clone()),
-            }
+            steps.push(step_rows(step, target));
         }
         let mut expanded = vec![format!("\x1b[2m{INDENT}⌄ {summary}\x1b[0m")];
         expanded.push(rail());

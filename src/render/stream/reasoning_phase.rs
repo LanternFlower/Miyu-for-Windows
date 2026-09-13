@@ -43,6 +43,13 @@ impl StreamRenderer {
         self.preparing_question_started_at = None;
         self.tool_preparing = None;
         self.tool_preparing_since = None;
+        // 上一段正文的最后一行还开着（模型没给换行，markdown 那层攒着半行）：
+        // 先把它收掉再起转轮。不收的话转轮画在这半行的位置上，等下一条思考
+        // delta 来收行时，那半行正文就接在转轮那一行后面（排队跟进的第二轮
+        // 实测：`⠹ 󰝨 思考中 · 0.1s好的,收到。…` 粘成一行）。
+        if self.mode == Some(ChatStreamKind::Content) {
+            self.end_active_stream_line()?;
+        }
         if self.reasoning_mode == ReasoningDisplayMode::Summary {
             self.reasoning_started_at = Some(received_at);
             self.reasoning_elapsed = None;

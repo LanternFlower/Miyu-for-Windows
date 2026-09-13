@@ -14,7 +14,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 PORT = int(os.environ.get("STUB_PORT", "18498"))
 CHUNK_CHARS = int(os.environ.get("STUB_CHUNK_CHARS", "3"))
 CHUNK_SLEEP = float(os.environ.get("STUB_CHUNK_SLEEP", "0.02"))
-REPLY = "好的,收到。这是一段用于走查的回复,分块吐出来好让 footer 量得出每秒 token。"
+# 置 STUB_REPLY 换正文：走查链接/markdown 渲染时要一段带链接的。
+REPLY = os.environ.get(
+    "STUB_REPLY",
+    "好的,收到。这是一段用于走查的回复,分块吐出来好让 footer 量得出每秒 token。",
+)
 # 默认不发思考:老的走查脚本按「回复就是全部输出」断言。置 STUB_REASONING=1
 # 才多吐一段 reasoning_content,给全屏 TUI 的「点击展开」测具用。
 REASONING = os.environ.get("STUB_REASONING")

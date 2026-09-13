@@ -414,20 +414,30 @@ sys.stdin.readline()  # 等 Rust 侧完成死后判定
             .unwrap();
         let (ops_tx, ops_rx) = std::sync::mpsc::channel::<TtyWriteOp>();
         let shell_pid = origin.shell_pid;
-        let writer = std::thread::spawn(move || origin_tty_writer(tty, shell_pid, ops_rx));
+        let setup = TtyRenderSetup {
+            reasoning_mode: crate::render::ReasoningDisplayMode::Summary,
+            tool_call_mode: crate::render::ToolCallDisplayMode::Summary,
+            readable_tool_names: true,
+            command_output_lines: 10,
+            cols: 80,
+            title: "走查".to_string(),
+        };
+        let writer = std::thread::spawn(move || origin_tty_writer(tty, shell_pid, ops_rx, setup));
         ops_tx
             .send(TtyWriteOp::Write(
                 "\x1b[1m✦ Miyu 后台任务跟进\x1b[0m\r\n".to_string(),
             ))
             .unwrap();
-        let mut body = String::new();
-        push_rendered_line(
-            "**粗体** 与 `代码` MIYU-E2E-END",
-            WriteLineStyle::Content,
-            &mut body,
-        );
-        ops_tx.send(TtyWriteOp::Write(body)).unwrap();
-        ops_tx.send(TtyWriteOp::Finish).unwrap();
+        // 正文走事件路：写线程上的渲染器把 markdown 画出来（和 shellhook 同款）。
+        ops_tx
+            .send(TtyWriteOp::Event {
+                kind: "assistant.delta".to_string(),
+                data: serde_json::json!({"delta": "**粗体** 与 `代码` MIYU-E2E-END\n"}),
+            })
+            .unwrap();
+        ops_tx
+            .send(TtyWriteOp::Finish { interrupted: false })
+            .unwrap();
         writer.join().unwrap();
     }
     stdin.write_all(b"written\n").unwrap();
