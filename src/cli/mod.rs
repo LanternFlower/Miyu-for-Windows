@@ -1010,26 +1010,11 @@ impl Drop for ReplCursorRestore {
     }
 }
 
-#[cfg(unix)]
+/// Raw input is required for key events, but renderer output still relies on
+/// newline translation. 实现挪到了 `terminal::restore_output_processing`：
+/// chafa 跑完也要补一次，那边是两个调用方的公共位置。
 fn restore_live_output_processing() -> Result<()> {
-    let mut attributes = std::mem::MaybeUninit::<libc::termios>::uninit();
-    // Raw input is required for key events, but renderer output still relies on newline translation.
-    unsafe {
-        if libc::tcgetattr(libc::STDOUT_FILENO, attributes.as_mut_ptr()) != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        let mut attributes = attributes.assume_init();
-        attributes.c_oflag |= libc::OPOST | libc::ONLCR;
-        if libc::tcsetattr(libc::STDOUT_FILENO, libc::TCSANOW, &attributes) != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn restore_live_output_processing() -> Result<()> {
-    Ok(())
+    crate::terminal::restore_output_processing()
 }
 
 /// 终端已死(PTY 对端关闭):POLLHUP/POLLERR/POLLNVAL 任一命中。

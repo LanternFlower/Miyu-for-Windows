@@ -4,10 +4,44 @@
 //! 层——两边都要用：
 //!
 //! - `kitty` 的图形协议既服务于 `print_image` 这类工具，也服务于公式渲染；
+//! - `chafa` 的调用约定同理——两条路此前各写一套参数，于是同一个版本兼容坑
+//!   踩了两遍；
 //! - `CommandOutputStream` 由命令执行产出、由渲染层消费。
 //!
 //! 放在基础层，两边都往下依赖，方向一致。
+pub(crate) mod chafa;
 pub(crate) mod kitty;
+
+/// 把输出端的换行翻译（`OPOST | ONLCR`）打开。
+///
+/// REPL 要 raw **输入**才能拿到按键，但渲染层的输出仍旧依赖 `\n` → `\r\n` 的
+/// 翻译，而 `cfmakeraw` 把 OPOST 一并关了。不补回来的话每一行都比上一行右移
+/// 一截，整块输出沿对角线滑出屏幕。
+///
+/// 两个地方要补：`enable_live_raw_mode` 进入 raw 时补一次；**chafa 这类会自己
+/// 动 termios 的子进程跑完也要补一次**——它探测终端能力时会改控制终端的
+/// termios，被 `kill_on_drop` 杀在中途就不会恢复现场，而 ONLCR 一旦丢了，往后
+/// 整个 REPL 的输出都是错位的。
+#[cfg(unix)]
+pub fn restore_output_processing() -> anyhow::Result<()> {
+    let mut attributes = std::mem::MaybeUninit::<libc::termios>::uninit();
+    unsafe {
+        if libc::tcgetattr(libc::STDOUT_FILENO, attributes.as_mut_ptr()) != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let mut attributes = attributes.assume_init();
+        attributes.c_oflag |= libc::OPOST | libc::ONLCR;
+        if libc::tcsetattr(libc::STDOUT_FILENO, libc::TCSANOW, &attributes) != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn restore_output_processing() -> anyhow::Result<()> {
+    Ok(())
+}
 
 /// 命令输出来自哪条流。
 ///

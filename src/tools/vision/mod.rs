@@ -7,6 +7,7 @@ pub(crate) use reference::*;
 use super::{ToolRegistry, ToolSpec};
 use crate::clipboard::write_image_cache_file;
 use crate::config::{AppConfig, PrintImagePluginConfig};
+use crate::i18n::text as t;
 use crate::llm::{ChatMessage, OpenAiCompatibleClient};
 use crate::paths::MiyuPaths;
 use crate::platform_types::{

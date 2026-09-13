@@ -224,8 +224,14 @@ pub(crate) fn sample(
 /// iTerm2 之流都能出真图，图片工具一直走的就是这条路（「Konsole 明明能显
 /// 示图片」正是这么来的），公式却一直没走。
 ///
-/// 关键是 `--probe-mode ctty`：chafa 经**控制终端**探测能力，所以这里把它
-/// 的 stdout 捕获下来也不影响判断——原先以为「一捕获就探测不到」是错的。
+/// 把 stdout 捕获下来并不妨碍 chafa 判断终端能力——它经**控制终端**探测，
+/// 原先以为「一捕获就探测不到」是错的。这一点此前靠显式 `--probe-mode ctty`
+/// 保证，而那个选项要 chafa ≥1.18.1，在那以下的发行版上整个进程直接退出码
+/// 2、这条路从来没生效过；现在交给 `terminal::chafa` 按版本组装，1.18.1+ 的
+/// 默认 `--probe-mode any` 本来就会走控制终端（实测输出字节与显式传它一致）。
+///
+/// 1.16~1.18.0 这一档只有 stdio 探测，而这里的 stdin 要喂 PNG、腾不出来，
+/// 于是仍会退回半块——比先前"整个进程失败"强，但要根治得改用临时文件喂图。
 ///
 /// `--polite on` 去掉隐藏/显示光标的转义（要嵌进流里，不能乱动光标）；
 /// 图形格式下 chafa 用 IND(`ESC D`) 推行而不是换行，渲染层按行记账会少算
@@ -242,22 +248,25 @@ pub(crate) fn render_math_chafa(tex: &str, max_cols: usize, max_rows: usize) -> 
     }
     let png = ratex_png(tex, MathMode::Block)?;
     let rows = natural_block_rows(&decode_and_trim(&png)?, max_rows);
+    // 参数按探测到的 chafa 版本组装(见 terminal::chafa)。此前这里写死
+    // `--probe-mode ctty`,而它要 chafa ≥1.18.1——在那以下的发行版上 chafa
+    // 直接退出码 2,于是这条路**从来没有生效过**,所有人看到的一直是半块:
+    // 08-17 那次「非 kitty 终端的公式改走 chafa」对他们等于没做。
+    let mut args: Vec<String> = crate::terminal::chafa::captured_args()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    args.extend([
+        // RaTeX 出的是透明底,阈值放高让背景真正透出去,别被合成成一块
+        // 底板。代价是抗锯齿边缘会硬一点,公式笔画本身影响很小。
+        "-t".to_string(),
+        "0.9".to_string(),
+        "--size".to_string(),
+        format!("{max_cols}x{rows}"),
+        "-".to_string(),
+    ]);
     let mut child = Command::new("chafa")
-        .args([
-            "--relative",
-            "off",
-            "--polite",
-            "on",
-            "--probe-mode",
-            "ctty",
-            // RaTeX 出的是透明底,阈值放高让背景真正透出去,别被合成成一块
-            // 底板。代价是抗锯齿边缘会硬一点,公式笔画本身影响很小。
-            "-t",
-            "0.9",
-            "--size",
-            &format!("{max_cols}x{rows}"),
-            "-",
-        ])
+        .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

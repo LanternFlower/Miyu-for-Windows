@@ -94,7 +94,21 @@ pub(in crate::cli) fn cursor_position_or(fallback: (u16, u16)) -> (u16, u16) {
     if terminal_hangup() {
         return fallback;
     }
-    cursor::position().unwrap_or(fallback)
+    let started = std::time::Instant::now();
+    let answer = cursor::position();
+    // 取证：这一问要是没答上来，活动区就会按**外部输出之前**的位置重画，
+    // 正好盖在刚打出来的图上。终端渲染大图（sixel 动辄上百 KB）期间不会
+    // 回答 ESC[6n，图越大越容易在这里超时——所以要看得见它。
+    if crate::terminal::chafa::trace_enabled() {
+        crate::terminal::chafa::trace(&format!(
+            "CPR {:?} {}ms fallback={:?}{}",
+            answer,
+            started.elapsed().as_millis(),
+            fallback,
+            if answer.is_err() { "  ←问不到,退回旧位置" } else { "" },
+        ));
+    }
+    answer.unwrap_or(fallback)
 }
 
 /// 从 `start` 起把 `frame` 写进终端后光标停在哪。追踪器不知道页高,顶到页底

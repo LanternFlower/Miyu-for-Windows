@@ -1,0 +1,3 @@
+# fetch-old-chafa.sh 拉下来的历史二进制与解压目录，别进仓库
+old/
+big.png
