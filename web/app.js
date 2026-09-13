@@ -5053,6 +5053,12 @@
     // 页脚(#2)。把页脚实际高度喂给 CSS,浮层的 bottom 就停在页脚上方、页脚照常可用。
     const height = elements.composerDock?.offsetHeight || 0;
     if (height) elements.mainStage.style.setProperty("--composer-dock-height", `${Math.round(height)}px`);
+    // 开面板当下量的是旧布局的页脚高度(面板一开正文列变窄、页脚里模型芯片会换行
+    // 变高),reflow 之后再量一次才对——否则「刚开盖住、跑一轮才正常」(#2 用户实测)。
+    window.requestAnimationFrame(() => {
+      const settled = elements.composerDock?.offsetHeight || 0;
+      if (settled) elements.mainStage.style.setProperty("--composer-dock-height", `${Math.round(settled)}px`);
+    });
   }
 
   function syncArtifactLayout() {
@@ -9866,6 +9872,8 @@
       // 标记捎带渲染出来——但那次全量重渲染在长对话里就是中断「特别高延迟 / 感觉
       // 加载很久」的由来。改成只在原位补这一条状态行（后端 cancel 事件仅 ~12ms）。
       showInterruptedMarker(markerTurnId, markerArticle);
+      // 紧跟着的那次 120ms 后台快照别再整会话重渲染一遍(上面已画对)。
+      state.suppressPostCancelRender = true;
     }
     if (kind === "completed" || kind === "cancelled") {
       // 上下文条跟着正在看的会话走（没有视图时退回终端车道）。
@@ -9949,7 +9957,12 @@
         state.turns = nextTurns;
         state.queuedPrompts = Array.isArray(payload?.queued_prompts) ? payload.queued_prompts : state.queuedPrompts;
         state.redoCandidate = nextCandidate;
-        if (turnsChanged || candidateChanged) renderConversation();
+        // 刚中断那次不必整会话重渲染(#1):原位补的「本轮已中断」+ 留在原地的直播
+        // 气泡已经把最终态画对了,重渲染只是把同样的东西再拼一遍——长对话里这一下
+        // 就是中断残留的卡顿。只吞这一次纯 turns 变更;redo 候选变了照常渲染。
+        const suppress = state.suppressPostCancelRender && !candidateChanged;
+        state.suppressPostCancelRender = false;
+        if ((turnsChanged || candidateChanged) && !suppress) renderConversation();
         renderQueueTray();
         restoreLiveRuns(runs);
       }

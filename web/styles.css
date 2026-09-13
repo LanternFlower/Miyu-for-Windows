@@ -4524,7 +4524,7 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   /* 非分栏桌面浮层态:bottom 停在输入框页脚上方(高度由 app.js 量了喂进来),
      不然绝对定位的面板会盖住页脚、输入框点不到(#2)。分栏/最大化/手机三态各自
      用 position:relative 或 fixed inset 覆盖这条,不受影响。 */
-  bottom: calc(var(--composer-dock-height, 56px) + 10px);
+  bottom: calc(var(--composer-dock-height, 96px) + 10px);
   z-index: 12;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -5368,7 +5368,10 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
 .composer-dock {
   grid-row: 3;
   position: relative;
-  z-index: 10;
+  /* 桌面浮层态(非分栏)的 artifact 面板是 z-index:12 的绝对定位,页脚(和它同在
+     main-stage 栈上下文里)得压过它,否则输入框被盖住点不到(#2)。手机全屏 artifact
+     是 z-index:30,仍盖在页脚上——那是全屏预览的既定行为,不受影响。 */
+  z-index: 13;
   min-width: 0;
   padding: 8px max(18px, calc((100% - 940px) / 2)) 12px;
   background: var(--app-bg);
