@@ -237,7 +237,7 @@ pub(in crate::cli) async fn follow_wake_run(
                     handle_live_agent_event(live, &mut renderer, AgentEvent::SpinnerTick)?;
                     // 状态条是 live tail 的一部分，附着期间同样要持续刷新。
                     follow_strip_tick = follow_strip_tick.wrapping_add(1);
-                    if follow_strip_tick % 8 == 0 && !live.external_output_active {
+                    if follow_strip_tick % 2 == 0 && !live.external_output_active {
                         if live.set_jobs(jobs_feed.current()) {
                             synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
                                 live.redraw()

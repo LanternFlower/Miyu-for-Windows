@@ -356,11 +356,11 @@ pub(in crate::cli) async fn try_run_remote_chat(
                         // footer 里的运行转轮与等待动画同源推进。
                         live.tick_footer_spinner()?;
                         // The job strip is part of the live tail, so it keeps
-                        // rendering during streaming; throttle to ~every 8th
-                        // spinner frame.
+                        // rendering during streaming. 转轮按时间定帧，这里每隔一个
+                        // 转轮 tick（约 66ms）重画一次就跟得上 80ms 一帧。
                         if let Some(feed) = jobs_feed {
                             job_strip_tick = job_strip_tick.wrapping_add(1);
-                            if job_strip_tick % 8 == 0 && !live.external_output_active {
+                            if job_strip_tick % 2 == 0 && !live.external_output_active {
                                 if live.set_jobs(feed.current()) {
                                     synchronized_terminal_update(
                                         CursorAfterUpdate::Preserve,

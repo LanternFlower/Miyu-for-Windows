@@ -85,6 +85,8 @@ pub struct StreamRenderer {
     pub(crate) live_summary: bool,
     pub(crate) wait_spinner: Option<WaitSpinner>,
     pub(crate) last_tick: Option<std::time::Instant>,
+    /// 全屏：自动压缩时流进来的摘要先攒着，压完收成一块（`finish_compact`）。
+    pub(crate) compact_text: String,
     /// 上一次把子代理面板重灌是什么时候。见 `refresh_subagent_panels`。
     pub(crate) last_subagent_refresh: Option<std::time::Instant>,
     pub(crate) preparing_question_started_at: Option<std::time::Instant>,
@@ -153,6 +155,7 @@ impl StreamRenderer {
             live_summary: io::stdout().is_terminal(),
             wait_spinner: None,
             last_tick: None,
+            compact_text: String::new(),
             last_subagent_refresh: None,
             preparing_question_started_at: None,
             tool_preparing: None,
@@ -310,6 +313,17 @@ impl StreamRenderer {
     pub fn write_system_message(&mut self, message: &str) -> Result<()> {
         self.prepare_for_external_output()?;
         let stdout = &mut self.output;
+        // 全屏：系统提示和时间线里的通知一个样子——暗色、带图标、退两格，
+        // 不是贴着第 0 列的一行灰字。
+        if blocks::enabled() {
+            let line = timeline::indent_body(&format!(
+                "\x1b[2m{} {message}\x1b[0m\n",
+                timeline::glyph_notice()
+            ));
+            write!(stdout, "{line}")?;
+            stdout.flush()?;
+            return Ok(());
+        }
         execute!(stdout, SetForegroundColor(Color::DarkGrey), MoveToColumn(0))?;
         writeln!(stdout, "{message}")?;
         execute!(stdout, ResetColor)?;
@@ -319,6 +333,13 @@ impl StreamRenderer {
 
     pub fn write_compact_chunk(&mut self, chunk: &ChatStreamChunk) -> Result<()> {
         if chunk.kind != ChatStreamKind::Content {
+            return Ok(());
+        }
+        // 全屏：摘要先攒着，压完收成一块点开看。整段灰字流到正文里，几十行
+        // 摘要把对话冲散了（用户：压缩上下文没有任何输出吗——inline 那套灰字在
+        // 全屏下本来就该折起来）。
+        if blocks::enabled() {
+            self.compact_text.push_str(&chunk.text);
             return Ok(());
         }
         self.prepare_for_external_output()?;
@@ -331,6 +352,16 @@ impl StreamRenderer {
     }
 
     pub fn finish_compact(&mut self) -> Result<()> {
+        if blocks::enabled() {
+            let summary = std::mem::take(&mut self.compact_text);
+            timeline::write_compact_summary(
+                &mut self.output,
+                t("context compacted", "上下文已压缩"),
+                &summary,
+            )?;
+            self.output.flush()?;
+            return Ok(());
+        }
         let stdout = &mut self.output;
         execute!(stdout, ResetColor)?;
         writeln!(stdout)?;

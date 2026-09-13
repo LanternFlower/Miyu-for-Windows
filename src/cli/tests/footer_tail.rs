@@ -493,6 +493,7 @@ fn spinner_does_not_resume_tail_during_external_output() {
         suppressed_jobs: std::collections::HashMap::new(),
         live_turn_tokens: 0,
         job_spinner: 0,
+        job_spinner_started: std::time::Instant::now(),
     };
     let mut renderer = render::StreamRenderer::new(
         render::ReasoningDisplayMode::Hidden,
@@ -534,6 +535,7 @@ fn live_tail_coalesces_adjacent_stream_chunks_and_can_discard_them() {
         suppressed_jobs: std::collections::HashMap::new(),
         live_turn_tokens: 0,
         job_spinner: 0,
+        job_spinner_started: std::time::Instant::now(),
     };
 
     for (kind, text) in [

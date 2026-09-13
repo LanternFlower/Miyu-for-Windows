@@ -264,6 +264,31 @@ pub(crate) fn reported_seconds(elapsed: Duration) -> Option<String> {
     (elapsed.as_millis() >= 100).then(|| format_seconds(elapsed))
 }
 
+/// 压缩上下文收成的那一块：合着一行 `› 上下文已压缩 · …`，点开是摘要全文（暗色）。
+/// 手动 `/compact` 和回合里的自动压缩都走它；摘要是空的就只留那一行提示。
+pub(crate) fn write_compact_summary<W: std::io::Write>(
+    writer: &mut W,
+    head: &str,
+    summary: &str,
+) -> std::io::Result<()> {
+    let indent = indent();
+    if summary.trim().is_empty() {
+        writeln!(writer, "\x1b[2m{indent}{} {head}\x1b[0m", glyph_notice())?;
+        return writeln!(writer);
+    }
+    let mut expanded = vec![format!("\x1b[2m{indent}⌄ {head}\x1b[0m"), String::new()];
+    expanded.extend(
+        wrap_detail(summary.trim())
+            .into_iter()
+            .map(|line| format!("\x1b[2m{indent}{DETAIL_INDENT}{line}\x1b[0m")),
+    );
+    expanded.push(String::new());
+    blocks::write_expandable(writer, expanded, |writer| {
+        writeln!(writer, "\x1b[2m{indent}› {head}\x1b[0m")?;
+        writeln!(writer)
+    })
+}
+
 /// 面板里「正在进行」那一行左边距上的转轮占位格。
 ///
 /// 面板内容是一段静态 ANSI，没人每帧重写它；画面板的那一层每一帧把这个格子换成

@@ -2261,6 +2261,22 @@ shellhook 走的是 `remote/one_shot.rs` + inline 渲染器（`live = None`）�
   一个 glyph，面板 `SubagentLog.preparing` 同样；后台面板直接用 `[准备] <工具>\t…`
   行里的工具 id 算图标（老日志没 id 退回齿轮）。
 
+### 26.17 第十一批：压缩上下文的输出、状态行转轮流式期间的节拍
+
+- **压缩上下文只有右上角的通知**：`/compact` 的两行提示走 `repl_note`，全屏下它一律
+  变 toast；用量那一行 `print_chat_token_usage` 直接打 stdout，全屏下进不了缓冲。
+  daemon 其实一路把摘要（`context.compact_delta`）流过来了，REPL 这边用的是不看事件的
+  `send_ipc_admin`。现在全屏走正文：一行带图标的「正在压缩上下文…」，用
+  `send_ipc_admin_streaming` 把摘要攒起来，压完写一块 `› 上下文已压缩 · <用量>`，点开
+  是摘要全文（`timeline::write_compact_summary`）；用量那一行做成字符串
+  （`chat_token_usage_text`）拼在抬头上。inline 照旧。回合里的**自动压缩**同款：
+  `write_system_message` 全屏改成带图标退两格的提示行，`write_compact_chunk` 攒着
+  不流到正文，`finish_compact` 收成同一种块。
+- **后台任务状态行的转轮在 AI 输出时不顺**：帧号是 `tick_job_strip` 每调一次进一帧，
+  而流式那一路每 8 个转轮 tick 才调一次（≈264ms 一帧），中间每个事件的整帧重画又
+  用同一个帧号。改成按时间定帧（`job_spinner_started`，80ms 一帧），谁来重画都画在
+  该在的位置；流式期间每隔一个 tick（≈66ms）重画状态行，跟进那一路同改。
+
 **opencode Zen 的 FreeUsageLimitError 不是客户端的事**（09-13 实测）：
 - 本机 opencode 1.18.29 指到本地假端点抓包，头与 Miyu 现发的一致
   （`x-opencode-client/project/session/request` + 同款 User-Agent）；

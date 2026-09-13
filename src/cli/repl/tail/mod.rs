@@ -167,6 +167,10 @@ pub(in crate::cli) struct LiveReplTail {
     /// 见 [`Self::set_live_turn_tokens`]。
     pub(in crate::cli) live_turn_tokens: u64,
     pub(in crate::cli) job_spinner: usize,
+    /// 状态行转轮的计时起点。帧按时间算（80ms 一帧）：谁来重画都画在该在的位置，
+    /// 不再是「每次 tick_job_strip 进一帧」——AI 流式输出时那一路每 8 个转轮 tick
+    /// 才来一次，状态行的转轮就一顿一顿（用户实测）。
+    pub(in crate::cli) job_spinner_started: std::time::Instant,
     /// 后台状态行在屏幕上的起始行与行数。全屏下点它要能对上是哪一个任务。
     pub(in crate::cli) job_strip_start: u16,
     pub(in crate::cli) job_strip_rows: u16,
@@ -607,6 +611,7 @@ impl LiveReplTail {
             suppressed_jobs: std::collections::HashMap::new(),
             live_turn_tokens: 0,
             job_spinner: 0,
+            job_spinner_started: std::time::Instant::now(),
             output_cursor: cursor_position_or((0, 0)),
             tail_start: 0,
             tail_rows: 0,
@@ -771,6 +776,11 @@ impl LiveReplTail {
 
     /// Lightweight spinner/timer repaint of the job strip only — no full
     /// tail redraw, so it can run at animation frequency without flicker.
+    /// 状态行转轮此刻该画哪一帧（80ms 一帧，按时间算）。
+    pub(in crate::cli) fn job_spinner_frame(&self) -> usize {
+        (self.job_spinner_started.elapsed().as_millis() / 80) as usize
+    }
+
     pub(in crate::cli) fn tick_job_strip(&mut self) -> Result<()> {
         if !self.rendered || self.jobs.is_empty() {
             return Ok(());
@@ -784,7 +794,7 @@ impl LiveReplTail {
         {
             return Ok(());
         }
-        self.job_spinner = self.job_spinner.wrapping_add(1);
+        self.job_spinner = self.job_spinner_frame();
         let (cols, _) = terminal::size().unwrap_or((80, 24));
         let lines = background_job_lines(&self.jobs, self.job_spinner, usize::from(cols));
         let rows = lines.len().min(u16::MAX as usize) as u16;

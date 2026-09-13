@@ -1472,3 +1472,45 @@ fn repeated_preparing_events_do_not_restart_the_spinner() {
         crate::render::set_cols_override(0);
     });
 }
+
+/// 全屏下的自动压缩：提示是时间线那种带图标的一行，摘要不往正文里流，压完收成
+/// 一块 `› 上下文已压缩`，点开才是全文（用户：压缩上下文只有右上角的通知）。
+#[test]
+fn auto_compact_folds_its_summary_into_a_block_in_fullscreen() {
+    with_blocks(|| {
+        let mut renderer = timeline_renderer();
+        renderer.use_buffered_output();
+        renderer.write_system_message("正在压缩上下文...").unwrap();
+        let notice = String::from_utf8_lossy(&renderer.take_output_frame()).into_owned();
+        assert!(
+            notice.contains(crate::render::timeline::glyph_notice())
+                && notice.contains("正在压缩上下文"),
+            "提示行没有图标: {notice:?}"
+        );
+        for piece in ["摘要第一段\n", "摘要第二段\n"] {
+            renderer
+                .write_compact_chunk(&crate::llm::ChatStreamChunk {
+                    kind: crate::llm::ChatStreamKind::Content,
+                    text: piece.to_string(),
+                })
+                .unwrap();
+        }
+        assert!(
+            renderer.take_output_frame().is_empty(),
+            "摘要流到正文里去了"
+        );
+        renderer.finish_compact().unwrap();
+        let frame = String::from_utf8_lossy(&renderer.take_output_frame()).into_owned();
+        let plain = crate::render::strip_ansi_text(&frame);
+        assert!(plain.contains("› 上下文已压缩"), "没收成一块: {plain:?}");
+        assert!(!plain.contains("摘要第二段"), "摘要平铺出来了: {plain:?}");
+        let id = block_id_in(&frame).expect("那一块没登记");
+        let detail = crate::render::blocks::get(id)
+            .unwrap_or_default()
+            .join("\n");
+        assert!(
+            crate::render::strip_ansi_text(&detail).contains("摘要第二段"),
+            "点开没有摘要: {detail:?}"
+        );
+    });
+}

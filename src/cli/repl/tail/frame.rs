@@ -156,7 +156,8 @@ impl LiveReplTail {
             clipped.extend(queue_lines.split_off(queue_lines.len().saturating_sub(keep)));
             queue_lines = clipped;
         }
-        let job_lines = background_job_lines(&self.jobs, self.job_spinner, usize::from(cols));
+        let job_lines =
+            background_job_lines(&self.jobs, self.job_spinner_frame(), usize::from(cols));
         let job_rows = job_lines.len().min(u16::MAX as usize) as u16;
         let total_rows = 1u16
             .saturating_add(queue_lines.len().min(u16::MAX as usize) as u16)

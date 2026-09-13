@@ -180,6 +180,30 @@ pub(in crate::cli) fn print_chat_token_usage(
     Ok(())
 }
 
+/// 同上，但不打 stdout——把那一行用量做成字符串（全屏下要写进缓冲）。关着
+/// 或没有用量时是 None。
+pub(in crate::cli) fn chat_token_usage_text(
+    result: &crate::llm::ChatResult,
+    enabled: bool,
+    session_token_total: u64,
+    context_window: Option<usize>,
+    cumulative: TurnTokens,
+) -> Option<String> {
+    if !enabled || result.usage.is_none() {
+        return None;
+    }
+    let meter = turn_meter(
+        TurnTokens::from_usage(result.usage.as_ref()),
+        GenerationSpeed::from_usage(result.usage.as_ref()),
+        session_token_total,
+        context_window,
+        cumulative,
+    );
+    let text = render::token_usage_output(&meter, result.usage_estimated);
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
 pub(in crate::cli) fn result_context_window(
     config: &AppConfig,
     result: &crate::llm::ChatResult,

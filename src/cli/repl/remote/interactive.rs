@@ -936,25 +936,48 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                     footer.update_cumulative_tokens(cumulative_tokens);
                 }
                 ReplSlashCommand::Compact => {
-                    repl_note(
-                        &mut live_repl,
-                        &format!(
-                            "\x1b[2m{}\x1b[0m",
-                            t("compacting context…", "正在压缩上下文…")
-                        ),
-                    )?;
-                    let Some((state, data)) = repl_ipc_admin(
+                    // 全屏：不用右上角的通知，写进正文——一行「正在压缩」，压完一行
+                    // 结果，摘要收成一块点开看（用户实测：压缩上下文只有右上角的通知）。
+                    // inline 照旧：两行提示 + 用量。
+                    let fullscreen = crate::cli::in_fullscreen();
+                    let notice = |text: &str| -> String {
+                        crate::render::timeline::indent_body(&format!(
+                            "\x1b[2m{} {text}\x1b[0m\n",
+                            crate::render::timeline::glyph_notice()
+                        ))
+                    };
+                    let compacting = t("compacting context…", "正在压缩上下文…");
+                    if fullscreen {
+                        live_repl.apply_output_frame(notice(compacting).as_bytes())?;
+                    } else {
+                        repl_note(&mut live_repl, &format!("\x1b[2m{compacting}\x1b[0m"))?;
+                    }
+                    // 摘要边生成边转发过来，攒起来压完收成一块。
+                    let mut summary = String::new();
+                    let outcome = send_ipc_admin_streaming(
                         paths,
-                        &mut live_repl,
                         IpcCommand::Compact {
                             target: crate::ipc::SessionRef::Id {
                                 id: active_session_id.clone(),
                             },
                         },
+                        |kind, data| {
+                            if kind == "context.compact_delta" {
+                                summary.push_str(ipc_text(data, "delta"));
+                            }
+                            Ok(())
+                        },
                     )
-                    .await?
-                    else {
-                        continue;
+                    .await;
+                    let (state, data) = match outcome {
+                        Ok(result) => result,
+                        Err(err) => {
+                            repl_note(
+                                &mut live_repl,
+                                &format!("\x1b[31m{}: {err}\x1b[0m\n", t("error", "错误")),
+                            )?;
+                            continue;
+                        }
                     };
                     if let Some(usage) = data
                         .get("usage")
@@ -963,10 +986,6 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         .map(serde_json::from_value::<Usage>)
                         .transpose()?
                     {
-                        repl_note(
-                            &mut live_repl,
-                            &format!("\x1b[2m{}\x1b[0m\n", t("context compacted", "上下文已压缩")),
-                        )?;
                         let result = ChatResult {
                             content: String::new(),
                             reasoning: None,
@@ -983,27 +1002,47 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                             last_request_usage: None,
                             responses_continuation: None,
                         };
-                        print_chat_token_usage(
-                            &result,
-                            config.display.show_token_usage,
-                            state.context_tokens,
-                            state.context_window,
-                            state_cumulative(&state),
-                        )?;
+                        if fullscreen {
+                            let mut head = t("context compacted", "上下文已压缩").to_string();
+                            if let Some(usage_line) = chat_token_usage_text(
+                                &result,
+                                config.display.show_token_usage,
+                                state.context_tokens,
+                                state.context_window,
+                                state_cumulative(&state),
+                            ) {
+                                head.push_str(" · ");
+                                head.push_str(&usage_line);
+                            }
+                            let mut frame = Vec::new();
+                            crate::render::timeline::write_compact_summary(
+                                &mut frame, &head, &summary,
+                            )?;
+                            live_repl.apply_output_frame(&frame)?;
+                        } else {
+                            repl_note(
+                                &mut live_repl,
+                                &format!(
+                                    "\x1b[2m{}\x1b[0m\n",
+                                    t("context compacted", "上下文已压缩")
+                                ),
+                            )?;
+                            print_chat_token_usage(
+                                &result,
+                                config.display.show_token_usage,
+                                state.context_tokens,
+                                state.context_window,
+                                state_cumulative(&state),
+                            )?;
+                        }
                     } else {
-                        repl_note(
-                            &mut live_repl,
-                            &format!(
-                                "\x1b[2m{}\x1b[0m\n",
-                                t("nothing to compact", "没有可压缩的上下文")
-                            ),
-                        )?;
+                        let nothing = t("nothing to compact", "没有可压缩的上下文");
+                        if fullscreen {
+                            live_repl.apply_output_frame(notice(nothing).as_bytes())?;
+                        } else {
+                            repl_note(&mut live_repl, &format!("\x1b[2m{nothing}\x1b[0m\n"))?;
+                        }
                     }
-                    cumulative_tokens = state_cumulative(&state);
-                    footer.update_session_tokens(state.context_tokens);
-                    footer
-                        .update_context_window(state.context_window, state.context_window_assumed);
-                    footer.update_cumulative_tokens(cumulative_tokens);
                 }
                 ReplSlashCommand::ResetMemory => {
                     // 不二次确认:只清本会话记下的那部分,会话历史/技能/知识库
