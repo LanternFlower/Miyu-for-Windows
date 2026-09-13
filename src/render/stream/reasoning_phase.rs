@@ -74,7 +74,7 @@ impl StreamRenderer {
                 format_reasoning_elapsed(started_at.elapsed())
             );
         }
-        if let Some((phase, started_at)) = self.tool_preparing {
+        if let Some((phase, _, started_at)) = self.tool_preparing {
             return format!(
                 "~ {phase} · {}",
                 format_reasoning_elapsed(started_at.elapsed())

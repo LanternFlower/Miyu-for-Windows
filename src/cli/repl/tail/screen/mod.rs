@@ -141,8 +141,8 @@ pub(in crate::cli) struct Screen {
     pending_copy: Option<String>,
     /// 下一帧先整屏擦一次。外部输出滚过屏幕之后，逐行重画盖不住残留。
     needs_clear: bool,
-    /// 面板里转轮的帧号和上一次换帧的时刻。见 `overlay_spinner_frame`。
-    overlay_spinner: (usize, Option<std::time::Instant>),
+    /// 面板转轮的计时起点。见 `overlay_spinner_frame`。
+    overlay_spinner_started: Option<std::time::Instant>,
     /// 上一帧的正文高度，`paint` 写、回翻与点选读。
     body: Option<u16>,
     /// 已展开的块：id → 摊开后的内容（内部还可以再有块）。空表示全折叠。
@@ -219,7 +219,7 @@ impl Screen {
             selection: None,
             pending_copy: None,
             needs_clear: true,
-            overlay_spinner: (0, None),
+            overlay_spinner_started: None,
             body: None,
             expanded: std::collections::HashMap::new(),
             overlay: None,
@@ -289,7 +289,7 @@ impl Screen {
             selection: None,
             pending_copy: None,
             needs_clear: true,
-            overlay_spinner: (0, None),
+            overlay_spinner_started: None,
             body: None,
             expanded: std::collections::HashMap::new(),
             overlay: None,

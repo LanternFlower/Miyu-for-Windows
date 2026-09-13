@@ -34,6 +34,12 @@ pub(crate) fn tool_glyph_for(name: &str) -> &'static str {
 }
 
 pub(crate) fn content_cols(fallback: usize) -> usize {
+    // 本线程报过的宽度最优先：面板里渲染一段正文时把面板宽度报进来，代码块、
+    // 表格、公式才按面板宽度排，而不是按整屏宽度排完再被折成碎行。
+    let forced = cols_override();
+    if forced > 0 {
+        return usize::from(forced);
+    }
     if let Some((cols, _)) = crate::cli::content_viewport() {
         return usize::from(cols);
     }
@@ -53,7 +59,12 @@ pub(crate) fn set_cols_override(cols: u16) {
 
 /// 本线程有没有报过宽度——报过就说明这条线程在往某个终端画（daemon 回写）。
 pub(crate) fn cols_override_active() -> bool {
-    COLS_OVERRIDE.with(|cell| cell.get()) > 0
+    cols_override() > 0
+}
+
+/// 本线程报过的宽度（0 = 没报）。
+pub(crate) fn cols_override() -> u16 {
+    COLS_OVERRIDE.with(|cell| cell.get())
 }
 
 /// 终端有多宽：先看本线程的覆盖值，再问 `terminal::size()`，都没有就用 `fallback`。

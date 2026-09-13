@@ -249,9 +249,11 @@ impl MarkdownLineRenderer {
 /// 块级公式:kitty 家族终端走图形协议(高清,复用 print_image 管线),
 /// 其余终端半块画;渲染失败原样回放(青色+定界符)。
 pub(crate) fn render_display_math(tex: &str, closer: &str) -> String {
-    let (terminal_cols, terminal_rows) =
-        crate::cli::content_viewport().unwrap_or_else(|| terminal::size().unwrap_or((100, 24)));
-    let max_cols = (terminal_cols as usize).saturating_sub(6).clamp(24, 110);
+    let terminal_rows = crate::cli::content_viewport()
+        .map(|(_, rows)| rows)
+        .unwrap_or_else(|| terminal::size().map(|(_, rows)| rows).unwrap_or(24));
+    let terminal_cols = crate::render::content_cols(100);
+    let max_cols = terminal_cols.saturating_sub(6).clamp(24, 110);
     // 垂直方向此前没有任何上限——只约束宽度，行数由调用方写死为 9。
     // 上限取 8 与 kitty 那条路对齐，再按终端高度收一道，矮窗口里一条公式
     // 不该占掉半屏。

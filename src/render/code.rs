@@ -4,6 +4,7 @@
 //! 里瞄一眼的场景够用，而且不用为每种语言引一个解析器。
 
 use crate::render::*;
+use unicode_width::UnicodeWidthStr;
 
 pub(crate) fn highlight_code_line(lang: &str, line: &str) -> String {
     let lang = lang.trim().to_ascii_lowercase();
@@ -115,19 +116,25 @@ pub(crate) fn render_code_block(lang: &str, lines: &[String]) -> String {
     };
     let header = format!("-- {label}");
     let footer = "--";
+    // 框宽封顶在内容宽度：一行代码比屏（或面板）还宽的话，框按最长那行画出来
+    // 就被终端硬折成碎片——底色断成两截、下一行是一片空白（子代理面板里
+    // 实测）。超长的行在框里折行，一个字不丢。
+    let cap = crate::render::content_cols(120).saturating_sub(2).max(24);
     let width = lines
         .iter()
-        .map(|line| line.chars().count())
+        .map(|line| UnicodeWidthStr::width(line.as_str()))
         .chain([header.chars().count(), footer.chars().count()])
         .max()
         .unwrap_or(footer.len())
-        .max(24);
+        .clamp(24, cap);
     let mut output = String::new();
     output.push_str(&render_code_block_frame(&header, width));
     output.push('\n');
     for line in lines {
-        output.push_str(&render_code_block_line_with_width(lang, line, width));
-        output.push('\n');
+        for piece in crate::render::wrap_display_text(line, width) {
+            output.push_str(&render_code_block_line_with_width(lang, &piece, width));
+            output.push('\n');
+        }
     }
     output.push_str(&render_code_block_frame(footer, width));
     output.push('\n');
@@ -147,7 +154,7 @@ pub(crate) fn render_code_block_frame(text: &str, width: usize) -> String {
 }
 
 pub(crate) fn render_code_block_line_with_width(lang: &str, line: &str, width: usize) -> String {
-    let line_width = line.chars().count();
+    let line_width = UnicodeWidthStr::width(line);
     let padding = " ".repeat(width.saturating_sub(line_width));
     let highlighted = highlight_code_line(lang, line);
     if highlighted.is_empty() {

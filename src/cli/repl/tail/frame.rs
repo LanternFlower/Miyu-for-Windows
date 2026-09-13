@@ -479,6 +479,13 @@ impl LiveReplTail {
     }
 
     /// 面板开着时跟着内容刷新。后台任务的日志自己在长，没人碰键盘也得动。
+    /// 有没有开着面板（空闲轮询要不要放快，好让面板里的转轮画得齐）。
+    pub(in crate::cli) fn overlay_open(&self) -> bool {
+        self.screen
+            .as_ref()
+            .is_some_and(super::screen::Screen::overlay_open)
+    }
+
     pub(in crate::cli) fn tick_overlay(&mut self) -> Result<()> {
         if self
             .screen

@@ -33,7 +33,10 @@ pub(in crate::cli) fn read_live_repl_input(
             events: libc::POLLIN,
             revents: 0,
         };
-        let ready = unsafe { libc::poll(&mut pollfd, 1, 80) };
+        // 开着面板时轮询放快一倍：面板里的转轮 80ms 一帧，轮询也是 80ms 的话
+        // 差一毫秒就漏一帧，看着一顿一顿。
+        let wait_ms = if live.overlay_open() { 40 } else { 80 };
+        let ready = unsafe { libc::poll(&mut pollfd, 1, wait_ms) };
         if ready == 1 && (pollfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL)) != 0 {
             return Ok(LiveReplOutcome::Exit);
         }

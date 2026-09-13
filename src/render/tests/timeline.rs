@@ -1351,3 +1351,95 @@ fn panel_speech_is_markdown_rendered() {
         "列表项没了: {plain:?}"
     );
 }
+
+/// 面板里的正文按面板宽度渲染：代码块、表格都不能比面板宽，长行折进框里
+///（用户实测截图：按整屏宽度排完再折进面板，是碎行和大片空白）。
+#[test]
+fn panel_speech_blocks_fit_the_panel_width() {
+    let text = "```sh\nfor i in $(seq 1 120); do echo \"a very long command line that keeps going on and on\"; sleep 1; done\n```\n\n| Metric | Value |\n|---|---|\n| calls | 10 |\n";
+    let lines = crate::render::timeline::render_speech_lines(text, 40);
+    for line in &lines {
+        let width = crate::render::command_ansi_width(line);
+        assert!(width <= 40, "有一行比面板宽 ({width}): {line:?}");
+    }
+    let plain = lines
+        .iter()
+        .map(|line| crate::render::strip_ansi_text(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        plain.contains("sleep 1; done"),
+        "代码长行被截掉了: {plain:?}"
+    );
+    assert!(
+        plain.contains('┌') && plain.contains("calls"),
+        "表格没画出来: {plain:?}"
+    );
+    // 渲染完把宽度还回去，别影响这条线程后面的渲染。
+    assert_eq!(crate::render::cols_override(), 0);
+}
+
+/// Arch 那一家子的工具挂 Arch 的 Nerd Font 标（U+F08C7，用户指名），官方包、AUR、
+/// Wiki、新闻一个样子。
+#[test]
+fn arch_family_tools_get_the_arch_logo() {
+    if std::env::var_os("MIYU_TUI_ASCII").is_some() {
+        return;
+    }
+    for name in [
+        "aur",
+        "archlinux_official_package_query",
+        "archwiki_query",
+        "archlinux_news",
+        "install_aur_package",
+        "review_aur_package",
+    ] {
+        assert_eq!(
+            crate::render::tool_glyph_for(name),
+            "\u{f08c7}",
+            "{name} 没挂 Arch 的标"
+        );
+    }
+    // 别的联网工具还是地球。
+    assert_eq!(crate::render::tool_glyph_for("web_search"), "\u{f0ac}");
+}
+
+/// 「准备xx」那一行挂的是那个工具自己的图标：准备编辑=铅笔、准备执行=`$`，
+/// 和它跑起来之后那一步一个样子（用户 09-14 要求）。主线、子代理面板都是。
+#[test]
+fn a_preparing_row_wears_the_tools_own_glyph() {
+    with_blocks(|| {
+        let mut renderer = timeline_renderer();
+        renderer.write_tool_preparing("edit", false).unwrap();
+        let (glyph, text) = renderer.timeline_preparing_line().expect("没有准备那一行");
+        assert_eq!(
+            glyph,
+            crate::render::tool_glyph_for("edit"),
+            "准备编辑没挂铅笔"
+        );
+        assert!(text.contains(t("Preparing edit", "准备编辑")), "{text:?}");
+
+        let mut renderer = timeline_renderer();
+        renderer
+            .write_tool_call("subagent", r#"{"description":"查目录","prompt":"去看看"}"#)
+            .unwrap();
+        renderer.subagent_tool_preparing("subagent", "run_command");
+        let id = renderer.subagent_overlay_id("subagent").expect("没登记");
+        let rows: Vec<String> = crate::render::blocks::get(id)
+            .unwrap_or_default()
+            .iter()
+            .map(|line| crate::render::strip_ansi_text(line))
+            .collect();
+        let row = rows
+            .iter()
+            .find(|line| line.contains(t("Preparing command", "准备执行")))
+            .unwrap_or_else(|| panic!("面板里没有准备那一行: {rows:?}"));
+        assert!(
+            row.contains(&format!(
+                " {} ",
+                crate::render::tool_glyph_for("run_command")
+            )),
+            "面板里准备执行没挂 $: {row:?}"
+        );
+    });
+}

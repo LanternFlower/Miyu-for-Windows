@@ -15,32 +15,18 @@ pub(in crate::config_tui) fn edit_custom_prompts(
 ) -> Result<()> {
     let mut selected = 0usize;
     loop {
+        // 防失忆提醒那两项是人格的事（开发模式没有人格，自然没有提醒），
+        // 归到「普通模式」底下（用户 09-14 要求）。
         let options = [
             t("Normal mode", "普通模式").to_string(),
             t("Dev mode", "开发模式").to_string(),
-            // 08-15 A/B 二轮:干净体制下预设对话单独已满分,提醒降为可关
-            // 开关;重噪声 QQ 长群聊体制未复测,默认保持启用。
-            format!(
-                "{}: {}",
-                t("Anti-amnesia reminder", "防失忆提醒"),
-                if config.prompt.persona_reminder {
-                    t("Enabled", "启用")
-                } else {
-                    t("Disabled", "禁用")
-                }
-            ),
-            format!(
-                "{}: {}",
-                t("Send reminder every N turns", "每几轮发一次防失忆提醒"),
-                config.prompt.persona_reminder_interval.max(1)
-            ),
         ];
         draw_menu(
             stdout,
             t(" CUSTOM PROMPTS ", " 自定义提示词 "),
             &options,
             selected,
-            t("[Enter]select/toggle [q]back", "[Enter]选择/切换 [q]返回"),
+            t("[Enter]select [q]back", "[Enter]选择 [q]返回"),
         )?;
         match read_key()? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
@@ -48,27 +34,13 @@ pub(in crate::config_tui) fn edit_custom_prompts(
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter if selected == 0 => edit_normal_mode_prompts(stdout, paths, config)?,
             KeyCode::Enter if selected == 1 => edit_dev_prompt(stdout, paths)?,
-            KeyCode::Enter if selected == 2 => {
-                config.prompt.persona_reminder = !config.prompt.persona_reminder;
-            }
-            KeyCode::Enter if selected == 3 => {
-                if let Some(value) = edit_inline_value(
-                    stdout,
-                    t("Send reminder every N turns", "每几轮发一次防失忆提醒"),
-                    &config.prompt.persona_reminder_interval.to_string(),
-                    false,
-                )? {
-                    if let Ok(interval) = value.trim().parse::<u32>() {
-                        config.prompt.persona_reminder_interval = interval.max(1);
-                    }
-                }
-            }
             _ => {}
         }
     }
 }
 
-/// 普通模式的提示词面:AI 人格与用户身份(原顶层两项下沉至此)。
+/// 普通模式的提示词面:AI 人格与用户身份(原顶层两项下沉至此)，以及防失忆
+/// 提醒的开关与间隔(09-14 从「自定义提示词」挪进来:提醒是人格的事)。
 pub(in crate::config_tui) fn edit_normal_mode_prompts(
     stdout: &mut io::Stdout,
     paths: &MiyuPaths,
@@ -88,13 +60,29 @@ pub(in crate::config_tui) fn edit_normal_mode_prompts(
                 t("Current", "当前")
             ),
             t("User identity", "用户身份").to_string(),
+            // 08-15 A/B 二轮:干净体制下预设对话单独已满分,提醒降为可关
+            // 开关;重噪声 QQ 长群聊体制未复测,默认保持启用。
+            format!(
+                "{}: {}",
+                t("Anti-amnesia reminder", "防失忆提醒"),
+                if config.prompt.persona_reminder {
+                    t("Enabled", "启用")
+                } else {
+                    t("Disabled", "禁用")
+                }
+            ),
+            format!(
+                "{}: {}",
+                t("Send reminder every N turns", "每几轮发一次防失忆提醒"),
+                config.prompt.persona_reminder_interval.max(1)
+            ),
         ];
         draw_menu(
             stdout,
             t(" NORMAL MODE ", " 普通模式 "),
             &options,
             selected,
-            t("[Enter]select [q]back", "[Enter]选择 [q]返回"),
+            t("[Enter]select/toggle [q]back", "[Enter]选择/切换 [q]返回"),
         )?;
         match read_key()? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
@@ -102,6 +90,21 @@ pub(in crate::config_tui) fn edit_normal_mode_prompts(
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter if selected == 0 => edit_personas(stdout, paths, config)?,
             KeyCode::Enter if selected == 1 => edit_identities(stdout, paths, config)?,
+            KeyCode::Enter if selected == 2 => {
+                config.prompt.persona_reminder = !config.prompt.persona_reminder;
+            }
+            KeyCode::Enter if selected == 3 => {
+                if let Some(value) = edit_inline_value(
+                    stdout,
+                    t("Send reminder every N turns", "每几轮发一次防失忆提醒"),
+                    &config.prompt.persona_reminder_interval.to_string(),
+                    false,
+                )? {
+                    if let Ok(interval) = value.trim().parse::<u32>() {
+                        config.prompt.persona_reminder_interval = interval.max(1);
+                    }
+                }
+            }
             _ => {}
         }
     }

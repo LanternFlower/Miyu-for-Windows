@@ -2225,6 +2225,30 @@ shellhook 走的是 `remote/one_shot.rs` + inline 渲染器（`live = None`）�
   段都直接 `wrap_detail` 裸文本。新加 `render_speech_lines(text, width)`：
   `MarkdownLineRenderer` 逐行渲染再按宽度折行（`wrap_display_text` 认转义），三处都走它。
 
+### 26.16 第十批：面板正文的块级渲染、后台转轮节拍、两条杂项
+
+- **浮层里 markdown 渲染有问题**：截图里大片空行、断句、表格只剩表头。三个原因。
+  一是代码块、表格、公式按**整屏**宽度排（`content_cols` 先问全屏视口），再被折进
+  面板：代码行的底色断成两截、下一行是一片空白。现在 `render_speech_lines` 渲染前
+  用线程局部 `set_cols_override(面板宽度)`，`content_cols` 先看它；`render_code_block`
+  的框宽封顶在内容宽度、超长行折进框里（一个字不丢）；`render_display_math` 也改问
+  `content_cols`。二是桥按自然段落盘 `[正文]`，一段里的换行原样写着，读日志时
+  `log_steps` 把跟在正文后面的续行**丢了**（原来只给思考续行）——标题、表格行、列表
+  项全在续行里。三（不是 bug）：子代理把整份报告放进了 ```markdown 围栏，围栏里
+  按设计原样显示。
+- **后台子代理的点阵不顺畅**：帧号原来是「每次画面板且距上次 ≥80ms 才进一帧」，
+  而画面板的节拍由空闲轮询（80ms）决定，差一毫秒就漏一帧、下一帧等 160ms。改成
+  按开面板以来的时间定帧（`overlay_spinner_started`），开着面板时空闲轮询降到 40ms
+  （`LiveReplTail::overlay_open`）。日志文件在长时每帧都重读重排（含正文 markdown），
+  加 150ms 节流（`Source::File::last_reload`）。
+- **杂项**：「自定义提示词」菜单里的「防失忆提醒」「每几轮发一次」挪进「普通模式」
+  菜单（提醒是人格的事，开发模式没有人格）；Arch 那一家子工具（aur、官方包查询、
+  ArchWiki、新闻、装包、审包）统一挂 Arch 的 Nerd Font 标 U+F08C7。
+- **「准备xx」的图标跟工具走**：准备编辑=铅笔、准备执行=`$`、准备问题=问号，和它
+  跑起来之后那一步一个样子（原来一律通用齿轮）。主线 `tool_preparing` 三元组多存
+  一个 glyph，面板 `SubagentLog.preparing` 同样；后台面板直接用 `[准备] <工具>\t…`
+  行里的工具 id 算图标（老日志没 id 退回齿轮）。
+
 **opencode Zen 的 FreeUsageLimitError 不是客户端的事**（09-13 实测）：
 - 本机 opencode 1.18.29 指到本地假端点抓包，头与 Miyu 现发的一致
   （`x-opencode-client/project/session/request` + 同款 User-Agent）；

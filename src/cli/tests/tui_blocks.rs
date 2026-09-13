@@ -939,3 +939,69 @@ fn a_trailing_stats_line_is_not_a_running_step() {
         let _ = std::fs::remove_dir_all(&dir);
     });
 }
+
+/// 桥按自然段落盘 `[正文]`，一段里的换行原样写着（标题、表格行、列表项）：
+/// 读日志时这些续行归到那一段里，不能丢（用户实测截图：整段缺句子、表格只剩表头）。
+#[test]
+fn a_multi_line_speech_paragraph_keeps_its_continuation_lines() {
+    with_blocks(|| {
+        let dir =
+            std::env::temp_dir().join(format!("miyu-log-speech-lines-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建目录");
+        let path = dir.join("job.log");
+        std::fs::write(
+            &path,
+            "[工具] run_command\t运行命令 · ls\n[结果] run_command\t运行命令 ok · 0.3s · ls\n[正文] ## Final report\n### Tool calls made\nBreakdown of the calls: three reads.\n[正文] | Metric | Value |\n|---|---|\n| calls | 10 |\n",
+        )
+        .expect("写日志");
+        let mut screen = Screen::detached(100, 40);
+        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None));
+        let rows = screen.overlay_rows();
+        for needle in ["Tool calls made", "three reads", "calls"] {
+            assert!(
+                rows.iter().any(|row| row.contains(needle)),
+                "续行 {needle} 丢了: {rows:?}"
+            );
+        }
+        // 表格按面板宽度画成了框，不是裸的竖线。
+        assert!(
+            rows.iter()
+                .any(|row| row.contains('┌') || row.contains('│')),
+            "表格没画成框: {rows:?}"
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.trim_start().starts_with("| Metric")),
+            "表格还是裸的: {rows:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+}
+
+/// 后台面板末尾的 `[准备] <工具>\t<提示>`：图标是那个工具自己的（准备编辑=铅笔）。
+#[test]
+fn a_log_preparing_row_wears_the_tools_own_glyph() {
+    with_blocks(|| {
+        let dir = std::env::temp_dir().join(format!("miyu-log-prep-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建目录");
+        let path = dir.join("job.log");
+        std::fs::write(
+            &path,
+            "[工具] run_command\t运行命令 · ls\n[结果] run_command\t运行命令 ok · 0.3s · ls\n[准备] edit\t准备编辑\n",
+        )
+        .expect("写日志");
+        let mut screen = Screen::detached(100, 30);
+        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None));
+        let rows = screen.overlay_rows();
+        let row = rows
+            .iter()
+            .find(|row| row.contains("准备编辑"))
+            .unwrap_or_else(|| panic!("没有准备那一行: {rows:?}"));
+        assert!(
+            row.contains(crate::render::tool_glyph_for("edit")),
+            "准备编辑没挂铅笔: {row:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+}

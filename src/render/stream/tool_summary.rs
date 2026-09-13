@@ -93,7 +93,7 @@ impl StreamRenderer {
         let since = *self
             .tool_preparing_since
             .get_or_insert_with(std::time::Instant::now);
-        self.tool_preparing = Some((phase, since));
+        self.tool_preparing = Some((phase, crate::render::tool_glyph_for(name), since));
         // Braille + the dim tool palette: this is a tool starting up, not the
         // model thinking, and the scanner/green pair reads as the latter.
         self.ensure_waiting_phase(self.waiting_phase_text(), SpinnerStyle::Braille)

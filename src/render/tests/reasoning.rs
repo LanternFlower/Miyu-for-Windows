@@ -286,13 +286,13 @@ fn batch_preparation_timer_spans_the_whole_window() {
     renderer.live_summary = true;
 
     renderer.write_tool_preparing("apply_patch", false).unwrap();
-    let first = renderer.tool_preparing.expect("准备状态已建立").1;
+    let first = renderer.tool_preparing.expect("准备状态已建立").2;
     // 参数流完 → 这个工具的准备结束，但整批还没完。
     renderer.write_tool_call("apply_patch", "{}").unwrap();
     assert!(renderer.tool_preparing.is_none());
     renderer.write_tool_preparing("write_file", false).unwrap();
     assert_eq!(
-        renderer.tool_preparing.expect("第二个工具的准备状态").1,
+        renderer.tool_preparing.expect("第二个工具的准备状态").2,
         first,
         "同一批里的计时起点必须复用"
     );
@@ -303,7 +303,7 @@ fn batch_preparation_timer_spans_the_whole_window() {
         .unwrap();
     renderer.write_tool_preparing("apply_patch", false).unwrap();
     assert_ne!(
-        renderer.tool_preparing.expect("新一批的准备状态").1,
+        renderer.tool_preparing.expect("新一批的准备状态").2,
         first,
         "工具跑完之后应该重新起算"
     );

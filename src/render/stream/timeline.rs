@@ -138,12 +138,18 @@ pub(crate) fn tool_glyph(name: &str) -> &'static str {
         "read" => "\u{f0f6}",
         // 放大镜
         "glob" | "grep" | "search_knowledge_base" | "search_evicted_context" | "kb" => "\u{f002}",
+        // Arch 那一家子：官方包、AUR、Wiki、新闻都挂 Arch 的标（用户指名这个码位）。
+        // 原来分散在"地球"和"包"两组里，认不出它们是同一家的。
+        "aur"
+        | "archlinux_official_package_query"
+        | "archwiki_query"
+        | "archlinux_news"
+        | "install_aur_package"
+        | "review_aur_package" => "\u{f08c7}",
         // 地球
         "web_search"
         | "web_fetch"
         | "search_web_images"
-        | "archwiki_query"
-        | "archlinux_news"
         | "check_issue"
         | "register_deep_research_reference"
         | "register_deep_research_topic_title"
@@ -166,11 +172,6 @@ pub(crate) fn tool_glyph(name: &str) -> &'static str {
         "job" => "\u{f0572}",
         // 计算器
         "ledger" | "manage_ledger" | "get_exchange_rate" | "query_api_quota" => "\u{f00ec}",
-        // 包：装包、看包、查包全算一类。
-        "install_aur_package"
-        | "review_aur_package"
-        | "aur"
-        | "archlinux_official_package_query" => "\u{f487}",
         // 查看系统信息：CoreOS 那个圆里嵌核的标（用户指名「核心的那个」）。
         // 它原来跟装包挤在一类里——查机器和装包不是一回事。
         "check_os_info" => "\u{f305}",
@@ -350,6 +351,10 @@ fn seal_subagent_speech(log: &mut SubagentLog) {
 /// 的星号、反引号原样露着（用户实测截图：浮层里正文没有 md 渲染）。主线正文走的
 /// 是同一套行渲染器，两边长相才一致。
 pub(crate) fn render_speech_lines(text: &str, width: usize) -> Vec<String> {
+    // 代码块、表格、公式问的是「终端多宽」——面板里得按面板宽度答，不然按整屏
+    // 排完再折进面板就是碎行和大片空白（用户实测截图）。渲染完把宽度还回去。
+    let previous = crate::render::cols_override();
+    crate::render::set_cols_override(width.clamp(20, u16::MAX as usize) as u16);
     let mut renderer = crate::render::MarkdownLineRenderer::new();
     let mut rendered = String::new();
     for line in text.lines() {
@@ -364,6 +369,7 @@ pub(crate) fn render_speech_lines(text: &str, width: usize) -> Vec<String> {
     }
     let rest = renderer.flush();
     rendered.push_str(&rest);
+    crate::render::set_cols_override(previous);
     rendered
         .lines()
         .flat_map(|line| {
@@ -588,9 +594,9 @@ fn subagent_lines(log: &mut SubagentLog) -> Vec<String> {
             label.push_str(peek);
         }
         entries.push(PanelEntry::Step(panel_live_step_line(glyph, &label)));
-    } else if let Some((phase, since)) = &log.preparing {
+    } else if let Some((phase, glyph, since)) = &log.preparing {
         entries.push(PanelEntry::Step(panel_live_step_line(
-            glyph_tool(),
+            glyph,
             &format!("{phase} · {}", format_seconds(since.elapsed())),
         )));
     }
@@ -675,7 +681,7 @@ pub(crate) struct SubagentLog {
     live_block: Option<u64>,
     /// 内层正在流工具参数：`准备编辑 · 1.2s`。主线有这一行，面板里原来没有
     ///（用户实测：浮层中没有「准备xx」系列输出）。
-    preparing: Option<(&'static str, Instant)>,
+    preparing: Option<(&'static str, &'static str, Instant)>,
     /// 内层正在跑的工具：`(图标, 名字, 窥视, 起点)`。原来调用发出到结果回来
     /// 之间面板里什么都没有，看着像卡住了。
     running: Option<(&'static str, String, Option<String>, Instant)>,
@@ -1556,7 +1562,7 @@ impl StreamRenderer {
     }
 
     /// 准备态那一行：`准备编辑 · 1.2s`。没有准备态就返回 `None`。
-    fn timeline_preparing_line(&self) -> Option<(&'static str, String)> {
+    pub(crate) fn timeline_preparing_line(&self) -> Option<(&'static str, String)> {
         if let Some(started_at) = self.preparing_question_started_at {
             return Some((
                 tool_glyph("ask_question"),
@@ -1567,13 +1573,15 @@ impl StreamRenderer {
                 ),
             ));
         }
-        let (phase, started_at) = self.tool_preparing?;
+        let (phase, glyph, started_at) = self.tool_preparing?;
         // 工具已经开跑了就不再报准备——那一行该让给真正的工具。
         if !self.tool_stats.is_empty() {
             return None;
         }
+        // 图标是那个工具自己的：准备编辑挂铅笔、准备执行挂 `$`，和它跑起来之后
+        // 那一步一个样子（用户 09-14 要求）。
         Some((
-            glyph_tool(),
+            glyph,
             format!("{phase} · {}", format_seconds(started_at.elapsed())),
         ))
     }
@@ -1908,7 +1916,7 @@ impl StreamRenderer {
         seal_subagent_speech(log);
         flush_subagent_thought(log);
         if log.preparing.is_none() {
-            log.preparing = Some((phase, Instant::now()));
+            log.preparing = Some((phase, tool_glyph(tool), Instant::now()));
         }
         self.publish_subagent(name);
     }

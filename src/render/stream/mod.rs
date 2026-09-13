@@ -93,7 +93,9 @@ pub struct StreamRenderer {
     /// `tick_spinner` re-derives the phase from renderer state on every tick,
     /// so a phase merely pushed into the spinner is overwritten before it can
     /// be drawn.
-    pub(crate) tool_preparing: Option<(&'static str, std::time::Instant)>,
+    /// 正在流参数的那个工具：提示语、它自己的图标、从什么时候开始。图标跟工具走
+    ///（准备编辑=铅笔、准备执行=`$`），不是一个通用齿轮（用户 09-14 要求）。
+    pub(crate) tool_preparing: Option<(&'static str, &'static str, std::time::Instant)>,
     /// 整个准备窗口的起点，跨 write_tool_call 存活。
     ///
     /// `tool_preparing` 每次工具调用完成就被清掉，计时锚点跟着它走的话，

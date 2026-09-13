@@ -26,8 +26,17 @@ enum Source {
     Block { id: u64, version: u64 },
     /// 盘上的日志文件（后台任务）。任务跑在 daemon 里，日志本来就落盘，
     /// 直接读比再造一条 IPC 分页通道省事。
-    File { path: std::path::PathBuf, size: u64 },
+    File {
+        path: std::path::PathBuf,
+        size: u64,
+        /// 上一次重读是什么时候。子代理一边跑一边写，文件每帧都在长，帧帧重读
+        /// 重排（含正文的 markdown 渲染）把画面板的那一帧拖慢，转轮就一顿一顿。
+        last_reload: Option<std::time::Instant>,
+    },
 }
+
+/// 日志文件在长的时候最快多久重读一次。
+const LOG_RELOAD_INTERVAL: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// 日志最多读末尾多少字节。后台任务能跑很久，整个读进来没意义。
 const LOG_TAIL_BYTES: u64 = 256 * 1024;
@@ -127,7 +136,11 @@ impl Overlay {
         cols: usize,
     ) -> Self {
         let mut panel = Self {
-            source: Source::File { path, size: 0 },
+            source: Source::File {
+                path,
+                size: 0,
+                last_reload: None,
+            },
             job_id,
             title,
             body: parse_body(&[], cols),
@@ -179,9 +192,17 @@ impl Overlay {
     }
 
     fn reload_file(&mut self, force: bool) {
-        let Source::File { path, size } = &mut self.source else {
+        let Source::File {
+            path,
+            size,
+            last_reload,
+        } = &mut self.source
+        else {
             return;
         };
+        if !force && last_reload.is_some_and(|last| last.elapsed() < LOG_RELOAD_INTERVAL) {
+            return;
+        }
         let current = std::fs::metadata(&*path)
             .map(|meta| meta.len())
             .unwrap_or(0);
@@ -189,6 +210,7 @@ impl Overlay {
             return;
         }
         *size = current;
+        *last_reload = Some(std::time::Instant::now());
         let text = read_tail(path, LOG_TAIL_BYTES);
         let lines = self.render_log(&text);
         self.body = parse_body(&lines, self.cols);
@@ -805,10 +827,11 @@ fn log_steps(text: &str) -> Vec<LogStep> {
         } else if let Some(rest) = line.strip_prefix("[准备]") {
             // 参数还在流。只有作为日志**末尾**那一行时才是"此刻"，别处的都是
             // 已经过去的准备，收尾时统一扔掉。
+            // 图标是那个工具自己的（`[准备] edit\t准备编辑` → 铅笔），老日志没带
+            // 工具 id 的退回通用齿轮。
             let (glyph, phase) = split_tool_line(rest);
-            let _ = glyph;
             steps.push(LogStep {
-                glyph: "\u{f4bc}".to_string(),
+                glyph,
                 head: phase,
                 preparing: true,
                 ..Default::default()
@@ -830,7 +853,10 @@ fn log_steps(text: &str) -> Vec<LogStep> {
                 // 跟在工具后面的那些是内层渲染器自己的进度回声
                 //（`工具 #7: 编辑文件 · … ok`），和上一行说的是同一件事，
                 // 贴进详情里只会让人以为出了两次（用户：「展开后的内容不太对」）。
-                Some(last) if last.thinking => last.body.push(line.to_string()),
+                // 正文段也一样：桥按自然段落盘，一段里的换行原样写着（标题、
+                // 表格行、列表项都是这么来的），丢掉就是整段缺句子、表格只剩
+                // 表头（用户实测截图）。
+                Some(last) if last.thinking || last.speech => last.body.push(line.to_string()),
                 Some(_) => {}
                 None => steps.push(LogStep {
                     glyph: " ".to_string(),
@@ -1185,16 +1211,17 @@ impl Screen {
     }
 
     /// 画覆盖层。返回真表示这一帧由面板接管，正文和活动区都不用画了。
-    /// 面板里转轮当前该画哪一帧。每帧都会来问，但字形最快 80ms 换一次。
+    /// 面板里转轮当前该画哪一帧：按时间算，80ms 一帧。
+    ///
+    /// 原来是「每次画面板、且距上次换帧 ≥80ms 才进一帧」：画面板的节拍是空闲
+    /// 轮询（80ms）决定的，差一毫秒就跳过一帧，下一帧要等 160ms——转轮一顿一顿
+    ///（用户实测：后台子代理的点阵不顺畅）。按开面板以来的时间定帧，什么时候
+    /// 画都画在该在的位置上。
     fn overlay_spinner_frame(&mut self) -> usize {
-        let now = std::time::Instant::now();
-        let (frame, last) = &mut self.overlay_spinner;
-        if last.is_none_or(|last| now.duration_since(last) >= std::time::Duration::from_millis(80))
-        {
-            *frame = frame.wrapping_add(1);
-            *last = Some(now);
-        }
-        *frame
+        let started = *self
+            .overlay_spinner_started
+            .get_or_insert_with(std::time::Instant::now);
+        (started.elapsed().as_millis() / 80) as usize
     }
 
     pub(in crate::cli) fn paint_overlay(&mut self) -> anyhow::Result<bool> {
