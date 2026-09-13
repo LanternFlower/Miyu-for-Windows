@@ -69,6 +69,8 @@ def main():
             (folder/'PKGBUILD').write_text(rendered)
             srcinfo=subprocess.run(['docker','run','--rm','--network','none','--user','65534:65534',
                 '--label','io.miyu.distribution.owner=distribution-2026-09-14',
+                '--env','HOME=/tmp','--env','BUILDDIR=/tmp','--env','PKGDEST=/tmp',
+                '--env','SRCDEST=/tmp','--env','SRCPKGDEST=/tmp','--env','LOGDEST=/tmp',
                 '--mount',f'type=bind,src={folder.resolve()},dst=/package,readonly',
                 '--workdir','/package',args.builder_image,'makepkg','--printsrcinfo'],
                 check=True,capture_output=True,text=True,timeout=60).stdout

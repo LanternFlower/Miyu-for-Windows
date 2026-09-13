@@ -1,168 +1,126 @@
 # Miyu 发布流程
 
-真相源是仓库里的 `packaging/README.md` 与 `packaging/arch/*/PKGBUILD`，本文是照着实际
-走过的一遍（0.5.0 / 0.5.0-2，2026-09-06）写的操作手册。四个 PKGBUILD 的分工：
+本手册按 0.6.0 实际执行的 Linux 容器构建、安装和发布链更新。工具入口在
+`packaging/ci/`，资源清单在 `packaging/common/assets.json`，Arch 四份配方仍以
+`packaging/arch/` 为真相源。远端 CI 的职责与凭据契约见
+[CI 说明](docs/plan/distribution/ci.md)。
 
-| 目录 | 作用 |
-|---|---|
-| `packaging/arch/miyu-release/` | 发布资产构建器：从源码 `makepkg` 出 `miyu-<ver>-<rel>-x86_64.pkg.tar.zst` 和 `miyu-voice-<ver>-<rel>-x86_64.pkg.tar.zst`，上传到 GitHub Release |
-| `packaging/arch/miyu/` | AUR `miyu`：下载上面的 `miyu` 资产转包（用户不本地编译） |
-| `packaging/arch/miyu-voice/` | AUR `miyu-voice`：下载 `miyu-voice` 资产转包，依赖 `miyu` |
-| `packaging/arch/miyu-git/` | AUR `miyu-git`：从最新 main 源码构建，`pkgver` 由 `pkgver()` 自算 |
+## 范围与工作区
 
-资产里已含：二进制、三套字体与许可证、内置表情、系统脚本、默认知识库（本仓库 `kb/` +
-Shorin Wiki，Wiki 从 GitHub remote 拉取）、内置 embedding 模型。`miyu-voice` 只有
-`/usr/bin/miyu-voice`。
+0.6.0 使用 `linux-smoke`：Arch、Debian 13、Ubuntu 25.10、Ubuntu 26.04、Fedora 44，
+均为 Linux x86_64。主程序与 voice 各提供 Arch、DEB、RPM、GNU tar，共八个包。
+主程序要求真实安装、资源/版本校验及指定供应商正常回复；voice 要求实际安装和版本校验。
+GNU tar 使用独立安装前缀与 MIYU_HOME。物理麦克风、Mac 和完整升级恢复不在这次验收范围。
 
-## 前提
+在独立 worktree 操作。是否合并 main、部署宿主、推送 AUR 或更新另一个软件源，取决于
+当前任务的明确范围；这些都不是“创建 GitHub Release”自动执行的附带步骤。
+不要覆盖其他工作区、AUR 检出的未提交改动，也不要无条件删除 `~/.local/bin/miyu`。
 
-- 在 `main` 上，要发的内容已 commit 并 push（`miyu-release` 按 GitHub 上的 tag / commit clone，
-  本地未推送的改动进不了包）。
-- 装有 `cargo`、`makepkg`、`gh`（已登录）、`bsdtar`；`sudo pacman` 免密。
-- AUR 检出：`~/Documents/aur/miyu`、`~/Documents/aur/miyu-voice`、`~/Documents/aur/miyu-git`。
-- `sar`（Shorin Arch Repo CLI）在 `~/.local/bin/sar`，pkglist 里 `miyu` / `miyu-voice` 标为 AUR 来源。
-- 面向用户的更新说明平时累积在仓库根目录 `next-release-note.md`，发布时搬进 release
-  正文，发完清空（保留首行说明）。
+## 1. 准备与源码门禁
 
-## 正式版本（X.Y.Z）
+版本同时写入 Cargo.toml、Cargo.lock 和源码发布配方。二进制 AUR 包装器保留上次公开
+资产的真实版本/hash，等新资产发布并回读后再更新，避免提前发布不存在的下载地址。
 
-### 1. 升版本、打标签、推送
+源码通过 `cargo fmt --check`、隔离的 `test_scripts/refactor-check.sh`、声明 MSRV 的
+`cargo check --locked --all-targets` 和 Python 打包测试。产品测试必须使用临时
+HOME/MIYU_HOME/XDG；进程与目录清理由 `Sandbox`、`ProcessSupervisor` 管理。
+`packaging/ci/run_tests.py` 提供预定义源码测试入口。
 
 ```bash
-cd ~/Documents/github/Miyu
-# Cargo.toml: version = "X.Y.Z"
-# packaging/arch/miyu-release/PKGBUILD: pkgver=X.Y.Z, pkgrel=1
-# packaging/arch/miyu/PKGBUILD 与 miyu-voice/PKGBUILD: pkgver=X.Y.Z, pkgrel=1, _release_pkgrel=1
-cargo build --release            # 让 Cargo.lock 跟上版本号
-git add Cargo.toml Cargo.lock packaging/arch
-git commit -m "release: vX.Y.Z"
-git tag vX.Y.Z
-git push origin main
-git push origin vX.Y.Z
+python3 -m unittest discover -s packaging/ci/tests -v
+python3 packaging/ci/run_tests.py --suite source-unit --report-dir out/distribution/source-unit
 ```
 
-### 2. 构建发布资产
+先用 preview 输入完成真实安装排错。源码完成后提交 release commit，创建本地版本 tag。
+正式输入要求源码 clean，tag、Cargo 版本与 source commit 一致。无需为了构建先合并 main
+或提前公开未验收的 tag。
 
-在干净目录用 `miyu-release` 的 PKGBUILD 构建。全量 release 编译约 8 分钟、内存峰值 11G，
-必须用 systemd 用户单元跑（Claude Code / 终端会话重启会连坐杀掉子进程），并限制内存
-防止拖死整机：
+## 2. 冻结并准备最终输入
+
+以下为 0.6.0 的实际入口；重跑应选新的空输出目录。metadata 同时保存源码快照和文件清单。
 
 ```bash
-B=~/.cache/miyu/release-build-X.Y.Z
-mkdir -p "$B"
-cp ~/Documents/github/Miyu/packaging/arch/miyu-release/PKGBUILD "$B/"
-# sherpa-onnx 静态库归档可从上次构建目录复制过来省下载：sherpa-onnx-v*.tar.bz2
-systemd-run --user --collect --unit=miyu-relbuild \
-  -p MemoryMax=12G -p MemorySwapMax=0 \
-  -E PACKAGER='Miyu Release <noreply@example.com>' -E LC_ALL=C.UTF-8 \
-  --working-directory="$B" bash -c 'makepkg -Cf > makepkg.log 2>&1'
-# 等它结束
-until ! systemctl --user is-active --quiet miyu-relbuild; do sleep 5; done
-tail -3 "$B/makepkg.log"        # 期待 "Finished making: miyu X.Y.Z-1"
-sha256sum "$B"/*.pkg.tar.zst
+python3 packaging/ci/metadata.py --mode release --source-ref HEAD --tag v0.6.0 \
+  --profile linux-smoke --revision 1 --out out/distribution/release-0.6.0/release-input.json
+python3 packaging/ci/prepare.py --manifest out/distribution/release-0.6.0/release-input.json \
+  --out out/distribution/release-0.6.0/inputs
 ```
 
-抽查：`bsdtar -tf "$B/miyu-X.Y.Z-1-x86_64.pkg.tar.zst" | grep -E 'bin/miyu$|fonts/|models/'`，
-以及 `bsdtar -xOf ... usr/bin/miyu | grep -c -aF '<本次改动里的新字符串>'` 确认装的是新代码。
+已验证的下载缓存和相同 Cargo.lock 的 vendor 可通过 `--cache`、`--vendor-cache` 复用；
+`--offline` 要求缓存完整，否则失败。Wiki、模型、ORT、sherpa 与工具下载均受锁定 hash 校验。
+GNU 构建镜像基于 Debian 13；Arch 使用锁定基础镜像和 Archive 2026/09/13 软件快照。
+两个 Dockerfile 位于 `packaging/linux/builders/`。记录准备出的实际 image ID。
 
-### 3. 创建 GitHub Release
+## 3. 构建与打包
 
-正文从 `next-release-note.md` 整理，风格：`## 重要更新` / `## 修复` / `## 安装` 三节，每条
-**加粗标题** 加一两句用户视角说明，不写文件名与实现细节。两个资产都要传。
+对 `gnu-x86_64`、`arch-x86_64` 各构建 core/voice。`build.py` 必须接收 manifest、inputs、
+build-id、component、out、builder-image；可指定该 component 独占的 `--target-cache`。
+最多两条构建并行，每条 jobs=2。编译在 `--network none` 容器内以 `--release --frozen` 执行，
+保留 thin LTO/codegen-units=1；链接几分钟属正常，不能因日志暂时不变就重启构建。
+
+每个 build-id 依次调用 `stage.py` 和 `package.py`。stage 接收对应 `--build-root`；package
+按 manifest 中的每个 `--asset-id` 生成到独立 `--out`。DEB/RPM 传 checksum 验证过的绝对
+`--nfpm` 路径，Arch 传实际 `--builder-image`。各脚本 `--help` 为当前参数契约。
+
+发布包必须包含字体、模型、表情、脚本、知识库和许可证。构建记录经 stage/package
+绑定到实际二进制；不能只改 JSON 中的 source/hash 来复用旧二进制。Arch 使用系统 ORT，
+GNU 使用私有 CPU ORT。Arch namcap E 会拒绝打包，RPM 不声明发行版共有目录的所有权。
+
+## 4. 实际安装与模型验收
+
+对 manifest 的五个 target-id 分别运行 `verify.py`：
 
 ```bash
-gh release create vX.Y.Z \
-  "$B/miyu-X.Y.Z-1-x86_64.pkg.tar.zst" \
-  "$B/miyu-voice-X.Y.Z-1-x86_64.pkg.tar.zst" \
-  --title "Miyu X.Y.Z" --notes-file /path/to/notes.md
+python3 packaging/ci/verify.py --manifest out/distribution/release-0.6.0/release-input.json \
+  --packages out/distribution/release-0.6.0/packages --target-id debian13-x86_64 \
+  --report-dir out/distribution/release-0.6.0/reports/debian13-x86_64 \
+  --provider-config /home/shorin/.miyu/config/config.jsonc
 ```
 
-### 4. 回填 sha256 与 miyu-git 快照
+这条本机配置路径仅用于本次用户已授权的本地验收。脚本只临时复制 opencodego provider，
+调用 deepseek-v4.1-flash，不上传凭据。远端 Actions 另需专用测试 secret，不能把宿主配置
+上传为 artifact。成功要求请求退出正常、最终回复非空、provider/model 正确，不要求人格
+逐字照抄某个测试口令。
+
+所有目标报告都必须指向最终包 hash。首次失败报告保留，重试用新目录。最终聚合目录只放
+各目标适用的成功报告。容器必须确认已移除，才能删除 bind-mounted home 并宣布清理完成。
+不要按日期猜测 Ubuntu 旧版本已经迁到 old-releases，保留能实际验证的官方源。
+
+## 5. 聚合、上传与回读
 
 ```bash
-cd ~/Documents/github/Miyu
-# packaging/arch/miyu/PKGBUILD        sha256sums=('<miyu 资产 sha256>')
-# packaging/arch/miyu-voice/PKGBUILD  sha256sums=('<miyu-voice 资产 sha256>')
-# packaging/arch/miyu-git/PKGBUILD    pkgver=X.Y.Z.r<git rev-list --count main>.g<短 sha>
-git add packaging/arch
-git commit -m "packaging: X.Y.Z 资产 sha256 + miyu-git 快照"
-git push origin main
+python3 packaging/ci/verify_release.py --manifest out/distribution/release-0.6.0/release-input.json \
+  --artifacts out/distribution/release-0.6.0/packages --reports out/distribution/release-0.6.0/reports \
+  --publish-dir out/distribution/release-0.6.0/publish
+python3 packaging/ci/publish.py --manifest out/distribution/release-0.6.0/release-input.json \
+  --dir out/distribution/release-0.6.0/publish --dry-run
 ```
 
-### 5. 更新三个 AUR 包
+聚合生成精确资产清单、SHA256SUMS、文件清单 SPDX、实际构建来源和脱敏 acceptance JSON。
+OOBE 截图来自真实 PTY；图片与说明放 `docs/releases/<version>/`，PNG 随 Release 发布。
+文件清单 SPDX 不等于完整依赖 SBOM。
 
-`miyu` 与 `miyu-voice` 本地 `makepkg` 一遍（只是下载资产转包，一分钟内），`miyu-git`
-只刷 `.SRCINFO`：
+全部验证成功后推送已批准的分支和 tag，再把 dry-run 换为 `--execute`，同时传
+`--notes docs/releases/0.6.0/release-notes.md`。上传先创建 draft，每个文件上传后下载回读
+hash，完整 allowlist 再次核对后才转正式。已有同名异内容或额外远端资产会失败，禁止 clobber。
 
-```bash
-R=~/Documents/github/Miyu/packaging/arch
-for p in miyu miyu-voice; do
-  cd ~/Documents/aur/$p
-  cp $R/$p/PKGBUILD PKGBUILD
-  rm -rf pkg/ src/ *.pkg.tar.zst
-  makepkg -Cf
-  makepkg --printsrcinfo > .SRCINFO
-  git add PKGBUILD .SRCINFO && git commit -m "upd: X.Y.Z" && git push origin master
-done
-cd ~/Documents/aur/miyu-git
-cp $R/miyu-git/PKGBUILD PKGBUILD
-makepkg --printsrcinfo > .SRCINFO
-git add PKGBUILD .SRCINFO && git commit -m "upd: X.Y.Z" && git push origin master
-```
+## 6. 同步渠道与收尾
 
-### 6. 本机安装并轮换 daemon
+正式 Release 回读成功后，运行 `channel_update.py`，传最终 manifest、release-output、
+published-url、空 out、builder-image；`--apply` 同步仓库 AUR 包装器和 `.SRCINFO`。
+用生成的配方从正式 URL 下载并在容器重包安装，确认主包/voice 版本、资源和别名一致。
+渠道变更单独提交，不能移动已经公开的 release tag。是否推送独立 AUR 仓库按当前任务授权；
+有本地改动的检出先保留，不能直接覆盖。`miyu-git` 的远端 main 必须实际包含新资源脚本后
+才能发对应 VCS 配方。
 
-轮换会掐断进行中的回合（已裁定可以直接打断）。daemon 必须由 systemd 用户单元托管，
-不要在 Claude Code 会话里 `miyu daemon start`（会话重启时一起被杀）；带 LANG 否则通知
-变英文。
+发布说明先归档到版本 changelog，再整理下一版记录。记录最终 tag、资产 hash、验收报告和
+清理结果。移除本次的临时 homes、进程、容器、已登记镜像、重复源码与构建/下载缓存，保留
+最终发行资产和必要证据。禁止全局 Docker prune，也不删除生产数据或共享的用户工具链缓存。
 
-```bash
-sudo pacman -U ~/Documents/aur/miyu/miyu-X.Y.Z-1-x86_64.pkg.tar.zst \
-               ~/Documents/aur/miyu-voice/miyu-voice-X.Y.Z-1-x86_64.pkg.tar.zst
-rm -f ~/.local/bin/miyu                      # 开发期放的测试二进制会遮蔽 /usr/bin/miyu
-systemctl --user stop miyu-daemon 2>/dev/null; /usr/bin/miyu daemon stop 2>/dev/null
-systemd-run --user --collect --unit=miyu-daemon \
-  -E LANG=zh_CN.UTF-8 -E LANGUAGE=zh_CN:en /usr/bin/miyu __daemon --port 8300
-P=$(ss -tlnp | grep 8300 | sed 's/.*pid=\([0-9]*\).*/\1/'); readlink /proc/$P/exe   # 应为 /usr/bin/miyu
-tail -3 ~/.miyu/cache/logs/miyu.$(date -u +%F).log   # 看到 OneBot 客户端已连接
-```
+宿主升级、daemon 轮换和额外软件源同步属于独立部署步骤，本次容器发布不执行。
 
-### 7. shorin-arch 源
+## 补丁发布
 
-AUR 生效要几分钟，之后：
-
-```bash
-sleep 300 && sar all miyu miyu-voice
-```
-
-### 8. 收尾
-
-- `next-release-note.md` 清掉已发布内容，只留首行说明。
-- 记忆里登记版本与部署时间。
-
-## 补丁重发（X.Y.Z-2，标签不动）
-
-适用于发版后马上修的小问题，不想升版本号。做法与正式版一样，只有这些差异：
-
-1. 修复合进 main 并 push；**不动 tag**。
-2. `packaging/arch/miyu-release/PKGBUILD`：`pkgrel=2`，`source` 里 miyu 那条从
-   `#tag=vX.Y.Z` 改成 `#commit=<main 上的完整 sha>`，加一行注释说明缘由。
-3. `packaging/arch/miyu/PKGBUILD` 与 `miyu-voice/PKGBUILD`：`pkgrel=2`、`_release_pkgrel=2`
-   （资产文件名里的 rel 由它决定）、sha256 回填。`miyu-git` 快照照常刷。
-4. 资产按新文件名上传到**同一个** Release，旧的 -1 资产留着：
-   `gh release upload vX.Y.Z "$B"/miyu-X.Y.Z-2-*.pkg.tar.zst "$B"/miyu-voice-X.Y.Z-2-*.pkg.tar.zst`
-5. Release 正文在 `## 安装` 前插一节 `## X.Y.Z-2 补丁（日期）`，列本次改动：
-   `gh release edit vX.Y.Z --notes-file notes.md`（先 `gh release view vX.Y.Z --json body -q .body` 取原文再拼）。
-6. 其余（AUR 三包 `upd: X.Y.Z-2`、本机 `pacman -U`、daemon 轮换、`sar all`）同上。
-
-## 注意事项
-
-- **.SRCINFO** 必须随 PKGBUILD 一起推，否则 AUR 不更新。
-- **`~/.local/bin/miyu` 遮蔽**：装完包一定删掉，并用 `readlink /proc/<8300 持有者>/exe` 确认。
-- **无主文件冲突**：曾手动 `sudo cp` 进 `/usr/share/miyu/` 的文件会挡 `pacman -U`，确认内容一致后
-  `--overwrite '/usr/share/miyu/*'` 让包接管。
-- **`miyu` 与 `miyu-git` 互相冲突**，本机只能装其一。
-- **构建目录半截产物**：中途被 kill 过的 release 构建会留半截 rusqlite 产物报 E0463，
-  用 `makepkg -Cf` 从头来（`-C` 会清 src/）。
-- **构建内存**：`MemoryMax=12G` 实测够用（峰值 11.2G）；不设上限时一次编译加测试曾把 61G 内存 +
-  swap 全吃光拖死整机。
+优先发布新的应用补丁版本。旧手册“tag 不动、偷偷换 source、直接向同一 Release 加 -2”
+不能沿用到此验证链：它会破坏 source/tag 绑定或远端精确 allowlist。确需同版本包修订时，
+先设计并验证完整的新旧资产及源码声明契约，不能靠覆盖旧资产或绕过发布检查实现。

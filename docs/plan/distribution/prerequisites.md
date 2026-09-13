@@ -7,7 +7,7 @@ Observed on 2026-09-14 in the dedicated distribution worktree. Full logs: `out/d
 | Baseline | main `b4d2ac929dbfa547c9e85468dfde8649f5228f88`, version 0.5.0 | Newer than plan baseline; source entry points inspected |
 | Main local changes | `next-release-note.md`, `todolist.md` | Left untouched |
 | Host | Linux x86_64, 61 GiB RAM, initially 262 GiB free disk | Native Linux container testing available |
-| Docker | Client/server 29.7.2, initially no local images | Record owned images/containers for later removal |
+| Docker | Client/server 29.7.2, initially no tagged images (three tiny pre-existing untagged images were preserved at cleanup) | Record owned images/containers for later removal |
 | GNU baseline | Debian 13 image `sha256:f324c7ff54321e8d9c588493a20244965938ce0aa50bbd1022d38010e9ffc4b1` | Actual container reports x86_64, Debian 13.6, glibc 2.41 |
 | Default Rust | 1.99.0-nightly (2026-07-12) | Record only; distribution will use a pinned stable compiler |
 | Installed stable compiler | 1.96.1 (`31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd`) | Candidate build toolchain |

@@ -5,8 +5,8 @@
 # 已随 release 资产一并打包，不再从上游单独拉取。
 
 pkgname=miyu
-pkgver=0.5.0
-pkgrel=2
+pkgver=0.6.0
+pkgrel=1
 pkgdesc='一个活在终端里的二次元少女。开箱即用的开源 AI 助手，支持接入通讯平台。'
 arch=('x86_64')
 url='https://github.com/SHORiN-KiWATA/miyu-agent'
@@ -25,12 +25,12 @@ optdepends=(
   'chromium: 网页检索脚本的浏览器(或改装 google-chrome)'
   'python-qrcode: 扫码登录时在终端里画二维码'
 )
-_release_pkgrel=2
+_release_pkgrel=1
 source=(
   "${pkgname}-${pkgver}-${_release_pkgrel}-${CARCH}.release.pkg.tar.zst::${url}/releases/download/v${pkgver}/${pkgname}-${pkgver}-${_release_pkgrel}-${CARCH}.pkg.tar.zst"
 )
 sha256sums=(
-  '0943349a9cc70675fb1bf4a197dd822f165ed9792e263bcca134003c069beb88'
+  '5f05589021ea49d6e4148e860cb2ac8abc39f4379c2579c6a5c601c1adc4e122'
 )
 
 # Keep the last published version and checksum until channel_update records

@@ -204,3 +204,12 @@
 - Linux 容器真实安装与指定供应商模型输出验证。
 - Rust 1.89 原子计数 API 兼容修复；Arch Python/bzip2 依赖和 Fedora 共享系统目录权限修复。
 - 发布资产精确白名单、冻结输入与真实构建记录绑定、上传下载哈希回读、失败环境清理检查。
+
+## 0.6.0 多发行版发布
+
+- 新增 Linux x86_64 的 DEB、Fedora RPM 和 GNU tar；保留 Arch 主包与 voice。资源随包分发，包含三套字体、模型、表情、脚本、默认知识库和许可证。
+- 构建输入、源码快照和资源固定哈希；断网构建并逐发行版安装，通过真实 opencodego/deepseek-v4.1-flash 对话后才发布。
+- 修复安装前缀资源定位、可移动 tar 的私有 ONNX Runtime 查找；沙盒拆分为 Linux backend 与明确失败关闭的 unsupported backend。
+- release note 附真实 OOBE 截图。0.6.0 本次发行包只覆盖已验收的 Linux x86_64，Mac 尚未验证，不提供正式资产。
+
+- 发布兼容性检查：修正三处原子计数API，使已声明的 Rust 1.89 能实际检查通过；补齐 Arch 内置脚本/voice 的 Python、bzip2 依赖，并修复 Fedora 系统目录权限冲突。

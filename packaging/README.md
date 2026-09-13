@@ -4,7 +4,7 @@
 `ci/stage.py` 用它生成完整目录，GNU DEB/RPM/tar 与 Arch 包都从这个目录打包。
 资源随主包提供，voice 是可选包，不存在独立 assets 包。
 
-本轮准备 Linux 0.6.0：Arch x86_64、Debian 13、Ubuntu 25.10/26.04、固定的
+Linux 0.6.0 已发布并通过容器安装和真实模型输出验收：Arch x86_64、Debian 13、Ubuntu 25.10/26.04、固定的
 Fedora 稳定版；GNU tar 也有独立产物。macOS 尚未通过原生验收，本轮不发布 Mac 资产。
 具体输入、资产和必需检查以冻结的 release input 与报告为准。
 
@@ -28,7 +28,7 @@ makedepends，不依赖执行机的 CI 绝对路径。VCS 的远端源码必须�
 `MIYU_RELEASE_SOURCE_COMMIT`、`MIYU_RELEASE_PATCH_REASON`，并记录到 release input；
 Wiki 覆盖同样必须是完整提交哈希。禁止偷偷取远端 main 作为普通 release 来源。
 
-二进制 AUR 配方当前保留最后已公开版本及真实 SHA256。新包产生且通过验收后，
+二进制 AUR 配方已同步公开的 0.6.0-1 与真实 SHA256。后续新包产生且通过验收后，
 渠道更新步骤才写入新的 `pkgver`、`pkgrel`、`_release_pkgrel` 和真实资产 SHA256。
 不能预填 0.6.0 的假哈希，也不能把公开二进制资产校验改成 `SKIP`。
 包装器复制整个 `usr/`，因此保留 `miyupm` 别名、字体、资源、许可证和未来新增文件。

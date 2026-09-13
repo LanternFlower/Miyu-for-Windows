@@ -23,7 +23,13 @@ class GitHubRelease:
         result=self.gh('api',f'repos/{self.repository}/releases/tags/{tag}',check=False)
         if result.returncode:
             if 'HTTP 404' in result.stderr:
-                return None
+                # GitHub's tag endpoint omits drafts. The authenticated list includes them.
+                pages=json.loads(self.gh('api','--paginate','--slurp',
+                    f'repos/{self.repository}/releases?per_page=100').stdout)
+                matches=[release for page in pages for release in page if release['tag_name']==tag]
+                if len(matches)>1:
+                    raise ValueError('Multiple remote releases match the requested tag.')
+                return matches[0] if matches else None
             raise RuntimeError('Unable to inspect remote release: '+result.stderr)
         return json.loads(result.stdout)
 
