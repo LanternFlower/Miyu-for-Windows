@@ -4,6 +4,7 @@
 //! （`finish_subagent_timer`）。并行子代理各占一块，settled 的要冻在原地，不能
 //! 因为别人还在跑就跟着重排。
 
+use super::timeline::{command_peek, tool_output_lines};
 use crate::render::*;
 
 impl StreamRenderer {
@@ -28,6 +29,18 @@ impl StreamRenderer {
                 self.tool_call_mode != ToolCallDisplayMode::Hidden,
                 self.tool_call_mode == ToolCallDisplayMode::Full,
             );
+            // 全屏：命令块不再自己往屏上画一大片，它在时间线里只占一行，
+            // 命令文本当窥视；完整的命令与输出留到点开时才看。
+            if self.timeline_enabled() {
+                self.command_display = Some(display);
+                let peek = command_peek(arguments);
+                let stats = self.tool_stats_entry(name);
+                stats.calls += 1;
+                stats.started_at.get_or_insert_with(std::time::Instant::now);
+                stats.peek = peek;
+                self.ensure_tool_waiting_phase()?;
+                return Ok(());
+            }
             if self.live_summary {
                 display.tick(&mut self.output)?;
                 self.last_tick = None;
@@ -39,6 +52,8 @@ impl StreamRenderer {
             let stats = self.tool_stats_entry(name);
             stats.started_at = Some(std::time::Instant::now());
             stats.elapsed = None;
+            // 面板的第一步：交给它的差事。派出去这一刻是唯一还看得见它的地方。
+            self.subagent_prompt(name, arguments);
         }
         if self.tool_call_mode == ToolCallDisplayMode::Full {
             let display_name = self.display_tool_name(name);
@@ -50,6 +65,10 @@ impl StreamRenderer {
             let stats = self.tool_stats_entry(name);
             stats.calls += 1;
             stats.subject = tool_subject(name, arguments);
+            // 每个工具都掐表，不只命令和子代理。时间线上那一步要报秒数，收缩行的
+            // `Worked for` 要把它算进去——原来普通工具不掐，一段里只有普通工具时
+            // 收缩行就成了光秃秃的 `1 tool · 1 err`（用户实测）。
+            stats.started_at.get_or_insert_with(std::time::Instant::now);
             self.ensure_tool_waiting_phase()?;
         }
         Ok(())
@@ -91,9 +110,44 @@ impl StreamRenderer {
         self.tool_preparing_since = None;
         self.reanchor_wait_timer();
         self.end_subagent_stream_line()?;
+        if is_subagent_tool(name) {
+            self.finish_subagent_log(name);
+        }
         let status = if ok { "ok" } else { "err" };
         let elapsed = self.finish_subagent_timer(name);
         if is_command_tool(name) {
+            if self.timeline_enabled() {
+                let width = super::timeline::detail_width();
+                // `ok` 说的是"工具本身有没有出错"。命令退出码非零时工具照样是
+                // Ok 的——只看 `ok` 的话，一条 `exit 3` 的命令在时间线上和跑成了
+                // 长得一模一样。退出码才是用户眼里的"跑失败了"。
+                let ok = ok
+                    && crate::render::parse_command_result(output)
+                        .is_none_or(|result| result.success);
+                // 全屏：完整命令 + 完整输出，点开才看。静态版没处点开，就地
+                // 印输出的尾巴（命令本身已经在那一行上了）。
+                let static_timeline = self.timeline_static();
+                let detail = self
+                    .command_display
+                    .take()
+                    .map_or_else(Vec::new, |mut display| {
+                        display.set_result(ok);
+                        if static_timeline {
+                            display.static_detail(width, !ok)
+                        } else {
+                            display.timeline_detail(width)
+                        }
+                    });
+                let stats = self.tool_stats_entry(name);
+                if ok {
+                    stats.ok += 1;
+                } else {
+                    stats.error += 1;
+                }
+                stats.elapsed = stats.started_at.map(|at| at.elapsed());
+                stats.detail = detail;
+                return self.settle_tool_batch();
+            }
             if let Some(mut display) = self.command_display.take() {
                 display.set_result(ok);
                 let include_output = self.tool_call_mode == ToolCallDisplayMode::Summary
@@ -122,6 +176,24 @@ impl StreamRenderer {
                 stdout.flush()?;
             }
             if rendered || output.trim_start().starts_with("todo list ") {
+                // 全屏：清单也是这一轮真做过的一件事，时间线里得有它那一步
+                //（用户实测：好像没看到 todolist 的工具 tag 行）。表本身排在
+                // 时间线收完之后（`pending_after_timeline`），不占这一步的位置。
+                //
+                // inline 那边照旧把状态行整个收掉——那儿表已经就地画出来了，
+                // 再留一行「任务清单×1 ok」是同一件事说两遍。注意**不能**顺手
+                // `tool_stats.clear()`：同一批里别的工具会被一起抹掉。
+                if self.timeline_enabled() {
+                    let stats = self.tool_stats_entry(name);
+                    stats.ok += 1;
+                    stats.progress = None;
+                    if stats.elapsed.is_none() {
+                        stats.elapsed = stats.started_at.map(|at| at.elapsed());
+                    }
+                    // 和别的工具一样结算：不结算的话这一步要等下一个事件才收
+                    // 进时间线，live 区里它会一直挂着转轮。
+                    return self.settle_tool_batch();
+                }
                 if self.tool_call_mode == ToolCallDisplayMode::Summary {
                     let stats = self.tool_stats_entry(name);
                     stats.ok += 1;
@@ -147,21 +219,55 @@ impl StreamRenderer {
             stdout.flush()?;
             self.tool_stats.remove(name);
         } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
+            // 全屏：把工具**真实的输出**留下来。摘要那几行只说了「跑没跑成」，
+            // 点开却什么都看不到的话，收起来就等于丢了。
+            //
+            // 静态版没处点开：普通工具只留那一行，成败都不印输出——输出是给模型
+            // 看的，不是给人扫的；报错更多时候是一团裸 JSON，印出来只会丑
+            //（用户拍板：除了命令，其他工具报错不需要报错信息）。
+            let detail = if self.timeline_static() {
+                None
+            } else {
+                self.timeline_enabled().then(|| tool_output_lines(output))
+            };
             let stats = self.tool_stats_entry(name);
             if ok {
                 stats.ok += 1;
             } else {
                 stats.error += 1;
             }
-            stats.progress = None;
-            if self.tool_stats.values().any(|stats| !stats.settled()) {
-                // Siblings still running (parallel subagents): freeze this
-                // tool's block in the live area; commit only when the whole
-                // batch settles.
-                self.update_tool_summary_display()?;
-            } else {
-                self.finalize_tools_summary()?;
+            // 跑完就把表停下：时间线上那一步报的是它自己花的时间，不是到收缩为止。
+            if stats.elapsed.is_none() {
+                stats.elapsed = stats.started_at.map(|at| at.elapsed());
             }
+            // 已经有更好的详情（补丁 diff）就别用原始输出盖掉它。
+            if let Some(detail) = detail {
+                if stats.detail.is_empty() {
+                    stats.detail = detail;
+                }
+            }
+            stats.progress = None;
+            self.settle_tool_batch()?;
+        }
+        Ok(())
+    }
+
+    /// 一个工具跑完了：这一批都齐了就收进时间线（或写摘要），还有兄弟在跑就
+    /// 只刷新 live 区。
+    ///
+    /// 全屏／静态时间线下，收完立刻把转轮再挂回去：收进去的那一刻 live 区是
+    /// 空的，等下一次模型请求开始（`reasoning.start`）才会重新出现——网络那一
+    /// 秒里整条时间线闪没了又闪回来。
+    pub(crate) fn settle_tool_batch(&mut self) -> Result<()> {
+        if self.tool_stats.values().any(|stats| !stats.settled()) {
+            // Siblings still running (parallel subagents): freeze this
+            // tool's block in the live area; commit only when the whole
+            // batch settles.
+            return self.update_tool_summary_display();
+        }
+        self.finalize_tools_summary()?;
+        if self.timeline_enabled() && self.wait_spinner.is_none() && self.live_summary {
+            self.ensure_tool_waiting_phase()?;
         }
         Ok(())
     }
@@ -181,6 +287,14 @@ impl StreamRenderer {
             return Ok(());
         }
         if let Some(json) = message.strip_prefix("__patch_preview__") {
+            // 全屏：diff 是"编辑文件"这一步的详情，不是正文。直接打屏的话它
+            // 既不在时间线里（点不开、收不起），也不在缓冲里（重开就没了）。
+            if self.timeline_enabled() {
+                if let Some(diff) = patch_preview_lines(json, super::timeline::detail_width()) {
+                    self.tool_stats_entry(name).detail = diff;
+                }
+                return Ok(());
+            }
             self.release_transient_output()?;
             let stdout = &mut self.output;
             if write_patch_result(stdout, json)? {
@@ -192,6 +306,16 @@ impl StreamRenderer {
         // progress 侧信道送达,载荷形状与旧工具输出一致。
         if let Some(json) = message.strip_prefix("__todo_table__") {
             self.release_transient_output()?;
+            // 全屏：表是"这一步的结果"，得排到时间线收完之后。就地写的话，
+            // 后面几步会跑到表底下去，看着像"先出了表再去干活"。
+            if self.timeline_enabled() {
+                let mut buffer: Vec<u8> = Vec::new();
+                if write_todo_table(&mut buffer, json)? {
+                    let text = String::from_utf8_lossy(&buffer).into_owned();
+                    self.queue_after_timeline(super::timeline::indent_body(&text));
+                }
+                return Ok(());
+            }
             let stdout = &mut self.output;
             if write_todo_table(stdout, json)? {
                 stdout.flush()?;
@@ -236,7 +360,35 @@ impl StreamRenderer {
             }
             return Ok(());
         }
+        if let Some(text) = message.strip_prefix("__subagent_metric__") {
+            // `<给人看的那串>\t<数字>\t<人话>`。数字进会话累计的实时加数，
+            // 人话进面板抬头。
+            let mut parts = text.splitn(3, '\t');
+            // 第一段是给人看的短标（`≈3.1K`）：时间线那一行挂它。
+            let display = parts.next().unwrap_or_default().trim().to_string();
+            if let Some(raw) = parts
+                .next()
+                .and_then(|value| value.trim().parse::<u64>().ok())
+            {
+                self.subagent_tokens.insert(name.to_string(), raw);
+            }
+            let text = parts.next().unwrap_or(text);
+            if self.timeline_enabled() {
+                self.subagent_stats(name, text, Some(display.as_str()));
+            }
+            // Full 档不打：这条一秒来好几次，打出来就是刷屏。跑完那次
+            // `__subagent_stats__` 照旧会留一行。
+            if self.tool_call_mode == ToolCallDisplayMode::Summary {
+                self.tool_stats_entry(name).final_progress = Some(text.to_string());
+                self.update_tool_summary_display()?;
+            }
+            return Ok(());
+        }
         if let Some(text) = message.strip_prefix("__subagent_stats__") {
+            if self.timeline_enabled() {
+                // 跑完那一次只有人话，短标沿用中途量报记下的那份。
+                self.subagent_stats(name, text, None);
+            }
             if self.tool_call_mode == ToolCallDisplayMode::Full {
                 self.release_transient_output()?;
                 let display_name = self.display_tool_name(name);
@@ -249,8 +401,21 @@ impl StreamRenderer {
             }
             return Ok(());
         }
+        if let Some(text) = message.strip_prefix("__subagent_content__") {
+            // 子代理开口说正文了。全屏：进它自己那块面板（并把前面那一段过程
+            // 收成一行）；别的档次一直是直接丢的——这个前缀只有终端渲染器认。
+            if self.timeline_enabled() {
+                self.subagent_content(name, &normalize_stream_text(text));
+            }
+            return Ok(());
+        }
         if let Some(text) = message.strip_prefix("__subagent_reasoning__") {
             let text = normalize_stream_text(text);
+            // 全屏：子代理的思考进它自己的时间线，不往正文里挤。
+            if self.timeline_enabled() {
+                self.subagent_thought(name, &text);
+                return Ok(());
+            }
             if self.tool_call_mode == ToolCallDisplayMode::Full {
                 if self.subagent_mode != Some(ChatStreamKind::Reasoning) {
                     self.stop_waiting()?;
@@ -267,12 +432,33 @@ impl StreamRenderer {
             }
             return Ok(());
         }
+        if let Some(tool) = message.strip_prefix("__subtool_preparing__") {
+            // 内层正在流工具参数：面板里露一行「准备xx」。别的档次一直是丢的。
+            if self.timeline_enabled() {
+                self.subagent_tool_preparing(name, tool.trim());
+            }
+            return Ok(());
+        }
         if let Some(json) = message.strip_prefix("__subtool_call__") {
             if let Ok(value) = serde_json::from_str::<Value>(json) {
                 let tool_name = value
                     .get("name")
                     .and_then(Value::as_str)
                     .unwrap_or("unknown");
+                // 全屏：调用本身不单独占一步，等结果回来连着输出一起记——
+                // 一次调用和它的结果是同一件事，分成两行只是把面板撑长。
+                // 但要在这儿掐表（内层事件自己不带耗时），并在面板里露出
+                // 「正在跑」那一行。
+                if self.timeline_enabled() {
+                    let display = value
+                        .get("display")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| self.display_tool_name(tool_name));
+                    let args = value.get("args").and_then(Value::as_str).unwrap_or("");
+                    self.subagent_tool_started(name, tool_name, &display, args);
+                    return Ok(());
+                }
                 if self.tool_call_mode == ToolCallDisplayMode::Full {
                     let args = value.get("args").and_then(Value::as_str).unwrap_or("");
                     self.release_transient_output()?;
@@ -296,6 +482,13 @@ impl StreamRenderer {
                     .and_then(Value::as_str)
                     .unwrap_or("unknown");
                 let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(true);
+                if self.timeline_enabled() {
+                    let display = self.display_tool_name(tool_name);
+                    let args = value.get("args").and_then(Value::as_str).unwrap_or("");
+                    let output = value.get("output").and_then(Value::as_str).unwrap_or("");
+                    self.subagent_tool(name, tool_name, &display, args, ok, output);
+                    return Ok(());
+                }
                 if self.tool_call_mode == ToolCallDisplayMode::Full {
                     let args = value.get("args").and_then(Value::as_str).unwrap_or("");
                     let output = value.get("output").and_then(Value::as_str).unwrap_or("");
@@ -348,7 +541,11 @@ impl StreamRenderer {
     pub(crate) fn update_tool_summary_display(&mut self) -> Result<()> {
         self.end_subagent_stream_line()?;
         if self.wait_spinner.is_some() {
-            let (header, sub) = self.tool_summary_live();
+            let (header, sub) = if self.timeline_enabled() {
+                self.timeline_waiting()
+            } else {
+                self.tool_summary_live()
+            };
             self.set_tool_waiting_phase(&header, sub.as_deref());
         } else {
             self.end_active_stream_line()?;
@@ -374,6 +571,12 @@ impl StreamRenderer {
     }
 
     pub(crate) fn finalize_tools_summary(&mut self) -> Result<()> {
+        // 全屏：工具跑完不写摘要，收进时间线当一步。真正的输出等这一段
+        // 连续过程被切断时才落（`cut_timeline`）。静态版也走这条，只是收进去
+        // 的那一步当场就落地。
+        if self.timeline_enabled() && self.tool_call_mode != ToolCallDisplayMode::Hidden {
+            return self.timeline_push_tools();
+        }
         if self.tool_call_mode == ToolCallDisplayMode::Summary && !self.tool_stats.is_empty() {
             self.stop_waiting()?;
             execute!(self.output, ResetColor)?;
@@ -383,8 +586,24 @@ impl StreamRenderer {
                 self.summary_line_active = false;
                 self.summary_lines_active = 0;
             }
+            // 展开的那份是每个工具各自的完整块（表头 + 主题 + 进度）——摘要那
+            // 一行把它们压成了「工具×3 ok:3」，点开才看得到分别干了什么。
+            let detail = if crate::render::blocks::enabled() {
+                self.ordered_tool_stats()
+                    .into_iter()
+                    .flat_map(|(name, stats)| self.tool_block_lines(name, stats, false))
+                    .map(|line| style_summary_text(&line, SummaryStyle::Tool))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            let expanded =
+                crate::render::blocks::expand_under(&summary, detail, SummaryStyle::Tool);
             let stdout = &mut self.output;
-            write_activity_summary(stdout, &summary, SummaryStyle::Tool)?;
+            crate::render::blocks::write_expandable(stdout, expanded, |writer| {
+                write_activity_summary(writer, &summary, SummaryStyle::Tool)
+                    .map_err(std::io::Error::other)
+            })?;
             stdout.flush()?;
             self.tool_stats.clear();
             self.last_tool_summary.clear();
@@ -644,6 +863,14 @@ impl StreamRenderer {
         // Subagents keep their per-call description so parallel subagent
         // calls show as separate lines: "子代理·<描述>".
         // "task:" 是改名前的事件名,历史回放里还在。
+        // 开发模式那条单列一类：「开发中」比「子代理」更说明它在干嘛——那一条
+        // 是去写代码的，不是去查资料的。前台后台一个口径。
+        if let Some(description) = name
+            .strip_prefix("subagent:dev:")
+            .or_else(|| name.strip_prefix("task:dev:"))
+        {
+            return format!("{}·{description}", t("dev", "开发中"));
+        }
         if let Some(description) = name
             .strip_prefix("subagent:")
             .or_else(|| name.strip_prefix("task:"))

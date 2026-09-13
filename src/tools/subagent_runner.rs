@@ -57,7 +57,9 @@ fn now_unix() -> u64 {
 }
 
 fn checkpoint_path(id: &str) -> Option<std::path::PathBuf> {
-    CHECKPOINT_DIR.get().map(|dir| dir.join(format!("{id}.json")))
+    CHECKPOINT_DIR
+        .get()
+        .map(|dir| dir.join(format!("{id}.json")))
 }
 
 fn store_checkpoint(messages: Vec<ChatMessage>, steps: usize) -> String {
@@ -202,13 +204,16 @@ impl SubagentProgress {
         }
     }
 
+    /// 子代理的思考。**Summary 档也发**：全屏 TUI 点开子代理看到的是它自己的
+    /// 时间线，那条时间线就靠这些事件拼出来。不认识这个前缀的客户端一直是
+    /// 直接丢掉的，多发不影响它们。
     pub fn reasoning(&self, text: &str) {
         // 空 delta 不发:模型常在步末尾吐一个空 reasoning/content 块,UI 据此会造一个
         // 空的思考/正文块并切断时间线(用户报的「串」:空块把时间线切得七零八落)。
         if text.is_empty() {
             return;
         }
-        if self.enabled && self.tool_mode == ProgressMode::Full {
+        if self.enabled && self.tool_mode != ProgressMode::Hidden {
             self.progress
                 .report(format!("__subagent_reasoning__{}", text));
         }
@@ -221,10 +226,24 @@ impl SubagentProgress {
         if text.is_empty() {
             return;
         }
-        if self.enabled && self.tool_mode == ProgressMode::Full {
+        // 同 `reasoning`：**Summary 档也发**。前台子代理的面板要靠它把"它开始
+        // 说话了"这件事表达出来——说话之前那几步该收成一行 `Worked for …`。
+        if self.enabled && self.tool_mode != ProgressMode::Hidden {
             self.progress
                 .report(format!("__subagent_content__{}", text));
         }
+    }
+
+    /// 内层工具的参数开始流了。只报主线也会报的那些（`preparing_phase` 认得的
+    /// 慢参数工具），别的一闪就过，报了只是闪一下。
+    pub fn tool_preparing(&self, name: &str) {
+        if !self.enabled || self.tool_mode == ProgressMode::Hidden {
+            return;
+        }
+        if crate::tools::preparing_phase(name).is_none() {
+            return;
+        }
+        self.progress.report(format!("__subtool_preparing__{name}"));
     }
 
     pub fn tool_start(&self, step: usize, name: &str, args: &str) {
@@ -246,13 +265,24 @@ impl SubagentProgress {
         }
     }
 
+    /// 子代理开始调一个工具。**Summary 档也发**：面板要靠它给每一步掐表，
+    /// 内层事件本身不带耗时。
     pub fn tool_call_detail(&self, name: &str, args: &str) {
-        if self.enabled && self.tool_mode == ProgressMode::Full && name != "run_command" {
-            self.progress.report(format!(
-                "__subtool_call__{}",
-                json!({ "name": name, "display": readable_tool_name(name), "args": args })
-            ));
+        if !self.enabled || self.tool_mode == ProgressMode::Hidden {
+            return;
         }
+        // Full 档下 run_command 由 `tool_end` 整块渲染，这里再发一次会画两遍。
+        if self.tool_mode == ProgressMode::Full && name == "run_command" {
+            return;
+        }
+        self.progress.report(format!(
+            "__subtool_call__{}",
+            json!({
+                "name": name,
+                "display": readable_tool_name(name),
+                "args": clip_detail(args),
+            })
+        ));
     }
 
     pub fn tool_end(&self, step: usize, name: &str, args: &str, ok: bool, output: &str) {
@@ -276,13 +306,33 @@ impl SubagentProgress {
                 )
             });
         }
-        if self.tool_mode == ProgressMode::Full {
-            self.progress.report(format!(
-                "__subtool_result__{}",
-                json!({ "name": name, "display": readable_tool_name(name), "args": args, "ok": ok, "output": output })
-            ));
-        }
+        // 同 `reasoning`：Summary 档也发，全屏 TUI 的子代理面板要靠它。
+        // 输出截断——这是给人看一眼的，不是把 IPC 当日志管道。
+        self.progress.report(format!(
+            "__subtool_result__{}",
+            json!({
+                "name": name,
+                "display": readable_tool_name(name),
+                "args": args,
+                "ok": ok,
+                "output": clip_detail(output),
+            })
+        ));
     }
+}
+
+/// 内层事件里单条输出最多带多少字节。
+const MAX_DETAIL_BYTES: usize = 8 * 1024;
+
+fn clip_detail(text: &str) -> String {
+    if text.len() <= MAX_DETAIL_BYTES {
+        return text.to_string();
+    }
+    let mut end = MAX_DETAIL_BYTES;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n…", &text[..end])
 }
 
 #[derive(Default)]
@@ -374,6 +424,20 @@ pub fn estimate_tokens(texts: &[&str]) -> u64 {
     }
 }
 
+/// 一次子代理跑到此刻的量：`(词元数, 人话)`。
+fn stats_text(stats: &SubagentStats) -> (String, String) {
+    // 与 stats JSON 的 token_estimate_is_actual 同口径:估算值必须带
+    // `≈` 前缀,硬编码 false 会把估算按精确值展示。
+    let estimated = stats.token_estimate_method != TokenEstimateMethod::ProviderUsage;
+    let tokens = format_token_count(stats.token_estimate, estimated);
+    let text = if is_zh() {
+        format!("工具调用 {} 次　消耗词元 {tokens}", stats.tool_calls)
+    } else {
+        format!("tool calls: {}　token cost: {tokens}", stats.tool_calls)
+    };
+    (tokens, text)
+}
+
 pub fn format_token_count(tokens: u64, estimated: bool) -> String {
     let prefix = if estimated { "≈" } else { "" };
     if tokens >= 1_000_000 {
@@ -462,6 +526,13 @@ pub struct SubagentRunner {
     timeout_seconds: u64,
     progress: SubagentProgress,
     inbox_id: Option<String>,
+    /// 每报一次量就把账记到审计会话上。
+    ///
+    /// 审计会话原来是**跑完才写**的：中途被打断（Ctrl+C、超时、daemon 重启）
+    /// 这一趟烧掉的词元就彻底没了，会话累计里查无此事（用户问到的正是这个）。
+    /// 落盘是一条按 session_id 的 UPDATE，写的是**累计值**不是增量，重复写
+    /// 不会算两遍。
+    usage_sink: Option<std::sync::Arc<dyn Fn(&SubagentStats) + Send + Sync>>,
 }
 
 impl SubagentRunner {
@@ -479,6 +550,7 @@ impl SubagentRunner {
             max_steps: 0,
             timeout_seconds: 60,
             progress,
+            usage_sink: None,
             inbox_id: None,
         }
     }
@@ -541,10 +613,15 @@ impl SubagentRunner {
             .chat_with_tools(messages, &mut stats, initial_steps)
             .await?;
 
-        stats.add_usage_or_estimate(
-            result.usage.as_ref(),
-            &[&self.system_prompt, prompt, &result.content],
-        );
+        // **不要**在这儿再加一次最后一轮的用量：`chat_with_tools` 的循环里每一轮
+        // 都已经加过了（包括交卷那一轮），再加就是把它算两遍——一个跑了三十来步
+        // 的子代理，末轮的 prompt 里装着整段对话，重复计一次能把总数抬高一大截
+        //（用户实测：token 处理有些问题）。
+        //
+        // 只在**一次都没记上**时用估算兜底：那是供应商压根不报用量的情形。
+        if stats.token_estimate_method == TokenEstimateMethod::None {
+            stats.add_usage_or_estimate(None, &[&self.system_prompt, prompt, &result.content]);
+        }
 
         self.report_stats(&stats);
 
@@ -552,23 +629,35 @@ impl SubagentRunner {
     }
 
     fn report_stats(&self, stats: &SubagentStats) {
-        // 与 stats JSON 的 token_estimate_is_actual 同口径:估算值必须带
-        // `≈` 前缀,硬编码 false 会把估算按精确值展示。
-        let estimated = stats.token_estimate_method != TokenEstimateMethod::ProviderUsage;
-        let text = if is_zh() {
-            format!(
-                "工具调用 {} 次　消耗词元 {}",
-                stats.tool_calls,
-                format_token_count(stats.token_estimate, estimated)
-            )
-        } else {
-            format!(
-                "tool calls: {}　token cost: {}",
-                stats.tool_calls,
-                format_token_count(stats.token_estimate, estimated)
-            )
-        };
+        let (_, text) = stats_text(stats);
         self.progress.phase(format!("__subagent_stats__{text}"));
+    }
+
+    /// 中途报一次量。面板标题和后台任务状态行都靠它。
+    ///
+    /// 原来只在**跑完**报——而面板恰恰是它跑着的时候才开着的，于是标题上那两个
+    /// 数字一路停在开跑时的样子（用户实测：工具调用次数和消耗词元都没正常涨）。
+    /// 走单独的前缀是因为这条一秒能来好几次：`__subagent_stats__` 是要落进流水账
+    /// 留底的，中途的量报落进去只会把时间线撑满。
+    /// 每报一次量就落一次账。见 `usage_sink`。
+    pub fn usage_sink(
+        mut self,
+        sink: std::sync::Arc<dyn Fn(&SubagentStats) + Send + Sync>,
+    ) -> Self {
+        self.usage_sink = Some(sink);
+        self
+    }
+
+    fn report_metric(&self, stats: &SubagentStats) {
+        if let Some(sink) = &self.usage_sink {
+            sink(stats);
+        }
+        let (tokens, text) = stats_text(stats);
+        // 机器读的在前，制表符分隔，人话在后——和内层工具事件一个写法。
+        // 三段：给状态行看的那串（带 `≈`）、给会话累计加的那个**数**、人话。
+        let raw = stats.token_estimate.max(stats.total_tokens);
+        self.progress
+            .phase(format!("__subagent_metric__{tokens}\t{raw}\t{text}"));
     }
 
     /// chat_stream with bounded retries: a mid-stream disconnect re-sends the
@@ -602,6 +691,9 @@ impl SubagentRunner {
                         match chunk.kind {
                             ChatStreamKind::Reasoning => self.progress.reasoning(&chunk.text),
                             ChatStreamKind::Content => self.progress.content(&chunk.text),
+                            // 工具名已解码、参数还在流：主线在这个窗口报「准备xx」，
+                            // 面板里也该有（用户实测：浮层中没有「准备xx」）。
+                            ChatStreamKind::ToolCall => self.progress.tool_preparing(&chunk.text),
                             _ => {}
                         }
                         Ok(())
@@ -657,9 +749,11 @@ impl SubagentRunner {
                 .chat_stream_with_retry(&messages, &definitions, steps)
                 .await?;
             stats.add_usage_or_estimate(result.usage.as_ref(), &[]);
-            // 每步更新一次统计:后台子代理任务条那行的 token 消耗据此逐步刷新
+            // 每步更新一次量:后台子代理任务条那行的 token 消耗据此逐步刷新
             // (09-12 用户要「时间左侧的 token 每步更新」),不再只在收尾时报一次。
-            self.report_stats(stats);
+            // 走 `__subagent_metric__` 而不是 `__subagent_stats__`：后者是要落进
+            // 流水账留底的，中途的量报一秒来好几次，落进去会把时间线撑满。
+            self.report_metric(stats);
 
             if result.tool_calls.is_empty() {
                 return Ok(result);
@@ -709,6 +803,9 @@ impl SubagentRunner {
                 } else {
                     stats.tool_errors += 1;
                 }
+                // 每调完一个就把次数推出去，别等这一轮结束——一轮里并排调五个
+                // 工具是常事，那五个跑完之前标题上一直是上一轮的数。
+                self.report_metric(stats);
 
                 self.progress.tool_end(
                     steps,
@@ -729,14 +826,58 @@ mod tests {
     use crate::tools::ToolProgressEvent;
     use tokio::sync::mpsc;
 
+    /// Summary 档也要发内层细节：全屏 TUI 点开子代理看到的是它自己的时间线，
+    /// 那条线就是用这些事件拼的。不认识这个前缀的客户端一直是直接丢掉的。
+    /// （本条曾经断言的是相反的行为，随全屏面板一起改的。）
     #[test]
-    fn tool_summary_suppresses_raw_subagent_reasoning() {
+    fn tool_summary_still_emits_inner_detail_for_panels() {
         let (sender, mut receiver) = mpsc::unbounded_channel();
         let progress =
             SubagentProgress::new(ToolProgress::new(sender), ProgressMode::Summary, true);
 
         progress.reasoning("detailed reasoning");
+        let ToolProgressEvent::Message(message) = receiver.try_recv().unwrap() else {
+            panic!("expected reasoning progress message");
+        };
+        assert_eq!(message, "__subagent_reasoning__detailed reasoning");
+
+        progress.tool_end(1, "grep", r#"{"pattern":"x"}"#, true, "hit");
+        // Summary 档的粗粒度状态行照旧
+        let ToolProgressEvent::Message(status) = receiver.try_recv().unwrap() else {
+            panic!("expected coarse status line");
+        };
+        assert!(
+            !status.starts_with("__"),
+            "粗粒度那行不该带内部前缀: {status}"
+        );
+        // 细节紧跟其后
+        let ToolProgressEvent::Message(detail) = receiver.try_recv().unwrap() else {
+            panic!("expected inner detail");
+        };
+        assert!(detail.starts_with("__subtool_result__"), "{detail}");
+        assert!(detail.contains("hit"));
+    }
+
+    #[test]
+    fn hidden_mode_emits_nothing() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let progress = SubagentProgress::new(ToolProgress::new(sender), ProgressMode::Hidden, true);
+        progress.reasoning("detailed reasoning");
+        progress.tool_end(1, "grep", "{}", true, "hit");
         assert!(receiver.try_recv().is_err());
+    }
+
+    /// 单条输出不能把 IPC 当日志管道使。
+    #[test]
+    fn inner_detail_output_is_clipped() {
+        let long = "字".repeat(20_000);
+        let clipped = clip_detail(&long);
+        assert!(clipped.len() <= MAX_DETAIL_BYTES + 8, "{}", clipped.len());
+        assert!(clipped.ends_with('…'));
+        // 截在字符边界上,不能切出半个字
+        assert!(clipped
+            .chars()
+            .all(|ch| ch == '字' || ch == '…' || ch == '\n'));
     }
 
     #[test]

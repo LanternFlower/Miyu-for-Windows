@@ -11,6 +11,7 @@
 // 活动区还用着一批留在 cli::mod 的东西（footer 结构、队列渲染、job 条）。
 mod frame;
 mod queue;
+pub(in crate::cli) mod screen;
 
 #[cfg(test)]
 pub(in crate::cli) use frame::queue_lifted_frame;
@@ -89,6 +90,12 @@ pub(in crate::cli) fn trace_tail_redraw(
 }
 
 pub(in crate::cli) fn cursor_position_or(fallback: (u16, u16)) -> (u16, u16) {
+    // 全屏下「终端光标在哪」这个问题没有意义——屏幕是我们自己画的，位置都
+    // 是算出来的。更要命的是 `ESC[6n` 的应答要**从 stdin 读**，那会把用户
+    // 正在打的字吞掉（09-11 走查里「打字不回显」就是这么来的）。
+    if screen::in_fullscreen() {
+        return fallback;
+    }
     // 终端已挂断时 ESC[6n 永远等不到应答,而 crossterm 的应答等待对
     // HUP fd 会无限自旋(超时失效)——直接用回退值,让退出路径走完。
     if terminal_hangup() {
@@ -105,7 +112,11 @@ pub(in crate::cli) fn cursor_position_or(fallback: (u16, u16)) -> (u16, u16) {
             answer,
             started.elapsed().as_millis(),
             fallback,
-            if answer.is_err() { "  ←问不到,退回旧位置" } else { "" },
+            if answer.is_err() {
+                "  ←问不到,退回旧位置"
+            } else {
+                ""
+            },
         ));
     }
     answer.unwrap_or(fallback)
@@ -150,7 +161,18 @@ pub(in crate::cli) struct LiveReplTail {
     pub(in crate::cli) footer_offset: Option<u16>,
     pub(in crate::cli) footer_spinner_last: Option<std::time::Instant>,
     pub(in crate::cli) jobs: Vec<crate::tools::jobs::JobOverview>,
+    /// 已经下过"停"的任务 → 下达的时刻。见 `suppress_jobs`。
+    pub(in crate::cli) suppressed_jobs: std::collections::HashMap<String, std::time::Instant>,
+    /// Σ 上那份实时加数：这一轮里跑着的前台子代理此刻烧了多少。
+    /// 见 [`Self::set_live_turn_tokens`]。
+    pub(in crate::cli) live_turn_tokens: u64,
     pub(in crate::cli) job_spinner: usize,
+    /// 后台状态行在屏幕上的起始行与行数。全屏下点它要能对上是哪一个任务。
+    pub(in crate::cli) job_strip_start: u16,
+    pub(in crate::cli) job_strip_rows: u16,
+    /// 用户在详情面板里按了 x：这个任务该停了。事件层不发 IPC（它没有
+    /// 异步上下文），攒在这儿由主循环取走。
+    pub(in crate::cli) pending_stop_job: Option<String>,
     pub(in crate::cli) output_cursor: (u16, u16),
     pub(in crate::cli) tail_start: u16,
     pub(in crate::cli) tail_rows: u16,
@@ -158,6 +180,10 @@ pub(in crate::cli) struct LiveReplTail {
     pub(in crate::cli) rendered: bool,
     pub(in crate::cli) external_output_active: bool,
     pub(in crate::cli) raw_mode_handoff: bool,
+    /// 全屏后端。`None` 就是原来的 inline 行为——正文进 scrollback、
+    /// 活动区靠 DECSTBM 钉在底下。`Some` 时正文改由它持有，活动区照旧
+    /// 由 `render_repl_input_with_footer` 打，只是 `tail_start` 指向视口底部。
+    pub(in crate::cli) screen: Option<screen::Screen>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -578,14 +604,29 @@ impl LiveReplTail {
             footer_offset: None,
             footer_spinner_last: None,
             jobs: Vec::new(),
+            suppressed_jobs: std::collections::HashMap::new(),
+            live_turn_tokens: 0,
             job_spinner: 0,
             output_cursor: cursor_position_or((0, 0)),
             tail_start: 0,
             tail_rows: 0,
+            job_strip_start: 0,
+            job_strip_rows: 0,
+            pending_stop_job: None,
             input_cursor: (0, 0),
             rendered: false,
             external_output_active: false,
             raw_mode_handoff: false,
+            screen: {
+                screen::trace_rss("tail-new");
+                let built = screen::requested()
+                    .then(screen::Screen::enter)
+                    .transpose()?;
+                if let Some(screen) = &built {
+                    screen.trace_ready();
+                }
+                built
+            },
         })
     }
 
@@ -656,7 +697,49 @@ impl LiveReplTail {
     /// invisible until the next input event causes the editor to render.
     /// Update the background-command strip; returns true when a redraw is
     /// needed (content changed, or spinners/timers must advance).
+    /// 已经下过"停"的任务：状态行里先别再显示它。
+    ///
+    /// 停完就把状态行清空是对的（那才是事实），但守护进程那边的任务快照是
+    /// **一秒轮询一次**的——停完紧接着来的那一次轮询往往还带着它，于是状态行
+    /// 消失一瞬间又冒出来，闪一下（用户实测）。压住它几秒，等快照追上来。
+    ///
+    /// 第一版是"轮询里没有了就解除压制"，看着合理，其实当场自废：停完紧跟着的
+    /// 那一句 `set_jobs(空)` 就是一次"轮询里没有"，压制表立刻被清空，下一次真
+    /// 轮询把它原样带了回来。所以只能按**时间**放，不能按"这一份列表里有没有"。
+    pub(in crate::cli) fn suppress_jobs<'a>(&mut self, ids: impl Iterator<Item = &'a str>) {
+        let now = std::time::Instant::now();
+        for id in ids {
+            self.suppressed_jobs.insert(id.to_string(), now);
+        }
+    }
+
+    /// 这一轮里跑着的前台子代理此刻烧了多少——先记在 Σ 上。
+    ///
+    /// 它的审计会话是边跑边写的，但**回合跑着的时候客户端不会去重读 Σ**
+    /// （那是空闲循环干的活），所以这一截得自己补。回合收尾时 Σ 从库里重读、
+    /// 这份清零，不会算两遍。
+    pub(in crate::cli) fn set_live_turn_tokens(&mut self, tokens: u64) -> bool {
+        if self.live_turn_tokens == tokens {
+            return false;
+        }
+        self.live_turn_tokens = tokens;
+        self.footer.update_live_extra_tokens(tokens)
+    }
+
     pub(in crate::cli) fn set_jobs(&mut self, jobs: Vec<crate::tools::jobs::JobOverview>) -> bool {
+        let jobs: Vec<crate::tools::jobs::JobOverview> = if self.suppressed_jobs.is_empty() {
+            jobs
+        } else {
+            let now = std::time::Instant::now();
+            self.suppressed_jobs
+                .retain(|_, at| now.duration_since(*at) < SUPPRESS_JOB_FOR);
+            jobs.into_iter()
+                .filter(|job| !self.suppressed_jobs.contains_key(&job.job_id))
+                .collect()
+        };
+        // 后台子代理**不**在这儿往 Σ 上加：它的审计会话是边跑边写的，守护进程
+        // 算出来的会话累计里已经有了，再加一遍就是算两遍。前台那一路才需要补
+        // （见 `set_live_turn_tokens`）——回合跑着的时候客户端不会去重读 Σ。
         let changed = self.jobs.len() != jobs.len()
             || self
                 .jobs
@@ -664,13 +747,41 @@ impl LiveReplTail {
                 .zip(jobs.iter())
                 .any(|(a, b)| a.job_id != b.job_id || a.status != b.status);
         self.jobs = jobs;
+        self.refresh_job_overlay_title();
         changed
+    }
+
+    /// 面板开着哪个任务，就把那个任务此刻的抬头推给它。
+    fn refresh_job_overlay_title(&mut self) {
+        let Some(job_id) = self
+            .screen
+            .as_ref()
+            .and_then(screen::Screen::overlay_job_id)
+        else {
+            return;
+        };
+        let Some(job) = self.jobs.iter().find(|job| job.job_id == job_id) else {
+            return;
+        };
+        let title = screen::job_panel_title(job);
+        if let Some(screen) = &mut self.screen {
+            screen.refresh_overlay_title(&title);
+        }
     }
 
     /// Lightweight spinner/timer repaint of the job strip only — no full
     /// tail redraw, so it can run at animation frequency without flicker.
     pub(in crate::cli) fn tick_job_strip(&mut self) -> Result<()> {
         if !self.rendered || self.jobs.is_empty() {
+            return Ok(());
+        }
+        // 详情面板开着时整屏归它。这时候还往活动区那几行写，两个画笔会在同一
+        // 块地方来回抢，屏幕上就是输入框疯狂抖动。
+        if self
+            .screen
+            .as_ref()
+            .is_some_and(screen::Screen::overlay_open)
+        {
             return Ok(());
         }
         self.job_spinner = self.job_spinner.wrapping_add(1);
@@ -725,6 +836,17 @@ impl LiveReplTail {
         if !self.rendered || self.external_output_active {
             return Ok(());
         }
+        // 详情面板开着时整屏归它。这一行画在 `tail_start + offset` 上，而那一带
+        // 现在是面板的地盘——两个画笔一人一帧地抢同一行，屏幕底下就在"面板页脚"
+        // 和"输入框 footer"之间反复横跳（用户实测：前台子代理一点开就疯狂鬼畜）。
+        // `tick_job_strip` 早就有这道闸，这儿漏了。
+        if self
+            .screen
+            .as_ref()
+            .is_some_and(screen::Screen::overlay_open)
+        {
+            return Ok(());
+        }
         let now = std::time::Instant::now();
         if self
             .footer_spinner_last
@@ -755,6 +877,9 @@ impl LiveReplTail {
         })
     }
 }
+
+/// 下过"停"之后压住状态行多久。守护进程的任务快照一秒轮询一次，留出几轮的余量。
+const SUPPRESS_JOB_FOR: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub(in crate::cli) struct LiveRawMode {
     pub(in crate::cli) restore_terminal_on_drop: bool,

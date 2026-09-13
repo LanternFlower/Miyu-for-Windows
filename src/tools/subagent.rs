@@ -8,6 +8,7 @@ use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::Duration;
 
 const SUBAGENT_SYSTEM_PROMPT: &str = include_str!("../prompts/subagent-general.md");
 
@@ -360,6 +361,7 @@ async fn spawn_background(
     progress: crate::tools::ToolProgress,
 ) -> Result<String> {
     let description = params.description.clone();
+    let prompt = params.prompt.clone();
     // 后台子代理起在 tokio::spawn 的新任务上,回合的 task-local(工作区/会话/
     // 沙盒)到那儿全空了:相对路径退回 daemon 的 cwd、Landlock 失效、且
     // mcp_bridge_config 因 try_session()=None 返回 None(claude-code 拿不到 Miyu 桥)。
@@ -373,6 +375,7 @@ async fn spawn_background(
         params.dev,
         &progress,
         move |job_id, log_path| async move {
+            write_subagent_prompt_header(&log_path, &prompt);
             let bridge = spawn_subagent_log_bridge(job_id.clone(), log_path.clone());
             // 后台子代理:用后台任务 id 作收件箱键,主体可用 send_subagent_message
             // 中途投递 follow-up;主体从后台返回里拿到这个 job_id。工作区/会话/沙盒
@@ -416,6 +419,35 @@ async fn spawn_background(
     .await
 }
 
+/// 流水账开头写一条「差事」，面板里就是第一步，点开看全文。
+///
+/// 后台子代理跑起来之后，能看到的全是它自己的动作；它到底被要求干什么，只有
+/// 派它出去的那一轮知道。隔十分钟回来看这个面板的人是没有那一轮的。
+fn write_subagent_prompt_header(log_path: &std::path::Path, prompt: &str) {
+    let line = prompt_header_line(prompt);
+    if line.is_empty() {
+        return;
+    }
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .and_then(|mut file| {
+            use std::io::Write as _;
+            writeln!(file, "{line}")
+        });
+}
+
+/// prompt → 流水账里那一行。多行压成一行：流水账是按行读的，`\u{1}` 在正文里
+/// 不会出现，面板那边照它拆回来。空 prompt 返回空串（不写）。
+fn prompt_header_line(prompt: &str) -> String {
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return String::new();
+    }
+    format!("[提示] {}", prompt.replace('\r', "").replace('\n', "\u{1}"))
+}
+
 /// Bridge a detached subagent's progress stream into its job log so
 /// `job_status` reads live progress the same way it reads command output.
 fn spawn_subagent_log_bridge(
@@ -424,6 +456,17 @@ fn spawn_subagent_log_bridge(
 ) -> crate::tools::ToolProgress {
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
+        // 思考和正文都是**逐 delta** 来的。一条一行的话日志会变成每行一个词的
+        // 字符梯，谁也读不下去（用户实测截图：整屏 `[正文] the` / `[正文] and`）。
+        // 攒成段落，遇到别的事件或段落够长了才落盘。
+        let mut thinking = String::new();
+        let mut speech = String::new();
+        // 上一次内层调用是什么时候发出的：结果回来时算耗时写进 `[结果]`。
+        // 流水账里没有时间戳，面板那边"这一步花了多久""这一段 Worked for 多久"
+        // 只能靠这个（用户实测：后台面板的收缩行没有 Worked for）。
+        let mut last_call: Option<std::time::Instant> = None;
+        // 这一段思考从什么时候开始的：落成 `[思考]` 行时把时长写在最前面。
+        let mut thinking_since: Option<std::time::Instant> = None;
         while let Some(event) = receiver.recv().await {
             let crate::tools::ToolProgressEvent::Message(message) = event else {
                 continue;
@@ -431,8 +474,44 @@ fn spawn_subagent_log_bridge(
             // 原始标记上 SSE(网页端据 job_id 渲染子过程流,与前台子代理工具行
             // 同款);人读的行落任务日志(job status 读它)。
             crate::tools::jobs::publish_job_progress(&job_id, &message);
-            let line = readable_subagent_log_line(&message);
-            if line.is_empty() {
+            if let Some(text) = message.strip_prefix("__subagent_metric__") {
+                // 制表符分隔：`<给人看的那串>\t<数字>\t<人话>`
+                //（见 `SubagentRunner::report_metric`）。中途的量报只刷状态行上
+                // 那串数，不落流水账——它一秒来好几次，落进去会把时间线撑满。
+                let mut parts = text.split('\t');
+                let display = parts.next().unwrap_or_default().trim().to_string();
+                let raw = parts.next().and_then(|value| value.trim().parse().ok());
+                crate::tools::jobs::set_metric(&job_id, &display, raw);
+                continue;
+            }
+            let mut lines: Vec<String> = Vec::new();
+            if let Some(text) = message.strip_prefix("__subagent_reasoning__") {
+                flush_stream_buffer(&mut speech, "[正文]", &mut lines);
+                if thinking.is_empty() && thinking_since.is_none() {
+                    thinking_since = Some(std::time::Instant::now());
+                }
+                accumulate_stream(&mut thinking, text, "[思考]", &mut lines);
+            } else if let Some(text) = message.strip_prefix("__subagent_content__") {
+                flush_stream_buffer(&mut thinking, "[思考]", &mut lines);
+                accumulate_stream(&mut speech, text, "[正文]", &mut lines);
+            } else {
+                flush_stream_buffer(&mut thinking, "[思考]", &mut lines);
+                flush_stream_buffer(&mut speech, "[正文]", &mut lines);
+                let elapsed = if message.starts_with("__subtool_call__") {
+                    last_call = Some(std::time::Instant::now());
+                    None
+                } else if message.starts_with("__subtool_result__") {
+                    last_call.take().map(|since| since.elapsed())
+                } else {
+                    None
+                };
+                let line = readable_subagent_log_line_timed(&message, elapsed);
+                if !line.is_empty() {
+                    lines.push(line);
+                }
+            }
+            stamp_thought_lines(&mut lines, &mut thinking_since);
+            if lines.is_empty() {
                 continue;
             }
             let _ = std::fs::OpenOptions::new()
@@ -441,14 +520,176 @@ fn spawn_subagent_log_bridge(
                 .open(&log_path)
                 .and_then(|mut file| {
                     use std::io::Write as _;
-                    writeln!(file, "{line}")
+                    for line in &lines {
+                        writeln!(file, "{line}")?;
+                    }
+                    Ok(())
+                });
+        }
+        // 收尾：最后那段没等到分隔符的也要落盘。
+        let mut lines: Vec<String> = Vec::new();
+        flush_stream_buffer(&mut thinking, "[思考]", &mut lines);
+        flush_stream_buffer(&mut speech, "[正文]", &mut lines);
+        stamp_thought_lines(&mut lines, &mut thinking_since);
+        if !lines.is_empty() {
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .and_then(|mut file| {
+                    use std::io::Write as _;
+                    for line in &lines {
+                        writeln!(file, "{line}")?;
+                    }
+                    Ok(())
                 });
         }
     });
     crate::tools::ToolProgress::new(sender)
 }
 
+/// 刚落下来的 `[思考]` 行带上这段想了多久：`[思考] 1.2s\t正文`。面板那边按它
+/// 报「已思考 · 1.2s」，收缩行的 Worked for 也把它算进去。
+fn stamp_thought_lines(lines: &mut [String], thinking_since: &mut Option<std::time::Instant>) {
+    for line in lines.iter_mut() {
+        let Some(text) = line.strip_prefix("[思考] ") else {
+            continue;
+        };
+        let Some(since) = thinking_since.take() else {
+            break;
+        };
+        let secs = crate::render::timeline::format_seconds(since.elapsed());
+        *line = format!("[思考] {secs}\t{text}");
+    }
+}
+
+/// 把一小段流式文本攒进缓冲，攒够一个自然段（空行）或够长了就落一条。
+fn accumulate_stream(buffer: &mut String, text: &str, tag: &str, lines: &mut Vec<String>) {
+    buffer.push_str(text);
+    while let Some(index) = buffer.find("\n\n") {
+        let chunk: String = buffer.drain(..index + 2).collect();
+        if !chunk.trim().is_empty() {
+            lines.push(format!("{tag} {}", chunk.trim()));
+        }
+    }
+    // 一直不出现空行的话也不能无限攒下去。
+    if buffer.chars().count() > 600 {
+        lines.push(format!("{tag} {}", buffer.trim()));
+        buffer.clear();
+    }
+}
+
+/// 把缓冲里剩的那截落成一条（别的事件来了、或者收尾了）。
+fn flush_stream_buffer(buffer: &mut String, tag: &str, lines: &mut Vec<String>) {
+    if buffer.trim().is_empty() {
+        buffer.clear();
+        return;
+    }
+    lines.push(format!("{tag} {}", buffer.trim()));
+    buffer.clear();
+}
+
+/// 内层工具事件压成一句人话。原样贴 JSON 的话日志里全是转义引号。
+fn subtool_summary(json: &str) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json.trim()) else {
+        return json.trim().to_string();
+    };
+    let name = value
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("?");
+    // 前面带上工具 id（制表符分隔）：面板那边要按 id 挑图标，光有中文名挑不出来
+    // ——所有工具就只能共用一个齿轮了。读日志的人看不到它（渲染时会切掉）。
+    let mut out = format!("{name}\t{}", crate::render::readable_tool_name(name));
+    if let Some(ok) = value.get("ok").and_then(serde_json::Value::as_bool) {
+        out.push_str(if ok { " ok" } else { " err" });
+    }
+    if let Some(args) = value.get("args").and_then(serde_json::Value::as_str) {
+        let args = args.trim();
+        if !args.is_empty() {
+            // 先按工具自己的规矩摘一句主题（命令文本、检索词、路径……），
+            // 摘不出来才退回原文。直接贴 JSON 的话日志里全是
+            // `{"command": "cd /very/long/path && …"}` 这种没法读的东西，
+            // 面板里那条时间线也就跟着糊了。
+            let subject =
+                crate::render::tool_subject(name, args).unwrap_or_else(|| args.to_string());
+            out.push_str(" · ");
+            out.push_str(&crate::render::clip_to_display_width(&subject, 200));
+        }
+    }
+    out
+}
+
+/// 结果事件摊成 `[结果]` + 若干 `[输出]`。
+///
+/// 只写 `[结果]` 的话，面板里那一步点开是空的——那行里已经有的东西再说一遍而已
+/// （用户实测：浮层里这些工具展开都没内容）。真正值得看的是工具吐了什么，而
+/// `__subtool_result__` 本来就带着（`clip_detail` 已经截过）。这儿再收一道，
+/// 免得一条 8KB 的输出把流水账撑成日志本体。
+fn subtool_result_lines(json: &str, elapsed: Option<Duration>) -> String {
+    let mut out = format!("[结果] {}", subtool_summary(json));
+    // 耗时紧跟在 ok/err 后面：`运行命令 ok · 1.2s · ls`。面板去掉 ok 之后就是
+    // 主线那一行的样子（名字 · 秒数 · 窥视）。
+    // 再短也写：一段里几个快工具加起来才够得上一个 Worked for。
+    if let Some(elapsed) = elapsed {
+        let secs = crate::render::timeline::format_seconds(elapsed);
+        for status in [" ok", " err"] {
+            if let Some(index) = out.find(&format!("{status} · ")) {
+                out.insert_str(index + status.len(), &format!(" · {secs}"));
+                break;
+            }
+            if out.ends_with(status) {
+                out.push_str(&format!(" · {secs}"));
+                break;
+            }
+        }
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json.trim()) else {
+        return out;
+    };
+    let Some(output) = value.get("output").and_then(serde_json::Value::as_str) else {
+        return out;
+    };
+    for line in output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .take(LOG_OUTPUT_LINES)
+    {
+        // 工具吐的是**原始输出**，里面有转义序列、回车、制表符。流水账是按行读
+        // 的纯文本，面板把它当普通字符排版——原样写进去，一行的真实宽度和算出来
+        // 的宽度就对不上，右边那根竖线跟着参差不齐。
+        let line = crate::render::strip_ansi_text(line);
+        let line = line
+            .chars()
+            .map(|ch| if ch == '\t' { ' ' } else { ch })
+            .filter(|ch| !ch.is_control())
+            .collect::<String>();
+        let line = line.trim_end();
+        if line.is_empty() {
+            continue;
+        }
+        out.push_str("\n[输出] ");
+        out.push_str(&crate::render::clip_to_display_width(line, 400));
+    }
+    out
+}
+
+/// 一次工具结果最多往流水账里写几行输出。
+const LOG_OUTPUT_LINES: usize = 24;
+
 fn readable_subagent_log_line(message: &str) -> String {
+    readable_subagent_log_line_timed(message, None)
+}
+
+/// 同上，`elapsed` 是这次内层调用从发出到结果回来花的时间（只有结果事件带）。
+fn readable_subagent_log_line_timed(message: &str, elapsed: Option<Duration>) -> String {
+    if let Some(name) = message.strip_prefix("__subtool_preparing__") {
+        // 参数还在流：面板把它当"正在准备"那一行。它不是一步，只有作为日志末尾
+        // 那一行时才有意义，读日志的人看到它也只当"刚才准备过"。
+        let name = name.trim();
+        let phase = crate::tools::preparing_phase(name).unwrap_or("");
+        return format!("[准备] {name}\t{phase}");
+    }
     if let Some(text) = message.strip_prefix("__subagent_reasoning__") {
         let text = text.trim();
         if text.is_empty() {
@@ -464,10 +705,30 @@ fn readable_subagent_log_line(message: &str) -> String {
         return format!("[正文] {text}");
     }
     if let Some(text) = message.strip_prefix("__subtool_call__") {
-        return format!("[工具] {}", text.trim());
+        return format!("[工具] {}", subtool_summary(text));
     }
     if let Some(text) = message.strip_prefix("__subtool_result__") {
-        return format!("[结果] {}", text.trim());
+        return subtool_result_lines(text, elapsed);
+    }
+    if let Some(text) = message.strip_prefix("__subagent_brief__") {
+        // 任务简介（Full 档才发）里带着 prompt——正是面板第一步要的那份。
+        // 认下来，免得它以无标签原文的身份漏进流水账。
+        let prompt = serde_json::from_str::<serde_json::Value>(text.trim())
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("prompt")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        return prompt_header_line(&prompt);
+    }
+    // 中途的量报只用来刷标题和状态行，不进流水账——每调一次工具记一条
+    // 「统计」的话，面板里的时间线会被这些节点撑满。跑完那一次走
+    // `__subagent_stats__`，那条是留底的。
+    if message.starts_with("__subagent_metric__") {
+        return String::new();
     }
     if let Some(text) = message.strip_prefix("__subagent_stats__") {
         return format!("[统计] {}", text.trim());
@@ -582,11 +843,17 @@ async fn run_core(
         SUBAGENT_SYSTEM_PROMPT.to_string()
     };
 
-    let runner = SubagentRunner::new(client, system_prompt, tools, sa_progress)
+    // 审计会话**开跑之前**就建好：它的用量行是会话累计里子代理那一份的来源，
+    // 跑完才写的话，中途被打断这一趟烧的词元就彻底没了（用户问到的正是这个）。
+    let audit = SubagentAudit::open(&context, &anchor, &description, &prompt);
+    let mut runner = SubagentRunner::new(client, system_prompt, tools, sa_progress)
         .max_steps(max_steps)
         .timeout_seconds(tool_timeout)
         .excluded_tools(SUBAGENT_EXCLUDED)
         .inbox_id(inbox_id.clone());
+    if let Some(audit) = &audit {
+        runner = runner.usage_sink(audit.usage_sink());
+    }
 
     // 后台子代理开收件箱:主体可在运行途中投递 follow-up(见 subagent_runner)。
     // 用 drop guard 关箱,覆盖所有退出路径(正常返回 / `?` 早退 / panic)。
@@ -624,15 +891,18 @@ async fn run_core(
                 "error": err.to_string(),
                 "stats": SubagentStats::default().public(),
             }))?;
-            record_subagent_audit(
-                &context,
-                &anchor,
-                &description,
-                &prompt,
-                &output,
-                None,
-                &model_choice,
-            );
+            match &audit {
+                Some(audit) => audit.finish(&context, &output, None, &model_choice),
+                None => record_subagent_audit(
+                    &context,
+                    &anchor,
+                    &description,
+                    &prompt,
+                    &output,
+                    None,
+                    &model_choice,
+                ),
+            }
             return Ok(SubagentRun {
                 output,
                 state: "error",
@@ -669,15 +939,18 @@ async fn run_core(
         (Some(provider_id), Some(model)) => Some((provider_id.clone(), model.clone())),
         _ => model_choice,
     };
-    record_subagent_audit(
-        &context,
-        &anchor,
-        &description,
-        &prompt,
-        &output,
-        Some(&stats),
-        &model_choice,
-    );
+    match &audit {
+        Some(audit) => audit.finish(&context, &output, Some(&stats), &model_choice),
+        None => record_subagent_audit(
+            &context,
+            &anchor,
+            &description,
+            &prompt,
+            &output,
+            Some(&stats),
+            &model_choice,
+        ),
+    }
     Ok(SubagentRun { output, state })
 }
 
@@ -685,6 +958,144 @@ async fn run_core(
 /// session linked to the parent turn's session, holding one turn (prompt →
 /// result JSON) plus the model identity and token usage on the session row.
 /// Best-effort: audit failures never fail the task itself.
+/// 一趟子代理的审计会话：开跑之前就建好，边跑边记账，跑完写结果。
+///
+/// 原来是**跑完才写**的一锤子买卖——中途被打断（Ctrl+C、超时、daemon 重启）
+/// 这一趟烧掉的词元就彻底没了，会话累计里查无此事（用户问：万一中断了不就
+/// 丢失数据了吗）。现在开跑就有一行，量报每来一次就更新它。
+struct SubagentAudit {
+    store: crate::state::StateStore,
+    session_id: String,
+    turn_id: String,
+    context_window: Option<i64>,
+}
+
+impl SubagentAudit {
+    fn open(
+        context: &SubagentContext,
+        anchor: &AuditAnchor,
+        description: &str,
+        prompt: &str,
+    ) -> Option<Self> {
+        let outcome = (|| -> Result<Self> {
+            let store = crate::state::StateStore::new(&context.paths)?;
+            let name: String = description.chars().take(40).collect();
+            let record = store.create_session(
+                &anchor.persona,
+                &name,
+                "subagent",
+                anchor.parent.as_deref(),
+            )?;
+            let turn_id = format!(
+                "sat_{}_{:08x}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_millis())
+                    .unwrap_or(0),
+                rand::random::<u32>()
+            );
+            store
+                .pinned(&record.session_id)
+                .start_turn(&turn_id, prompt, std::process::id())?;
+            Ok(Self {
+                store,
+                session_id: record.session_id,
+                turn_id,
+                context_window: None,
+            })
+        })();
+        match outcome {
+            Ok(audit) => Some(audit),
+            Err(error) => {
+                tracing::warn!(error = %error, "{}", crate::i18n::text("failed to open the subagent audit session", "建立子代理审计会话失败"));
+                None
+            }
+        }
+    }
+
+    /// 把此刻的账记上。写的是**累计值**不是增量，重复写不会算两遍。
+    fn record(&self, stats: &SubagentStats) {
+        let _ = self.store.record_subagent_usage(
+            &self.session_id,
+            None,
+            None,
+            self.context_window,
+            stats.prompt_tokens as i64,
+            stats.completion_tokens as i64,
+            stats.total_tokens.max(stats.token_estimate) as i64,
+            stats.cache_read_tokens as i64,
+        );
+    }
+
+    fn usage_sink(&self) -> std::sync::Arc<dyn Fn(&SubagentStats) + Send + Sync> {
+        let store = self.store.clone();
+        let session_id = self.session_id.clone();
+        let context_window = self.context_window;
+        std::sync::Arc::new(move |stats: &SubagentStats| {
+            let _ = store.record_subagent_usage(
+                &session_id,
+                None,
+                None,
+                context_window,
+                stats.prompt_tokens as i64,
+                stats.completion_tokens as i64,
+                stats.total_tokens.max(stats.token_estimate) as i64,
+                stats.cache_read_tokens as i64,
+            );
+        })
+    }
+
+    /// 收尾：写结果、补上端点与最终用量。
+    fn finish(
+        &self,
+        context: &SubagentContext,
+        output: &str,
+        stats: Option<&SubagentStats>,
+        model_choice: &Option<(String, String)>,
+    ) {
+        let outcome = (|| -> Result<()> {
+            self.store
+                .pinned(&self.session_id)
+                .complete_turn(&self.turn_id, output, None)?;
+            let (provider_id, model) = match model_choice.as_ref() {
+                Some((provider_id, model)) => (Some(provider_id.as_str()), Some(model.as_str())),
+                None => (None, None),
+            };
+            let context_window = match (provider_id, model) {
+                (Some(provider), Some(model)) => context
+                    .config
+                    .context_window_for_provider_model(provider, model)
+                    .ok()
+                    .flatten()
+                    .map(|window| window as i64),
+                _ => None,
+            };
+            let (prompt_tokens, completion_tokens, total_tokens, cache_read_tokens) = match stats {
+                Some(stats) => (
+                    stats.prompt_tokens as i64,
+                    stats.completion_tokens as i64,
+                    stats.total_tokens.max(stats.token_estimate) as i64,
+                    stats.cache_read_tokens as i64,
+                ),
+                None => (0, 0, 0, 0),
+            };
+            self.store.record_subagent_usage(
+                &self.session_id,
+                provider_id,
+                model,
+                context_window,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                cache_read_tokens,
+            )
+        })();
+        if let Err(error) = outcome {
+            tracing::warn!(error = %error, "{}", crate::i18n::text("failed to record subagent audit session", "记录子代理审计会话失败"));
+        }
+    }
+}
+
 fn record_subagent_audit(
     context: &SubagentContext,
     anchor: &AuditAnchor,
@@ -752,6 +1163,117 @@ fn record_subagent_audit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 中途的量报只刷标题和状态行，**不进流水账**。
+    ///
+    /// 它一秒能来好几次（每调完一个工具报一次）。落进去的话，面板里那条时间线
+    /// 会被「统计」节点撑满，真正在干什么反而看不见了。
+    #[test]
+    fn running_metric_never_lands_in_the_job_log() {
+        assert_eq!(
+            readable_subagent_log_line("__subagent_metric__1.2K\t工具调用 3 次"),
+            ""
+        );
+        // 跑完那一次照旧留底。
+        assert_eq!(
+            readable_subagent_log_line("__subagent_stats__工具调用 3 次"),
+            "[统计] 工具调用 3 次"
+        );
+    }
+
+    /// 结果那一行要把工具真吐出来的东西带上。
+    ///
+    /// 只写一句「运行命令 ok · ls」的话，面板里那一步点开看到的还是同一句话
+    /// ——等于点开是空的（用户实测：浮层里这些工具展开都没内容）。
+    #[test]
+    fn tool_result_carries_its_output_into_the_log() {
+        let json = serde_json::json!({
+            "name": "run_command",
+            "args": r#"{"command":"ls"}"#,
+            "ok": true,
+            "output": "total 12\n\ndrwxr-xr-x 2 shorin\n",
+        })
+        .to_string();
+        let line = readable_subagent_log_line(&format!("__subtool_result__{json}"));
+        let mut lines = line.lines();
+        assert!(
+            lines
+                .next()
+                .unwrap_or_default()
+                .starts_with("[结果] run_command\t"),
+            "{line}"
+        );
+        assert_eq!(lines.next(), Some("[输出] total 12"), "{line}");
+        // 空行不占一条记录。
+        assert_eq!(lines.next(), Some("[输出] drwxr-xr-x 2 shorin"), "{line}");
+        assert_eq!(lines.next(), None, "{line}");
+    }
+
+    /// 正文也是**逐 delta** 来的，得攒成段落再落盘。
+    ///
+    /// 一条一行的话日志会变成每行一个词的字符梯（用户实测截图：整屏
+    /// `[正文] the` / `[正文] and`）。
+    #[test]
+    fn streamed_speech_is_batched_into_paragraphs() {
+        let mut buffer = String::new();
+        let mut lines = Vec::new();
+        for chunk in ["Now ", "let ", "me ", "enumerate."] {
+            accumulate_stream(&mut buffer, chunk, "[正文]", &mut lines);
+        }
+        assert!(lines.is_empty(), "还没到段落就落盘了: {lines:?}");
+        flush_stream_buffer(&mut buffer, "[正文]", &mut lines);
+        assert_eq!(lines, vec!["[正文] Now let me enumerate.".to_string()]);
+        // 空行就是段落分隔，到了就落一条。
+        let mut lines = Vec::new();
+        accumulate_stream(&mut buffer, "第一段\n\n第二段", "[正文]", &mut lines);
+        assert_eq!(lines, vec!["[正文] 第一段".to_string()]);
+        flush_stream_buffer(&mut buffer, "[正文]", &mut lines);
+        assert_eq!(lines[1], "[正文] 第二段");
+    }
+
+    /// 工具吐的原始输出要洗干净再进流水账。
+    ///
+    /// 转义序列、回车、制表符原样写进去的话，面板按纯文本算宽度，算出来的和
+    /// 真实占宽对不上，右边那根竖线跟着参差不齐。
+    #[test]
+    fn tool_output_is_plain_text_in_the_log() {
+        let json = serde_json::json!({
+            "name": "run_command",
+            "args": "{}",
+            "ok": true,
+            "output": "\u{1b}[31m红的\u{1b}[0m\ta\u{7}b\r\n干净一行\n",
+        })
+        .to_string();
+        let line = readable_subagent_log_line(&format!("__subtool_result__{json}"));
+        let outputs = line
+            .lines()
+            .filter_map(|line| line.strip_prefix("[输出] "))
+            .collect::<Vec<_>>();
+        assert_eq!(outputs, vec!["红的 ab", "干净一行"], "{line}");
+        // `[结果]` 那一行自己带一个制表符（工具 id 的分隔），只看输出那几行。
+        assert!(
+            outputs
+                .iter()
+                .all(|line| !line.contains(|ch: char| ch.is_control())),
+            "{line}"
+        );
+    }
+
+    /// 差事写在流水账开头，换行折成 `\u{1}`（面板那边再拆回来）。
+    #[test]
+    fn prompt_header_folds_newlines() {
+        let dir = std::env::temp_dir().join(format!("miyu-prompt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建目录");
+        let path = dir.join("job.log");
+        write_subagent_prompt_header(&path, "  第一行\n第二行  ");
+        let text = std::fs::read_to_string(&path).expect("读日志");
+        assert_eq!(text, "[提示] 第一行\u{1}第二行\n");
+        // 空差事不写。
+        let empty = dir.join("empty.log");
+        write_subagent_prompt_header(&empty, "   ");
+        assert!(!empty.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn test_paths(root: &std::path::Path) -> MiyuPaths {
         crate::tools::tests::test_paths(root)

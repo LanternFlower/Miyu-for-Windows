@@ -255,6 +255,21 @@ pub(in crate::cli) async fn render_remote_tool_image(
     tools::vision::print_image_file(preview.path(), size).await
 }
 
+/// 全屏下的图片：返回 `(发给终端的, 进缓冲的)`。
+pub(in crate::cli) async fn remote_tool_image_parts(
+    state: &StateStore,
+    event: &serde_json::Value,
+    size: Option<String>,
+) -> Result<(String, String)> {
+    let asset_id = remote_tool_image_asset_id(event)
+        .ok_or_else(|| anyhow::anyhow!("tool image event did not contain an asset id"))?;
+    let asset = state
+        .load_image_asset(asset_id)?
+        .ok_or_else(|| anyhow::anyhow!("tool image asset is no longer available"))?;
+    let preview = remote_image_preview(&asset)?;
+    tools::vision::image_parts_for_buffer(preview.path(), size).await
+}
+
 pub(in crate::cli) fn remote_tool_image_asset_id(event: &serde_json::Value) -> Option<&str> {
     event
         .get("asset")

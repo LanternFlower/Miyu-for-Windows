@@ -285,7 +285,9 @@ pub(crate) fn meme_print_size(args: &Value, config: &MemesPluginConfig) -> Optio
 }
 
 pub(crate) fn configured_meme_size(config: &MemesPluginConfig) -> Option<String> {
-    let (cols, rows) = crossterm::terminal::size().ok()?;
+    // 全屏下按正文区算，理由同 `configured_print_size`。
+    let (cols, rows) =
+        crate::cli::content_viewport().or_else(|| crossterm::terminal::size().ok())?;
     let width = ((cols as u32 * config.width_percent as u32) / 100)
         .max(1)
         .min(160);

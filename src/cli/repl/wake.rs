@@ -52,8 +52,6 @@ pub(in crate::cli) async fn follow_wake_run(
     // Print the header straight into the scrollback (not the live frame):
     // it must survive the streaming render that follows.
     {
-        live.suspend()?;
-        let mut stdout = io::stdout();
         // 目标续轮不打表头：一个长任务会连着跑几十轮，每轮顶一行「第 N 轮」
         // 只会把真正的输出挤散。轮次已经在 footer 上（那是它常驻的位置）。
         let header = if label == crate::tools::goal::GOAL_ROUND_LABEL {
@@ -63,13 +61,30 @@ pub(in crate::cli) async fn follow_wake_run(
         } else {
             format!("⚙ {label}")
         };
-        if !header.is_empty() {
-            queue!(stdout, Print(format!("\x1b[2m{header}\x1b[0m\r\n\r\n")))?;
+        if crate::cli::in_fullscreen() {
+            // 全屏：表头走缓冲。`suspend` + 直写 stdout + `resume_at` 那条路是
+            // inline 的写法——全屏下直写的字节进不了缓冲，而 `resume_at` 会整屏
+            // 擦掉重画，开着的浮层跟着闪一下（用户实测：后台任务完成时已经开着
+            // 的浮层会鬼畜抖动一下）。
+            if !header.is_empty() {
+                let glyph = crate::render::timeline::glyph_notice();
+                let text = header.trim_start_matches('⚙').trim_start();
+                let line = crate::render::timeline::indent_body(&format!(
+                    "\x1b[2m{glyph} {text}\x1b[0m\r\n\r\n"
+                ));
+                live.apply_output_frame(line.as_bytes())?;
+            }
+        } else {
+            live.suspend()?;
+            let mut stdout = io::stdout();
+            if !header.is_empty() {
+                queue!(stdout, Print(format!("\x1b[2m{header}\x1b[0m\r\n\r\n")))?;
+            }
+            stdout.flush()?;
+            live.output_cursor = cursor_position_or(live.output_cursor);
+            let output_cursor = live.output_cursor;
+            live.resume_at(output_cursor)?;
         }
-        stdout.flush()?;
-        live.output_cursor = cursor_position_or(live.output_cursor);
-        let output_cursor = live.output_cursor;
-        live.resume_at(output_cursor)?;
     }
     renderer.start_waiting()?;
     live.apply_renderer_frame(&mut renderer)?;
@@ -159,6 +174,9 @@ pub(in crate::cli) async fn follow_wake_run(
                             crate::slash_commands::ReplInput::Slash(..) => continue,
                             crate::slash_commands::ReplInput::Chat => {}
                         }
+                    }
+                    if live.handle_screen_event(&event)? {
+                        continue;
                     }
                     match live.editor.handle_event(event, paths, true)? {
                         LiveEditorAction::None => {}

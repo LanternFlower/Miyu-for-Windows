@@ -30,12 +30,12 @@ pub(in crate::cli) fn background_job_lines(
     if jobs.is_empty() {
         return Vec::new();
     }
-    let kind_label = |job: &crate::tools::jobs::JobOverview| {
-        if job.kind == "subagent" {
-            crate::i18n::text("agent", "子代理")
-        } else {
-            crate::i18n::text("cmd", "命令")
-        }
+    let kind_label = |job: &crate::tools::jobs::JobOverview| match job.kind.as_str() {
+        // 开发模式的子代理单列一类：那一条是去写代码的，「开发中」比「子代理」
+        // 更说明它在干嘛。
+        "dev" => crate::i18n::text("dev", "开发中"),
+        "subagent" => crate::i18n::text("agent", "子代理"),
+        _ => crate::i18n::text("cmd", "命令"),
     };
     // Pad kinds to one column so mixed command/subagent rows keep their ids
     // and titles vertically aligned.
@@ -53,7 +53,17 @@ pub(in crate::cli) fn background_job_lines(
             "{marker} {kind_word}{kind_pad} {} · {}",
             job.job_id, job.title
         );
-        let timer = format_job_duration(job.runtime_seconds);
+        // 时间左边先报量：一条子代理跑五分钟，光有秒数看不出它是在干活还是
+        // 卡住了（用户：这里时间左侧应该有一个 token 记述）。命令类任务没有
+        // 这个概念，那儿就是空的。
+        let timer = match job.metric.as_deref().filter(|text| !text.trim().is_empty()) {
+            Some(metric) => format!(
+                "{}  {}",
+                metric.trim(),
+                format_job_duration(job.runtime_seconds)
+            ),
+            None => format_job_duration(job.runtime_seconds),
+        };
         let timer_width = visible_width(&timer);
         // Never exceed the terminal width: a wrapped strip line would shift
         // the whole tail and flicker.

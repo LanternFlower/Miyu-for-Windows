@@ -149,6 +149,20 @@ pub(in crate::web) async fn handle_ipc_connection(
         IpcCommand::VoiceReset => {
             voice_bridge::handle_voice_reset(&state, &mut stream).await?;
         }
+        IpcCommand::StopJob { job_id } => {
+            let stopped = tools::jobs::stop_job(&job_id).await.is_ok();
+            state
+                .events
+                .publish("job.acknowledged", json!({ "job_id": job_id }));
+            ipc::send(
+                &mut stream,
+                &IpcFrame::AdminResult {
+                    state: session_state(&state.manager, &state.state_store)?,
+                    data: json!({ "stopped": stopped }),
+                },
+            )
+            .await?;
+        }
         IpcCommand::StopSessionJobs { session_id } => {
             let stopped = tools::jobs::stop_session_jobs(&session_id).await;
             state

@@ -530,6 +530,8 @@ fn finished_turns_keep_a_replayable_transcript() {
     store.start_turn("t1", "改一下 README", 999_999).unwrap();
     let db = store.conv_db();
     for (kind, call_id, name, payload, ok) in [
+        ("assistant_reasoning", None, None, Some("先看一眼 "), None),
+        ("assistant_reasoning", None, None, Some("再动手。"), None),
         ("assistant_content", None, None, Some("这就去改。"), None),
         (
             "tool_call",
@@ -555,13 +557,41 @@ fn finished_turns_keep_a_replayable_transcript() {
 
     let replays = store.session_replay(5).unwrap();
     assert_eq!(replays.len(), 1);
-    let entries = &replays[0].entries;
+    // 耗时按事件落盘的时刻算，同一个测试里写得飞快，数值不稳定——形状照旧
+    // 逐条比，时间另测（见 `replay_entries_carry_how_long_each_step_took`）。
+    let entries = &replays[0]
+        .entries
+        .iter()
+        .cloned()
+        .map(|entry| match entry {
+            ReplayEntry::Reasoning { text, .. } => ReplayEntry::Reasoning {
+                text,
+                elapsed_ms: 0,
+            },
+            ReplayEntry::ToolResult {
+                name, ok, output, ..
+            } => ReplayEntry::ToolResult {
+                name,
+                ok,
+                output,
+                elapsed_ms: 0,
+            },
+            other => other,
+        })
+        .collect::<Vec<_>>();
     assert_eq!(replays[0].display_content, "改一下 README");
     // Prose and tool blocks keep their original interleaving, and the
     // live-only progress ticks are gone.
     assert_eq!(
         entries,
         &vec![
+            // 思考也进流水账：`turns.assistant_reasoning` 只留得住最后一回合
+            // 那份，想完就去调工具的轮子在那一列里是空的（重开之后时间线上
+            // 的思考那一步整个没了）。挨着的思考事件并成一条。
+            ReplayEntry::Reasoning {
+                text: "先看一眼 再动手。".to_string(),
+                elapsed_ms: 0,
+            },
             ReplayEntry::Text {
                 text: "这就去改。".to_string()
             },
@@ -573,6 +603,7 @@ fn finished_turns_keep_a_replayable_transcript() {
                 name: "edit_string".to_string(),
                 ok: true,
                 output: "1 处替换".to_string(),
+                elapsed_ms: 0,
             },
             ReplayEntry::Text {
                 text: "改好了。".to_string()
@@ -839,4 +870,77 @@ fn deleting_a_turn_takes_its_reports_with_it() {
             .unwrap();
     }
     assert_eq!(count(&db), 0, "回合删了但报告还留着");
+}
+
+/// 回放条目要记下每一步花了多久。
+///
+/// 回放是一瞬间喂完的，墙上时间是零——`Worked for …` 那一截于是整个消失，重开
+/// 之后只剩 `1 tool · 2 thoughts`（用户实测对比图）。时刻 journal 本来就记着，
+/// 一减就有。
+#[test]
+fn replay_entries_carry_how_long_each_step_took() {
+    let (_temp, store) = test_store();
+    store.init_files().unwrap();
+    store.start_turn("t1", "跑一下", 999_999).unwrap();
+    let db = store.conv_db();
+    // 事件写得飞快，时刻靠得太近减出来是 0：手动隔开几十毫秒。
+    let sleep = || std::thread::sleep(std::time::Duration::from_millis(60));
+    sleep();
+    db.append_turn_journal_event(
+        "t1",
+        0,
+        0,
+        "assistant_reasoning",
+        None,
+        None,
+        Some("先想想"),
+        None,
+        None,
+    )
+    .unwrap();
+    db.append_turn_journal_event(
+        "t1",
+        0,
+        0,
+        "tool_call",
+        Some("c1"),
+        Some("run_command"),
+        Some("{}"),
+        None,
+        None,
+    )
+    .unwrap();
+    sleep();
+    db.append_turn_journal_event(
+        "t1",
+        0,
+        0,
+        "tool_result",
+        Some("c1"),
+        None,
+        Some("好了"),
+        None,
+        Some(true),
+    )
+    .unwrap();
+    store.complete_turn("t1", "跑完了", None).unwrap();
+
+    let replays = store.session_replay(5).unwrap();
+    let entries = &replays[0].entries;
+    let reasoning_ms = entries
+        .iter()
+        .find_map(|entry| match entry {
+            ReplayEntry::Reasoning { elapsed_ms, .. } => Some(*elapsed_ms),
+            _ => None,
+        })
+        .expect("没有思考那一条");
+    let tool_ms = entries
+        .iter()
+        .find_map(|entry| match entry {
+            ReplayEntry::ToolResult { elapsed_ms, .. } => Some(*elapsed_ms),
+            _ => None,
+        })
+        .expect("没有结果那一条");
+    assert!(reasoning_ms >= 50, "思考耗时没记上: {reasoning_ms}ms");
+    assert!(tool_ms >= 50, "工具耗时没记上: {tool_ms}ms");
 }

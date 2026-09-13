@@ -329,6 +329,16 @@ fn run_command_replaces_an_active_tool_summary() {
     assert!(!renderer.summary_line_active);
     assert_eq!(renderer.summary_lines_active, 0);
     assert!(renderer.command_display.is_some());
+    // 终端里走的是静态时间线：命令也是时间线上的一步，得在统计里占一格
+    // （跑完收进时间线时清掉）；管道里才是"命令块自己画、不进统计"。
+    assert!(renderer.tool_stats.contains_key("run_command"));
+    renderer.live_summary = false;
+    renderer.tool_stats.clear();
+    renderer.command_display = None;
+    renderer
+        .write_tool_call("run_command", r#"{"command":"printf ok"}"#)
+        .unwrap();
+    assert!(renderer.command_display.is_some());
     assert!(renderer.tool_stats.is_empty());
 }
 

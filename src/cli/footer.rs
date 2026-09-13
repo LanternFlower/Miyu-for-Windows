@@ -112,7 +112,9 @@ impl ReplFooterStatus {
         context_window: Option<usize>,
         cumulative: TurnTokens,
     ) {
+        let live_extra = self.token_usage.live_extra_tokens;
         self.token_usage = render::TokenMeter {
+            live_extra_tokens: live_extra,
             turn_tokens: turn.total,
             turn_prompt_tokens: turn.prompt,
             turn_cached_tokens: turn.cache_read,
@@ -125,6 +127,15 @@ impl ReplFooterStatus {
 
     pub(in crate::cli) fn update_session_tokens(&mut self, session_tokens: u64) {
         self.token_usage.session_tokens = session_tokens;
+    }
+
+    /// Σ 上那份「还没落进库里」的加数：正在跑的子代理。返回是否真的变了，
+    /// 调用方据此决定要不要重画——并行几个子代理时它一秒能变好几次，
+    /// 不看这个就会一直重画整条 footer。
+    pub(in crate::cli) fn update_live_extra_tokens(&mut self, extra: u64) -> bool {
+        let changed = self.token_usage.live_extra_tokens != extra;
+        self.token_usage.live_extra_tokens = extra;
+        changed
     }
 
     /// 回合中途的逐请求刷新:在(回合前的)基线上叠加回合累计。必须作用

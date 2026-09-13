@@ -281,7 +281,10 @@ impl CommandLiveDisplay {
         self.output.finalize();
         let show_output = self.show_output;
         self.show_output = include_output && show_output;
-        self.redraw(writer, false)?;
+        let expanded = self.expandable_lines();
+        crate::render::blocks::write_expandable(writer, expanded, |writer| {
+            self.redraw(writer, false).map_err(std::io::Error::other)
+        })?;
         self.show_output = show_output;
         if !self.rendered_line_widths.is_empty() {
             write_command_block_gap(writer, false)?;
@@ -300,10 +303,14 @@ impl CommandLiveDisplay {
         let show_output = self.show_output;
         self.show_output = include_output && show_output;
         let lines = self.rendered_lines(command_terminal_width(), false);
+        let expanded = self.expandable_lines();
         self.show_output = show_output;
-        for line in lines {
-            writeln!(writer, "{line}")?;
-        }
+        crate::render::blocks::write_expandable(writer, expanded, |writer| {
+            for line in lines {
+                writeln!(writer, "{line}")?;
+            }
+            Ok(())
+        })?;
         write_command_block_gap(writer, true)?;
         writer.flush()?;
         Ok(())
@@ -333,6 +340,136 @@ impl CommandLiveDisplay {
         Ok(())
     }
 
+    /// 时间线里这一步点开看到的内容：完整命令 + 完整输出。
+    ///
+    /// 和 `expanded_lines` 的区别只在「总是给」——时间线那一行只有一句窥视，
+    /// 不点开就什么都看不到，所以不能因为「折叠版已经说全了」而返回空。
+    /// 时间线里这一步点开看到的内容：完整命令 + 完整输出。
+    ///
+    /// **不带 `↳` `│` 那套装饰**：那是 inline 下用来在一片正文里圈出"这是命令块"
+    /// 的，全屏里这一段本来就缩进在一步之下、上下各有空行，再画一遍前缀只会
+    /// 让每一行的起始列对不齐。命令和输出之间空一行就够分。
+    pub(crate) fn timeline_detail(&mut self, width: usize) -> Vec<String> {
+        self.output.finalize();
+        self.live_detail(width)
+    }
+
+    /// 还在跑的时候点开看到的内容：和 [`Self::timeline_detail`] 一个形状，
+    /// 只是不结算尾巴上那半行——命令还没完，最后一行可能正写到一半。
+    ///
+    /// 每一帧都会重算一遍（`refresh_live_block`），于是展开着的那一块跟着输出
+    /// 一起长。原来这一块只有一句窥视，命令跑到一半点开什么都看不到
+    ///（用户实测：命令展开后没有流式输出，展开内容居然是窥视行）。
+    pub(crate) fn live_detail(&self, width: usize) -> Vec<String> {
+        let mut lines = Vec::new();
+        for line in self.command.lines() {
+            lines.extend(wrap_plain_text(line, width));
+        }
+        if self.show_output {
+            let logical = self.output.logical_lines();
+            if !logical.is_empty() {
+                lines.push(String::new());
+            }
+            // 跑砸了整段红（省略标记也红）：报错信息得一眼认得出是报错
+            //（用户实测：真 TUI 里报错展开不是红的）。
+            let failed = matches!(self.status, CommandStatus::Error);
+            if self.output.omitted_lines {
+                let style = if failed { "\x1b[31m" } else { "\x1b[2m" };
+                lines.push(format!(
+                    "{style}⋮ {}\x1b[0m",
+                    t("earlier output omitted", "已省略较早输出")
+                ));
+            }
+            if failed {
+                lines.extend(output_rows_styled(&logical, width, |_| "\x1b[31m"));
+            } else {
+                lines.extend(output_rows(&logical, width));
+            }
+        }
+        lines
+    }
+
+    /// 静态时间线（shellhook／单次 CLI）里这一步下面直接印出来的内容：**只有
+    /// 输出的尾巴**，最多 `max_output_rows` 行。
+    ///
+    /// 命令本身已经在那一行上了（`$ 运行命令 · 1.4s · echo …`），再印一遍是同一
+    /// 句话说两遍；而输出没处点开，所以得就地给几行——和原来 shellhook 那块
+    /// 命令卡片给的量一样。
+    ///
+    /// 跑砸了的命令整段标红：报错信息是要看的，但它得一眼认得出是报错。
+    pub(crate) fn static_detail(&mut self, width: usize, failed: bool) -> Vec<String> {
+        self.output.finalize();
+        if !self.show_output || self.max_output_rows == 0 {
+            return Vec::new();
+        }
+        let logical = self.output.logical_lines();
+        let mut rows = if failed {
+            output_rows_styled(&logical, width, |_| "\x1b[31m")
+        } else {
+            output_rows(&logical, width)
+        };
+        let omitted = self.output.omitted_lines || rows.len() > self.max_output_rows;
+        let keep = if omitted && self.max_output_rows > 1 {
+            self.max_output_rows - 1
+        } else {
+            self.max_output_rows
+        };
+        let start = rows.len().saturating_sub(keep);
+        let mut lines = Vec::with_capacity(keep + 1);
+        if omitted && self.max_output_rows > 1 {
+            // 跑砸了的话省略标记也跟着红：整段红里夹一行灰，看着像两块东西。
+            let style = if failed { "\x1b[31m" } else { "\x1b[2m" };
+            lines.push(format!(
+                "{style}⋮ {}\x1b[0m",
+                t("earlier output omitted", "已省略较早输出")
+            ));
+        }
+        lines.extend(rows.drain(start..));
+        lines
+    }
+
+    /// 还在跑的命令此刻输出的最后几行（静态时间线的转轮行底下露出来的那几行）。
+    ///
+    /// 超出 `max_rows` 时第一行换成 `⋮ 已省略较早输出`——和它跑完之后落下来的那块
+    /// 一个规矩、一个颜色。
+    pub(crate) fn live_tail(&self, width: usize, max_rows: usize) -> Vec<String> {
+        if !self.show_output || max_rows == 0 {
+            return Vec::new();
+        }
+        let logical = self.output.logical_lines();
+        let mut rows = output_rows(&logical, width);
+        let omitted = self.output.omitted_lines || rows.len() > max_rows;
+        let keep = if omitted && max_rows > 1 {
+            max_rows - 1
+        } else {
+            max_rows
+        };
+        let start = rows.len().saturating_sub(keep);
+        let mut lines = Vec::with_capacity(keep + 1);
+        if omitted && max_rows > 1 {
+            lines.push(format!(
+                "\x1b[2m⋮ {}\x1b[0m",
+                t("earlier output omitted", "已省略较早输出")
+            ));
+        }
+        lines.extend(rows.drain(start..));
+        lines
+    }
+
+    /// 值得展开才给出展开内容：折叠版已经把话说全了就返回空，
+    /// `write_expandable` 会当作「这块没什么可点的」。
+    fn expandable_lines(&self) -> Vec<String> {
+        if !crate::render::blocks::enabled() {
+            return Vec::new();
+        }
+        let width = command_terminal_width();
+        let expanded = self.expanded_lines(width);
+        if expanded.len() <= self.rendered_lines(width, false).len() {
+            return Vec::new();
+        }
+        expanded
+    }
+
     pub(crate) fn rendered_lines(&self, width: usize, spinning: bool) -> Vec<String> {
         let usable = width.saturating_sub(1).max(5);
         let body_width = usable.saturating_sub(4).max(1);
@@ -353,6 +490,34 @@ impl CommandLiveDisplay {
     }
 
     pub(crate) fn rendered_log_lines(&self, body_width: usize) -> Vec<String> {
+        self.log_lines_capped(body_width, self.max_output_rows)
+    }
+
+    /// 展开后的完整块：命令不省略中间、输出不砍前面。点开看到的就是这份。
+    ///
+    /// 「完整」以渲染器还留着的为准——`CommandOutputTail` 本身只保 `max_output_rows`
+    /// 的四倍，更早的行在收集时就丢了，这里变不出来。
+    pub(crate) fn expanded_lines(&self, width: usize) -> Vec<String> {
+        let usable = width.saturating_sub(1).max(5);
+        let body_width = usable.saturating_sub(4).max(1);
+        let mut output = vec![command_heading_line(self.status)];
+        output.extend(render_command_preview(
+            &self.command,
+            usable,
+            true,
+            false,
+            self.frame,
+        ));
+        if self.show_output {
+            output.extend(self.log_lines_capped(body_width, usize::MAX));
+        }
+        output
+    }
+
+    fn log_lines_capped(&self, body_width: usize, max_output_rows: usize) -> Vec<String> {
+        if max_output_rows == 0 {
+            return Vec::new();
+        }
         let logical = self.output.logical_lines();
         let mut rows = Vec::new();
         for line in logical {
@@ -364,15 +529,15 @@ impl CommandLiveDisplay {
                 });
             }
         }
-        let omitted = self.output.omitted_lines || rows.len() > self.max_output_rows;
-        let keep = if omitted && self.max_output_rows > 1 {
-            self.max_output_rows - 1
+        let omitted = self.output.omitted_lines || rows.len() > max_output_rows;
+        let keep = if omitted && max_output_rows > 1 {
+            max_output_rows - 1
         } else {
-            self.max_output_rows
+            max_output_rows
         };
         let start = rows.len().saturating_sub(keep);
-        let mut output = Vec::with_capacity(self.max_output_rows);
-        if omitted && self.max_output_rows > 1 {
+        let mut output = Vec::with_capacity(rows.len().min(max_output_rows));
+        if omitted && max_output_rows > 1 {
             output.push(format!(
                 "\x1b[2m  ⋮ {}\x1b[0m",
                 t("earlier output omitted", "已省略较早输出")
@@ -387,6 +552,30 @@ impl CommandLiveDisplay {
         }));
         output
     }
+}
+
+/// 输出行折到 `width`、按流上色（stderr 红）。**不带 `│` 装饰**——时间线里这一段
+/// 本来就缩进在一步之下。
+fn output_rows(logical: &[CommandLogLine], width: usize) -> Vec<String> {
+    output_rows_styled(logical, width, |stream| match stream {
+        CommandOutputStream::Stdout => "\x1b[2m",
+        CommandOutputStream::Stderr => "\x1b[2m\x1b[31m",
+    })
+}
+
+fn output_rows_styled(
+    logical: &[CommandLogLine],
+    width: usize,
+    style: impl Fn(CommandOutputStream) -> &'static str,
+) -> Vec<String> {
+    let mut rows = Vec::new();
+    for line in logical {
+        let style = style(line.stream);
+        for row in wrap_plain_text(&line.text, width) {
+            rows.push(format!("{style}{row}\x1b[0m"));
+        }
+    }
+    rows
 }
 
 pub(crate) fn write_command_block_gap(
@@ -419,10 +608,12 @@ pub(crate) fn command_heading_line(status: CommandStatus) -> String {
     )
 }
 
+/// 正文能用多宽。
+///
+/// 全屏下要减掉页边距：按整屏宽排出来的表格、代码块会比可视区宽两列，落到
+/// 缓冲里被硬折一次，续行从第 0 列开始——屏幕左边就冒出半截边框。
 pub(crate) fn command_terminal_width() -> usize {
-    terminal::size()
-        .map(|(width, _)| usize::from(width))
-        .unwrap_or(120)
+    crate::render::content_cols(120)
 }
 
 /// 命令家族:走 `CommandLiveDisplay`(带色命令行+输出尾巴)的工具。
@@ -572,11 +763,76 @@ pub(crate) fn wrap_plain_text(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
+/// 按**显示宽度**折一行，转义序列不算宽度、也不会被从中间切断。
+///
+/// 和 `wrap_plain_text` 的区别是这个认转义序列——正文是带颜色的，拿整串去量宽度
+/// 会把一行当成比它实际宽得多，于是提前断行；切点还可能落在转义序列中间。
+///
+/// 能在空格处断就在空格处断。硬断在词中间是终端的默认行为，但既然折行这件事
+/// 已经自己接管了，顺手做对。
+pub(crate) fn wrap_display_text(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    if display_width_skipping_escapes(text) <= width {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+    // 最近一个可断处：`current` 里的字节位置 + 那时的显示宽度。
+    let mut break_at: Option<(usize, usize)> = None;
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(len) = escape_len(rest) {
+            current.push_str(&rest[..len]);
+            rest = &rest[len..];
+            continue;
+        }
+        let Some(grapheme) = rest.graphemes(true).next() else {
+            break;
+        };
+        let grapheme_len = grapheme.len();
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if current_width > 0 && current_width + grapheme_width > width {
+            match break_at.take() {
+                Some((position, width_before)) if width_before > 0 => {
+                    let tail = current.split_off(position);
+                    let head = current.trim_end().to_string();
+                    lines.push(head);
+                    current = tail;
+                    current_width = current_width.saturating_sub(width_before);
+                }
+                _ => {
+                    lines.push(std::mem::take(&mut current));
+                    current_width = 0;
+                }
+            }
+        }
+        current.push_str(grapheme);
+        current_width += grapheme_width;
+        if grapheme == " " {
+            break_at = Some((current.len(), current_width));
+        }
+        rest = &rest[grapheme_len..];
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+/// 按**显示宽度**裁一行，转义序列不算宽度、也不会被从中间切断。
+///
+/// 以前是拿整串（连转义带控制字符）去量宽度的：一行带颜色的文字会被当成比它
+/// 实际宽得多，于是提前截断；更糟的是切点可能落在转义序列中间，半个序列流到
+/// 终端上就是乱码。全屏 TUI 把块标记（OSC）也放进了行里，这条必须是对的。
 pub(crate) fn clip_to_display_width(text: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();
     }
-    if UnicodeWidthStr::width(text) <= max_width {
+    if display_width_skipping_escapes(text) <= max_width {
         return text.to_string();
     }
     let ellipsis = "…";
@@ -587,16 +843,63 @@ pub(crate) fn clip_to_display_width(text: &str, max_width: usize) -> String {
     let content_width = max_width - ellipsis_width;
     let mut output = String::new();
     let mut width = 0usize;
-    for grapheme in text.graphemes(true) {
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(len) = escape_len(rest) {
+            // 转义序列整段留下，一个字节都不切。
+            output.push_str(&rest[..len]);
+            rest = &rest[len..];
+            continue;
+        }
+        let grapheme = rest.graphemes(true).next().unwrap_or("");
+        if grapheme.is_empty() {
+            break;
+        }
         let grapheme_width = UnicodeWidthStr::width(grapheme);
         if width + grapheme_width > content_width {
             break;
         }
         output.push_str(grapheme);
         width += grapheme_width;
+        rest = &rest[grapheme.len()..];
     }
     output.push_str(ellipsis);
+    // 裁掉的那一截里的转义序列要留下：颜色复位不留会把后面整行染色，块的
+    // 结束标记不留会让那一块一直开到天边。它们不占宽度，补在省略号后面就是。
+    while !rest.is_empty() {
+        match escape_len(rest) {
+            Some(len) => {
+                output.push_str(&rest[..len]);
+                rest = &rest[len..];
+            }
+            None => {
+                let grapheme = rest.graphemes(true).next().unwrap_or("");
+                if grapheme.is_empty() {
+                    break;
+                }
+                rest = &rest[grapheme.len()..];
+            }
+        }
+    }
     output
+}
+
+/// 显示宽度：跳过转义序列，其余按**字形簇**量（组合记号不该单独占一列）。
+fn display_width_skipping_escapes(text: &str) -> usize {
+    let mut width = 0usize;
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(len) = escape_len(rest) {
+            rest = &rest[len..];
+            continue;
+        }
+        let Some(grapheme) = rest.graphemes(true).next() else {
+            break;
+        };
+        width += UnicodeWidthStr::width(grapheme);
+        rest = &rest[grapheme.len()..];
+    }
+    width
 }
 
 pub(crate) fn transient_summary_lines(text: &str, terminal_width: usize) -> Vec<String> {
@@ -729,7 +1032,7 @@ pub(crate) fn write_command_block_with_status(
 ) -> Result<()> {
     let command = command_from_arguments(arguments);
     writeln!(stdout, "{}", command_heading_line(status))?;
-    let terminal_width = terminal::size().map(|(w, _)| usize::from(w)).unwrap_or(120);
+    let terminal_width = crate::render::content_cols(120);
     let usable = terminal_width.saturating_sub(1).max(5);
     for line in render_command_preview(&command, usable, true, false, 0) {
         writeln!(stdout, "{line}")?;

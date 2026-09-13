@@ -643,7 +643,11 @@ pub fn register_webui_artifact_tools(
     paths: &MiyuPaths,
     session_id: &str,
 ) {
-    artifact::register_webui(registry, artifact::artifacts_root(config, paths), session_id);
+    artifact::register_webui(
+        registry,
+        artifact::artifacts_root(config, paths),
+        session_id,
+    );
 }
 
 /// WebUI 文件分享工具。与 artifact 演示区解耦，单独注册。

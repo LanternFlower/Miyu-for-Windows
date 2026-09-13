@@ -15,6 +15,49 @@ PORT = int(os.environ.get("STUB_PORT", "18498"))
 CHUNK_CHARS = int(os.environ.get("STUB_CHUNK_CHARS", "3"))
 CHUNK_SLEEP = float(os.environ.get("STUB_CHUNK_SLEEP", "0.02"))
 REPLY = "好的,收到。这是一段用于走查的回复,分块吐出来好让 footer 量得出每秒 token。"
+# 默认不发思考:老的走查脚本按「回复就是全部输出」断言。置 STUB_REASONING=1
+# 才多吐一段 reasoning_content,给全屏 TUI 的「点击展开」测具用。
+REASONING = os.environ.get("STUB_REASONING")
+# 置 STUB_TOOL=1:第一次请求先要一次 run_command,拿到结果再正常作答。
+# 全屏 TUI 的时间线、命令窥视、点开看完整输出都得有真工具才验得了。
+TOOL = os.environ.get("STUB_TOOL")
+# 置 STUB_ASK=1:第一次请求先问一个问题。全屏下提问面板是盖上去的,一退场
+# 就没了,「问了什么答了什么有没有进正文」只能这么验。
+ASK = os.environ.get("STUB_ASK")
+# 置 STUB_SUBAGENT=1:主线先派一个子代理。子代理自己会想一段、跑一条命令,
+# 于是全屏下能验「点开子代理 → 覆盖层里是它自己的时间线」。
+SUBAGENT = os.environ.get("STUB_SUBAGENT")
+SUBAGENT_MARK = "子代理走查任务"
+# 主线用户消息里必然有、子对话里必然没有的一段。
+MAIN_MARK = os.environ.get("STUB_MAIN_MARK", "走查一句")
+TOOL_COMMAND = os.environ.get("STUB_TOOL_COMMAND", "printf '走查用的命令输出\\n第二行\\n'")
+# 子代理内层跑的那条。默认和主线同一条；走查里会换成一条**慢的**——面板、
+# 状态行上的那些量只有在它还跑着的时候才看得见，瞬间跑完就什么都测不到。
+SUBAGENT_COMMAND = os.environ.get("STUB_SUBAGENT_COMMAND", TOOL_COMMAND)
+# 后台子代理内层那条。它要多跑几轮——后台任务一收工，状态行和面板就跟着没了，
+# 只跑一条的话"趁它还活着点开看看"这件事根本来不及做。
+SUBAGENT_BG_COMMAND = os.environ.get("STUB_SUBAGENT_BG_COMMAND", SUBAGENT_COMMAND)
+SUBAGENT_BG_ROUNDS = int(os.environ.get("STUB_SUBAGENT_BG_ROUNDS", "3"))
+# 置 STUB_BACKGROUND=1:再派一条后台命令。后台任务的状态行点开是日志面板,
+# 只有真有后台任务在跑才验得了。
+BACKGROUND = os.environ.get("STUB_BACKGROUND")
+# 置 STUB_EDIT=1:改一次文件。全屏下"编辑文件"那一步点开该是**补丁 diff**,
+# 而且路径只出现一次(时间线那行已经写过了)。
+EDIT = os.environ.get("STUB_EDIT")
+EDIT_PATH = os.environ.get("STUB_EDIT_PATH", "/tmp/miyu-tui-smoke/walk.txt")
+# 置 STUB_FAIL=1:跑一条必定失败的命令。失败的那一步要渲染成红的。
+FAIL = os.environ.get("STUB_FAIL")
+FAIL_COMMAND = os.environ.get(
+    "STUB_FAIL_COMMAND", "printf '走查用的报错\\n' >&2; exit 3"
+)
+BACKGROUND_COMMAND = os.environ.get(
+    "STUB_BACKGROUND_COMMAND",
+    "for i in 1 2 3 4 5 6 7 8 9 10; do echo \"后台第 $i 行\"; sleep 1; done",
+)
+REASONING_TEXT = os.environ.get(
+    "STUB_REASONING_TEXT",
+    "先看一眼需求,再决定怎么下手。这段是思考正文,折叠时看不到,点开才有。",
+)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -29,12 +72,147 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get("content-length", "0"))
-        if length:
-            self.rfile.read(length)
+        body = self.rfile.read(length) if length else b""
+        # 按请求里已有几条 tool 结果决定这一轮要什么,免得来回死循环。
+        done = body.count(b'"role": "tool"') + body.count(b'"role":"tool"')
+        # 子代理的子对话是独立的一份消息列表,按任务标记认出来:它只跑一条命令
+        # 就收工,不然会和主线的阶段表打架。
+        # 只看标记不行：派子代理之后，**主线**的消息里也留着那段 prompt（在
+        # assistant 的 tool_call 参数里）。用「有没有主线那条用户消息」来分。
+        # 走查里要「再开一条后台任务」时用：消息里带这个记号就当场派一条，
+        # 不看阶段表。（阶段表是按"这一轮已经有几条工具结果"走的，同一个会话里
+        # 过了 background 那一格就再也派不出来了。）
+        # `done` 数的是**整个会话**的工具结果，不是这一轮的——拿它当"还没派过"
+        # 的判据，跑到后面永远为假。改成看这条命令自己有没有出现在历史里。
+        wants_background = b"STUB_BG" in body and b"BG2" not in body
+        # 后台子代理：派出去那条的 prompt 里带 `BGSUB-SENT`，历史里认得出来，
+        # 免得每轮再派一条。
+        wants_bg_subagent = b"STUB_SUBBG" in body and b"BGSUB-SENT" not in body
+        inside_subagent = (
+            SUBAGENT_MARK.encode() in body and MAIN_MARK.encode() not in body
+        )
+        inside_bg_subagent = inside_subagent and b"BGSUB-SENT" in body
+        if inside_subagent:
+            rounds = SUBAGENT_BG_ROUNDS if inside_bg_subagent else 1
+            stage = "tool" if done < rounds else None
+        elif wants_bg_subagent:
+            stage = "background_subagent"
+        elif wants_background:
+            stage = "background2"
+        else:
+            stages = []
+            if ASK:
+                stages.append("ask")
+            if SUBAGENT:
+                stages.append("subagent")
+            if TOOL:
+                stages.append("tool")
+            if EDIT:
+                stages.append("edit")
+            if FAIL:
+                stages.append("fail")
+            if BACKGROUND:
+                stages.append("background")
+            stage = stages[done] if done < len(stages) else None
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")
         self.send_header("cache-control", "no-cache")
         self.end_headers()
+        if stage is not None:
+            # 调工具之前先想一句。真模型都是这样的，而且这一段思考**只**存在于
+            # 中间回合——`turns.assistant_reasoning` 那一列只留得住最后一回合
+            # 那份，所以它正好把「重开之后思考行没了」这条钉住。
+            if REASONING:
+                for chunk in ("先想一句，", "再动手。"):
+                    self._sse({"choices": [{"index": 0,
+                                            "delta": {"reasoning_content": chunk},
+                                            "finish_reason": None}]})
+                    time.sleep(CHUNK_SLEEP)
+            if stage == "ask":
+                name = "ask_question"
+                arguments = json.dumps({"questions": [{
+                    "header": "走查",
+                    "question": "走查用的问题：选一个",
+                    "options": [
+                        {"label": "甲选项", "description": "第一个"},
+                        {"label": "乙选项", "description": "第二个"},
+                    ],
+                }]}, ensure_ascii=False)
+            elif stage == "subagent":
+                name = "subagent"
+                arguments = json.dumps({
+                    "description": "走查子代理",
+                    "prompt": f"{SUBAGENT_MARK}：跑一条命令看看，然后简单说一句。",
+                }, ensure_ascii=False)
+            elif stage == "background_subagent":
+                name = "subagent"
+                arguments = json.dumps({
+                    "description": "走查后台子代理",
+                    "prompt": f"{SUBAGENT_MARK}BGSUB-SENT：跑一条命令看看，然后简单说一句。",
+                    "background": True,
+                }, ensure_ascii=False)
+            elif stage == "edit":
+                name = "edit"
+                patch = (
+                    "*** Begin Patch\n"
+                    f"*** Add File: {EDIT_PATH}\n"
+                    "+走查用的第一行\n"
+                    "+走查用的第二行\n"
+                    "*** End Patch\n"
+                )
+                arguments = json.dumps({"patchText": patch}, ensure_ascii=False)
+            elif stage == "fail":
+                name = "run_command"
+                arguments = json.dumps({"command": FAIL_COMMAND}, ensure_ascii=False)
+            elif stage == "background":
+                name = "run_command"
+                arguments = json.dumps({
+                    "command": BACKGROUND_COMMAND,
+                    "background": True,
+                    "title": "走查后台任务",
+                }, ensure_ascii=False)
+            elif stage == "background2":
+                # 第二条：命令里带 `BG2` 当"已经派过"的记号，免得每轮再派一条。
+                name = "run_command"
+                arguments = json.dumps({
+                    "command": "echo BG2; " + BACKGROUND_COMMAND,
+                    "background": True,
+                    "title": "走查后台任务二",
+                }, ensure_ascii=False)
+            else:
+                name = "run_command"
+                # 子代理内层跑的那条要慢一点：面板标题上的工具次数与词元、状态行
+                # 上那串量，都只有在它还跑着的时候才看得见。
+                if inside_bg_subagent:
+                    command = SUBAGENT_BG_COMMAND
+                elif inside_subagent:
+                    command = SUBAGENT_COMMAND
+                else:
+                    command = TOOL_COMMAND
+                arguments = json.dumps({"command": command})
+            self._sse({"choices": [{"index": 0, "delta": {"tool_calls": [{
+                "index": 0,
+                "id": f"call_stub_{done}",
+                "type": "function",
+                "function": {"name": name, "arguments": arguments},
+            }]}, "finish_reason": None}]})
+            # 带工具调用的那一轮也报 usage。真供应商都报，而子代理跑到一半时
+            # 面板标题与状态行上的词元数就是从这儿来的——不报的话那两个数一路
+            # 是 0，测具看着"有数"其实什么都没验到。
+            self._sse({"choices": [{"index": 0, "delta": {},
+                                    "finish_reason": "tool_calls"}],
+                       "usage": {"prompt_tokens": 120, "completion_tokens": 30,
+                                 "total_tokens": 150}})
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+            return
+        if REASONING:
+            for start in range(0, len(REASONING_TEXT), CHUNK_CHARS):
+                self._sse({"choices": [{"index": 0,
+                                        "delta": {"reasoning_content":
+                                                  REASONING_TEXT[start:start + CHUNK_CHARS]},
+                                        "finish_reason": None}]})
+                time.sleep(CHUNK_SLEEP)
         for start in range(0, len(REPLY), CHUNK_CHARS):
             self._sse({"choices": [{"index": 0,
                                     "delta": {"content": REPLY[start:start + CHUNK_CHARS]},

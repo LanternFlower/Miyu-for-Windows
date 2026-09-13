@@ -140,6 +140,11 @@ pub enum Command {
     StopSessionJobs {
         session_id: String,
     },
+    /// 停掉**一个**后台任务。全屏 TUI 的详情面板里按 x 用它——
+    /// 面板讲的就是这一个任务，停整会话的任务是另一回事。
+    StopJob {
+        job_id: String,
+    },
     GetSessionState {
         target: SessionRef,
     },

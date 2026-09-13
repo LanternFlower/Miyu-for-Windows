@@ -192,20 +192,18 @@ pub fn trace_enabled() -> bool {
 ///
 /// 报障时最想知道的就是这个：出真图还是退回了字符画。
 pub fn detect_format(output: &[u8]) -> &'static str {
-    let contains = |needle: &[u8]| {
-        output
-            .windows(needle.len())
-            .any(|window| window == needle)
-    };
+    let contains = |needle: &[u8]| output.windows(needle.len()).any(|window| window == needle);
     if contains(b"\x1b_G") {
         return "kitty";
     }
     if contains(b"\x1b]1337;File=") {
         return "iterm";
     }
-    if output.windows(2).enumerate().any(|(index, window)| {
-        window == b"\x1bP" && starts_sixel(&output[index + 2..])
-    }) {
+    if output
+        .windows(2)
+        .enumerate()
+        .any(|(index, window)| window == b"\x1bP" && starts_sixel(&output[index + 2..]))
+    {
         return "sixel";
     }
     if contains(b"\x1b[48;2;") || contains(b"\x1b[48;5;") || contains("▀".as_bytes()) {

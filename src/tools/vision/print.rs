@@ -73,6 +73,38 @@ pub(crate) async fn print_image(
     }
 }
 
+/// 图片在**全屏**下怎么出：返回 `(发给终端的, 进缓冲的)`。
+///
+/// 直接打屏的话下一帧重画就把它抹了——全屏的正文是从缓冲重建的，不在缓冲里的
+/// 东西不存在。kitty 走占位格，其余走 chafa 的字符画（本来就是文字）。
+pub async fn image_parts_for_buffer(path: &Path, size: Option<String>) -> Result<(String, String)> {
+    if crate::terminal::kitty::is_native_kitty_terminal()
+        && crate::terminal::kitty::supports_path(path)
+    {
+        return crate::terminal::kitty::split_for_buffer(path, size.as_deref());
+    }
+    let mut command = Command::new("chafa");
+    command.args(["--probe", "off", "--relative", "off"]);
+    if let Some(size) = size {
+        command.arg("--size").arg(size);
+    }
+    command.kill_on_drop(true);
+    let output = command
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .with_context(|| "failed to run chafa; install chafa or disable terminal image printing")?;
+    if !output.status.success() {
+        bail!("chafa exited with status {}", output.status);
+    }
+    // chafa 吐的是 `\n` 断行；缓冲按终端语义走，要 `\r\n` 才回到行首。
+    let art = String::from_utf8_lossy(&output.stdout).replace('\n', "\r\n");
+    Ok((String::new(), art))
+}
+
 pub async fn print_image_file(path: &Path, size: Option<String>) -> Result<()> {
     // 不再自带前导空行:所有调用方都紧跟 prepare_for_external_output,
     // 摘要冻结(write_activity_summary)已留了一个空行,这里再空一行就是
@@ -307,10 +339,21 @@ async fn run_chafa(path: &Path, size: Option<String>) -> Result<()> {
 }
 
 pub fn configured_print_size(print_config: &PrintImagePluginConfig) -> Option<String> {
-    let (cols, rows) = crossterm::terminal::size().ok()?;
+    let (cols, rows) = display_grid()?;
     let width = ((cols as u32 * print_config.width_percent as u32) / 100).max(1);
     let height = ((rows as u32 * print_config.height_percent as u32) / 100).max(1);
     Some(format!("{}x{}", width.min(300), height.min(200)))
+}
+
+/// 百分比按什么算。
+///
+/// 全屏下按**正文区**，不是整屏：正文左右有页边距、下边压着活动区，按整屏的
+/// 百分比算出来的格子数会比实际能放的多，一张图就能把输入框顶出屏幕。
+fn display_grid() -> Option<(u16, u16)> {
+    if let Some(viewport) = crate::cli::content_viewport() {
+        return Some(viewport);
+    }
+    crossterm::terminal::size().ok()
 }
 
 /// 模型显式要的尺寸，没要就是 None。

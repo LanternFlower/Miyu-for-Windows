@@ -64,7 +64,7 @@ pub(in crate::cli) fn initialize_models_cache(paths: &MiyuPaths) {
 }
 
 pub(in crate::cli) async fn run_models(paths: &MiyuPaths, args: ModelsArgs) -> Result<()> {
-    run_models_for_session(paths, args, None).await
+    run_models_for_session(paths, args, None).await.map(|_| ())
 }
 
 /// REPL 的 `/models` 收的是一整串自由文本,这里把 `--global` / `-g` 从中
@@ -99,10 +99,13 @@ pub(in crate::cli) fn parse_models_argument(argument: &str) -> ModelsArgs {
 ///
 /// 与会话覆盖的两点不同:池不能清空(至少留一个端点,`set_active_provider_models`
 /// 自己会拦),以及 `default` 没有意义——全局池本身就是那个"默认"。
+/// 返回真表示**真的改了**。假是"什么都没发生"：Esc 退出、勾选没变、或者
+/// 不在终端里（只打了个清单）。调用方靠它决定要不要说"已更新"——不看这个
+/// 的话，Esc 取消也会收到一句"会话模型已更新"（用户实测）。
 pub(in crate::cli) async fn run_models_global(
     paths: &MiyuPaths,
     target: Option<&str>,
-) -> Result<()> {
+) -> Result<bool> {
     let mut config = AppConfig::load(paths)?;
     let choices = config.text_provider_model_choices();
     if choices.is_empty() {
@@ -133,7 +136,7 @@ pub(in crate::cli) async fn run_models_global(
     } else {
         if !(io::stdout().is_terminal() && io::stdin().is_terminal()) {
             print_model_choices(&config, &choices, None);
-            return Ok(());
+            return Ok(false);
         }
         let initial = choices
             .iter()
@@ -147,7 +150,7 @@ pub(in crate::cli) async fn run_models_global(
             initial.clone(),
         )?
         else {
-            return Ok(());
+            return Ok(false);
         };
         if active == initial {
             println!(
@@ -157,7 +160,7 @@ pub(in crate::cli) async fn run_models_global(
                     "未做修改（回车=选定高亮模型,Tab=多选勾选）"
                 )
             );
-            return Ok(());
+            return Ok(false);
         }
         choices
             .iter()
@@ -195,17 +198,18 @@ pub(in crate::cli) async fn run_models_global(
         })
         .await?;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Switches the model pool of one session (the current session when
 /// `session_id` is None). The override persists on the session, so reopening
 /// it restores the model; the global pool is managed in `miyu config`.
+/// 返回真表示**真的改了**；见 [`run_models_global`]。
 pub(in crate::cli) async fn run_models_for_session(
     paths: &MiyuPaths,
     args: ModelsArgs,
     session_id: Option<&str>,
-) -> Result<()> {
+) -> Result<bool> {
     if args.global {
         return run_models_global(paths, args.target.as_deref()).await;
     }
@@ -231,7 +235,7 @@ pub(in crate::cli) async fn run_models_for_session(
                     "当前会话已恢复跟随全局激活模型池"
                 )
             );
-            return Ok(());
+            return Ok(true);
         }
         let choice = crate::config::resolve_provider_model_argument(&choices, target)
             .map_err(anyhow::Error::msg)?;
@@ -242,7 +246,7 @@ pub(in crate::cli) async fn run_models_for_session(
         }];
         set_session_models(paths, session_id, models).await?;
         println!("{}: {label}", t("session model", "当前会话模型"));
-        return Ok(());
+        return Ok(true);
     }
     if io::stdout().is_terminal() && io::stdin().is_terminal() {
         let override_pool = session_model_override_snapshot(paths, session_id)?;
@@ -271,7 +275,7 @@ pub(in crate::cli) async fn run_models_for_session(
                         "当前会话已恢复跟随全局激活模型池"
                     )
                 );
-                return Ok(());
+                return Ok(true);
             }
             let active = active.into_iter().skip(1).collect::<Vec<_>>();
             let initial = initial.into_iter().skip(1).collect::<Vec<_>>();
@@ -283,7 +287,7 @@ pub(in crate::cli) async fn run_models_for_session(
                         "未做修改（回车=选定高亮模型,Tab=多选勾选）"
                     )
                 );
-                return Ok(());
+                return Ok(false);
             }
             let models = choices
                 .iter()
@@ -308,11 +312,13 @@ pub(in crate::cli) async fn run_models_for_session(
             } else {
                 println!("{}", t("session models updated", "已更新当前会话模型"));
             }
+            return Ok(true);
         }
-        return Ok(());
+        // 选择器里按了 Esc：什么都没发生，别让调用方去报"已更新"。
+        return Ok(false);
     }
     print_model_choices(&config, &choices, None);
-    Ok(())
+    Ok(false)
 }
 
 pub(in crate::cli) fn run_list_models(paths: &MiyuPaths) -> Result<()> {

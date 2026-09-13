@@ -76,6 +76,12 @@ pub(in crate::cli) fn ensure_repl_space(
     input_row: &mut u16,
     needed_rows: u16,
 ) -> Result<()> {
+    // 全屏下屏幕是自己的：最后一行照样能写，而「跳到屏底打换行」会把整屏顶
+    // 上去一行——正文最上面那行被挤掉，屏幕行与缓冲行从此差一行，点选也就
+    // 跟着错位。inline 下这一笔是对的（顶上去的进 scrollback），全屏下不是。
+    if super::tail::screen::in_fullscreen() {
+        return Ok(());
+    }
     let (_, term_rows) = terminal::size().unwrap_or((80, 24));
     let term_rows = term_rows.max(1);
     if (*input_row).saturating_add(needed_rows) < term_rows {

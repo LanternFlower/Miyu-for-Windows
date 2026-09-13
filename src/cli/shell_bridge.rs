@@ -220,9 +220,26 @@ pub(in crate::cli) async fn run_shell_intercept(
             println!("\x1b[2m{}\x1b[0m", t("cancelled", "已取消"));
             Ok(())
         }
-        // 其余错误这里不打印：往上返回后 `main.rs` 会打一次。以前这里先打
-        // 一遍再返回 Err，同一句「错误: …」就会出现两次。
-        other => other,
+        // 其余错误**在这儿打到 stdout**，再带着退出码、空正文返回——`main.rs`
+        // 见正文为空就不复述，同一句不会打两遍。
+        //
+        // 不能只靠 `main.rs` 打 stderr：fish 钩子里 `fish_command_not_found`
+        // 那两条路是 `miyu --shell-intercept … 2>/dev/null`，stderr 整个被吞，
+        // 「no LLM provider/model endpoint succeeded」这种回合失败就一个字都
+        // 看不见（用户实测）。
+        Err(err) => {
+            println!(
+                "\x1b[31m{}: {:#}\x1b[0m",
+                crate::i18n::text("error", "错误"),
+                err
+            );
+            let _ = io::stdout().flush();
+            Err(crate::cli::exit_code::exit_with(
+                crate::cli::exit_code::exit_code_for(&err),
+                "",
+            ))
+        }
+        ok => ok,
     }
 }
 

@@ -249,7 +249,8 @@ impl MarkdownLineRenderer {
 /// 块级公式:kitty 家族终端走图形协议(高清,复用 print_image 管线),
 /// 其余终端半块画;渲染失败原样回放(青色+定界符)。
 pub(crate) fn render_display_math(tex: &str, closer: &str) -> String {
-    let (terminal_cols, terminal_rows) = terminal::size().unwrap_or((100, 24));
+    let (terminal_cols, terminal_rows) =
+        crate::cli::content_viewport().unwrap_or_else(|| terminal::size().unwrap_or((100, 24)));
     let max_cols = (terminal_cols as usize).saturating_sub(6).clamp(24, 110);
     // 垂直方向此前没有任何上限——只约束宽度，行数由调用方写死为 9。
     // 上限取 8 与 kitty 那条路对齐，再按终端高度收一道，矮窗口里一条公式
@@ -560,10 +561,7 @@ pub(crate) fn render_html_tag(tag: &str) -> Option<String> {
 }
 
 pub(crate) fn horizontal_rule() -> String {
-    let width = terminal::size()
-        .map(|(width, _)| usize::from(width) / 3)
-        .unwrap_or(24)
-        .clamp(16, 40);
+    let width = (crate::render::content_cols(72) / 3).clamp(16, 40);
     format!("\x1b[2m{}\x1b[0m", "─".repeat(width))
 }
 
@@ -610,19 +608,81 @@ pub(crate) fn find_double_marker(chars: &[char], start: usize, marker: char) -> 
         .find(|index| chars[*index] == marker && chars[index + 1] == marker)
 }
 
+/// 一段文本占多少显示列。转义序列不算。
+///
+/// 以前只认「ESC 到 `m` 为止」，于是 OSC（以 BEL 结尾）会把它之后的整行都
+/// 当成转义吞掉，宽度算成 0。全屏 TUI 把块标记（OSC）放进了行里，这条必须对。
 pub(crate) fn visible_width(text: &str) -> usize {
     let mut width = 0;
-    let mut escape = false;
-    for ch in text.chars() {
-        if ch == '\x1b' {
-            escape = true;
-        } else if escape {
-            if ch == 'm' {
-                escape = false;
-            }
-        } else {
-            width += char_display_width(ch);
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(len) = escape_len(rest) {
+            rest = &rest[len..];
+            continue;
         }
+        let ch = rest.chars().next().unwrap_or('\0');
+        width += char_display_width(ch);
+        rest = &rest[ch.len_utf8()..];
     }
     width
+}
+
+/// 去掉所有转义序列，只留看得见的字。
+///
+/// 拿一行渲染好的东西当"一句话"用时要先过这儿——不然 SGR 和 OSC 会混进去，
+/// 量宽度、截断、比较全是错的。
+pub(crate) fn strip_ansi_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(len) = escape_len(rest) {
+            rest = &rest[len..];
+            continue;
+        }
+        let Some(ch) = rest.chars().next() else { break };
+        out.push(ch);
+        rest = &rest[ch.len_utf8()..];
+    }
+    out
+}
+
+/// 开头是不是一段转义序列？是就返回它的字节长度。
+///
+/// 认三类：CSI（`ESC [ … 终止字节`）、**字符串类**（OSC `ESC ]`、APC `ESC _`、
+/// DCS `ESC P`、PM `ESC ^`、SOS `ESC X`，一律扫到 `BEL` 或 `ESC \` 为止）、
+/// 以及其余「ESC + 一个字节」的短序列。
+///
+/// APC 必须认，而且必须整段认下来：kitty 的图片和公式走的就是 APC，载荷是
+/// 几 KB 的 base64。少认一个字节的后果不是"宽度算偏一点"——是那几 KB 被当成
+/// 正文去量宽度、去折行，折行插进去的换行把控制块劈成两半，终端报
+/// `Malformed GraphicsCommand`，图整个不出来。
+pub(crate) fn escape_len(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if bytes.first() != Some(&0x1b) {
+        return None;
+    }
+    match bytes.get(1) {
+        Some(b'[') => {
+            let mut index = 2;
+            while index < bytes.len() && !(0x40..=0x7e).contains(&bytes[index]) {
+                index += 1;
+            }
+            Some((index + 1).min(bytes.len()))
+        }
+        Some(b']' | b'_' | b'P' | b'^' | b'X') => {
+            let mut index = 2;
+            while index < bytes.len() {
+                if bytes[index] == 0x07 {
+                    return Some(index + 1);
+                }
+                if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'\\') {
+                    return Some(index + 2);
+                }
+                index += 1;
+            }
+            Some(bytes.len())
+        }
+        Some(_) => Some(2),
+        None => Some(1),
+    }
 }

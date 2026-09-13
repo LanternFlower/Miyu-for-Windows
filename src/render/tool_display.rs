@@ -23,6 +23,12 @@ pub(crate) struct ToolStats {
     /// the work finished instantly. The job strip tracks it from here on.
     pub(crate) detached: bool,
     pub(crate) seq: usize,
+    /// 时间线那一行右边的**单行窥视**：命令文本、检索词之类。
+    /// 只在全屏下填。
+    pub(crate) peek: Option<String>,
+    /// 点开这一步看到的完整内容（命令块全文、工具输出）。只在全屏下填——
+    /// inline 不需要，攥着它只是白占内存。
+    pub(crate) detail: Vec<String>,
 }
 
 impl ToolStats {

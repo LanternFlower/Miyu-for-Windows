@@ -142,13 +142,21 @@ fn render_frame_at_width(
         SpinnerStyle::Braille => (paint_secondary(braille_frame(frame)), 1),
     };
     let usable = terminal_width.saturating_sub(1).max(1);
-    let phase_width = usable.saturating_sub(spinner_width + 1);
+    // 全屏下这一行也归装订边管：转轮贴着屏幕左边，而它下面每一行正文都从第 2 列
+    // 起——整屏只有"正在加载"那一个点阵不在线上，看着就是歪的。
+    // 静态时间线（点阵转轮那一档）同样退两格：时间线整体退了，它不退就歪。
+    let margin = if crate::render::blocks::enabled() || state.style == SpinnerStyle::Braille {
+        "  "
+    } else {
+        ""
+    };
+    let phase_width = usable.saturating_sub(spinner_width + 1 + margin.len());
     let phase = clip_to_display_width(&state.phase, phase_width);
     let main_line = if phase.is_empty() {
-        spinner_prefix
+        format!("{margin}{spinner_prefix}")
     } else {
         format!(
-            "{} {}",
+            "{margin}{} {}",
             spinner_prefix,
             paint_for_style(&phase, state.style)
         )
@@ -176,10 +184,15 @@ fn render_block_frame(frame: usize, sub: &str, terminal_width: usize) -> (String
     let glyph = paint_secondary(braille_frame(frame));
     let mut lines = Vec::new();
     for line in sub.lines() {
-        if let Some(rest) = line.strip_prefix(BLOCK_MARKER) {
-            let rest = clip_to_display_width(rest, usable.saturating_sub(2));
+        // 标记前面的缩进要留着：点阵转轮得落在 logo 那一列上，而不是行首。
+        // 时间线就靠这个让「正在跑的那一步」原地把图标换成进度点阵。
+        if let Some(index) = line.find(BLOCK_MARKER) {
+            let (indent, rest) = line.split_at(index);
+            let rest = &rest[BLOCK_MARKER.len_utf8()..];
+            let width = usable.saturating_sub(indent.chars().count() + 2);
+            let rest = clip_to_display_width(rest, width);
             lines.push(format!(
-                "{glyph} {}",
+                "{indent}{glyph} {}",
                 paint_for_style(&rest, SpinnerStyle::Braille)
             ));
         } else if line.trim().is_empty() {

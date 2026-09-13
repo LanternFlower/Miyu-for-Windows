@@ -29,6 +29,9 @@ pub struct TokenMeter {
     pub cumulative_tokens: Option<u64>,
     pub cumulative_prompt_tokens: u64,
     pub cumulative_cached_tokens: u64,
+    /// 还没落进库里的那部分 Σ：正在跑的子代理（前台和后台都算）此刻烧掉的量。
+    /// 它们跑完之后会进审计会话、被库里那份接手，这个加数同时清零。
+    pub live_extra_tokens: u64,
     /// 输出速度(最近一个回合的样本,见 `Usage::generation_ms`)。两者任一
     /// 为零就不显示——没测到的速度不能渲染成 0 tok/s。
     pub generation_tokens: u64,
@@ -151,7 +154,11 @@ pub(crate) fn format_token_usage_inline_opts(
         ),
         _ => format!("{}/{}", format_compact_count(meter.session_tokens), context),
     };
-    if let Some(cumulative_tokens) = meter.cumulative_tokens {
+    let cumulative_shown = match meter.cumulative_tokens {
+        Some(total) => Some(total.saturating_add(meter.live_extra_tokens)),
+        None => (meter.live_extra_tokens > 0).then_some(meter.live_extra_tokens),
+    };
+    if let Some(cumulative_tokens) = cumulative_shown {
         session.push_str(&format!(
             " · Σ{}{}",
             format_compact_count(cumulative_tokens),

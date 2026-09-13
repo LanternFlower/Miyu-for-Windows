@@ -14,6 +14,7 @@ mod args;
 mod daemon_cmds;
 pub(crate) mod exit_code;
 mod inline_picker;
+mod ipc_event;
 mod localize;
 mod mcp_schema;
 mod mcp_serve;
@@ -863,13 +864,21 @@ fn session_replay_frame(
         } else if replay.is_synthetic {
             // daemon 自己合成的轮：实时渲染画的是一条暗色 `⚙` 提示，回放要
             // 对齐，不能变成用户气泡。
-            frame.extend_from_slice(
-                format!(
-                    "\n\x1b[2m⚙ {}\x1b[0m\n\n",
-                    job_wake_headline(&replay.display_content)
-                )
-                .as_bytes(),
+            let notice = format!(
+                "\n\x1b[2m{} {}\x1b[0m\n\n",
+                if render::blocks::enabled() {
+                    render::timeline::glyph_notice()
+                } else {
+                    "⚙"
+                },
+                job_wake_headline(&replay.display_content)
             );
+            let notice = if render::blocks::enabled() {
+                render::timeline::indent_body(&notice)
+            } else {
+                notice
+            };
+            frame.extend_from_slice(notice.as_bytes());
         } else if !replay.display_content.trim().is_empty() {
             frame.extend_from_slice(
                 committed_user_messages_text(&[(&replay.display_content, mode)], true, cols)
@@ -877,7 +886,13 @@ fn session_replay_frame(
             );
         }
         let mut renderer = render::StreamRenderer::new(
-            render::ReasoningDisplayMode::Hidden,
+            // 全屏：思考在时间线里只占一行，回放时补上正好补齐"重开之后
+            // 少一块"的缺口。inline 照旧不放——那边一放就是整段，回放会刷屏。
+            if render::blocks::enabled() {
+                render::ReasoningDisplayMode::Summary
+            } else {
+                render::ReasoningDisplayMode::Hidden
+            },
             render::ToolCallDisplayMode::from_config(&config.display.tool_calls),
             false,
             config.display.readable_tool_names,
@@ -885,10 +900,38 @@ fn session_replay_frame(
         );
         renderer.use_external_cursor_control();
         renderer.use_buffered_output();
+        // 流水账里带着思考就按它的位置放，别再用 `assistant_reasoning` 那一列
+        // 补一遍。那一列只留得住**最后一回合**的思考：想完就去调工具、最后一
+        // 回合直接交卷的那种轮，它是空的——重开之后时间线上的思考那一步整个
+        // 没了（用户实测）。老轮（这次改动之前记下的）流水账里没有思考，那就
+        // 还是拿那一列兜底。
+        let journal_has_reasoning = replay
+            .entries
+            .iter()
+            .any(|entry| matches!(entry, ReplayEntry::Reasoning { .. }));
+        if !journal_has_reasoning {
+            if let Some(reasoning) = replay
+                .assistant_reasoning
+                .as_deref()
+                .filter(|text| !text.trim().is_empty())
+            {
+                renderer.write_chunk(ChatStreamChunk {
+                    kind: crate::llm::ChatStreamKind::Reasoning,
+                    text: reasoning.to_string(),
+                })?;
+            }
+        }
         if replay.entries.is_empty() {
+            // 被中断的轮：正文尾巴上那段 `<system-reminder>` 是写给模型的，
+            // 不给人看。
+            let content = if replay.interrupted {
+                crate::state::interrupted_prefix(&replay.assistant_content)
+            } else {
+                replay.assistant_content.clone()
+            };
             renderer.write_chunk(ChatStreamChunk {
                 kind: crate::llm::ChatStreamKind::Content,
-                text: replay.assistant_content.clone(),
+                text: content,
             })?;
         } else {
             for entry in &replay.entries {
@@ -897,10 +940,28 @@ fn session_replay_frame(
                         kind: crate::llm::ChatStreamKind::Content,
                         text: text.clone(),
                     })?,
+                    ReplayEntry::Reasoning { text, elapsed_ms } => {
+                        renderer.write_chunk(ChatStreamChunk {
+                            kind: crate::llm::ChatStreamKind::Reasoning,
+                            text: text.clone(),
+                        })?;
+                        renderer.replay_reasoning_elapsed(std::time::Duration::from_millis(
+                            *elapsed_ms,
+                        ));
+                    }
                     ReplayEntry::ToolCall { name, arguments } => {
                         renderer.write_tool_call(name, arguments)?
                     }
-                    ReplayEntry::ToolResult { name, ok, output } => {
+                    ReplayEntry::ToolResult {
+                        name,
+                        ok,
+                        output,
+                        elapsed_ms,
+                    } => {
+                        renderer.replay_tool_elapsed(
+                            name,
+                            std::time::Duration::from_millis(*elapsed_ms),
+                        );
                         renderer.write_tool_result(name, *ok, output)?
                     }
                 }
@@ -908,6 +969,24 @@ fn session_replay_frame(
         }
         renderer.finish()?;
         frame.extend_from_slice(&renderer.take_output_frame());
+        if replay.interrupted {
+            // 标一行：这一轮没说完。和后台任务那条提示一个样子。
+            let notice = format!(
+                "\x1b[2m{} {}\x1b[0m\n\n",
+                if render::blocks::enabled() {
+                    render::timeline::glyph_notice()
+                } else {
+                    "⚙"
+                },
+                t("interrupted", "已中断")
+            );
+            let notice = if render::blocks::enabled() {
+                render::timeline::indent_body(&notice)
+            } else {
+                notice
+            };
+            frame.extend_from_slice(notice.as_bytes());
+        }
     }
     Ok(frame)
 }
@@ -1025,6 +1104,19 @@ fn restore_live_output_processing() -> Result<()> {
 /// 退出路径 5 秒宽限——主线程若卡死在 crossterm 对 HUP fd 的任何内部
 /// 自旋(事件 poll、CPR 应答等待,均为实测形态),由这里强制收尾,
 /// 保证关终端后绝不留下吃 CPU 的残留进程。
+/// REPL 是不是正跑在全屏（备用屏）里。
+///
+/// 提问面板、选择器这类"自己占一块屏"的组件要据此改行为：备用屏没有
+/// scrollback，靠打换行腾地方会把正文顶没。
+pub(crate) fn in_fullscreen() -> bool {
+    repl::tail::screen::in_fullscreen()
+}
+
+/// 全屏下正文区的尺寸（列, 行）。别的地方拿它替代 `terminal::size()`。
+pub(crate) fn content_viewport() -> Option<(u16, u16)> {
+    repl::tail::screen::content_viewport()
+}
+
 pub(crate) fn spawn_hangup_watchdog() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -1110,6 +1202,10 @@ enum LiveReplOutcome {
     /// Ctrl+C on an empty line while this session has background work: stop
     /// the work and stay in the REPL. Pressing it again then exits.
     StopJobs,
+    /// 全屏详情面板里按了 x：停掉**这一个**后台任务，人留在 REPL 里。
+    StopJob {
+        job_id: String,
+    },
 }
 
 fn repl_history_is_clean(
@@ -1257,9 +1353,16 @@ fn handle_agent_event(renderer: &mut render::StreamRenderer, event: AgentEvent) 
             request, responder, ..
         } => {
             renderer.prepare_for_external_output()?;
-            let response = crate::question_tui::ask(&request).unwrap_or_else(|err| {
-                crate::question::QuestionResponse::Unavailable(err.to_string())
-            });
+            let leave_summary = !renderer.timeline_static();
+            let response = crate::question_tui::ask_with(&request, None, leave_summary)
+                .unwrap_or_else(|err| {
+                    crate::question::QuestionResponse::Unavailable(err.to_string())
+                });
+            // 全屏下面板是**盖在**画面上的，它退场之后下一帧就按缓冲重画，
+            // 问了什么、答了什么会一起消失（用户原话「回答完问题也没输出」）。
+            // 把这一问一答写进缓冲，它才算进了历史、回翻找得到。
+            renderer.timeline_push_question(&request, &response)?;
+            renderer.write_question_exchange(&request, &response)?;
             if !matches!(&response, crate::question::QuestionResponse::Cancelled) {
                 renderer.start_waiting()?;
             }

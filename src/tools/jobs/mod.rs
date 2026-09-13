@@ -82,7 +82,9 @@ impl JobState {
 /// detached subagent future.
 #[derive(Clone)]
 pub enum JobKind {
-    Command { pid: u32 },
+    Command {
+        pid: u32,
+    },
     Subagent {
         abort: tokio::task::AbortHandle,
         /// 开发模式子代理(dev=true):UI 的任务条据此把标签写成「开发中」。
@@ -113,6 +115,10 @@ struct JobEntry {
     /// 刷新后据它回放子过程时间线(#9:刷新丢内容)。封顶保存最近若干条,进程内、
     /// daemon 重启即清(那时任务多半也没了)。命令任务用日志文件回看,不走这。
     trace: Vec<String>,
+    /// 状态行上那串量（子代理烧了多少词元）。命令类任务没有这个概念。
+    metric: Option<String>,
+    /// 同一个量的**数字**形态，给会话累计用。
+    metric_tokens: Option<u64>,
 }
 
 /// trace 环形缓冲上限:子代理一步就几十条标记,4000 条够回放好几十步的展开区。
@@ -164,6 +170,16 @@ pub struct JobOverview {
     pub status: String,
     pub running: bool,
     pub runtime_seconds: u64,
+    /// 日志文件。全屏 TUI 点开状态行时直接读它，省掉一个专门的 IPC 往返——
+    /// 日志本来就落在盘上，再造一条分页通道没意义。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_path: Option<String>,
+    /// 状态行上时间左边那串量：子代理是词元数，命令没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric: Option<String>,
+    /// 同一个量的数字形态。跑着的时候先记在会话累计上，跑完由审计会话接手。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_tokens: Option<u64>,
 }
 
 struct JobHost {
@@ -247,6 +263,9 @@ impl JobEntry {
     fn kind_label(&self) -> &'static str {
         match self.kind {
             JobKind::Command { .. } => "command",
+            // 开发模式的子代理单列一类：状态行上「开发中」比「子代理」更说明
+            // 它在干嘛——那一条是去写代码的，不是去查资料的。
+            JobKind::Subagent { dev: true, .. } => "dev",
             JobKind::Subagent { .. } => "subagent",
         }
     }
@@ -258,8 +277,11 @@ fn overview_of(job: &JobEntry) -> JobOverview {
         title: job.title.clone(),
         kind: job.kind_label().to_string(),
         dev: matches!(job.kind, JobKind::Subagent { dev: true, .. }),
+        log_path: Some(job.log_path.display().to_string()),
         session_id: job.session_id.as_deref().map(str::to_string),
         status: job.state.label(),
+        metric: job.metric.clone(),
+        metric_tokens: job.metric_tokens,
         running: !job.state.is_terminal(),
         runtime_seconds: job
             .finished
@@ -294,6 +316,22 @@ pub fn job_log_tail(job_id: &str, max_bytes: usize) -> Option<(String, bool)> {
     // 从 max_bytes 边界起可能切进多字节字符中间,from_utf8_lossy 兜底。
     let text = String::from_utf8_lossy(&bytes[start..]).into_owned();
     Some((text, running))
+}
+
+/// 记下这个任务当前烧了多少——状态行上时间左边那串就是它。
+///
+/// 子代理跑着的时候每调一次工具报一次（见 `SubagentRunner::report_metric`）。
+/// 不落日志：那是给人翻的，不是给数字刷屏的。
+pub fn set_metric(job_id: &str, metric: &str, tokens: Option<u64>) {
+    let mut jobs = jobs().lock().unwrap();
+    if let Some(job) = jobs.get_mut(job_id) {
+        job.metric = if metric.trim().is_empty() {
+            None
+        } else {
+            Some(metric.trim().to_string())
+        };
+        job.metric_tokens = tokens;
+    }
 }
 
 /// 完成且已报告的任务直接从注册表移除(验收 08-16 用户反馈:"做完了
@@ -436,6 +474,8 @@ pub async fn spawn_background(
         log_path: log_path.clone(),
         state: JobState::Running,
         trace: Vec::new(),
+        metric: None,
+        metric_tokens: None,
     };
     let started = overview_of(&entry);
     jobs().lock().unwrap().insert(job_id.clone(), entry);
@@ -528,8 +568,8 @@ where
         origin_tty: super::workspace::current_origin_tty(),
         platform_sender: super::workspace::current_platform_sender(),
         kind: JobKind::Subagent {
-            abort: handle.abort_handle(),
             dev,
+            abort: handle.abort_handle(),
         },
         started_wall: SystemTime::now(),
         started: Instant::now(),
@@ -537,6 +577,8 @@ where
         log_path: log_path.clone(),
         state: JobState::Running,
         trace: Vec::new(),
+        metric: None,
+        metric_tokens: None,
     };
     let started = overview_of(&entry);
     jobs().lock().unwrap().insert(job_id.clone(), entry);

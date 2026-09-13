@@ -172,11 +172,7 @@ pub(crate) fn bounded_table_widths(mut widths: Vec<usize>) -> Vec<usize> {
     if widths.is_empty() {
         return widths;
     }
-    let terminal_width = terminal::size()
-        .map(|(width, _)| usize::from(width))
-        .unwrap_or(100)
-        .saturating_sub(1)
-        .max(20);
+    let terminal_width = crate::render::content_cols(100).saturating_sub(1).max(20);
     let border_overhead = widths.len().saturating_mul(3).saturating_add(1);
     let available = terminal_width
         .saturating_sub(border_overhead)

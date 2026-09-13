@@ -372,6 +372,10 @@ pub(in crate::cli) async fn run_direct_repl(
                 LiveReplOutcome::Exit | LiveReplOutcome::FollowWake { .. } => None,
                 // Direct mode owns its jobs in-process, so stop them here
                 // rather than through the daemon.
+                LiveReplOutcome::StopJob { job_id } => {
+                    let _ = crate::tools::jobs::stop_job(&job_id).await;
+                    continue;
+                }
                 LiveReplOutcome::StopJobs => {
                     for job in crate::tools::jobs::overview() {
                         if job.running {
@@ -490,7 +494,7 @@ pub(in crate::cli) async fn run_direct_repl(
         if command.eq_ignore_ascii_case("/models") {
             let argument = command_args.trim();
             let repl_session_id = state.session_id();
-            run_models_for_session(
+            let _changed = run_models_for_session(
                 paths,
                 parse_models_argument(argument),
                 Some(&repl_session_id),

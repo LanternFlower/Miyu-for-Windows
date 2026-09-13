@@ -361,8 +361,8 @@ async fn run_turn_task_inner(
             .map(|profile| profile.turn_system_context.clone())
             .unwrap_or_default();
         if local_webui && mode == AgentMode::Normal {
-            let manifest =
-                tools::webui_artifact_manifest(&config, &paths, &session_id).unwrap_or_else(|_| {
+            let manifest = tools::webui_artifact_manifest(&config, &paths, &session_id)
+                .unwrap_or_else(|_| {
                     "(the artifact manifest is temporarily unavailable)".to_string()
                 });
             // v7 Phase 2.1: the manifest changes whenever artifacts change, so

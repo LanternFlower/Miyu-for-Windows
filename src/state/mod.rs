@@ -3,6 +3,7 @@ pub use accounts::*;
 mod assets;
 mod history;
 mod shared_files;
+pub(crate) use conversation_db::interrupted_prefix;
 pub use conversation_db::SharedFile;
 mod conversation_db;
 mod migrations;

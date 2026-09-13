@@ -131,18 +131,19 @@ pub(crate) fn attach_turn_children_locked(conn: &Connection, turns: &mut [Turn])
 }
 
 /// Folds the live journal of a just-finished turn into `turns.replay_journal`.
-/// Everything only the live view needed — reasoning, progress ticks, command
-/// output blobs — is dropped; what is left is the ordered prose/tool sequence
+/// Progress ticks and command output blobs — the parts only the live view
+/// needed — are dropped; what is left is the ordered prose/思考/tool sequence
 /// the REPL redraws when the session is reopened.
 pub(crate) fn store_replay_journal(tx: &Transaction, turn_id: &str) -> Result<()> {
     // 只取当前修订的事件:被 redo 的 interrupted 回合会同时残留新旧两个
     // revision 的事件(interrupt 不删 segments),混着快照会串台。
     let mut stmt = tx.prepare(
-        "SELECT kind, call_id, name, text_payload, ok
+        "SELECT kind, call_id, name, text_payload, ok, created_at
            FROM turn_journal_events
           WHERE turn_id = ?1
             AND revision = (SELECT revision FROM turns WHERE turn_id = ?1)
-            AND kind IN ('assistant_content', 'tool_call', 'tool_result')
+            AND kind IN ('assistant_content', 'assistant_reasoning',
+                         'tool_call', 'tool_result')
           ORDER BY event_id",
     )?;
     let rows = stmt
@@ -153,14 +154,32 @@ pub(crate) fn store_replay_journal(tx: &Transaction, turn_id: &str) -> Result<()
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
+    // 回合开始的时刻：第一段思考是从这儿起算的。
+    let turn_started: Option<chrono::DateTime<chrono::Utc>> = tx
+        .query_row(
+            "SELECT user_timestamp FROM turns WHERE turn_id = ?1",
+            params![turn_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+        .and_then(|text| parse_journal_time(&text));
 
     let mut entries: Vec<ReplayEntry> = Vec::new();
     let mut call_names: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
+    // 每次调用是什么时候发出去的：结果回来时一减就是这一步的耗时。
+    let mut call_times: std::collections::HashMap<String, chrono::DateTime<chrono::Utc>> =
+        std::collections::HashMap::new();
+    // 上一条事件的时刻。一段思考的耗时 = 它最后一条事件的时刻 − 它开始之前那
+    // 一刻（思考是攒批落的，同一段可能只有一条事件，自己跟自己减恒为零）。
+    let mut prev_at = turn_started;
+    let mut reasoning_from: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut text = String::new();
     let flush_text = |entries: &mut Vec<ReplayEntry>, text: &mut String| {
         if !text.trim().is_empty() {
@@ -170,14 +189,52 @@ pub(crate) fn store_replay_journal(tx: &Transaction, turn_id: &str) -> Result<()
         }
         text.clear();
     };
-    for (kind, call_id, name, payload, ok) in rows {
+    for (kind, call_id, name, payload, ok, created_at) in rows {
+        let at = created_at.as_deref().and_then(parse_journal_time);
+        let span = |from: Option<chrono::DateTime<chrono::Utc>>| -> u64 {
+            match (from, at) {
+                (Some(from), Some(at)) => (at - from).num_milliseconds().max(0) as u64,
+                _ => 0,
+            }
+        };
+        if kind != "assistant_reasoning" {
+            reasoning_from = None;
+        }
         match kind.as_str() {
             "assistant_content" => text.push_str(payload.as_deref().unwrap_or_default()),
+            "assistant_reasoning" => {
+                let chunk = payload.as_deref().unwrap_or_default();
+                if chunk.trim().is_empty() {
+                    prev_at = at.or(prev_at);
+                    continue;
+                }
+                let from = reasoning_from.or(prev_at);
+                reasoning_from = Some(from.unwrap_or_else(chrono::Utc::now));
+                // 同一段思考是分好几条事件落下来的（journal 按字节攒批），
+                // 挨着的就并回一条，别在时间线上排成一串「已思考」。
+                if let Some(ReplayEntry::Reasoning {
+                    text: last,
+                    elapsed_ms,
+                }) = entries.last_mut()
+                {
+                    last.push_str(chunk);
+                    *elapsed_ms = span(from);
+                } else {
+                    flush_text(&mut entries, &mut text);
+                    entries.push(ReplayEntry::Reasoning {
+                        text: chunk.to_string(),
+                        elapsed_ms: span(from),
+                    });
+                }
+            }
             "tool_call" => {
                 flush_text(&mut entries, &mut text);
                 let Some(name) = name else { continue };
                 if let Some(call_id) = call_id {
-                    call_names.insert(call_id, name.clone());
+                    call_names.insert(call_id.clone(), name.clone());
+                    if let Some(at) = at {
+                        call_times.insert(call_id, at);
+                    }
                 }
                 entries.push(ReplayEntry::ToolCall {
                     name,
@@ -197,6 +254,9 @@ pub(crate) fn store_replay_journal(tx: &Transaction, turn_id: &str) -> Result<()
                 if name.is_empty() {
                     continue;
                 }
+                let started = call_id
+                    .as_deref()
+                    .and_then(|id| call_times.get(id).copied());
                 entries.push(ReplayEntry::ToolResult {
                     name,
                     ok: ok.unwrap_or(1) != 0,
@@ -204,12 +264,19 @@ pub(crate) fn store_replay_journal(tx: &Transaction, turn_id: &str) -> Result<()
                         payload.as_deref().unwrap_or_default(),
                         REPLAY_ENTRY_MAX_CHARS,
                     ),
+                    elapsed_ms: span(started),
                 });
             }
             _ => {}
         }
+        prev_at = at.or(prev_at);
     }
     flush_text(&mut entries, &mut text);
+    for entry in &mut entries {
+        if let ReplayEntry::Reasoning { text, .. } = entry {
+            *text = truncate_chars_owned(text, REPLAY_REASONING_MAX_CHARS);
+        }
+    }
     if entries.is_empty() {
         return Ok(());
     }
@@ -225,6 +292,14 @@ pub(crate) fn store_replay_journal(tx: &Transaction, turn_id: &str) -> Result<()
         params![encoded, turn_id],
     )?;
     Ok(())
+}
+
+/// journal 里的时刻是 RFC3339。解不出来就当没有——耗时退回 0，不至于连回放
+/// 都没了。
+fn parse_journal_time(text: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(text.trim())
+        .ok()
+        .map(|at| at.with_timezone(&chrono::Utc))
 }
 
 pub(crate) fn truncate_chars_owned(value: &str, max: usize) -> String {

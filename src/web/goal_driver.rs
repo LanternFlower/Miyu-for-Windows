@@ -127,7 +127,10 @@ pub(in crate::web) fn apply_goal_command(
     let store = state.stores.for_session(session_id).pinned(session_id);
     // 排查「clear 之后 create 仍报已有目标」(09-12):记下解析到谁的库、命令
     // 执行前库里那颗目标是什么状态。owner=""=管理员库。
-    let owner = state.stores.owner_of_session(session_id).unwrap_or_default();
+    let owner = state
+        .stores
+        .owner_of_session(session_id)
+        .unwrap_or_default();
     let pre = store
         .goal(session_id)
         .ok()
@@ -235,8 +238,7 @@ pub(in crate::web) async fn maybe_continue_goal(state: DaemonState, session_id: 
         return;
     };
     // 平台绑定会话 v1 不驱动（回复送达要合成平台轮，与这里的会话轮不同构）。
-    if let Ok(bindings) = store.platform_session_bindings(&record.persona, "onebot")
-    {
+    if let Ok(bindings) = store.platform_session_bindings(&record.persona, "onebot") {
         if bindings
             .iter()
             .any(|binding| binding.session_id == session_id)

@@ -1,3 +1,4 @@
+pub(crate) mod blocks;
 mod code;
 mod command;
 mod link;
@@ -21,6 +22,25 @@ pub(crate) use tool_display::*;
 pub(crate) use usage::*;
 
 pub(crate) mod wait_spinner;
+
+/// 正文能用多宽。
+///
+/// 全屏下正文左右各留了页边距，按**整屏**排出来的表格、补丁、代码块会比可视区宽，
+/// 落进缓冲被硬折一次，续行从第 0 列开始——屏幕左边就冒出半截边框。`fallback`
+/// 是连终端尺寸都问不到时的兜底（各调用点历来的默认值不同，保持原样）。
+/// 某个工具在时间线上的图标。面板里的那条时间线也按它来，两处一个样子。
+pub(crate) fn tool_glyph_for(name: &str) -> &'static str {
+    stream::timeline::tool_glyph(name)
+}
+
+pub(crate) fn content_cols(fallback: usize) -> usize {
+    if let Some((cols, _)) = crate::cli::content_viewport() {
+        return usize::from(cols);
+    }
+    terminal::size()
+        .map(|(width, _)| usize::from(width))
+        .unwrap_or(fallback)
+}
 
 use crate::i18n::text as t;
 use crate::llm::{ChatResult, ChatStreamChunk, ChatStreamKind, GenerationSpeed, Usage};

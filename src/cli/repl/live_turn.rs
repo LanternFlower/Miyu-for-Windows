@@ -182,7 +182,21 @@ pub(in crate::cli) async fn run_live_agent_turn(
                     if !event::poll(Duration::ZERO)? {
                         continue;
                     }
-                    let event = event::read()?;
+                    // 鼠标事件一次抽干，理由同 `remote/one_shot.rs`：一 tick 一个
+                    // 的话，拖动时选区会落在光标后面。
+                    let mut pending: Option<Event> = None;
+                    while event::poll(Duration::ZERO)? {
+                        let next = event::read()?;
+                        if matches!(next, Event::Mouse(_)) {
+                            live_cell.borrow_mut().handle_screen_event(&next)?;
+                            continue;
+                        }
+                        pending = Some(next);
+                        break;
+                    }
+                    let Some(event) = pending else {
+                        continue;
+                    };
                     let mut live = live_cell.borrow_mut();
                     if matches!(
                         &event,
@@ -211,11 +225,12 @@ pub(in crate::cli) async fn run_live_agent_turn(
                                 live.redraw()
                             })?
                         }
-                        LiveEditorAction::ClearScreen if !live.external_output_active => {
-                            synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
-                                live.clear_screen()
-                            })?
-                        }
+                        // 回合跑着的时候不清屏。
+                        //
+                        // 全屏下清屏是"把视口顶空"，而正文还在往里写——顶完下一
+                        // 帧新内容就接着冒出来，屏幕既没干净也没保住上文，纯粹
+                        // 添乱。等它说完再清。
+                        LiveEditorAction::ClearScreen if crate::cli::in_fullscreen() => {}
                         LiveEditorAction::Redraw | LiveEditorAction::ClearScreen => {}
                         LiveEditorAction::EmptySubmit => {}
                         LiveEditorAction::Submit(submission) => {

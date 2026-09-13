@@ -851,12 +851,17 @@ impl ConversationDb {
             // 它们不是用户输入，回放时不能画成用户气泡——判据取 `user_content`
             // 的开头标签，因为那是模型真正收到的东西，而 `display_content`
             // 是给人看的、随时可能改文案。
+            // 被中断的轮也回放：它已经进了上下文（模型下一轮看得见它），
+            // `/history` 里也有，重开之后正文里却没有，看着像丢了一轮
+            //（用户实测：明明有历史记录，但是没有回放）。
             "SELECT display_content, assistant_content, replay_journal,
                     (user_content LIKE '<background-job-report>%'
-                     OR user_content LIKE '<goal_round>%')
+                     OR user_content LIKE '<goal_round>%'),
+                    assistant_reasoning,
+                    status = 'interrupted'
                FROM turns
               WHERE session_id = ?1 AND hidden = 0 AND is_summary = 0
-                AND status = 'completed'
+                AND status IN ('completed', 'interrupted')
               ORDER BY seq DESC
               LIMIT ?2",
         )?;
@@ -870,6 +875,8 @@ impl ConversationDb {
                         .and_then(|json| serde_json::from_str(&json).ok())
                         .unwrap_or_default(),
                     is_synthetic: row.get::<_, i64>(3)? != 0,
+                    assistant_reasoning: row.get::<_, Option<String>>(4)?,
+                    interrupted: row.get::<_, i64>(5)? != 0,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;

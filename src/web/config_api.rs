@@ -250,8 +250,8 @@ pub(in crate::web) async fn set_thinking_variants(
                 ));
             }
         }
-        let options = active_thinking_variant_options(&config, &member_paths)
-            .map_err(ApiError::internal)?;
+        let options =
+            active_thinking_variant_options(&config, &member_paths).map_err(ApiError::internal)?;
         return Ok(Json(ThinkingVariantsResponse { options }));
     }
     reserve_admin(&state.manager)?;

@@ -38,6 +38,36 @@ pub fn supports_path(path: &Path) -> bool {
     )
 }
 
+/// 图片拆成两半：**传输段**要发给真终端（它得把像素收下），**占位格**是普通
+/// 文字，进得了缓冲。
+///
+/// 全屏下必须这么分：占位格进缓冲才能跟着正文一起重画、回翻，否则下一帧就被
+/// 抹掉了；而传输段是给终端的指令，塞进缓冲毫无意义。
+pub fn split_for_buffer(path: &Path, requested_size: Option<&str>) -> Result<(String, String)> {
+    let image = image::ImageReader::open(path)
+        .with_context(|| format!("failed to open image {}", path.display()))?
+        .with_guessed_format()
+        .context("failed to detect image format")?
+        .decode()
+        .with_context(|| format!("failed to decode image {}", path.display()))?;
+    let (terminal_cols, terminal_rows) = display_bounds();
+    let (max_cols, max_rows) = parse_size(requested_size, terminal_cols, terminal_rows)?;
+    let (transfer, rows) = kitty_image_parts(&image, max_cols, max_rows)?;
+    // 占位格逐行给，行末带换行——它们就是普通字符，缓冲照常收。
+    let mut placeholder = String::new();
+    for row in rows {
+        placeholder.push_str(&row);
+        placeholder.push_str("\r\n");
+    }
+    Ok((transfer, placeholder))
+}
+
+/// 图能占多大。全屏下按正文区算——按整屏算的话，一张高图会把活动区顶出去。
+fn display_bounds() -> (u16, u16) {
+    crate::cli::content_viewport()
+        .unwrap_or_else(|| crossterm::terminal::size().unwrap_or((80, 24)))
+}
+
 pub fn print(path: &Path, requested_size: Option<&str>) -> Result<()> {
     let image = image::ImageReader::open(path)
         .with_context(|| format!("failed to open image {}", path.display()))?
@@ -45,7 +75,7 @@ pub fn print(path: &Path, requested_size: Option<&str>) -> Result<()> {
         .context("failed to detect image format")?
         .decode()
         .with_context(|| format!("failed to decode image {}", path.display()))?;
-    let (terminal_cols, terminal_rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let (terminal_cols, terminal_rows) = display_bounds();
     let (max_cols, max_rows) = parse_size(requested_size, terminal_cols, terminal_rows)?;
     if std::env::var_os("MIYU_IMAGE_TRACE").is_some() {
         let (cell_w, cell_h) = cell_pixel_size();
@@ -204,7 +234,52 @@ fn resize_for_transfer(
     image.thumbnail(width, height)
 }
 
+/// 图形传输与占位符网格**分开**返回。
+///
+/// 全屏 TUI 要这个切分：传输只能做一次（同一张图重复发会在终端里重复占显存），
+/// 而占位符格子每帧都得随布局重画。inline 模型下两者一起发没问题——那一帧写完
+/// 就进 scrollback 不再动了；全屏下画面每帧重绘，两件事的节奏不一样。
+pub(crate) fn kitty_image_parts(
+    image: &DynamicImage,
+    max_cols: u16,
+    max_rows: u16,
+) -> Result<(String, Vec<String>)> {
+    let (cell_width, cell_height) = cell_pixel_size();
+    let (cols, rows) = fit_cells(
+        image.width(),
+        image.height(),
+        max_cols,
+        max_rows,
+        cell_width,
+        cell_height,
+    );
+    let resized = resize_for_transfer(image.clone(), cols, rows, cell_width, cell_height);
+    let image_id = (rand::random::<u32>() & 0x00ff_ffff).max(1);
+    let mut transfer = Vec::new();
+    write_transfer(&mut transfer, &resized, image_id, cols, rows)?;
+    let grid = placeholder_grid(image_id, cols, rows)?;
+    Ok((
+        String::from_utf8(transfer).context("kitty transfer sequence is not utf-8")?,
+        grid,
+    ))
+}
+
 fn write_image(
+    output: &mut impl Write,
+    image: &DynamicImage,
+    image_id: u32,
+    cols: u16,
+    rows: u16,
+) -> Result<()> {
+    write_transfer(output, image, image_id, cols, rows)?;
+    for line in placeholder_grid(image_id, cols, rows)? {
+        writeln!(output, "{line}")?;
+    }
+    Ok(())
+}
+
+/// 只把像素传过去，不画占位符。
+fn write_transfer(
     output: &mut impl Write,
     image: &DynamicImage,
     image_id: u32,
@@ -231,11 +306,19 @@ fn write_image(
         output.write_all(encoded.as_bytes())?;
         write!(output, "\x1b\\")?;
     }
+    let _ = (cols, rows);
+    Ok(())
+}
 
+/// 占位符网格：每行一个 `String`（自带前景色与收尾，不含换行）。
+fn placeholder_grid(image_id: u32, cols: u16, rows: u16) -> Result<Vec<String>> {
+    use std::fmt::Write as _;
     let [_, red, green, blue] = image_id.to_be_bytes();
+    let mut grid = Vec::with_capacity(usize::from(rows));
     for row in 0..rows {
         let row_mark = row_diacritic(row).context("image is too tall for Kitty placeholders")?;
-        write!(output, "\x1b[38;2;{red};{green};{blue}m")?;
+        let mut output = String::new();
+        let _ = write!(output, "\x1b[38;2;{red};{green};{blue}m");
         // 每一格都写全行号+列号，不靠 kitty 的连续性推断。
         //
         // 省略后续格子的记号本来是合法写法（kitty 会按前一格递推），但只
@@ -246,11 +329,12 @@ fn write_image(
         for col in 0..cols {
             let col_mark =
                 row_diacritic(col).context("image is too wide for Kitty placeholders")?;
-            write!(output, "{PLACEHOLDER}{row_mark}{col_mark}")?;
+            let _ = write!(output, "{PLACEHOLDER}{row_mark}{col_mark}");
         }
-        writeln!(output, "\x1b[39m")?;
+        let _ = write!(output, "\x1b[39m");
+        grid.push(output);
     }
-    Ok(())
+    Ok(grid)
 }
 
 fn row_diacritic(row: u16) -> Option<char> {

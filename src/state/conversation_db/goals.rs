@@ -354,7 +354,8 @@ impl ConversationDb {
                 verb,
             });
         }
-        if check_capacity && current.max_rounds > 0 && current.rounds_started >= current.max_rounds {
+        if check_capacity && current.max_rounds > 0 && current.rounds_started >= current.max_rounds
+        {
             bail!(GoalDenied::RoundsExhausted {
                 max_rounds: current.max_rounds
             });

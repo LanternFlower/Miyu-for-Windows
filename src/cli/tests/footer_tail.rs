@@ -67,12 +67,16 @@ fn replayed_job_wake_turns_are_not_drawn_as_user_prompts() {
         assistant_content: "跑完了。".to_string(),
         entries: Vec::new(),
         is_synthetic: true,
+        interrupted: false,
+        assistant_reasoning: None,
     };
     let typed = crate::state::TurnReplay {
         display_content: "帮我改一下 README".to_string(),
         assistant_content: "改好了。".to_string(),
         entries: Vec::new(),
         is_synthetic: false,
+        interrupted: false,
+        assistant_reasoning: None,
     };
 
     let frame = session_replay_frame(&[wake], AgentMode::Normal, &config, 80).unwrap();
@@ -477,11 +481,17 @@ fn spinner_does_not_resume_tail_during_external_output() {
         output_cursor: (0, 0),
         tail_start: 0,
         tail_rows: 0,
+        job_strip_start: 0,
+        job_strip_rows: 0,
+        pending_stop_job: None,
         input_cursor: (0, 0),
         rendered: false,
         external_output_active: true,
         raw_mode_handoff: false,
+        screen: None,
         jobs: Vec::new(),
+        suppressed_jobs: std::collections::HashMap::new(),
+        live_turn_tokens: 0,
         job_spinner: 0,
     };
     let mut renderer = render::StreamRenderer::new(
@@ -512,11 +522,17 @@ fn live_tail_coalesces_adjacent_stream_chunks_and_can_discard_them() {
         output_cursor: (0, 0),
         tail_start: 0,
         tail_rows: 0,
+        job_strip_start: 0,
+        job_strip_rows: 0,
+        pending_stop_job: None,
         input_cursor: (0, 0),
         rendered: false,
         external_output_active: false,
         raw_mode_handoff: false,
+        screen: None,
         jobs: Vec::new(),
+        suppressed_jobs: std::collections::HashMap::new(),
+        live_turn_tokens: 0,
         job_spinner: 0,
     };
 
@@ -707,4 +723,84 @@ fn cursor_after_frame_clamps_to_the_last_row_when_the_echo_scrolls() {
     );
     // 光标不在行首时先补的那个换行也要算进去。
     assert_eq!(cursor_after_frame(b"\nab", (7, 3), 120, 40), (2, 4));
+}
+
+/// 状态行上时间**左边**先报量。
+///
+/// 一条子代理能跑好几分钟，光有秒数看不出它是在干活还是卡住了（用户：这里时间
+/// 左侧应该有一个 token 记述）。命令类任务没有词元这个概念，那儿就只有时间。
+#[test]
+fn the_job_strip_reports_tokens_left_of_the_timer() {
+    let job = |metric: Option<&str>| crate::tools::jobs::JobOverview {
+        job_id: "82bea3".into(),
+        title: "查目录".into(),
+        kind: "subagent".into(),
+        dev: false,
+        session_id: None,
+        status: "running".into(),
+        running: true,
+        runtime_seconds: 12,
+        log_path: None,
+        metric: metric.map(str::to_string),
+        metric_tokens: None,
+    };
+    let row = |metric: Option<&str>| {
+        let lines = crate::cli::repl::jobs::background_job_lines(&[job(metric)], 0, 60);
+        strip_terminal_control_sequences(&lines[1])
+            .trim_end()
+            .to_string()
+    };
+
+    let with_tokens = row(Some("≈3.1K"));
+    let without = row(None);
+    assert!(with_tokens.ends_with("≈3.1K  12s"), "{with_tokens:?}");
+    assert!(without.ends_with("12s"), "{without:?}");
+    assert!(
+        !without.contains("≈"),
+        "命令类任务不该冒出词元数: {without:?}"
+    );
+    // 两行一样宽：状态行是右对齐的，宽度一抖整条尾巴就跟着抖。
+    assert_eq!(
+        crate::cli::repl::width::visible_width(&with_tokens),
+        crate::cli::repl::width::visible_width(&without),
+        "加了量之后右边没对齐: {with_tokens:?} / {without:?}"
+    );
+}
+
+/// 后台任务面板的抬头也带着量。
+#[test]
+fn the_job_panel_title_carries_the_token_figure() {
+    use crate::cli::repl::tail::screen::job_panel_title;
+    let mut job = crate::tools::jobs::JobOverview {
+        job_id: "82bea3".into(),
+        title: "走查后台子代理".into(),
+        kind: "subagent".into(),
+        dev: false,
+        session_id: None,
+        status: "running".into(),
+        running: true,
+        runtime_seconds: 4,
+        log_path: None,
+        metric: None,
+        metric_tokens: None,
+    };
+    assert_eq!(job_panel_title(&job), "走查后台子代理 · running");
+    job.metric = Some("≈3.1K".into());
+    assert_eq!(job_panel_title(&job), "走查后台子代理 · running · ≈3.1K");
+}
+
+/// 跑着的子代理先记在 Σ 上：它们的审计会话要跑完才落盘，而一个子代理能跑
+/// 好几分钟——那几分钟里 Σ 纹丝不动（用户问的就是这个）。
+#[test]
+fn the_sigma_meter_counts_running_subagents() {
+    let mut meter = render::TokenMeter {
+        session_tokens: 1_000,
+        context_window: Some(100_000),
+        cumulative_tokens: Some(10_000),
+        ..Default::default()
+    };
+    let line = |meter: &render::TokenMeter| render::format_token_usage_inline(meter);
+    assert!(line(&meter).contains("Σ10k"), "{}", line(&meter));
+    meter.live_extra_tokens = 2_500;
+    assert!(line(&meter).contains("Σ12.5k"), "{}", line(&meter));
 }

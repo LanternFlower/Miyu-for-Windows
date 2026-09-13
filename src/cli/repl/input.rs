@@ -100,7 +100,11 @@ pub(in crate::cli) fn read_live_repl_input(
                     }
                 }
             }
-            let typing = last_key_at.elapsed() < Duration::from_millis(350);
+            // 打字期间暂停动画，是 inline 的历史包袱：那边状态条和活动区是
+            // 两处各自往终端打，叠在一起会写坏帧。全屏下整屏由一个画笔按 diff
+            // 重画，没有这个冲突——再暂停就只剩「一交互进度条就卡住」的坏处。
+            let typing = !crate::cli::repl::tail::screen::in_fullscreen()
+                && last_key_at.elapsed() < Duration::from_millis(350);
             if typing {
                 continue;
             }
@@ -112,6 +116,11 @@ pub(in crate::cli) fn read_live_repl_input(
             let cumulative_changed = jobs_feed
                 .cumulative()
                 .is_some_and(|totals| live.footer.update_cumulative_tokens(totals));
+            live.expire_toast()?;
+            live.tick_overlay()?;
+            if let Some(job_id) = live.pending_stop_job.take() {
+                return Ok(LiveReplOutcome::StopJob { job_id });
+            }
             if live.set_jobs(jobs_feed.current()) || cumulative_changed {
                 synchronized_terminal_update(CursorAfterUpdate::Preserve, || live.redraw())?;
             } else {
@@ -170,6 +179,15 @@ pub(in crate::cli) fn read_live_repl_input(
                     }
                 }
             }
+            // 全屏下先给视口一次机会（回翻、滚轮）；inline 下这里是空操作。
+            if live.handle_screen_event(&event)? {
+                continue;
+            }
+            // 又打字了：候选面板可以重新弹出来（Esc 只关「当时那一串」）。
+            if matches!(&event, Event::Key(KeyEvent { kind, .. }) if *kind != KeyEventKind::Release)
+            {
+                live.allow_command_hint();
+            }
             match live.editor.handle_event(event, paths, false)? {
                 LiveEditorAction::None => {}
                 LiveEditorAction::Redraw => {
@@ -223,6 +241,16 @@ pub(in crate::cli) fn read_live_repl_input(
                 // (`Exit`) always quits outright.
                 LiveEditorAction::Interrupt if !live.jobs.is_empty() => {
                     return Ok(LiveReplOutcome::StopJobs);
+                }
+                // Ctrl+C 的最后一级在全屏下不退出。
+                //
+                // inline 下退出无所谓——scrollback 还在，往上翻就都看得到。
+                // 全屏是一块自己的画布，退出等于整屏一起没，为了一次误触付这个
+                // 代价太贵。阶梯照旧（清草稿 → 中断回复 → 停后台任务），只是
+                // 最后一级改成提示走 Ctrl+D。
+                LiveEditorAction::Interrupt if crate::cli::repl::tail::screen::in_fullscreen() => {
+                    live.toast_note_at(t("press Ctrl+D to exit", "要退出请按 Ctrl+D"), true);
+                    continue;
                 }
                 LiveEditorAction::Interrupt | LiveEditorAction::Exit => {
                     synchronized_terminal_update(CursorAfterUpdate::Hidden, || live.suspend())?;
@@ -288,6 +316,7 @@ pub(in crate::cli) fn read_repl_input(
             stdout,
             input_row,
             rendered_rows,
+            &mut Vec::new(),
             mode,
             input,
             cursor,
@@ -764,6 +793,9 @@ pub(in crate::cli) fn render_repl_input_with_footer(
     stdout: &mut io::Stdout,
     input_row: &mut u16,
     rendered_rows: &mut u16,
+    // `drawn`：画出去的输入行（屏幕行号 + 这一行的文字）。全屏下拿它做选区——
+    // 输入区不在正文缓冲里，不记下来就没法知道某一格上是什么字。
+    drawn: &mut Vec<(u16, String)>,
     mode: AgentMode,
     input: &str,
     cursor: usize,
@@ -807,6 +839,7 @@ pub(in crate::cli) fn render_repl_input_with_footer(
         let row = (*input_row).saturating_add(row_offset);
         queue!(stdout, MoveTo(0, row))?;
         queue!(stdout, Print(&prompt_prefix), Print(line))?;
+        drawn.push((row, format!("{prompt_prefix}{line}")));
         row_offset = row_offset.saturating_add(1);
     }
     queue!(
@@ -815,7 +848,9 @@ pub(in crate::cli) fn render_repl_input_with_footer(
         Print(&prompt_prefix)
     )?;
     row_offset = row_offset.saturating_add(1);
-    if !suggestions.is_empty() {
+    // 全屏下候选走输入框上方的浮层（`command_hint_lines`），footer 留着——
+    // 挤掉 footer 的话打命令时连模型名和用量都看不见了。
+    if !suggestions.is_empty() && !crate::cli::in_fullscreen() {
         let suggestion_width = cols.saturating_sub(visible_width(&prompt_prefix)).max(1);
         queue!(
             stdout,

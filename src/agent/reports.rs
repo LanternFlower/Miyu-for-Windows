@@ -262,7 +262,13 @@ pub(in crate::agent) fn tool_event_name(name: &str, arguments: &str) -> String {
             .filter(|description| !description.is_empty())
             .map(|description| {
                 let truncated: String = description.chars().take(32).collect();
-                format!("subagent:{truncated}")
+                // 开发模式单列一类：渲染那边靠这个前缀把抬头写成「开发中」，
+                // 和后台任务状态行一个口径。
+                if args.get("dev").and_then(Value::as_bool).unwrap_or(false) {
+                    format!("subagent:dev:{truncated}")
+                } else {
+                    format!("subagent:{truncated}")
+                }
             })
             .unwrap_or_else(|| name.to_string()),
         _ => name.to_string(),

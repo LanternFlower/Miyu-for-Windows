@@ -19,8 +19,12 @@ pub(in crate::cli) fn print_mode_help() {
     }
 }
 
-pub(in crate::cli) fn print_repl_help() {
-    println!("{}", t("commands:", "命令:"));
+/// 帮助全文。**要能拿到字符串**：全屏下它得走缓冲进正文（直接 `println!`
+/// 的话字节不在缓冲里，下一帧重画就被抹掉，回翻也找不到）。
+pub(in crate::cli) fn repl_help_text() -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(out, "{}", t("commands:", "命令:"));
     let width = REPL_COMMAND_TABLE
         .iter()
         .map(|spec| {
@@ -39,49 +43,97 @@ pub(in crate::cli) fn print_repl_help() {
         } else {
             format!("{} {}", spec.name, spec.arg_hint)
         };
-        println!("  {invocation:<width$}  {}", t(spec.help_en, spec.help_zh));
+        let _ = writeln!(
+            out,
+            "  {invocation:<width$}  {}",
+            t(spec.help_en, spec.help_zh)
+        );
     }
-    println!("{}", t("keys:", "快捷键:"));
-    println!(
+    let _ = writeln!(out, "{}", t("keys:", "快捷键:"));
+    let _ = writeln!(
+        out,
         "  Tab         {}",
         t(
             "cycle NORMAL/CHAT, or complete slash commands",
             "循环切换 普通/闲聊，或补全斜杠菜单"
         )
     );
-    println!("  Enter       {}", t("send message", "发送消息"));
-    println!("  Shift+Enter {}", t("insert newline", "插入换行"));
-    println!(
+    let _ = writeln!(out, "  Enter       {}", t("send message", "发送消息"));
+    let _ = writeln!(out, "  Shift+Enter {}", t("insert newline", "插入换行"));
+    let _ = writeln!(
+        out,
         "  Ctrl+J      {}",
         t(
             "insert newline, same as Shift+Enter",
             "插入换行，与 Shift+Enter 相同"
         )
     );
-    println!(
+    let _ = writeln!(
+        out,
         "  Ctrl+V      {}",
         t(
             "paste image or text from clipboard",
             "从剪贴板粘贴图片或文本"
         )
     );
-    println!("  Ctrl+L      {}", t("clear screen", "清屏"));
-    println!(
+    let _ = writeln!(out, "  Ctrl+L      {}", t("clear screen", "清屏"));
+    let _ = writeln!(
+        out,
         "  Up/Down     {}",
         t("browse input history", "切换输入历史")
     );
-    println!(
+    let _ = writeln!(
+        out,
         "  Esc Esc     {}",
         t("interrupt running reply", "中断当前回复")
     );
-    println!(
+    let _ = writeln!(
+        out,
         "  Ctrl+C      {}",
         t(
             "clear the draft, else interrupt the reply, else stop background tasks, else exit",
             "先清空输入；输入为空则中断回复；再无回复则停止后台任务；都没有则退出"
         )
     );
-    println!("  Ctrl+D      {}", t("exit", "退出"));
+    let _ = writeln!(out, "  Ctrl+D      {}", t("exit", "退出"));
+    out
+}
+
+pub(in crate::cli) fn print_repl_help() {
+    print!("{}", repl_help_text());
+}
+
+/// 斜杠命令候选面板的内容：每条一行「命令 + 它是干什么的」。
+///
+/// inline 那边只能在 footer 位置塞一行挤在一起的命令名——全屏有地方，就把
+/// 说明也给上，省得记不住哪个是哪个。最多四条，再多就该 Tab 补全了。
+pub(in crate::cli) fn command_hint_lines(input: &str, cols: usize) -> Vec<String> {
+    let input = input.trim_start();
+    let suggestions = crate::slash_commands::repl_command_suggestions(input);
+    // 只剩一条且已经打全了就别挡着了。
+    if suggestions.is_empty() || (suggestions.len() == 1 && suggestions[0] == input) {
+        return Vec::new();
+    }
+    let width = cols.saturating_sub(10).max(20);
+    let name_col = suggestions
+        .iter()
+        .map(|name| name.len())
+        .max()
+        .unwrap_or(0)
+        .min(20);
+    suggestions
+        .iter()
+        .take(4)
+        .map(|name| {
+            let help = REPL_COMMAND_TABLE
+                .iter()
+                .find(|spec| spec.name == *name)
+                .map(|spec| t(spec.help_en, spec.help_zh))
+                .unwrap_or("");
+            let pad = " ".repeat(name_col.saturating_sub(name.len()));
+            truncate_visible_width(&format!("{name}{pad}  \x1b[2m{help}\x1b[0m"), width)
+        })
+        .collect()
 }
 
 pub(in crate::cli) fn repl_command_suggestions_line(

@@ -21,6 +21,10 @@ pub(crate) const REPLAY_JOURNAL_MAX_CHARS: usize = 8 * 1024;
 /// Per-entry clamp so one runaway tool result cannot eat the whole budget.
 pub(crate) const REPLAY_ENTRY_MAX_CHARS: usize = 2 * 1024;
 
+/// 思考正文进回放时的上限。比别的条目紧：一轮可能想好几段，而整份流水账只有
+/// 8 KB——让思考占满的话，真正在干什么的那些工具条目会被挤出去。
+pub(crate) const REPLAY_REASONING_MAX_CHARS: usize = 1024;
+
 /// One entry of a finished turn's display transcript, in stream order.
 ///
 /// Reconstructed from the live journal just before it is dropped, so the
@@ -34,6 +38,17 @@ pub enum ReplayEntry {
     Text {
         text: String,
     },
+    /// 这一轮某一**回合**的思考。
+    ///
+    /// `turns.assistant_reasoning` 只留得住最后一回合那份：模型想完就去调工具、
+    /// 最后一回合直接交卷时，那一列是空的，重开之后时间线上的思考那一步整个没了
+    /// （用户实测）。思考发生在流里的哪个位置，也只有流水账说得清。
+    Reasoning {
+        text: String,
+        /// 这一段想了多久（毫秒）。同 `ToolResult::elapsed_ms`。
+        #[serde(default, skip_serializing_if = "is_zero_ms")]
+        elapsed_ms: u64,
+    },
     ToolCall {
         name: String,
         #[serde(default)]
@@ -44,7 +59,15 @@ pub enum ReplayEntry {
         ok: bool,
         #[serde(default)]
         output: String,
+        /// 这次调用花了多久（毫秒）。回放时时间线靠它把 `Worked for …` 算回来
+        /// ——整段是一瞬间喂完的，墙上时间是零。
+        #[serde(default, skip_serializing_if = "is_zero_ms")]
+        elapsed_ms: u64,
     },
+}
+
+fn is_zero_ms(value: &u64) -> bool {
+    *value == 0
 }
 
 /// `app_state` key prefixes for the two persona-scoped session pointers. The
@@ -540,8 +563,14 @@ pub struct TurnReplay {
     /// `[后台任务完成] …` headline.
     pub display_content: String,
     pub assistant_content: String,
+    /// 这一轮的思考正文。库里一直存着，只是从前回放不查它——全屏的时间线
+    /// 把思考压成一行，重开 TUI 时再也不用凭空少一块。
+    pub assistant_reasoning: Option<String>,
     pub entries: Vec<ReplayEntry>,
     /// daemon 自己合成的轮，不是任何人敲的：后台任务唤醒、目标续轮。
     /// 回放时画成一条居中提示，而不是用户气泡。
     pub is_synthetic: bool,
+    /// 这一轮被中断了（Ctrl+C／断线）。回放时照画它说到一半的话，尾巴上那段给
+    /// 模型看的 `<system-reminder>` 去掉，末尾标一行「已中断」。
+    pub interrupted: bool,
 }

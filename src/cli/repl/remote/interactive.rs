@@ -90,7 +90,12 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
         let replay_store = StateStore::new(paths)?.pinned(&active_session_id);
         match replay_store.session_replay(config.display.repl_replay_turns) {
             Ok(replays) if !replays.is_empty() => {
+                // 全屏下按正文区的宽度排，不是整屏：左右各两列边距，按整屏排出来
+                // 的东西会比可视区宽、被缓冲硬折一次。
                 let (cols, _) = terminal::size().unwrap_or((80, 24));
+                let cols = crate::cli::content_viewport()
+                    .map(|(cols, _)| cols)
+                    .unwrap_or(cols);
                 let frame =
                     session_replay_frame(&replays, mode, &config, usize::from(cols.max(1)))?;
                 live_repl.apply_output_frame(&frame)?;
@@ -111,6 +116,32 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
             Some(&active_session_id),
         )? {
             LiveReplOutcome::Exit => break,
+            LiveReplOutcome::StopJob { job_id } => {
+                let result = send_ipc_command(
+                    paths,
+                    IpcCommand::StopJob {
+                        job_id: job_id.clone(),
+                    },
+                )
+                .await;
+                let note = match result {
+                    Ok(_) => {
+                        // 压住它：紧接着那次轮询还带着它，状态行会闪一下。
+                        live_repl.suppress_jobs(std::iter::once(job_id.as_str()));
+                        let remaining: Vec<crate::tools::jobs::JobOverview> = live_repl
+                            .jobs
+                            .iter()
+                            .filter(|job| job.job_id != job_id)
+                            .cloned()
+                            .collect();
+                        live_repl.set_jobs(remaining);
+                        t("background task stopped", "已停止这个后台任务")
+                    }
+                    Err(_) => t("could not stop the task", "没能停掉这个后台任务"),
+                };
+                repl_note(&mut live_repl, &format!("\x1b[2m{note}\x1b[0m\n"))?;
+                continue;
+            }
             LiveReplOutcome::StopJobs => {
                 let stopped = match repl_ipc_admin(
                     paths,
@@ -130,6 +161,15 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                 // Drop the strip now instead of waiting out the ~1s jobs poll:
                 // every job of this session was just stopped, so an empty strip
                 // is the truth.
+                //
+                // 光清是不够的：紧接着那次轮询拿到的还是停之前的快照，状态行会
+                // 再冒出来一下——先把这些 id 压住，等轮询里真的没有了再放开。
+                let stopped_ids: Vec<String> = live_repl
+                    .jobs
+                    .iter()
+                    .map(|job| job.job_id.clone())
+                    .collect();
+                live_repl.suppress_jobs(stopped_ids.iter().map(String::as_str));
                 live_repl.set_jobs(Vec::new());
                 repl_note(
                     &mut live_repl,
@@ -194,7 +234,14 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
             }
             match command {
                 ReplSlashCommand::Exit => break,
-                ReplSlashCommand::Help => print_repl_help(),
+                ReplSlashCommand::Help => {
+                    // 走缓冲而不是 `println!`：全屏下直接打 stdout 的字节不在
+                    // 缓冲里，下一帧重画就没了，回翻也找不到。
+                    repl_note(
+                        &mut live_repl,
+                        crate::cli::repl::commands::repl_help_text().trim_end(),
+                    )?;
+                }
                 ReplSlashCommand::Stt => {
                     if crate::cli::repl::dictation::is_active() {
                         crate::cli::repl::dictation::stop();
@@ -628,10 +675,13 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                     )
                     .await;
                     synchronized_terminal_update(CursorAfterUpdate::Shown, || live_repl.resume())?;
-                    if let Err(error) = result {
-                        repl_note(&mut live_repl, &format!("\x1b[31m{error:#}\x1b[0m\n"))?;
-                        continue;
-                    }
+                    let changed = match result {
+                        Ok(changed) => changed,
+                        Err(error) => {
+                            repl_note(&mut live_repl, &format!("\x1b[31m{error:#}\x1b[0m\n"))?;
+                            continue;
+                        }
+                    };
                     let session_config =
                         footer_config_for_session(paths, &config, &active_session_id);
                     let (state, _) =
@@ -651,16 +701,20 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                     // 输出帧也不重画 footer 行,于是模型标签要等下一次按键才换
                     // (09-10 用户截图:提示已说「已更新」,footer 仍是旧模型)。
                     live_repl.refresh_footer(footer.clone())?;
-                    repl_note(
-                        &mut live_repl,
-                        &format!(
-                            "\x1b[2m{}\x1b[0m\n",
-                            t(
-                                "session model updated; takes effect from the next turn",
-                                "会话模型已更新，下一轮生效"
-                            )
-                        ),
-                    )?;
+                    // Esc 退出选择器时什么都没改，这句"已更新"就是假消息
+                    //（用户实测）。选择器自己该说的话它已经说过了。
+                    if changed {
+                        repl_note(
+                            &mut live_repl,
+                            &format!(
+                                "\x1b[2m{}\x1b[0m\n",
+                                t(
+                                    "session model updated; takes effect from the next turn",
+                                    "会话模型已更新，下一轮生效"
+                                )
+                            ),
+                        )?;
+                    }
                 }
                 ReplSlashCommand::Config => {
                     crate::config_tui::run(paths)?;
@@ -1019,6 +1073,14 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                     // 挂着重置前的累计(验收问题四)。
                     live_repl.refresh_footer(footer.clone())?;
                     reload_repl_queue(&mut live_repl, paths, &active_session_id)?;
+                    // 全屏：会话清空了，画布也该清空——正文里还留着刚被清掉的那段
+                    // 对话，看着像什么都没发生（用户实测：真 TUI 里 /reset 不会
+                    // 清屏）。`clear_screen` 只是把视口顶空，往回翻还在。
+                    if crate::cli::in_fullscreen() {
+                        synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
+                            live_repl.clear_screen()
+                        })?;
+                    }
                     repl_note(
                         &mut live_repl,
                         &format!(
@@ -1122,8 +1184,14 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                 if is_remote_turn_cancelled(&err)
                     || crate::question::is_question_cancelled(&err) =>
             {
-                let frame = format!("\x1b[2m{}\x1b[0m\n\n", t("cancelled", "已取消"));
-                live_repl.apply_output_frame(frame.as_bytes())?;
+                // 走通知条：「已取消」不是对话内容，几秒之后就不再有意义。
+                // 直接塞进正文的话它会贴着第 0 列、还会被前面那个收缩块吃进去
+                // ——用户实测「这个已取消怎么不是通知，而是跟 Worked for 一起
+                // 是可交互的」说的就是它。
+                repl_note(
+                    &mut live_repl,
+                    &format!("\x1b[2m{}\x1b[0m", t("cancelled", "已取消")),
+                )?;
                 // The interrupted turn still entered the context; refresh the
                 // footer from the daemon's post-cancel state.
                 if let Ok((state, _)) =

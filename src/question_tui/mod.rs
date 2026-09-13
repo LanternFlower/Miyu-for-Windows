@@ -42,6 +42,22 @@ pub fn available(plain: bool) -> bool {
 }
 
 pub fn ask(request: &QuestionRequest) -> Result<QuestionResponse> {
+    ask_with(request, None, true)
+}
+
+/// 问一轮，允许调用方接管「面板上面那截正文」的回翻。
+///
+/// 面板开着的时候输入泵停了，滚轮和 PgUp 都没人接——可这正是最想往回看的时候
+/// （要答的问题往往就指着上面那几行）。`scroll` 收到的是 `(方向, 面板占了几行)`，
+/// 由调用方去滚视口、重画面板**上面**那一截；面板自己那几行它不碰。
+/// `leave_summary`：答完之后要不要把「已回答 N 个问题」那几行留在面板原来的
+/// 位置上。inline 的老样子是留；静态时间线自己把一问一答写成那一步的正文，
+/// 面板得整个擦干净、光标放回面板顶上，那一步才落在原位。
+pub fn ask_with(
+    request: &QuestionRequest,
+    mut scroll: Option<&mut dyn FnMut(isize, u16)>,
+    leave_summary: bool,
+) -> Result<QuestionResponse> {
     request.validate()?;
     if !available(false) {
         bail!("interactive terminal is unavailable");
@@ -67,6 +83,28 @@ pub fn ask(request: &QuestionRequest) -> Result<QuestionResponse> {
             continue;
         }
         let event = event::read()?;
+        // 回翻交给调用方：滚轮、PgUp/PgDn 都只动面板上面那截正文。
+        if let Some(scroll) = scroll.as_deref_mut() {
+            let delta = match &event {
+                Event::Mouse(mouse) => match mouse.kind {
+                    event::MouseEventKind::ScrollUp => Some(-3),
+                    event::MouseEventKind::ScrollDown => Some(3),
+                    _ => None,
+                },
+                Event::Key(key) if key.kind == KeyEventKind::Press && !state.editing => {
+                    match key.code {
+                        KeyCode::PageUp => Some(-10),
+                        KeyCode::PageDown => Some(10),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            if let Some(delta) = delta {
+                scroll(delta, session.panel_lines);
+                continue;
+            }
+        }
         match event {
             Event::Resize(_, rows) => {
                 session.resize_to_terminal(rows);
@@ -88,7 +126,7 @@ pub fn ask(request: &QuestionRequest) -> Result<QuestionResponse> {
                 if state.editing {
                     if handle_editing_key(request, &mut state, key)? && !request.needs_review() {
                         if let Some(answers) = submitted_answers(request, &state)? {
-                            session.finish_answered(request, &answers)?;
+                            session.finish_answered(request, &answers, leave_summary)?;
                             return Ok(QuestionResponse::Answered(answers));
                         }
                     }
@@ -114,7 +152,7 @@ pub fn ask(request: &QuestionRequest) -> Result<QuestionResponse> {
                         KeyCode::Right | KeyCode::Char('l') => state.next_tab(request),
                         KeyCode::Enter => {
                             if let Some(answers) = submitted_answers(request, &state)? {
-                                session.finish_answered(request, &answers)?;
+                                session.finish_answered(request, &answers, leave_summary)?;
                                 return Ok(QuestionResponse::Answered(answers));
                             }
                             state.go_to_first_unanswered(request);
@@ -140,7 +178,7 @@ pub fn ask(request: &QuestionRequest) -> Result<QuestionResponse> {
                         state.activate_current(request)?;
                         if !request.needs_review() {
                             if let Some(answers) = submitted_answers(request, &state)? {
-                                session.finish_answered(request, &answers)?;
+                                session.finish_answered(request, &answers, leave_summary)?;
                                 return Ok(QuestionResponse::Answered(answers));
                             }
                         }
@@ -344,9 +382,23 @@ impl QuestionSession {
             )
             .is_ok()
         };
-        let (_, cursor_y) =
-            crossterm::cursor::position().unwrap_or((0, panel_lines.saturating_sub(1)));
-        let anchor_y = cursor_y.saturating_sub(panel_lines.saturating_sub(1));
+        // 全屏下**别去问光标在哪**。
+        //
+        // `crossterm::cursor::position()` 走的是 ESC[6n：应答要从 stdin 读，而
+        // 全屏这条路上 stdin 正被输入泵盯着，问不到就退回一个假值
+        // （`panel_lines - 1`）——于是 anchor 落到 0，面板跑到屏幕最上面，
+        // 底下空出一大片（用户实测「为什么离底边框那么远」）。
+        // 位置本来就是算得出来的：`reserve_space` 已经把它定在底边。
+        let anchor_y = if crate::cli::in_fullscreen() {
+            let rows = crossterm::terminal::size()
+                .map(|(_, rows)| rows)
+                .unwrap_or(24);
+            rows.saturating_sub(panel_lines)
+        } else {
+            let (_, cursor_y) =
+                crossterm::cursor::position().unwrap_or((0, panel_lines.saturating_sub(1)));
+            cursor_y.saturating_sub(panel_lines.saturating_sub(1))
+        };
         Ok(Self {
             stdout,
             anchor_y,
@@ -360,8 +412,15 @@ impl QuestionSession {
         &mut self,
         request: &QuestionRequest,
         answers: &QuestionAnswers,
+        leave_summary: bool,
     ) -> Result<()> {
         self.clear()?;
+        if !leave_summary {
+            // 什么都不留：光标回到面板顶上，调用方接着在这儿写它自己的那一步。
+            queue!(self.stdout, MoveTo(0, self.anchor_y), Show)?;
+            self.stdout.flush()?;
+            return Ok(());
+        }
         let width = terminal::size().map(|(cols, _)| cols).unwrap_or(80) as usize;
         let content_width = width.saturating_sub(3).max(1);
         let keeps_blank_line = self.panel_lines > 1;

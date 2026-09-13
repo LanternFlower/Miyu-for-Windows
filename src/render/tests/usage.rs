@@ -42,6 +42,7 @@ fn a_cache_rate_divides_by_the_prompt_not_the_whole_turn() {
     // Dividing by the turn total would report 45% and would sag further the
     // longer the model talked, which says nothing about the cache.
     let meter = TokenMeter {
+        live_extra_tokens: 0,
         turn_tokens: 24_800,
         turn_prompt_tokens: 12_000,
         turn_cached_tokens: 11_200,
@@ -75,6 +76,7 @@ fn the_output_speed_sits_between_the_turn_figure_and_the_context_meter() {
         cumulative_cached_tokens: 238_000,
         generation_tokens: 12_800,
         generation_ms: 35_457,
+        live_extra_tokens: 0,
     };
     assert_eq!(
         format_token_usage_inline(&meter),

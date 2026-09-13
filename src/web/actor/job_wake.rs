@@ -74,9 +74,10 @@ pub(in crate::web) async fn handle_job_completion(
     if !completion.wake_requested {
         // The model stopped this command itself; clean the strips quietly.
         tools::jobs::acknowledge(&completion.job_id);
-        state
-            .events
-            .publish("job.acknowledged", json!({ "job_id": completion.job_id, "session_id": completion.session_id.as_deref() }));
+        state.events.publish(
+            "job.acknowledged",
+            json!({ "job_id": completion.job_id, "session_id": completion.session_id.as_deref() }),
+        );
         return;
     }
     let command_short = completion.command.chars().take(120).collect::<String>();
@@ -137,9 +138,10 @@ pub(in crate::web) async fn handle_job_completion(
         }
     }
     tools::jobs::acknowledge(&completion.job_id);
-    state
-        .events
-        .publish("job.acknowledged", json!({ "job_id": completion.job_id, "session_id": completion.session_id.as_deref() }));
+    state.events.publish(
+        "job.acknowledged",
+        json!({ "job_id": completion.job_id, "session_id": completion.session_id.as_deref() }),
+    );
 }
 
 /// 本地会话唤醒回合的标识:run id + 事件订阅起点(在回合入队前取,保证

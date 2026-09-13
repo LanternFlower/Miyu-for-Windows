@@ -192,7 +192,15 @@ pub(in crate::cli) fn validate_ipc_command_response(frame: Option<IpcFrame>) -> 
 /// input history, queue tray, and the footer's token accounting.
 /// Writes one line of REPL feedback through the live tail so the output
 /// cursor stays in sync; never use bare `println!` inside the remote REPL.
+/// 一句话的状态提示。
+///
+/// 全屏下短提示走**通知条**（浮在输入框上方，几秒后自己消失），长的照旧进正文。
+/// 判据是行数：`/help` 那种整页清单浮起来没法看，而「已取消」写进正文只会让
+/// 回翻时满屏都是碎片。
 pub(in crate::cli) fn repl_note(live: &mut LiveReplTail, text: &str) -> Result<()> {
+    if live.toast_note(text) {
+        return Ok(());
+    }
     live.apply_output_frame(format!("{text}\n").as_bytes())
 }
 

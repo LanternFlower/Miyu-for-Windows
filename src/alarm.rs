@@ -126,7 +126,8 @@ fn normalize_duration(input: &str) -> String {
     }
     // 去掉方位 / 连接噪声词(此时单位已全替成 d/h/m/s,「in」「min」不会误伤)。
     for noise in [
-        "之后", "以后", "後", "后", "later", "after", "过", "整", "再", "等", "的", "钟", "in", "at",
+        "之后", "以后", "後", "后", "later", "after", "过", "整", "再", "等", "的", "钟", "in",
+        "at",
     ] {
         s = s.replace(noise, "");
     }
@@ -134,7 +135,11 @@ fn normalize_duration(input: &str) -> String {
     for unit in [" d", " h", " m", " s"] {
         s = s.replace(unit, unit.trim());
     }
-    s.split_whitespace().collect::<Vec<_>>().join(" ").trim().to_string()
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string()
 }
 
 pub fn due_at_from_time(value: &str) -> Result<i64> {

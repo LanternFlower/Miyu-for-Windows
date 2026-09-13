@@ -303,6 +303,7 @@ pub(in crate::cli) async fn run_session_command(
                 Some(&entry.id),
             )
             .await
+            .map(|_| ())
         }
         SessionCommand::Sandbox { target, dir, clear } => {
             let entry = resolve_managed_session(paths, &target).await?;

@@ -10,5 +10,6 @@ mod patch;
 mod reasoning;
 mod shared;
 mod table;
+mod timeline;
 mod tool_summary;
 mod usage;
