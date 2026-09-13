@@ -1443,3 +1443,32 @@ fn a_preparing_row_wears_the_tools_own_glyph() {
         );
     });
 }
+
+/// 参数每流一片就来一条准备事件：同一阶段的转轮不能每条都重起——重起就是在
+/// 第 0、1 帧之间抖（用户实测：主体「准备xx」的转轮特别快、特别鬼畜）。
+#[test]
+fn repeated_preparing_events_do_not_restart_the_spinner() {
+    with_blocks(|| {
+        // 测试里 stdout 不是终端；报个宽度转轮才认自己在往终端画。
+        crate::render::set_cols_override(100);
+        let mut renderer = timeline_renderer();
+        renderer.use_buffered_output();
+        renderer.write_tool_preparing("edit", false).unwrap();
+        let first = renderer.take_output_frame();
+        assert!(!first.is_empty(), "第一条准备事件该把转轮画出来");
+        for _ in 0..5 {
+            renderer.write_tool_preparing("edit", false).unwrap();
+        }
+        let again = renderer.take_output_frame();
+        assert!(
+            again.is_empty(),
+            "同一阶段的准备事件重画了转轮: {:?}",
+            String::from_utf8_lossy(&again)
+        );
+        // 换了阶段（另一个工具开始流参数）才换文字，也不必重起。
+        renderer.write_tool_preparing("run_command", false).unwrap();
+        let (glyph, _) = renderer.timeline_preparing_line().expect("准备那一行");
+        assert_eq!(glyph, crate::render::tool_glyph_for("run_command"));
+        crate::render::set_cols_override(0);
+    });
+}

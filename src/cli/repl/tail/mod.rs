@@ -936,6 +936,13 @@ pub(in crate::cli) fn enable_live_raw_mode() -> Result<()> {
         let _ = terminal::disable_raw_mode();
         return Err(error);
     }
+    // 全屏：鼠标捕获跟着 raw 模式走。raw 一关（斜杠命令等 daemon 的那几秒），
+    // 终端回到行编辑+回显，这时鼠标上报还开着的话，鼠标一动终端就把
+    // `ESC[<35;x;yM` 当输入回显到屏上——/compact 等了几秒，屏上就是一大段这个
+    //（用户实测截图）。
+    if crate::cli::in_fullscreen() {
+        let _ = execute!(io::stdout(), crossterm::event::EnableMouseCapture);
+    }
     Ok(())
 }
 
@@ -946,6 +953,10 @@ impl Drop for LiveRawMode {
         }
         let mut stdout = io::stdout();
         let _ = execute!(stdout, DisableBracketedPaste, DisableFocusChange, Show);
+        // 全屏：raw 关了鼠标上报也得关，见 `enable_live_raw_mode`。
+        if crate::cli::in_fullscreen() {
+            let _ = execute!(stdout, crossterm::event::DisableMouseCapture);
+        }
         // 1. 先 Pop 键盘增强协议
         // 2. 再退出 raw mode
         self.keyboard_enhancement.disable(&mut stdout);

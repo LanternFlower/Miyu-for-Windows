@@ -397,6 +397,30 @@ def scenario_links(report):
         stop(tui, daemon, stub)
 
 
+def scenario_new_session(report):
+    """全屏里 `/new`：画布清空、切到空会话；`/session 1` 切回去能看到旧对话。"""
+    stub, daemon, tui, master, sink = start({"STUB_CHUNK_SLEEP": "0.02"})
+    try:
+        os.write(master, h.PROMPT.encode())
+        h.drain_until(master, sink, h.PROMPT, 3.0)
+        os.write(master, b"\r")
+        h.drain_until(master, sink, "走查的回复", 40.0)
+        h.settle(master, sink)
+        os.write(master, b"/new\r")
+        h.settle(master, sink, quiet=0.6, timeout=20.0)
+        fresh = h.render(bytes(sink))
+        save("new-session", fresh)
+        report["r26_08_new_session_clears_screen"] = not any("走查的回复" in l for l in fresh)
+        report["r26_08_new_session_says_switched"] = any("已切换到会话" in l for l in fresh)
+        os.write(master, b"/session 1\r")
+        h.settle(master, sink, quiet=0.6, timeout=20.0)
+        back = h.render(bytes(sink))
+        save("session-back", back)
+        report["r26_08_switch_back_replays"] = any("走查的回复" in l for l in back)
+    finally:
+        stop(tui, daemon, stub)
+
+
 def main():
     if not h.BIN.exists():
         print(f"! 先 cargo build：{h.BIN} 不存在", file=sys.stderr)
@@ -408,6 +432,7 @@ def main():
     scenario_interrupt(report)
     scenario_panel_spinner(report)
     scenario_links(report)
+    scenario_new_session(report)
     (h.OUT / "round26-report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )

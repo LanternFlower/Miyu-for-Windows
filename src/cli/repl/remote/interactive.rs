@@ -326,6 +326,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                     apply_repl_session_switch(
                         paths,
                         &config,
+                        mode,
                         &state,
                         &mut active_session_id,
                         &mut history,
@@ -360,6 +361,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                     apply_repl_session_switch(
                         paths,
                         &config,
+                        mode,
                         &state,
                         &mut active_session_id,
                         &mut history,
@@ -460,6 +462,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         apply_repl_session_switch(
                             paths,
                             &config,
+                            mode,
                             &state,
                             &mut active_session_id,
                             &mut history,
@@ -641,6 +644,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         apply_repl_session_switch(
                             paths,
                             &config,
+                            mode,
                             &daemon_state,
                             &mut active_session_id,
                             &mut history,
@@ -731,6 +735,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         apply_repl_session_switch(
                             paths,
                             &config,
+                            mode,
                             &state,
                             &mut active_session_id,
                             &mut history,
@@ -796,6 +801,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                                 apply_repl_session_switch(
                                     paths,
                                     &config,
+                                    mode,
                                     &state,
                                     &mut active_session_id,
                                     &mut history,
@@ -1213,6 +1219,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                     apply_repl_session_switch(
                         paths,
                         &config,
+                        mode,
                         &state,
                         &mut active_session_id,
                         &mut history,

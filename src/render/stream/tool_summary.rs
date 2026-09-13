@@ -85,7 +85,17 @@ impl StreamRenderer {
         let Some(phase) = phase else {
             return Ok(());
         };
-        self.release_transient_output()?;
+        // 参数每流一片就来一条准备事件。同一阶段的转轮已经在转了，就只更新
+        // 文字——原来每条都先 `release_transient_output`（顺手把转轮停掉）再起一
+        // 个新的，转轮在第 0、1 帧之间反复重起，跟着参数流的节奏抖
+        //（用户实测：主体「准备xx」的转轮特别快、特别鬼畜）。
+        let same_phase = self
+            .tool_preparing
+            .is_some_and(|(current, _, _)| current == phase)
+            && self.wait_spinner.is_some();
+        if !same_phase {
+            self.release_transient_output()?;
+        }
         // Set before the spinner exists: `ensure_waiting_phase` ticks
         // immediately, and that tick re-derives the phase from renderer state.
         // Without the sticky field the tool summary or the reasoning timer wins

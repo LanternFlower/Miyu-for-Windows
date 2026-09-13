@@ -216,6 +216,7 @@ pub(in crate::cli) fn display_session_name(name: &str) -> &str {
 pub(in crate::cli) async fn apply_repl_session_switch(
     paths: &MiyuPaths,
     config: &AppConfig,
+    mode: AgentMode,
     state: &ipc::SessionState,
     active_session_id: &mut String,
     history: &mut Vec<ReplHistoryEntry>,
@@ -234,6 +235,13 @@ pub(in crate::cli) async fn apply_repl_session_switch(
     live_repl.editor.history_clean_index = None;
     live_repl.editor.input.clear();
     live_repl.editor.cursor = 0;
+    // 全屏：换会话就换画布。先把上一个会话的正文顶出视口（往回翻还在），再把
+    // 目标会话最近几轮回放出来——新会话就是一张空画布，切回旧会话能看到它的
+    // 对话（用户实测：/new 不清屏，看着还是旧会话）。inline 照旧只打一行提示。
+    let fullscreen = crate::cli::in_fullscreen();
+    if fullscreen {
+        synchronized_terminal_update(CursorAfterUpdate::Preserve, || live_repl.clear_screen())?;
+    }
     repl_note(
         live_repl,
         &format!(
@@ -242,6 +250,20 @@ pub(in crate::cli) async fn apply_repl_session_switch(
             display_session_name(&state.session_name)
         ),
     )?;
+    if fullscreen && config.display.repl_replay_turns > 0 {
+        match store.session_replay(config.display.repl_replay_turns) {
+            Ok(replays) if !replays.is_empty() => {
+                let (cols, _) = terminal::size().unwrap_or((80, 24));
+                let cols = crate::cli::content_viewport()
+                    .map(|(cols, _)| cols)
+                    .unwrap_or(cols);
+                let frame = session_replay_frame(&replays, mode, config, usize::from(cols.max(1)))?;
+                live_repl.apply_output_frame(&frame)?;
+            }
+            Ok(_) => {}
+            Err(error) => tracing::debug!(error = %error, "session replay unavailable"),
+        }
+    }
     synchronized_terminal_update(CursorAfterUpdate::Shown, || live_repl.reload_queue(&store))?;
     // Rebuild rather than reset: the target session may pin its own model
     // pool, so provider/model/thinking have to be re-derived alongside the

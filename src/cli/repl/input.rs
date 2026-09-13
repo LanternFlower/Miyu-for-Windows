@@ -18,7 +18,13 @@ pub(in crate::cli) fn read_live_repl_input(
     let _raw_mode = if std::mem::take(&mut live.raw_mode_handoff) {
         LiveRawMode::adopt()
     } else {
-        LiveRawMode::start()?
+        let guard = LiveRawMode::start()?;
+        // 全屏：raw 模式断过一段（斜杠命令等 daemon 的那几秒终端在回显模式），
+        // 屏上可能落了回显进来的字符，整屏按缓冲重画一遍把它们盖掉。
+        if crate::cli::repl::tail::screen::in_fullscreen() {
+            live.rendered = false;
+        }
+        guard
     };
     if !live.rendered {
         synchronized_terminal_update(CursorAfterUpdate::Shown, || live.resume())?;

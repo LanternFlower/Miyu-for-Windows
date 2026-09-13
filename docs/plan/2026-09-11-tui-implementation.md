@@ -2244,6 +2244,18 @@ shellhook 走的是 `remote/one_shot.rs` + inline 渲染器（`live = None`）�
 - **杂项**：「自定义提示词」菜单里的「防失忆提醒」「每几轮发一次」挪进「普通模式」
   菜单（提醒是人格的事，开发模式没有人格）；Arch 那一家子工具（aur、官方包查询、
   ArchWiki、新闻、装包、审包）统一挂 Arch 的 Nerd Font 标 U+F08C7。
+- **主线「准备xx」的转轮特别快、鬼畜**：参数每流一片就来一条 `ToolPreparing`，
+  `write_tool_preparing` 每条都先 `release_transient_output`（顺手 `stop_waiting`）再起一个
+  新转轮，帧在 0、1 之间反复重起，跟着参数流的节奏抖。同一阶段的转轮已经在转就只
+  更新文字。
+- **全屏 `/new` 不清屏、看着还是旧会话**：`apply_repl_session_switch` 只换状态、打一行
+  提示。全屏下改成：先 `clear_screen` 把旧正文顶出视口，再回放目标会话最近几轮
+  （`/session` 切回去看得到旧对话，新会话就是空画布）。多传一个 `mode` 给回放用。
+- **`/compact` 屏上一大段 `^[[<35;x;yM`**：斜杠命令等 daemon 的那几秒 raw 模式是关的
+  （`read_live_repl_input` 的守卫已经落了），终端回到行编辑+回显，而全屏的鼠标上报
+  还开着——鼠标一动终端就把上报序列当输入回显到屏上。鼠标捕获改成跟 raw 模式走
+  （`enable_live_raw_mode` 开、`LiveRawMode::drop` 关），raw 重新拿到时整屏按缓冲
+  重画一遍把已经回显进来的字符盖掉。
 - **「准备xx」的图标跟工具走**：准备编辑=铅笔、准备执行=`$`、准备问题=问号，和它
   跑起来之后那一步一个样子（原来一律通用齿轮）。主线 `tool_preparing` 三元组多存
   一个 glyph，面板 `SubagentLog.preparing` 同样；后台面板直接用 `[准备] <工具>\t…`
