@@ -159,8 +159,11 @@ state/cache/models。目录名用用户名，账号 id 另存账号表，princip
 
 ### 工作区
 - **成员**：每人一个共享工作区 `home/<user>/workspace`，跨该成员所有会话共用（不看会话记录
-  里的 workspace）。
-- **管理员**：按会话——会话记录 workspace 有效则用它，否则 daemon 的 cwd；不套沙盒。
+  里的沙盒根）。
+- **管理员**：按会话——会话记录里 `/sandbox` 绑了根就用它（并套沙盒，见下），否则客户端 cwd，
+  再否则 daemon 的 cwd，不套沙盒。`/workspace`（只设 cwd 不锁）09-13 退役：cwd 机制留下，由
+  沙盒根驱动；`sessions.workspace` 列原地复用为沙盒根，v36 迁移清掉老值。
+- 三处作用域化点（回合、重做、工具桥）都从 `web::sandbox_scope::session_scope` 拿工作区与策略。
 
 ---
 
@@ -171,7 +174,14 @@ state/cache/models。目录名用用户名，账号 id 另存账号表，princip
 - **成员回合**：Landlock 限制。可读写 `home/<user>/workspace`、`/tmp`、`/dev/null`、cache 目录；
   只读 `/usr /bin /sbin /lib /lib64 /etc /proc /sys /dev /run /opt /var` + 脚本目录 +
   当前可执行文件。**沙盒外的读取也禁**——成员只能读工作区和系统目录。
-- **管理员**：不套沙盒。
+- **管理员**：默认不套。`/sandbox <root>`（REPL / WebUI / `miyu session sandbox`，IPC `SetSandbox`）
+  绑定后同样读写都锁：可写 root、`/tmp`、`/dev/null`、cache、runtime(IPC socket)、artifact 库、
+  documents / pictures 产出目录 + 配置 `tools.sandbox.writable`（默认 `~/.cargo ~/.npm`）；只读
+  系统目录 + 脚本目录 + 可执行文件 + `tools.sandbox.readable`（默认 `~/.rustup ~/.local ~/.gitconfig`）。
+  HOME 换成 root，清单里放行了的工具链目录经 `CARGO_HOME / RUSTUP_HOME / npm_config_cache /
+  GIT_CONFIG_GLOBAL` 指回真家，`~/.cargo/bin ~/.local/bin` 补进 PATH。绑定时探测内核，成员会话拒绝。
+  环境块 `<host-environment sandbox="landlock" root=… writable=… readable=…>` 由策略摘要生成
+  （成员回合同一条路径），绑定/解绑各一次缓存冷启动；没有 on/off。
 - **进程内守卫**：read / edit / glob / grep / trash / apply_patch / print_image / vision /
   artifact / memes 都在进程内查一遍路径；`rg` 子进程也套沙盒。
 - **中转线 CLI 关进沙盒**：成员用 claude-code / codex / antigravity 时，整个 CLI 进程套同一套

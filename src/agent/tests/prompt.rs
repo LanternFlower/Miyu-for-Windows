@@ -118,6 +118,37 @@ fn host_environment_rides_the_system_prompt_for_owners_only() {
     assert!(host_at < lock_at);
 }
 
+/// `/sandbox`(或成员)回合:环境块按 task-local 的策略带上根与放行摘要;作用域外
+/// 一个字不多——同一会话内策略不变,字节就不变。
+#[tokio::test]
+async fn host_environment_reads_the_sandbox_policy_from_the_turn_scope() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_paths(temp.path());
+    let build = || {
+        with_host_environment(
+            "base".to_string(),
+            PromptAudience::Owner,
+            &paths,
+            &AppConfig::default(),
+            AgentMode::Normal,
+            false,
+        )
+    };
+    let policy = std::sync::Arc::new(crate::tools::sandbox::SandboxPolicy {
+        root: temp.path().join("root"),
+        writable_summary: vec!["root".into(), "/tmp".into()],
+        readable_summary: vec!["root".into(), "/tmp".into(), "system dirs".into()],
+        ..Default::default()
+    });
+    let (first, second) =
+        crate::tools::sandbox::with_sandbox(Some(policy), async { (build(), build()) }).await;
+    assert!(first.contains(" sandbox=\"landlock\" root=\""), "{first}");
+    assert!(first.contains(" writable=\"root, /tmp\" readable=\"root, /tmp, system dirs\""));
+    assert_eq!(first, second, "same policy must render byte-identically");
+    let outside = build();
+    assert!(!outside.contains("sandbox="), "{outside}");
+}
+
 #[test]
 fn host_environment_is_byte_stable_across_prompt_rebuilds() {
     let temp = tempfile::tempdir().unwrap();

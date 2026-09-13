@@ -136,7 +136,7 @@ pub enum Command {
     /// MCP stdio 工具桥(claude-code 供应商内部使用,由 claude 拉起)
     #[command(name = "mcp-serve", hide = true)]
     McpServe,
-    /// 会话管理:list / new / show / delete / rename / clear / pop / compact / models / workspace
+    /// 会话管理:list / new / show / delete / rename / clear / pop / compact / models / sandbox
     Session(SessionArgs),
     /// 长驻协议模式:stdin 一行一请求(JSON),stdout 一行一事件;宿主软件把 Miyu 当后端用
     Stdio,
@@ -319,8 +319,8 @@ pub enum SessionCommand {
         target: String,
         model: Option<String>,
     },
-    /// 查看/绑定会话工作区;`--clear` 解绑
-    Workspace {
+    /// 查看/绑定会话沙盒根(Landlock);`--clear` 解绑
+    Sandbox {
         target: String,
         dir: Option<PathBuf>,
         #[arg(long, conflicts_with = "dir")]

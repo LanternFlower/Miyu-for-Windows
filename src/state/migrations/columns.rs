@@ -320,3 +320,13 @@ pub(in crate::state) fn apply_v33_compact_v3(conn: &Connection) -> Result<()> {
     add_column_if_missing(conn, "turns", "token_context_end", "INTEGER")?;
     add_column_if_missing(conn, "turns", "compact_extras", "TEXT")
 }
+
+/// v36: `/workspace` 退役、`sessions.workspace` 列改存 `/sandbox` 的根(09-13)。
+/// 老值只是 cwd 绑定,沿用会把以前设过工作区的会话暗中上锁,一次性清空。
+pub(in crate::state) fn apply_v36_sandbox_root(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "UPDATE sessions SET workspace = NULL WHERE workspace IS NOT NULL",
+        [],
+    )?;
+    Ok(())
+}

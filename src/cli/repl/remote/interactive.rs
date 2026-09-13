@@ -423,7 +423,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         .await?;
                     }
                 }
-                ReplSlashCommand::Workspace => {
+                ReplSlashCommand::Sandbox => {
                     let arg = command_args.trim();
                     if arg.is_empty() {
                         let Some(state) = repl_get_session_state(
@@ -437,16 +437,20 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         else {
                             continue;
                         };
-                        let note = match state.workspace {
-                            Some(workspace) => format!(
-                                "\x1b[2m{}: {workspace}\x1b[0m\n",
-                                t("session workspace", "会话工作目录")
+                        let note = match state.sandbox {
+                            Some(root) => format!(
+                                "\x1b[2m{}: {root}\n{}: {}\n{}: {}\x1b[0m\n",
+                                t("sandbox root", "沙盒根"),
+                                t("writable", "可写"),
+                                state.sandbox_writable.join(", "),
+                                t("readable", "可读"),
+                                state.sandbox_readable.join(", "),
                             ),
                             None => format!(
                                 "\x1b[2m{}\x1b[0m\n",
                                 t(
-                                    "no workspace bound; using the client working directory",
-                                    "未绑定工作目录；使用客户端当前目录"
+                                    "no sandbox bound; using the client working directory, nothing confined",
+                                    "未绑定沙盒;使用客户端当前目录,不设限"
                                 )
                             ),
                         };
@@ -457,11 +461,11 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         if repl_ipc_admin(
                             paths,
                             &mut live_repl,
-                            IpcCommand::SetWorkspace {
+                            IpcCommand::SetSandbox {
                                 target: crate::ipc::SessionRef::Id {
                                     id: active_session_id.clone(),
                                 },
-                                path: None,
+                                root: None,
                             },
                         )
                         .await?
@@ -471,7 +475,10 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                                 &mut live_repl,
                                 &format!(
                                     "\x1b[2m{}\x1b[0m\n",
-                                    t("workspace unbound", "已解绑工作目录")
+                                    t(
+                                        "sandbox unbound; later turns run unconfined",
+                                        "已解绑沙盒;之后的回合不设限"
+                                    )
                                 ),
                             )?;
                         }
@@ -484,7 +491,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                                 &mut live_repl,
                                 &format!(
                                     "\x1b[31m{}: {arg} ({error})\x1b[0m\n",
-                                    t("invalid workspace path", "无效的工作目录路径")
+                                    t("invalid sandbox path", "无效的沙盒路径")
                                 ),
                             )?;
                             continue;
@@ -493,11 +500,11 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                     if repl_ipc_admin(
                         paths,
                         &mut live_repl,
-                        IpcCommand::SetWorkspace {
+                        IpcCommand::SetSandbox {
                             target: crate::ipc::SessionRef::Id {
                                 id: active_session_id.clone(),
                             },
-                            path: Some(path.clone()),
+                            root: Some(path.clone()),
                         },
                     )
                     .await?
@@ -506,9 +513,13 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         repl_note(
                             &mut live_repl,
                             &format!(
-                                "\x1b[2m{}: {}\x1b[0m\n",
-                                t("workspace bound", "已绑定工作目录"),
-                                path.display()
+                                "\x1b[2m{}: {}\n{}\x1b[0m\n",
+                                t("sandbox bound", "已绑定沙盒"),
+                                path.display(),
+                                t(
+                                    "later turns read and write only inside it (plus /tmp and the configured toolchain dirs)",
+                                    "之后的回合只能在这里面读写(外加 /tmp 与配置里的工具链目录)"
+                                )
                             ),
                         )?;
                     }

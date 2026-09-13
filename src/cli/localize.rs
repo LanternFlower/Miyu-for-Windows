@@ -198,8 +198,8 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
     let descriptions = [
         (
             "session",
-            "Manage sessions: list / new / show / delete / rename / clear / pop / compact / models / workspace",
-            "会话管理:list / new / show / delete / rename / clear / pop / compact / models / workspace",
+            "Manage sessions: list / new / show / delete / rename / clear / pop / compact / models / sandbox",
+            "会话管理:list / new / show / delete / rename / clear / pop / compact / models / sandbox",
         ),
         (
             "stdio",
@@ -570,8 +570,8 @@ pub(in crate::cli) fn localize_session_command(command: clap::Command) -> clap::
         ("new", "Create a session", "新建会话"),
         (
             "show",
-            "Session details (mode, workspace, turns, context usage)",
-            "会话详情(模式、工作区、轮数、上下文占用)",
+            "Session details (mode, sandbox, turns, context usage)",
+            "会话详情(模式、沙盒、轮数、上下文占用)",
         ),
         ("delete", "Delete a session", "删除会话"),
         ("rename", "Rename a session", "重命名会话"),
@@ -592,9 +592,9 @@ pub(in crate::cli) fn localize_session_command(command: clap::Command) -> clap::
             "查看/设置会话模型覆盖(`default` 恢复跟随全局池)",
         ),
         (
-            "workspace",
-            "Show or bind the session workspace; --clear unbinds",
-            "查看/绑定会话工作区;--clear 解绑",
+            "sandbox",
+            "Show or bind the session sandbox root (Landlock); --clear unbinds",
+            "查看/绑定会话沙盒根(Landlock);--clear 解绑",
         ),
     ];
     let mut command = command;

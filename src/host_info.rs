@@ -155,13 +155,14 @@ pub(crate) fn host_environment_block_with(
     host_environment_block_full(root_dir, model, effort, None)
 }
 
-/// 再带上沙盒信息(09-11):成员回合里模型得知道自己只能动工作区,别去猜
-/// 为什么读 ~/.miyu 会 Permission denied。
+/// 再带上沙盒信息(09-11 成员,09-13 起 `/sandbox` 会话):模型得知道自己关在哪、
+/// 根之外还能碰什么,别去猜为什么读 ~/.ssh 会 outside your workspace。属性由策略
+/// 的摘要生成,同一份策略两次生成逐字节相等(缓存前缀契约)。
 pub(crate) fn host_environment_block_full(
     root_dir: &Path,
     model: Option<&str>,
     effort: Option<&str>,
-    sandbox_workspace: Option<&Path>,
+    sandbox: Option<&crate::tools::sandbox::SandboxPolicy>,
 ) -> String {
     let (os, kernel) = host_os_facts();
     let mut block = format!("<host-environment os=\"{}\"", xml_attr_escape(os));
@@ -184,10 +185,12 @@ pub(crate) fn host_environment_block_full(
     if let Some(effort) = effort.map(str::trim).filter(|value| !value.is_empty()) {
         block.push_str(&format!(" effort=\"{}\"", xml_attr_escape(effort)));
     }
-    if let Some(workspace) = sandbox_workspace {
+    if let Some(policy) = sandbox {
         block.push_str(&format!(
-            " sandbox=\"landlock\" workspace=\"{}\" writable=\"workspace, /tmp\" readable=\"workspace, /tmp, system dirs (/usr /etc /proc …)\"",
-            xml_attr_escape(&workspace.display().to_string())
+            " sandbox=\"landlock\" root=\"{}\" writable=\"{}\" readable=\"{}\"",
+            xml_attr_escape(&policy.root.display().to_string()),
+            xml_attr_escape(&policy.writable_summary.join(", ")),
+            xml_attr_escape(&policy.readable_summary.join(", ")),
         ));
     }
     block.push_str("/>");
@@ -258,6 +261,28 @@ mod tests {
         // No placeholder values leak in when a probe comes back empty.
         assert!(!block.contains("\"\""));
         assert!(!block.contains("unknown"));
+    }
+
+    /// 沙盒属性来自策略摘要:根 + 可写 + 可读,两次生成逐字节相等;没策略一个字不多。
+    #[test]
+    fn host_block_carries_the_sandbox_summary_byte_stably() {
+        let policy = crate::tools::sandbox::SandboxPolicy {
+            root: PathBuf::from("/home/tester/proj"),
+            writable_summary: vec!["root".into(), "/tmp".into(), "~/.cargo".into()],
+            readable_summary: vec!["root".into(), "/tmp".into(), "system dirs".into()],
+            ..Default::default()
+        };
+        let root = PathBuf::from("/home/tester/.miyu");
+        let block = host_environment_block_full(&root, Some("stub/a"), None, Some(&policy));
+        assert!(block.contains(
+            " sandbox=\"landlock\" root=\"/home/tester/proj\" writable=\"root, /tmp, ~/.cargo\" readable=\"root, /tmp, system dirs\"/>"
+        ), "{block}");
+        assert_eq!(
+            block,
+            host_environment_block_full(&root, Some("stub/a"), None, Some(&policy))
+        );
+        let bare = host_environment_block_full(&root, Some("stub/a"), None, None);
+        assert!(!bare.contains("sandbox"));
     }
 
     #[test]

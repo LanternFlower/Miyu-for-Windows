@@ -365,7 +365,7 @@ fn session_selection_defaults_to_the_current_entry() {
         is_current,
         turns: 0,
         snippet: String::new(),
-        workspace: None,
+        sandbox: None,
         mode: "normal".to_string(),
     };
     let entries = vec![entry("default", true), entry("active", false)];

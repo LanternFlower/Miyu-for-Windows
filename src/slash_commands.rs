@@ -24,7 +24,7 @@ pub(crate) enum ReplSlashCommand {
     Session,
     Rename,
     Delete,
-    Workspace,
+    Sandbox,
     Models,
     Persona,
     Usage,
@@ -112,12 +112,14 @@ pub(crate) const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
         web: false,
     },
     ReplCommandSpec {
-        name: "/workspace",
-        command: ReplSlashCommand::Workspace,
+        name: "/sandbox",
+        command: ReplSlashCommand::Sandbox,
         arg_hint: "[path|clear]",
-        help_en: "show, bind, or unbind the session workspace",
-        help_zh: "查看、绑定或解绑会话工作目录",
-        web: false,
+        help_en: "confine this session to a directory (Landlock); no arg shows, `clear` unbinds",
+        help_zh: "把本会话关进某个目录(Landlock 沙盒);不带参数查看,clear 解绑",
+        // WebUI 也开(09-13 用户拍板):浏览器里没有别的入口能做这件事。成员会话
+        // 本来就关在自己家里,daemon 侧一律拒绝。
+        web: true,
     },
     ReplCommandSpec {
         name: "/models",

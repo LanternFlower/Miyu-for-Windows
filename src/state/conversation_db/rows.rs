@@ -16,7 +16,7 @@ pub(crate) fn session_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Resu
         name: row.get("name")?,
         kind: row.get("kind")?,
         parent_session_id: row.get("parent_session_id")?,
-        workspace: row.get("workspace")?,
+        sandbox: row.get("workspace")?,
         archived: row.get("archived")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,

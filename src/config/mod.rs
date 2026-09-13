@@ -770,6 +770,29 @@ pub struct ToolsConfig {
     /// 防提示注入与模型手滑；默认只收录几乎不可能误伤的毁灭性模式。
     #[serde(default = "default_command_deny")]
     pub command_deny: Vec<String>,
+    /// `/sandbox` 会话沙盒的放行清单(管理员绑定时生效;成员沙盒不看)。
+    #[serde(default)]
+    pub sandbox: SandboxConfig,
+}
+
+/// `/sandbox <路径>` 之外还放行什么。根、`/tmp`、系统目录、Miyu 自己的产出目录
+/// 是固定的;这里只是工具链。清单进环境块,改了就是一次计划内的缓存冷启动。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SandboxConfig {
+    /// 根之外额外**只读**的目录/文件(`~` 展开)。默认:`~/.rustup ~/.local ~/.gitconfig`。
+    pub readable: Vec<String>,
+    /// 根之外额外**可写**的目录(`~` 展开)。默认构建缓存:`~/.cargo ~/.npm`。
+    pub writable: Vec<String>,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            readable: default_sandbox_readable(),
+            writable: default_sandbox_writable(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -998,6 +1021,7 @@ impl Default for ToolsConfig {
             subagent_concurrency: default_subagent_concurrency(),
             default_timeout_secs: default_tools_timeout_secs(),
             command_deny: default_command_deny(),
+            sandbox: SandboxConfig::default(),
         }
     }
 }

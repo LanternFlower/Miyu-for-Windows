@@ -129,7 +129,7 @@ pub(in crate::agent) fn with_host_environment(
 }
 
 /// 主机环境块:模型池与思考档位(state 里存的偏好)——池里不止一个就全列(逗号
-/// 分隔),档位各模型不一致就写 mixed;沙盒回合(成员)再带上工作区。
+/// 分隔),档位各模型不一致就写 mixed;沙盒回合再带上根与放行摘要。
 pub(crate) fn host_environment_for(config: &AppConfig, paths: &MiyuPaths) -> String {
     let choices = config.active_provider_model_choices();
     let model_label = (!choices.is_empty()).then(|| {
@@ -141,17 +141,15 @@ pub(crate) fn host_environment_for(config: &AppConfig, paths: &MiyuPaths) -> Str
     });
     // effort 不再进主机环境块(09-11 用户拍板):思考档位在对话中会切换,把它写进
     // 系统提示词会让每次改档都掰断前缀缓存。档位与缓存前缀就此解耦。
-    // 沙盒回合(成员):工作区就是他能动的地方。
-    let sandbox_workspace = config
-        .accounts
-        .home_dir
-        .as_deref()
-        .map(|home| std::path::Path::new(home).join("workspace"));
+    // 沙盒回合(成员,或 `/sandbox` 绑定的管理员会话):策略在回合的 task-local 上
+    // (Agent 在 run_turn_task 里建,处在 with_sandbox 作用域内),属性按真实策略
+    // 生成——根、可写、可读——字节随会话恒定;绑定/解绑各是一次计划内冷启动。
+    let sandbox = crate::tools::sandbox::current_sandbox();
     crate::host_info::host_environment_block_full(
         &paths.root_dir,
         model_label.as_deref(),
         None,
-        sandbox_workspace.as_deref(),
+        sandbox.as_deref(),
     )
 }
 

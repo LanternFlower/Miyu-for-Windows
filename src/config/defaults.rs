@@ -110,6 +110,24 @@ pub(crate) fn default_tools_timeout_secs() -> u64 {
     180
 }
 
+/// `/sandbox` 默认放行的只读工具链目录:rustup 的工具链、`~/.local`(pipx/用户装的
+/// bin 与 lib)、全局 git 配置。`~/.ssh`、`~/.config` 刻意不在:那是沙盒要挡的东西。
+pub(crate) fn default_sandbox_readable() -> Vec<String> {
+    ["~/.rustup", "~/.local", "~/.gitconfig"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+/// `/sandbox` 默认放行的可写构建缓存:不放行的话锁进项目后 `cargo build` 第一步
+/// 下依赖就挂。
+pub(crate) fn default_sandbox_writable() -> Vec<String> {
+    ["~/.cargo", "~/.npm"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
 pub(crate) fn default_command_deny() -> Vec<String> {
     [
         "rm -rf /",

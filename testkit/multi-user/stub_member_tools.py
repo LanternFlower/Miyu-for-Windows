@@ -9,6 +9,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("STUB_PORT", "18497"))
 CALLS = json.loads(os.environ.get("STUB_CALLS", "[]"))
+# 每个请求的第一条 system 消息追加一行 JSON 到这个文件(验环境块里的 sandbox 属性)。
+DUMP = os.environ.get("STUB_DUMP_SYSTEM")
+
+
+def content_text(message):
+    content = message.get("content")
+    if isinstance(content, list):
+        return "".join(part.get("text", "") for part in content if isinstance(part, dict))
+    return content or ""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -36,12 +45,19 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("content-length", "0"))
         body = json.loads(self.rfile.read(length) or b"{}") if length else {}
         messages = body.get("messages", [])
-        acts = sum(1 for m in messages if m.get("role") == "assistant" and m.get("tool_calls"))
+        if DUMP:
+            system = next((content_text(m) for m in messages if m.get("role") == "system"), "")
+            with open(DUMP, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"system": system}, ensure_ascii=False) + "\n")
+        # 一轮的第一个请求以用户消息收尾 → 把工具全叫一遍;带着工具结果回来的第二个
+        # 请求 → 说一句话收尾。按「最后一条是不是 user」判,同一会话连跑几轮都成立
+        # (09-13 沙盒走查要在同一会话上绑定→解绑各跑一轮)。
+        last_is_user = bool(messages) and messages[-1].get("role") == "user"
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")
         self.send_header("cache-control", "no-cache")
         self.end_headers()
-        if acts == 0 and CALLS:
+        if last_is_user and CALLS:
             for index, call in enumerate(CALLS):
                 self._sse({"tool_calls": [{"index": index, "id": f"call_{index}", "type": "function",
                                            "function": {"name": call["name"], "arguments": json.dumps(call.get("args", {}), ensure_ascii=False)}}]})

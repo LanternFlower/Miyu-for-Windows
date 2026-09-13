@@ -202,10 +202,15 @@ const MIGRATIONS: &[Migration] = &[
         name: "generation_speed",
         apply: apply_v35_generation_speed,
     },
+    Migration {
+        version: 36,
+        name: "sandbox_root",
+        apply: apply_v36_sandbox_root,
+    },
 ];
 
 /// Latest schema version this build produces.
-pub const LATEST_VERSION: i64 = 35;
+pub const LATEST_VERSION: i64 = 36;
 
 /// Returns the schema version currently recorded in the database.
 pub fn current_version(conn: &Connection) -> Result<i64> {
@@ -736,6 +741,30 @@ mod tests {
             )
             .unwrap();
         assert!(meme_table_exists);
+    }
+
+    /// v36 把老 `/workspace` 的 cwd 绑定清掉:升级后没有会话会被暗中锁进旧工作区。
+    #[test]
+    fn v36_clears_legacy_workspace_bindings() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&mut conn, 0, &MIGRATIONS[..35]).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), 35);
+        conn.execute(
+            "INSERT INTO sessions (session_id, persona, name, kind, workspace, created_at, updated_at) \
+             VALUES ('s1', 'miyu', 'old', 'user', '/tmp/old-workspace', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        run_migrations(&mut conn).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), LATEST_VERSION);
+        let bound: Option<String> = conn
+            .query_row(
+                "SELECT workspace FROM sessions WHERE session_id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(bound, None);
     }
 
     #[test]

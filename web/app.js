@@ -2463,8 +2463,8 @@
     // Gemini-style list rows: name only; details live in the hover tooltip.
     if (!renaming) {
       const snippet = firstLine(session?.last_user_content || "");
-      const workspace = String(session?.workspace || "").trim();
-      const details = [snippet, workspace].filter(Boolean).join("\n");
+      const sandbox = String(session?.sandbox || "").trim();
+      const details = [snippet, sandbox ? `sandbox: ${sandbox}` : ""].filter(Boolean).join("\n");
       if (details) {
         main.title = `${sessionDisplayName(session)}\n${details}`;
       }
@@ -3104,7 +3104,7 @@
           session_id: sessionId,
           name: String(data?.name || ""),
           kind: "",
-          workspace: "",
+          sandbox: "",
           mode: data?.mode === "dev" ? "dev" : "normal",
           created_at: null,
           updated_at: new Date().toISOString(),
@@ -3126,8 +3126,8 @@
       }
     } else if (name === "session.updated") {
       const target = findSession(sessionId);
-      if (target && Object.prototype.hasOwnProperty.call(data || {}, "workspace")) {
-        target.workspace = String(data?.workspace || "");
+      if (target && Object.prototype.hasOwnProperty.call(data || {}, "sandbox")) {
+        target.sandbox = String(data?.sandbox || "");
       }
       if (Object.prototype.hasOwnProperty.call(data || {}, "model_override") && sessionId === state.viewSessionId) {
         setSessionModelOverride(sessionId, data.model_override);

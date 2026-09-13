@@ -229,7 +229,7 @@ mod tests {
             is_current: false,
             turns: 0,
             snippet: String::new(),
-            workspace: None,
+            sandbox: None,
             mode: "normal".to_string(),
         }
     }

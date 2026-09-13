@@ -271,7 +271,8 @@ pub(in crate::cli) struct SessionListEntry {
     pub(in crate::cli) is_current: bool,
     pub(in crate::cli) turns: u64,
     pub(in crate::cli) snippet: String,
-    pub(in crate::cli) workspace: Option<String>,
+    /// `/sandbox` 绑的根;None = 没绑。
+    pub(in crate::cli) sandbox: Option<String>,
     /// "dev" | "normal",由 daemon 按会话人格推导。
     pub(in crate::cli) mode: String,
 }
@@ -312,7 +313,7 @@ pub(in crate::cli) fn session_list_entry(session: &serde_json::Value) -> Session
                 }
             })
             .unwrap_or_default(),
-        workspace: text("workspace"),
+        sandbox: text("sandbox"),
         mode: text("mode").unwrap_or_else(|| "normal".to_string()),
     }
 }
@@ -356,8 +357,8 @@ pub(in crate::cli) fn session_select_line(
         line.push_str(" · ");
         line.push_str(&entry.snippet);
     }
-    if let Some(workspace) = &entry.workspace {
-        line.push_str(&format!("  [{workspace}]"));
+    if let Some(sandbox) = &entry.sandbox {
+        line.push_str(&format!("  [sandbox {sandbox}]"));
     }
     line
 }
@@ -368,7 +369,7 @@ pub(in crate::cli) fn session_select_search(entry: &SessionListEntry) -> String 
         display_session_name(&entry.name),
         session_mode_label(&entry.mode),
         entry.snippet,
-        entry.workspace.as_deref().unwrap_or_default()
+        entry.sandbox.as_deref().unwrap_or_default()
     )
 }
 

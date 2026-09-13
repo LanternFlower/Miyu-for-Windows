@@ -178,9 +178,9 @@ pub(in crate::web) async fn create_session_http(
 pub(in crate::web) struct UpdateSessionRequest {
     #[serde(default)]
     pub(in crate::web) name: Option<String>,
-    /// `Some("")` unbinds the workspace; a non-empty value binds it.
+    /// `Some("")` unbinds the session sandbox; a non-empty path binds it.
     #[serde(default)]
-    pub(in crate::web) workspace: Option<String>,
+    pub(in crate::web) sandbox: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -231,13 +231,13 @@ pub(in crate::web) async fn update_session_http(
         .await
         .map_err(session_api_error)?;
     }
-    if let Some(workspace) = request.workspace {
-        let path = (!workspace.trim().is_empty()).then(|| std::path::PathBuf::from(workspace));
+    if let Some(sandbox) = request.sandbox {
+        let root = (!sandbox.trim().is_empty()).then(|| std::path::PathBuf::from(sandbox));
         handle_session_command(
             &state,
-            IpcCommand::SetWorkspace {
+            IpcCommand::SetSandbox {
                 target: target(),
-                path,
+                root,
             },
         )
         .await
@@ -679,7 +679,7 @@ pub(in crate::web) fn session_record_json(record: &crate::state::SessionRecord) 
         "session_id": record.session_id,
         "name": record.name,
         "kind": record.kind,
-        "workspace": record.workspace,
+        "sandbox": record.sandbox,
         "created_at": record.created_at,
         "updated_at": record.updated_at,
         "mode": session_mode_label(record),
@@ -1047,7 +1047,9 @@ pub(in crate::web) fn session_state(
             .as_ref()
             .map(|record| record.name.clone())
             .unwrap_or_default(),
-        workspace: record.and_then(|record| record.workspace),
+        sandbox: record.and_then(|record| record.sandbox),
+        sandbox_writable: Vec::new(),
+        sandbox_readable: Vec::new(),
     })
 }
 
@@ -1064,10 +1066,14 @@ pub(in crate::web) async fn session_context_http(
     require_auth(&headers, &state)?;
     require_local_web_session(&state, &headers, &session_id)?;
     let snapshot = session_state_for(&state, &session_id).map_err(ApiError::internal)?;
+    // 沙盒三件顺路带上:WebUI 的 `/sandbox`(不带参数)就靠这条看根与放行摘要。
     Ok(Json(json!({
         "context_tokens": snapshot.context_tokens,
         "context_window": snapshot.context_window,
         "context_window_assumed": snapshot.context_window_assumed,
+        "sandbox": snapshot.sandbox,
+        "sandbox_writable": snapshot.sandbox_writable,
+        "sandbox_readable": snapshot.sandbox_readable,
     })))
 }
 
@@ -1102,6 +1108,20 @@ pub(in crate::web) fn session_state_for(
         context.window = Some(window);
         context.window_assumed = matches!(source, crate::config::ContextWindowSource::Assumed);
     }
+    // `/sandbox` 查看:摘要来自真正会装进规则集的策略(清单里不存在的路径不列)。
+    let (sandbox_writable, sandbox_readable) = record
+        .sandbox
+        .as_deref()
+        .map(PathBuf::from)
+        .filter(|root| root.is_dir())
+        .and_then(|root| admin_scope(&state.paths, &config, root).policy)
+        .map(|policy| {
+            (
+                policy.writable_summary.clone(),
+                policy.readable_summary.clone(),
+            )
+        })
+        .unwrap_or_default();
     Ok(ipc::SessionState {
         context_tokens: context.tokens,
         context_window: context.window,
@@ -1111,7 +1131,9 @@ pub(in crate::web) fn session_state_for(
         cumulative_cache_read_tokens: context.cumulative_cache_read_tokens,
         session_id: record.session_id,
         session_name: record.name,
-        workspace: record.workspace,
+        sandbox: record.sandbox,
+        sandbox_writable,
+        sandbox_readable,
     })
 }
 

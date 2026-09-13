@@ -118,6 +118,20 @@
           kind: "string-list",
           default: ["rm -rf /", "rm -rf ~", "mkfs.", "dd if=/dev/zero of=/dev/", ":(){ :|:& };:"],
         },
+        {
+          path: "tools.sandbox.writable",
+          label: "沙盒额外可写",
+          hint: "/sandbox 绑定后根之外还能写的目录(构建缓存);改了会掰一次缓存",
+          kind: "string-list",
+          default: ["~/.cargo", "~/.npm"],
+        },
+        {
+          path: "tools.sandbox.readable",
+          label: "沙盒额外只读",
+          hint: "/sandbox 绑定后根之外还能读的目录或文件(工具链);~/.ssh 这类别放",
+          kind: "string-list",
+          default: ["~/.rustup", "~/.local", "~/.gitconfig"],
+        },
       ],
     },
     {

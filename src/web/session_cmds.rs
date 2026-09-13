@@ -232,7 +232,8 @@ pub(in crate::web) async fn handle_session_command(
             };
             // 会话按人分库:成员的会话在成员库里,配置也按成员+人格算。
             let session_store = state.stores.for_session(&session_id);
-            let record = session_store
+            // 会话存在性检查(作用域由 session_scope 按记录自己算)。
+            session_store
                 .session_record(&session_id)
                 .map_err(|error| safe_error_message(&error))?
                 .ok_or_else(|| "session not found".to_string())?;
@@ -260,20 +261,18 @@ pub(in crate::web) async fn handle_session_command(
                 .as_deref()
                 .and_then(|raw| serde_json::from_str(raw).ok())
                 .unwrap_or(crate::tools::workspace::TurnOrigin::Human);
-            // 成员的桥调用与回合同一份作用域:工作区在家里,子进程套 Landlock。
-            let member = member_scope(&state.paths, &state.state_store, &state.stores, &session_id);
-            let workspace = member
-                .as_ref()
-                .map(|scope| scope.workspace.clone())
-                .or_else(|| {
-                    record
-                        .workspace
-                        .clone()
-                        .map(std::path::PathBuf::from)
-                        .filter(|path| path.is_dir())
-                })
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
-            let sandbox = member.map(|scope| scope.policy);
+            // 桥调用与回合同一份作用域(成员在家里、管理员按 /sandbox 绑定)。
+            let TurnScope {
+                workspace,
+                policy: sandbox,
+            } = session_scope(
+                &state.paths,
+                &state.state_store,
+                &state.stores,
+                &config,
+                &session_id,
+                None,
+            );
             let session_arc: Arc<str> = session_id.clone().into();
             let output = crate::tools::sandbox::with_sandbox(
                 sandbox,
@@ -478,29 +477,62 @@ pub(in crate::web) async fn handle_session_command(
             );
             Ok(json!({}))
         }
-        IpcCommand::SetWorkspace { target, path } => {
+        IpcCommand::SetSandbox { target, root } => {
             let record = resolve_local_session_ref(state, &target)?;
-            let workspace = match path {
-                Some(path) => {
-                    if !path.is_dir() {
+            // 成员的沙盒定死在自己家里,不归他们自己管。
+            if let Some(owner) = state.stores.owner_of_session(&record.session_id) {
+                let is_member = !owner.is_empty()
+                    && state
+                        .state_store
+                        .account_by_id(&owner)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|account| !account.is_admin());
+                if is_member {
+                    return Err(t(
+                        "member sessions are always sandboxed in their own home; /sandbox is admin only",
+                        "成员会话固定关在自己家里,/sandbox 只给管理员",
+                    )
+                    .to_string());
+                }
+            }
+            let root = match root {
+                Some(root) => {
+                    let root = std::fs::canonicalize(&root).map_err(|error| {
+                        format!(
+                            "{}: {} ({error})",
+                            t("sandbox root is not a directory", "沙盒根不是目录"),
+                            root.display()
+                        )
+                    })?;
+                    if !root.is_dir() {
                         return Err(format!(
                             "{}: {}",
-                            t("workspace is not a directory", "workspace 不是目录"),
-                            path.display()
+                            t("sandbox root is not a directory", "沙盒根不是目录"),
+                            root.display()
                         ));
                     }
-                    Some(path.to_string_lossy().into_owned())
+                    // 规则是 daemon 装的,在这里探测内核;没有 Landlock 就当场拒绝,
+                    // 别等到跑命令才失败关闭。
+                    if crate::tools::sandbox::probe().is_none() {
+                        return Err(t(
+                            "this kernel has no Landlock (Linux 5.13+ required); cannot sandbox",
+                            "这个内核没有 Landlock(需要 Linux 5.13+),无法沙盒",
+                        )
+                        .to_string());
+                    }
+                    Some(root.to_string_lossy().into_owned())
                 }
                 None => None,
             };
             state
                 .stores
                 .for_session(&record.session_id)
-                .set_session_workspace(&record.session_id, workspace.as_deref())
+                .set_session_sandbox(&record.session_id, root.as_deref())
                 .map_err(|error| safe_error_message(&error))?;
             state.events.publish(
                 "session.updated",
-                json!({ "session_id": record.session_id, "workspace": workspace }),
+                json!({ "session_id": record.session_id, "sandbox": root }),
             );
             Ok(json!({}))
         }

@@ -6,6 +6,10 @@ e2e_hello)跑一轮,把脚本工具、read、glob、edit、run_command、print_i
 - print_image 的图片资源成员自己能取到(用户反馈「图片加载失败」)
 管理员同一套再跑一遍作对照(不套沙盒)。
 
+09-13 加管理员 `/sandbox`(PATCH /api/sessions/{id} {"sandbox": 根}):绑定后同一套调用
+读写都锁在根下、环境块带 sandbox 属性;不存在的目录 / 成员会话被拒;解绑后同一会话
+再跑一轮恢复不受限、环境块不再带 sandbox。
+
     BIN=<miyu> python3 testkit/multi-user/member_tools_probe.py
 """
 import json
@@ -45,6 +49,15 @@ def calls_for(home, workspace):
         {"name": "run_command", "args": {"command": f"cat {secret} 2>&1 | head -1; echo sandboxed > {workspace}/cmd.txt && echo WROTE"}},
         {"name": "print_image", "args": {"image": f"{workspace}/pic.png"}},
     ]
+
+
+def last_system():
+    """桩模型 dump 的最后一个 system 消息(最近一次请求的环境块就在里面)。"""
+    path = OUT / "stub-system.jsonl"
+    if not path.exists():
+        return ""
+    lines = path.read_text("utf-8").strip().splitlines()
+    return json.loads(lines[-1])["system"] if lines else ""
 
 
 def raw_get(client, path):
@@ -186,17 +199,49 @@ def main():
         else:
             run_actor(member, sid, "member", str(HOME), str(member_ws), sandboxed=True)
 
-        # 管理员对照:同样的调用,但路径指向管理员工作区(工作区=会话 workspace,这里直接用 HOME)
-        status, created = admin.call("POST", "/api/sessions", {"name": "管理员走查", "workspace": str(admin_ws)})
-        asid = created["session"]["session_id"]
+        # 管理员对照:同样的调用,但路径指向管理员工作区;没绑沙盒 → 不受限
         stub.terminate()
         stub.wait(timeout=5)
         stub_env["STUB_CALLS"] = json.dumps(calls_for(HOME, admin_ws))
+        stub_env["STUB_DUMP_SYSTEM"] = str(OUT / "stub-system.jsonl")
         stub2 = subprocess.Popen([sys.executable, str(HERE / "stub_member_tools.py")], env=stub_env,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         assert e2e.wait_http(f"http://127.0.0.1:{STUB_PORT}/v1/models"), "stub2 not up"
         try:
+            status, created = admin.call("POST", "/api/sessions", {"name": "管理员走查"})
+            asid = created["session"]["session_id"]
             run_actor(admin, asid, "admin", str(HOME), str(admin_ws), sandboxed=False)
+            check("admin: 环境块不带 sandbox", 'sandbox="landlock"' not in last_system())
+
+            # 管理员 /sandbox(09-13):绑定 → 同一套调用锁在根下;解绑 → 同一会话恢复
+            real_ws = os.path.realpath(admin_ws)
+            status, created = admin.call("POST", "/api/sessions", {"name": "管理员沙盒"})
+            ssid = created["session"]["session_id"]
+            status, body = admin.call("PATCH", f"/api/sessions/{ssid}", {"sandbox": str(admin_ws)})
+            check("admin-sandbox: 绑定成功", status == 200, f"{status} {json.dumps(body, ensure_ascii=False)[:80]}")
+            status, listing = admin.call("GET", "/api/sessions")
+            bound = next((s for s in listing.get("sessions", []) if s.get("session_id") == ssid), {})
+            check("admin-sandbox: 会话记录带 sandbox 根", bound.get("sandbox") == real_ws, json.dumps(bound.get("sandbox")))
+            # 上一幕(不受限)已经在同一个工作区写过 made.txt/cmd.txt,先清掉:
+            # apply_patch 的「文件已存在」会先于沙盒判定报错,测的就不是沙盒了。
+            for name in ("made.txt", "cmd.txt"):
+                (admin_ws / name).unlink(missing_ok=True)
+            run_actor(admin, ssid, "admin-sandbox", str(HOME), str(admin_ws), sandboxed=True)
+            system = last_system()
+            at = system.find("sandbox=")
+            check("admin-sandbox: 环境块带 sandbox 根与放行摘要",
+                  'sandbox="landlock"' in system and f'root="{real_ws}"' in system and 'writable="root, /tmp' in system and 'readable="root, /tmp, system dirs' in system,
+                  system[max(at - 2, 0):at + 200] if at >= 0 else system[:120])
+            status, body = admin.call("PATCH", f"/api/sessions/{ssid}", {"sandbox": str(HOME / "does-not-exist")})
+            check("admin-sandbox: 绑不存在的目录被拒", status >= 400, f"{status} {json.dumps(body, ensure_ascii=False)[:100]}")
+            status, body = member.call("PATCH", f"/api/sessions/{sid}", {"sandbox": str(member_ws)})
+            check("member: /sandbox 被拒(成员固定在家里)", status >= 400, f"{status} {json.dumps(body, ensure_ascii=False)[:100]}")
+            status, body = admin.call("PATCH", f"/api/sessions/{ssid}", {"sandbox": ""})
+            check("admin-sandbox: 解绑成功", status == 200, f"{status}")
+            for name in ("made.txt", "cmd.txt"):
+                (admin_ws / name).unlink(missing_ok=True)
+            run_actor(admin, ssid, "admin-unbound", str(HOME), str(admin_ws), sandboxed=False)
+            check("admin-unbound: 环境块不再带 sandbox", 'sandbox="landlock"' not in last_system())
         finally:
             stub2.terminate()
     finally:

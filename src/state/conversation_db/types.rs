@@ -425,7 +425,8 @@ pub struct SessionRecord {
     pub name: String,
     pub kind: String,
     pub parent_session_id: Option<String>,
-    pub workspace: Option<String>,
+    /// `/sandbox` 绑的根目录(列名仍叫 `workspace`,09-13 起语义=沙盒根;None=没绑)。
+    pub sandbox: Option<String>,
     pub archived: bool,
     pub created_at: String,
     pub updated_at: String,

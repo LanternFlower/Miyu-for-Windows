@@ -395,7 +395,9 @@ mod tests {
                 cumulative_cache_read_tokens: 10,
                 session_id: "default".to_string(),
                 session_name: "终端集成会话".to_string(),
-                workspace: None,
+                sandbox: None,
+                sandbox_writable: Vec::new(),
+                sandbox_readable: Vec::new(),
             },
             data: serde_json::json!({"ok": true}),
         };

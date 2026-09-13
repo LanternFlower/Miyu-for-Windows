@@ -268,6 +268,30 @@ window.MiyuCommands = (() => {
         ctx.toast?.(`已从上下文弹出最旧的 ${removed} 轮`);
         return true;
       }
+      if (spec.name === "/sandbox") {
+        // 与 REPL 同一条 IPC(SetSandbox):校验目录、探测内核、拒绝成员都在服务端;
+        // 这里只负责把回执贴进对话流。路径是 daemon 那台机器上的路径。
+        const base = `/api/sessions/${encodeURIComponent(ctx.sessionId)}`;
+        const trimmed = args.trim();
+        const describe = async () => {
+          const response = await ctx.apiRequest(`${base}/context`);
+          const info = await response.json();
+          if (!info?.sandbox) {
+            return "未绑定沙盒：读写不设限。用 /sandbox <路径> 把本会话关进一个目录";
+          }
+          const writable = (info.sandbox_writable || []).join("、");
+          const readable = (info.sandbox_readable || []).join("、");
+          return `沙盒根：${info.sandbox} ｜ 可写：${writable} ｜ 可读：${readable}`;
+        };
+        if (!trimmed) return done(await describe());
+        const clearing = trimmed.toLowerCase() === "clear";
+        await ctx.apiRequest(base, {
+          method: "PATCH",
+          body: JSON.stringify({ sandbox: clearing ? "" : trimmed }),
+        });
+        if (clearing) return done("已解绑沙盒；之后的回合不设限");
+        return done(`已绑定：${await describe()}（只影响之后的回合）`);
+      }
       if (spec.name === "/stop") {
         // 和点停止按钮完全一致：不留命令回显、不留回执（按钮也不留）。
         // 只有「其实没有在跑」这种落空才用 toast 提一句。

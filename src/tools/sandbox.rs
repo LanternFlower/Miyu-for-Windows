@@ -1,14 +1,15 @@
-//! 成员子进程沙盒(09-11,Landlock)。
+//! 子进程沙盒(09-11 成员,09-13 起管理员会话也可绑;Landlock)。
 //!
 //! 照搬 dsh 的 `landlock-run` 思路:fork 之后、exec 之前给**子进程自己**装一套
 //! Landlock 规则集(允许列表),规则随 `execve` 继承,命令和它再起的一切子进程
 //! 都受限,daemon 本身不受影响。没有任何依赖——三个裸 syscall 加一次 `prctl`,
 //! 内核 5.13+ 自带。
 //!
-//! 策略由调用方给(回合层按「会话归谁」算):成员的回合与工具桥里,run_command、
-//! 后台 job、脚本工具起的进程只能写自己家里的工作区、`/tmp` 与脚本缓存,其余
-//! 只读;管理员不套。内核不支持(没编 Landlock / 被禁)就**失败关闭**:成员的
-//! 命令一个都不跑,而不是裸奔。
+//! 策略由调用方给(回合层按「会话归谁、绑没绑沙盒」算,见 `web::sandbox_scope`):
+//! 成员的回合与工具桥里,run_command、后台 job、脚本工具起的进程只能写自己家里
+//! 的工作区、`/tmp` 与脚本缓存,其余只读;管理员默认不套,`/sandbox <路径>` 绑定
+//! 后同样读写都锁在那个根下。内核不支持(没编 Landlock / 被禁)就**失败关闭**:
+//! 沙盒回合的命令一个都不跑,而不是裸奔。
 //!
 //! 只管文件系统。网络(ABI 4 的 TCP bind/connect)不在 handled 集合里,不受限。
 
@@ -19,13 +20,24 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone, Default)]
 pub struct SandboxPolicy {
+    /// 沙盒根:成员是 `home/<用户>/workspace`,管理员是 `/sandbox` 绑的目录。
+    /// 进环境块告诉模型自己关在哪;`/sandbox` 查看也用它。
+    pub root: PathBuf,
     /// 只读 + 可执行(目录下的一切)。
     pub read_only: Vec<PathBuf>,
     /// 内核能管的全部文件系统权限。
     pub read_write: Vec<PathBuf>,
-    /// 子进程的 HOME(成员的工作区):登录 shell 读 ~/.profile、程序写 ~/.cache
-    /// 都落在这里,而不是撞在管理员家门口的 Permission denied 上。
+    /// 子进程的 HOME(沙盒根):登录 shell 读 ~/.profile、程序写 ~/.cache
+    /// 都落在这里,而不是撞在真家门口的 Permission denied 上。
     pub home: Option<PathBuf>,
+    /// 额外环境变量(工具链直通:CARGO_HOME 这类指回真家里放行了的目录)。
+    pub env: Vec<(String, String)>,
+    /// 插到子进程 PATH 头部的目录(`~/.cargo/bin` 这类,存在且放行了才进)。
+    pub path_prepend: Vec<PathBuf>,
+    /// 给模型看的可写/可读摘要(环境块与 `/sandbox` 查看共用),路径以 `~` 缩写;
+    /// 系统目录、Miyu 内部目录不逐条列,只写 `system dirs`。
+    pub writable_summary: Vec<String>,
+    pub readable_summary: Vec<String>,
 }
 
 /// 进程内工具(read/edit/glob/grep/print_image/看图……)读路径前过一遍:
@@ -114,11 +126,35 @@ pub fn current_sandbox() -> Option<Arc<SandboxPolicy>> {
     SANDBOX.try_with(|policy| policy.clone()).ok().flatten()
 }
 
+/// 子进程环境:HOME 换成沙盒根(`keep_home` 时不换——中转线 CLI 得按真家找
+/// `~/.claude`)、工具链变量、PATH 头部补放行了的 bin 目录。
+fn child_env(policy: &SandboxPolicy, keep_home: bool) -> Vec<(String, std::ffi::OsString)> {
+    let mut env: Vec<(String, std::ffi::OsString)> = Vec::new();
+    if !keep_home {
+        if let Some(home) = &policy.home {
+            env.push(("HOME".to_string(), home.clone().into_os_string()));
+        }
+    }
+    for (key, value) in &policy.env {
+        env.push((key.clone(), value.clone().into()));
+    }
+    if !policy.path_prepend.is_empty() {
+        let mut parts: Vec<PathBuf> = policy.path_prepend.clone();
+        if let Some(existing) = std::env::var_os("PATH") {
+            parts.extend(std::env::split_paths(&existing));
+        }
+        if let Ok(joined) = std::env::join_paths(parts) {
+            env.push(("PATH".to_string(), joined));
+        }
+    }
+    env
+}
+
 /// 有策略在身就给 Command 挂 `pre_exec`(在子进程里装规则再 exec);没有就原样。
 pub fn confine(command: &mut tokio::process::Command) {
     if let Some(policy) = current_sandbox() {
-        if let Some(home) = &policy.home {
-            command.env("HOME", home);
+        for (key, value) in child_env(&policy, false) {
+            command.env(key, value);
         }
         let rules = Rules::prepare(&policy);
         // SAFETY: 闭包只做裸 syscall / open / close,不碰锁、不分配。
@@ -141,6 +177,9 @@ pub fn confine_relay(command: &mut tokio::process::Command, extra_rw: &[PathBuf]
                 extended.read_write.push(path.clone());
             }
         }
+        for (key, value) in child_env(&extended, true) {
+            command.env(key, value);
+        }
         let rules = Rules::prepare(&extended);
         // SAFETY: 同 confine。
         unsafe {
@@ -152,8 +191,8 @@ pub fn confine_relay(command: &mut tokio::process::Command, extra_rw: &[PathBuf]
 pub fn confine_std(command: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
     if let Some(policy) = current_sandbox() {
-        if let Some(home) = &policy.home {
-            command.env("HOME", home);
+        for (key, value) in child_env(&policy, false) {
+            command.env(key, value);
         }
         let rules = Rules::prepare(&policy);
         // SAFETY: 同上。
@@ -343,9 +382,11 @@ mod tests {
         let denied = temp.path().join("denied");
         std::fs::create_dir_all(&denied).unwrap();
         let policy = Arc::new(SandboxPolicy {
+            root: allowed.clone(),
             read_only: vec![PathBuf::from("/")],
             read_write: vec![allowed.clone(), PathBuf::from("/dev/null")],
             home: Some(allowed.clone()),
+            ..Default::default()
         });
         let script = format!(
             "echo ok > {}/a.txt && ! (echo no > {}/b.txt) 2>/dev/null && cat /etc/hostname >/dev/null",
@@ -374,9 +415,10 @@ mod tests {
         std::fs::create_dir_all(&ro).unwrap();
         std::fs::write(ro.join("a.txt"), "a").unwrap();
         let policy = Arc::new(SandboxPolicy {
+            root: rw.clone(),
             read_only: vec![ro.clone()],
             read_write: vec![rw.clone()],
-            home: None,
+            ..Default::default()
         });
         let outside = temp.path().join("outside.txt");
         let outside_in = outside.clone();
@@ -392,6 +434,41 @@ mod tests {
         })
         .await;
         assert!(guard_read(&outside).is_ok(), "no policy = no guard");
+    }
+
+    /// 工具链直通:HOME 换根、策略里的环境变量透传、PATH 头部补目录。
+    #[tokio::test]
+    async fn child_env_carries_home_toolchain_and_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let bin = temp.path().join("bin");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        let policy = SandboxPolicy {
+            root: root.clone(),
+            home: Some(root.clone()),
+            env: vec![("CARGO_HOME".to_string(), "/real/.cargo".to_string())],
+            path_prepend: vec![bin.clone()],
+            ..Default::default()
+        };
+        let env = child_env(&policy, false);
+        let get = |key: &str| {
+            env.iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value.to_string_lossy().into_owned())
+        };
+        assert_eq!(get("HOME").as_deref(), Some(root.to_str().unwrap()));
+        assert_eq!(get("CARGO_HOME").as_deref(), Some("/real/.cargo"));
+        let path = get("PATH").unwrap();
+        assert!(path.starts_with(bin.to_str().unwrap()), "{path}");
+        assert!(
+            path.len() > bin.to_str().unwrap().len(),
+            "daemon PATH must follow"
+        );
+        // 中转线:HOME 不换,其余照给。
+        let relay = child_env(&policy, true);
+        assert!(relay.iter().all(|(name, _)| name != "HOME"));
+        assert!(relay.iter().any(|(name, _)| name == "CARGO_HOME"));
     }
 
     #[tokio::test]

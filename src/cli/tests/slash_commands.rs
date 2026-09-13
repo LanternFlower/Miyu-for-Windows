@@ -199,6 +199,7 @@ fn web_commands_are_a_subset_of_the_repl_table() {
     assert_eq!(
         names,
         [
+            "/sandbox",
             "/pop",
             "/compact",
             "/goal",

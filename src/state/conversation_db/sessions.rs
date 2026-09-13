@@ -478,7 +478,7 @@ impl ConversationDb {
             name: name.to_string(),
             kind: "user".to_string(),
             parent_session_id: None,
-            workspace: None,
+            sandbox: None,
             archived: false,
             created_at: now.clone(),
             updated_at: now,
@@ -498,8 +498,9 @@ impl ConversationDb {
         self.update_session_field(session_id, "persona", Some(persona))
     }
 
-    pub fn set_session_workspace(&self, session_id: &str, workspace: Option<&str>) -> Result<()> {
-        self.update_session_field(session_id, "workspace", workspace)
+    /// `/sandbox` 绑定/解绑:根目录进 `workspace` 列(列名沿用,语义=沙盒根)。
+    pub fn set_session_sandbox(&self, session_id: &str, root: Option<&str>) -> Result<()> {
+        self.update_session_field(session_id, "workspace", root)
     }
 
     /// JSON-encoded per-session model pool override
