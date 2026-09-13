@@ -412,11 +412,18 @@ def scenario_new_session(report):
         save("new-session", fresh)
         report["r26_08_new_session_clears_screen"] = not any("走查的回复" in l for l in fresh)
         report["r26_08_new_session_says_switched"] = any("已切换到会话" in l for l in fresh)
-        os.write(master, b"/session 1\r")
-        h.settle(master, sink, quiet=0.6, timeout=20.0)
-        back = h.render(bytes(sink))
-        save("session-back", back)
-        report["r26_08_switch_back_replays"] = any("走查的回复" in l for l in back)
+        # 切回旧会话：列表按最近活动排，/new 之后新会话多半是 1 号、旧的是 2 号，
+        # 但不赌次序——2 号没回放出旧对话就再试 1 号。
+        replayed = False
+        for index in (b"2", b"1"):
+            os.write(master, b"/session " + index + b"\r")
+            h.settle(master, sink, quiet=0.6, timeout=20.0)
+            back = h.render(bytes(sink))
+            save("session-back", back)
+            if any("走查的回复" in l for l in back):
+                replayed = True
+                break
+        report["r26_08_switch_back_replays"] = replayed
     finally:
         stop(tui, daemon, stub)
 
