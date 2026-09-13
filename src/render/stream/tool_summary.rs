@@ -460,16 +460,17 @@ impl StreamRenderer {
                     return Ok(());
                 }
                 if self.tool_call_mode == ToolCallDisplayMode::Full {
+                    // 命令由结果那一条整块画（命令 + 状态 + 输出），这儿先画一遍
+                    // 就是画两遍。
+                    if tool_name == "run_command" {
+                        return Ok(());
+                    }
                     let args = value.get("args").and_then(Value::as_str).unwrap_or("");
                     self.release_transient_output()?;
                     let display_name = self.display_tool_name(tool_name);
                     let stdout = &mut self.output;
-                    if tool_name == "run_command" {
-                        write_command_block(stdout, args)?;
-                    } else {
-                        writeln!(stdout, "{} {}", t("tool", "工具"), display_name)?;
-                        write_tool_payload(stdout, t("args", "参数"), args)?;
-                    }
+                    writeln!(stdout, "{} {}", t("tool", "工具"), display_name)?;
+                    write_tool_payload(stdout, t("args", "参数"), args)?;
                     stdout.flush()?;
                 }
             }

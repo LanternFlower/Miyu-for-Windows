@@ -380,7 +380,7 @@ fn collapse_subagent_segment(log: &mut SubagentLog) {
     log.step_blocks.truncate(from);
     // 收缩行点开是时间线（`fold`）：抬头、连线、各步同一列，不再当正文缩进。
     let mut fold = Step::new(
-        step_line_in(SUMMARY_GLYPH, &summary, panel_step_width()),
+        step_line_in(FOLD_GLYPH_CLOSED, &summary, panel_step_width()),
         body,
         None,
     );
@@ -391,6 +391,20 @@ fn collapse_subagent_segment(log: &mut SubagentLog) {
 
 /// 收缩行的图标。和主线那条 `⌄ Worked for …` 一个样子。
 const SUMMARY_GLYPH: &str = "⌄";
+
+/// 收缩行**合着**的时候的图标：`› Worked for …`。点开之后（块内容的第一行）才是
+/// `⌄`——主线那条就是这么翻的，面板里原来一直是 `⌄`，合着开着一个样
+///（用户实测：Worked for 左侧箭头异常）。
+const FOLD_GLYPH_CLOSED: &str = "›";
+
+pub(crate) fn fold_glyph_closed() -> &'static str {
+    FOLD_GLYPH_CLOSED
+}
+
+/// 收缩行点开之后的抬头：`›` 换成 `⌄`。
+pub(crate) fn fold_line_open(line: &str) -> String {
+    line.replacen(FOLD_GLYPH_CLOSED, SUMMARY_GLYPH, 1)
+}
 
 fn trim_subagent(log: &mut SubagentLog) {
     if log.steps.len() > SUBAGENT_LOG_STEPS {
@@ -890,15 +904,16 @@ fn push_wrapped(out: &mut String, line: &str, width: usize) {
 /// 内容会和上下两步的连线糊成一片。
 fn step_detail(step: &Step) -> Vec<String> {
     let mut detail = Vec::with_capacity(step.body.len() + 3);
-    detail.push(step.line.clone());
     if step.fold {
-        // 收缩行点开是时间线：抬头、连线、各步同一列，不缩进不铺底
-        //（用户拿主线那份对比：「这个才是正确的」）。
+        // 收缩行点开是时间线：抬头（`›` 翻成 `⌄`）、连线、各步同一列，不缩进
+        // 不铺底（用户拿主线那份对比：「这个才是正确的」）。
+        detail.push(fold_line_open(&step.line));
         detail.push(rail());
         detail.extend(step.body.iter().cloned());
         detail.push(String::new());
         return detail;
     }
+    detail.push(step.line.clone());
     detail.extend(indented_body(&step.body));
     detail
 }
@@ -1829,6 +1844,11 @@ impl StreamRenderer {
         };
         let log = self.subagent_logs.entry(name.to_string()).or_default();
         log.started.get_or_insert_with(Instant::now);
+        // 参数开始流 = 这一段想完了、话也说完了：先按时序封掉，「准备xx」才排
+        // 在它们后面。原来思考要等结果回来才结算，面板里「准备执行」一直压在
+        // 「思考中」上头，思考的耗时还把工具跑的时间算了进去。
+        seal_subagent_speech(log);
+        flush_subagent_thought(log);
         if log.preparing.is_none() {
             log.preparing = Some((phase, Instant::now()));
         }
@@ -1853,6 +1873,7 @@ impl StreamRenderer {
         let log = self.subagent_logs.entry(name.to_string()).or_default();
         log.started.get_or_insert_with(Instant::now);
         seal_subagent_speech(log);
+        flush_subagent_thought(log);
         log.preparing = None;
         log.running = Some((tool_glyph(tool), display.to_string(), peek, Instant::now()));
         log.tool_since = Some(Instant::now());
@@ -1886,19 +1907,20 @@ impl StreamRenderer {
         match diff {
             Some(lines) => body.extend(lines),
             None => {
+                // 和主线那一步点开一个样子：主题（命令全文／路径）一段、空一行、
+                // 然后是输出。`$` 是抬头上的图标，正文里不再写一遍。
                 if !subject.trim().is_empty() {
-                    let head = if crate::render::is_command_tool(tool) {
-                        format!("$ {subject}")
-                    } else {
-                        subject.clone()
-                    };
                     body.extend(
-                        wrap_detail(&head)
+                        wrap_detail(&subject)
                             .into_iter()
                             .map(|piece| format!("\x1b[2m{piece}\x1b[0m")),
                     );
                 }
-                body.extend(tool_output_lines(output));
+                let output = tool_output_lines(output);
+                if !body.is_empty() && !output.is_empty() {
+                    body.push(String::new());
+                }
+                body.extend(output);
             }
         }
         let log = self.subagent_logs.entry(name.to_string()).or_default();
@@ -1935,6 +1957,33 @@ impl StreamRenderer {
         ));
         trim_subagent(log);
         self.publish_subagent(name);
+    }
+
+    /// 每个 tick 把还活着的面板重新灌一遍，「准备执行 · 1.2s」、标题上的秒数才会
+    /// 走。面板内容不归转轮管，只在事件到来时重生成——不灌的话它停在上一次事件
+    /// 那一刻（用户实测：浮层里 `准备执行 · 0.0s` 不动）。十分之一秒灌一次够了，
+    /// 秒数就是这个精度。
+    pub(crate) fn refresh_subagent_panels(&mut self) {
+        if !blocks::enabled() {
+            return;
+        }
+        let now = Instant::now();
+        if self
+            .last_subagent_refresh
+            .is_some_and(|last| now.duration_since(last) < Duration::from_millis(100))
+        {
+            return;
+        }
+        self.last_subagent_refresh = Some(now);
+        let live: Vec<String> = self
+            .subagent_logs
+            .iter()
+            .filter(|(_, log)| log.id.is_some() && !log.finished)
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in live {
+            self.publish_subagent(&name);
+        }
     }
 
     /// 把一个子代理的时间线灌进它的覆盖层块。

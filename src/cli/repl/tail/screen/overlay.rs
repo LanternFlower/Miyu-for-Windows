@@ -284,11 +284,18 @@ impl Overlay {
             // 反过来（抬头绿、正文白）看着像把手比内容还重要，而这一行本来就
             // 只是个把手（用户实测：浮层里思考行和思考展开内容的颜色反了）。
             let _ = step.green;
-            let status = match step.status {
-                Some(status) => format!(" · {status}"),
-                // 日志末尾那个还没有结果的调用：标出它正在跑，不然看着像卡住了。
-                None if step.running => format!(" · {}", crate::i18n::text("running", "运行中")),
-                None => String::new(),
+            // ok 不上抬头：主线和前台面板都不写 ok，跑砸了靠红色和打叉说话。
+            // 日志末尾那个还没有结果的调用例外：标出它正在跑，不然看着像卡住了。
+            let status = if step.status.is_none() && step.running {
+                format!(" · {}", crate::i18n::text("running", "运行中"))
+            } else {
+                String::new()
+            };
+            // 收缩行合着的时候是 `›`，点开才翻成 `⌄`（和主线那条一样）。
+            let glyph = if step.glyph == SUMMARY_GLYPH {
+                crate::render::timeline::fold_glyph_closed()
+            } else {
+                step.glyph.as_str()
             };
             // 想的那一步按主线的说法写：`已思考  <窥视>`。面板里光甩一句原文
             // 出来，看不出那是"在想"还是工具吐的东西。
@@ -312,13 +319,10 @@ impl Overlay {
             // 应该是一回事啊，为什么感觉你做出来两个浮层）。
             // 正在跑／正在准备的那一行左边距上转着点阵，和主线一样。
             let line = if step.running || step.preparing {
-                crate::render::timeline::panel_live_step_line(
-                    &step.glyph,
-                    &format!("{head}{status}"),
-                )
+                crate::render::timeline::panel_live_step_line(glyph, &format!("{head}{status}"))
             } else {
                 crate::render::timeline::panel_step_line(
-                    &step.glyph,
+                    glyph,
                     &format!("{head}{status}"),
                     step.status == Some("err"),
                 )
@@ -362,15 +366,11 @@ impl Overlay {
             if inner_index > 0 {
                 rows.push(crate::render::timeline::panel_rail());
             }
-            let status = match step.status {
-                Some(status) => format!(" · {status}"),
-                None => String::new(),
-            };
             let head = step_head(step, head_width);
             let head = crate::render::clip_to_display_width(&head, head_width);
             let inner_line = crate::render::timeline::panel_step_line(
                 &step.glyph,
-                &format!("{head}{status}"),
+                &head,
                 step.status == Some("err"),
             );
             let detail = log_step_detail(&inner_line, step);
@@ -396,9 +396,10 @@ impl Overlay {
                 None => inner_line,
             });
         }
-        // 收缩行点开是时间线：抬头、连线、各步同一列，不缩进——和主线那份一个样子。
+        // 收缩行点开是时间线：抬头（`›` 翻成 `⌄`）、连线、各步同一列，不缩进
+        // ——和主线那份一个样子。
         let mut detail = Vec::with_capacity(rows.len() + 3);
-        detail.push(line.to_string());
+        detail.push(crate::render::timeline::fold_line_open(line));
         detail.push(crate::render::timeline::panel_rail());
         detail.extend(rows);
         detail.push(String::new());
@@ -488,6 +489,16 @@ struct LogStep {
     running: bool,
     /// 日志末尾的 `[准备]`：参数还在流。
     preparing: bool,
+    /// 这一步的主题（命令全文、路径、检索词——`[工具] 运行命令 · ls` 里 ` · ` 后面
+    /// 那段）。点开之后正文第一段是它，不是把抬头再说一遍。
+    subject: Option<String>,
+}
+
+/// `运行命令 · ls` → `ls`：抬头里 ` · ` 后面那段是主题。
+fn subject_of(text: &str) -> Option<String> {
+    text.split_once(" · ")
+        .map(|(_, subject)| subject.trim().to_string())
+        .filter(|subject| !subject.is_empty())
 }
 
 /// `<工具 id>\t<中文名> · <主题>` → `(图标, 去掉 id 的正文)`。
@@ -508,6 +519,10 @@ const PROMPT_GLYPH: &str = "\u{f4a5}";
 
 /// 收缩行的图标。和主线那条 `⌄ Worked for …` 一个样子。
 const SUMMARY_GLYPH: &str = "⌄";
+
+/// `[统计]` 那一行的图标。它不是工具调用：没有结果行，也永远不该被当成
+/// 「末尾那个还没回来的调用」挂上转轮（测具截图：`⠏ 工具调用 3 次 · 运行中`）。
+const STATS_GLYPH: &str = "\u{f200}";
 
 /// 把已经走完的那几步收成一行 `⌄ Worked for …`，点开还是那几步。
 ///
@@ -591,6 +606,7 @@ fn is_tool_step(step: &LogStep) -> bool {
         && !step.preparing
         && step.glyph != PROMPT_GLYPH
         && step.glyph != SUMMARY_GLYPH
+        && step.glyph != STATS_GLYPH
 }
 
 /// 从 `运行命令 ok · 1.2s · ls` 这种正文里把耗时摘出来（第一个 ` · ` 之后那一段
@@ -728,6 +744,7 @@ fn log_steps(text: &str) -> Vec<LogStep> {
             steps.push(LogStep {
                 glyph,
                 green: false,
+                subject: subject_of(&head),
                 head,
                 status: None,
                 body: Vec::new(),
@@ -772,6 +789,7 @@ fn log_steps(text: &str) -> Vec<LogStep> {
                     } else {
                         glyph
                     },
+                    subject: subject_of(&text),
                     head: match elapsed {
                         Some(elapsed) => with_elapsed(&text, elapsed),
                         None => text,
@@ -794,7 +812,7 @@ fn log_steps(text: &str) -> Vec<LogStep> {
             });
         } else if let Some(rest) = line.strip_prefix("[统计]") {
             steps.push(LogStep {
-                glyph: "\u{f200}".to_string(),
+                glyph: STATS_GLYPH.to_string(),
                 green: false,
                 head: rest.trim().to_string(),
                 status: None,
@@ -885,12 +903,20 @@ fn log_step_detail(line: &str, step: &LogStep) -> Vec<String> {
     let inner = crate::render::timeline::panel_detail_width();
     let color = if step.thinking { "\x1b[38;5;10m" } else { "" };
     let mut body: Vec<String> = Vec::new();
-    // 抬头**无条件**给全。
-    //
-    // 工具那一步的正文常常就是抬头本身（命令、路径、检索词），只在"抬头被裁过"
-    // 时才补的话，短命令点开就是一片空白（用户实测：浮层里这些工具展开都没内容）。
-    // 行里那一份是裁过的，这儿这份是完整的，不算说两遍。
-    let mut texts: Vec<&str> = vec![step.head.as_str()];
+    // 正文第一段是这一步的**主题**（命令全文、路径、检索词），空一行，然后是输出
+    // ——和主线那一步点开一个样子。原来是把抬头（`运行命令 · 5.3s · echo …`）整个
+    // 再说一遍（用户实测：命令展开处理异常）。没有主题的（思考、提示词）还是
+    // 抬头本身：行里那一份是裁过的，这儿这份是完整的。
+    let mut texts: Vec<&str> = Vec::new();
+    match &step.subject {
+        Some(subject) => {
+            texts.push(subject);
+            if !step.body.is_empty() {
+                texts.push("");
+            }
+        }
+        None => texts.push(step.head.as_str()),
+    }
     texts.extend(step.body.iter().map(String::as_str));
     for text in texts {
         if text.trim().is_empty() {

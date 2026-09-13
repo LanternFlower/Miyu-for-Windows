@@ -269,6 +269,79 @@ def scenario_interrupt(report):
         stop(tui, daemon, stub)
 
 
+TITLE_SECS = re.compile(r"走查子代理 · ([0-9.]+)s")
+
+
+def panel_rows(screen):
+    """面板那一段：标题栏（`── 子代理·…`）到页脚（`Esc 关闭`）之间。"""
+    top = next((i for i, l in enumerate(screen) if "── 子代理" in l), None)
+    bottom = next((i for i, l in enumerate(screen) if "Esc" in l and "关闭" in l), None)
+    if top is None or bottom is None:
+        return None, []
+    return top, screen[top + 1:bottom]
+
+
+def scenario_panel_spinner(report):
+    """子代理浮层开着的时候：正在跑的那一行左边距上的转轮真的在转，标题上的秒数
+    真的在走（用户实测：浮层没有转轮、`准备执行 · 0.0s` 不动）。"""
+    stub, daemon, tui, master, sink = start({
+        "STUB_REASONING": "1",
+        "STUB_SUBAGENT": "1",
+        # 内层那条命令要慢：面板只有在它还跑着的时候才有东西可转。
+        "STUB_SUBAGENT_COMMAND": "sleep 8; printf 'SUBOUT\\n'",
+        "STUB_REASONING_TEXT": "想一下。",
+        "STUB_CHUNK_SLEEP": "0.05",
+    })
+    try:
+        os.write(master, h.PROMPT.encode())
+        h.drain_until(master, sink, h.PROMPT, 3.0)
+        os.write(master, b"\r")
+        screen = wait_screen(
+            master, sink,
+            lambda s: any(is_running_row(l, "走查子代理") for l in s),
+            30.0,
+        )
+        report["r26_05_subagent_row_running"] = screen is not None
+        if screen is None:
+            save("panel-spinner-timeout", LAST["screen"] or [])
+            return
+        row = next(i for i, l in enumerate(screen) if is_running_row(l, "走查子代理"))
+        h.click(master, sink, 5, row, quiet=0.3, timeout=1.0)
+
+        def running_in_panel(s):
+            _, rows = panel_rows(s)
+            return any(is_running_row(l, "运行命令") for l in rows)
+
+        first = wait_screen(master, sink, running_in_panel, 15.0)
+        report["r26_05_panel_shows_running_row"] = first is not None
+        if first is None:
+            save("panel-spinner-open", LAST["screen"] or [])
+            return
+        save("panel-spinner-a", first)
+        # 隔半秒再看一眼：转轮换了帧、标题上的秒数涨了。
+        h.drain(master, 0.5, sink)
+        second = h.render(bytes(sink))
+        save("panel-spinner-b", second)
+        top_a, rows_a = panel_rows(first)
+        top_b, rows_b = panel_rows(second)
+        run_a = next((l for l in rows_a if is_running_row(l, "运行命令")), "")
+        run_b = next((l for l in rows_b if is_running_row(l, "运行命令")), "")
+        report["r26_05_panel_spinner_animates"] = bool(run_a) and bool(run_b) and (
+            run_a.lstrip()[0] != run_b.lstrip()[0]
+        )
+        secs_a = TITLE_SECS.search(first[top_a] if top_a is not None else "")
+        secs_b = TITLE_SECS.search(second[top_b] if top_b is not None else "")
+        report["r26_05_panel_title_ticks"] = bool(secs_a and secs_b) and float(
+            secs_b.group(1)
+        ) > float(secs_a.group(1))
+        # 跑着的那一行尾巴上不挂 ok；转轮在左边距、图标还在它右边。
+        report["r26_05_running_row_has_logo"] = " $ " in run_a[:8] if run_a else False
+        os.write(master, b"\x1b")
+        h.drain_until(master, sink, "走查的回复", 40.0)
+    finally:
+        stop(tui, daemon, stub)
+
+
 def main():
     if not h.BIN.exists():
         print(f"! 先 cargo build：{h.BIN} 不存在", file=sys.stderr)
@@ -278,6 +351,7 @@ def main():
     report = {}
     scenario_live_clicks(report)
     scenario_interrupt(report)
+    scenario_panel_spinner(report)
     (h.OUT / "round26-report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )

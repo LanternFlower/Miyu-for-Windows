@@ -655,12 +655,12 @@ fn a_subagent_panel_folds_its_steps_once_it_starts_talking() {
             .iter()
             .map(|line| crate::render::strip_ansi_text(line))
             .collect::<Vec<_>>();
-        // 收缩行长这样：`⌄ Worked for … · 3 tools · 3 thoughts`。测试里这一段
+        // 收缩行长这样：`› Worked for … · 3 tools · 3 thoughts`。测试里这一段
         // 只花了几十微秒，`summary_line` 按设计不报耗时（回放也是这个规矩），
         // 所以认计数不认 `Worked for`。
         assert!(
             text.iter()
-                .any(|line| line.contains('⌄') && line.contains("3 tools")),
+                .any(|line| line.contains('›') && line.contains("3 tools")),
             "没收成一行: {text:?}"
         );
         assert!(
@@ -953,7 +953,7 @@ fn a_subagent_speech_keeps_its_place_when_it_thinks_again() {
         // 一条收缩行，所以取**最后**那条。）
         let fold = text
             .iter()
-            .rposition(|line| line.contains('⌄'))
+            .rposition(|line| line.contains('›'))
             .unwrap_or_else(|| panic!("中间那段过程没收成一行: {text:?}"));
         let last = text
             .iter()
@@ -1004,15 +1004,25 @@ fn the_fold_opens_into_a_timeline_not_an_indented_body() {
         let panel = crate::render::blocks::get(id).unwrap_or_default();
         let fold = panel
             .iter()
-            .find(|line| crate::render::strip_ansi_text(line).contains('⌄'))
+            .find(|line| crate::render::strip_ansi_text(line).contains("1 tool"))
             .unwrap_or_else(|| panic!("没收成一行: {panel:?}"));
         let fold_id = block_id_in(fold).expect("收缩行没挂块");
+        // 合着是 `›`，点开（块内容第一行）翻成 `⌄`——和主线那条一样。
+        assert!(
+            crate::render::strip_ansi_text(fold)
+                .trim_start()
+                .starts_with('›'),
+            "合着的收缩行不是 ›: {fold:?}"
+        );
         let detail: Vec<String> = crate::render::blocks::get(fold_id)
             .unwrap_or_default()
             .iter()
             .map(|line| crate::render::strip_ansi_text(line))
             .collect();
-        assert!(detail[0].contains('⌄'), "第一行不是抬头: {detail:?}");
+        assert!(
+            detail[0].trim_start().starts_with('⌄'),
+            "点开的抬头不是 ⌄: {detail:?}"
+        );
         assert_eq!(detail[1].trim(), "│", "抬头底下不是连线: {detail:?}");
         let head_col = column_of(&detail[0]);
         let thought = detail
@@ -1149,5 +1159,112 @@ fn a_quick_tool_step_does_not_report_zero_seconds() {
             .find(|line| line.contains("miyu 转轮"))
             .expect("没有那一步");
         assert!(!step.contains("0.0s"), "报了个 0.0s: {step:?}");
+    });
+}
+
+/// 参数开始流（「准备xx」）那一刻，这一段思考就结算成一步、排在准备行**上面**；
+/// 原来要等结果回来才结算，面板里「准备执行」一直压在「思考中」上头，思考的
+/// 耗时还把工具跑的时间算了进去（用户实测截图）。
+#[test]
+fn a_preparing_subagent_settles_its_thought_first() {
+    with_blocks(|| {
+        let mut renderer = timeline_renderer();
+        renderer
+            .write_tool_call("subagent", r#"{"description":"查目录","prompt":"去看看"}"#)
+            .unwrap();
+        renderer.subagent_thought("subagent", "先想想");
+        renderer.subagent_tool_preparing("subagent", "run_command");
+        let id = renderer.subagent_overlay_id("subagent").expect("没登记");
+        let rows: Vec<String> = crate::render::blocks::get(id)
+            .unwrap_or_default()
+            .iter()
+            .map(|line| crate::render::strip_ansi_text(line))
+            .collect();
+        let thought = rows
+            .iter()
+            .position(|line| line.contains(t("thought", "已思考")))
+            .unwrap_or_else(|| panic!("思考没结算成一步: {rows:?}"));
+        let preparing = rows
+            .iter()
+            .position(|line| line.contains(t("Preparing command", "准备执行")))
+            .unwrap_or_else(|| panic!("没有准备那一行: {rows:?}"));
+        assert!(thought < preparing, "准备行压在思考上头: {rows:?}");
+        assert!(
+            !rows
+                .iter()
+                .any(|line| line.contains(t("thinking", "思考中"))),
+            "还挂着「思考中」: {rows:?}"
+        );
+    });
+}
+
+/// 面板每个 tick 重灌一遍：「准备执行 · 0.0s」的秒数会走（原来停在事件到来那一刻）。
+#[test]
+fn live_subagent_panels_tick_between_events() {
+    with_blocks(|| {
+        let mut renderer = timeline_renderer();
+        renderer
+            .write_tool_call("subagent", r#"{"description":"查目录","prompt":"去看看"}"#)
+            .unwrap();
+        renderer.subagent_tool_preparing("subagent", "run_command");
+        let id = renderer.subagent_overlay_id("subagent").expect("没登记");
+        let before = crate::render::blocks::get(id)
+            .unwrap_or_default()
+            .join("\n");
+        assert!(before.contains("0.0s"), "刚开始不是 0.0s: {before:?}");
+        std::thread::sleep(Duration::from_millis(250));
+        renderer.refresh_subagent_panels();
+        let after = crate::render::blocks::get(id)
+            .unwrap_or_default()
+            .join("\n");
+        assert!(!after.contains("0.0s"), "重灌之后秒数没走: {after:?}");
+    });
+}
+
+/// 子代理的命令那一步点开：命令本身一段、空一行、输出——和主线那一步一个样子，
+/// 正文里不再带 `$`（那是抬头上的图标）。
+#[test]
+fn a_subagent_command_step_opens_like_the_main_line() {
+    with_blocks(|| {
+        let mut renderer = timeline_renderer();
+        renderer
+            .write_tool_call("subagent", r#"{"description":"查目录","prompt":"去看看"}"#)
+            .unwrap();
+        renderer.subagent_tool(
+            "subagent",
+            "run_command",
+            "运行命令",
+            r#"{"command":"ls -la"}"#,
+            true,
+            "total 0",
+        );
+        let id = renderer.subagent_overlay_id("subagent").expect("没登记");
+        let panel = crate::render::blocks::get(id).unwrap_or_default();
+        let step = panel
+            .iter()
+            .find(|line| crate::render::strip_ansi_text(line).contains("ls -la"))
+            .unwrap_or_else(|| panic!("那一步不见了: {panel:?}"));
+        let step_id = block_id_in(step).expect("那一步没挂块");
+        let detail: Vec<String> = crate::render::blocks::get(step_id)
+            .unwrap_or_default()
+            .iter()
+            .map(|line| crate::render::strip_ansi_text(line))
+            .collect();
+        let command = detail
+            .iter()
+            .position(|line| line.trim() == "ls -la")
+            .unwrap_or_else(|| panic!("点开没有命令本身: {detail:?}"));
+        assert!(
+            !detail.iter().any(|line| line.trim().starts_with("$ ls")),
+            "正文里带了 $: {detail:?}"
+        );
+        assert!(
+            detail[command + 1].trim().is_empty(),
+            "命令和输出之间没空一行: {detail:?}"
+        );
+        assert!(
+            detail.iter().any(|line| line.contains("total 0")),
+            "点开没有输出: {detail:?}"
+        );
     });
 }

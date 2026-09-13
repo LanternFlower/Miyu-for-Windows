@@ -265,14 +265,16 @@ impl SubagentProgress {
         }
     }
 
-    /// 子代理开始调一个工具。**Summary 档也发**：面板要靠它给每一步掐表，
-    /// 内层事件本身不带耗时。
+    /// 子代理开始调一个工具。**每个档都发、每个工具都发**：面板要靠它给每一步
+    /// 掐表、露出「正在跑」那一行，内层事件本身不带耗时。
+    ///
+    /// 原来 Full 档下 `run_command` 不发（inline 那边由 `tool_end` 整块画，先发
+    /// 一次会画两遍）。可是 REPL 常驻连接不带 origin tty，daemon 把它当网页回合
+    /// 一律用 Full 档——于是全屏面板里最常见的那个工具从来没有「运行中」，只剩
+    /// 「准备执行」一直挂到结果回来（用户实测截图）。画两遍的事让渲染那边自己
+    /// 躲：Full 档 inline 收到这条时命令块不画，等结果整块画。
     pub fn tool_call_detail(&self, name: &str, args: &str) {
         if !self.enabled || self.tool_mode == ProgressMode::Hidden {
-            return;
-        }
-        // Full 档下 run_command 由 `tool_end` 整块渲染，这里再发一次会画两遍。
-        if self.tool_mode == ProgressMode::Full && name == "run_command" {
             return;
         }
         self.progress.report(format!(

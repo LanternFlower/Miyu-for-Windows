@@ -85,6 +85,8 @@ pub struct StreamRenderer {
     pub(crate) live_summary: bool,
     pub(crate) wait_spinner: Option<WaitSpinner>,
     pub(crate) last_tick: Option<std::time::Instant>,
+    /// 上一次把子代理面板重灌是什么时候。见 `refresh_subagent_panels`。
+    pub(crate) last_subagent_refresh: Option<std::time::Instant>,
     pub(crate) preparing_question_started_at: Option<std::time::Instant>,
     /// Phase text and start time for the "still receiving arguments" hint.
     /// Sticky like `preparing_question_started_at` and for the same reason:
@@ -149,6 +151,7 @@ impl StreamRenderer {
             live_summary: io::stdout().is_terminal(),
             wait_spinner: None,
             last_tick: None,
+            last_subagent_refresh: None,
             preparing_question_started_at: None,
             tool_preparing: None,
             tool_preparing_since: None,

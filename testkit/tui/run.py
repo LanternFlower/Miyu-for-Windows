@@ -1369,10 +1369,37 @@ def main():
                     )
                     if foot_row is None:
                         break
-                    for i in range(foot_row - 1, max(foot_row - 25, 0), -1):
-                        if "运行命令" in panel_now[i] and "ok" in panel_now[i]:
-                            step_row = i
-                            break
+                    # 跑完的那一步：`运行命令 · … · cmd`，尾巴上不再盖 ok（主线也不
+                    # 盖），认「有命令、不在跑」。它开口说过话之后这些步会收进
+                    # `› Worked for …` 里，那就先把收缩行点开再找。
+                    def finished_command_row(lines):
+                        for i in range(foot_row - 1, max(foot_row - 25, 0), -1):
+                            if "运行命令" in lines[i] and "运行中" not in lines[i]:
+                                return i
+                        return None
+
+                    step_row = finished_command_row(panel_now)
+                    if step_row is None:
+                        fold_row = next(
+                            (
+                                i
+                                for i in range(foot_row - 1, max(foot_row - 25, 0), -1)
+                                if panel_now[i].lstrip().startswith("›")
+                            ),
+                            None,
+                        )
+                        if fold_row is not None:
+                            click(master, sink, 6, fold_row, quiet=0.2, timeout=1.5)
+                            panel_now = render(bytes(sink))
+                            foot_row = next(
+                                (
+                                    i
+                                    for i, line in enumerate(panel_now)
+                                    if "Esc" in line and "关闭" in line
+                                ),
+                                foot_row,
+                            )
+                            step_row = finished_command_row(panel_now)
                 (OUT / "bgsub-panel.txt").write_text(
                     "\n".join(panel_now), encoding="utf-8"
                 )

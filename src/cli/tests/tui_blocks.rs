@@ -441,9 +441,15 @@ fn job_panel_merges_a_call_with_its_result() {
         let rows = screen.overlay_rows();
         let calls = rows.iter().filter(|row| row.contains("运行命令")).count();
         assert_eq!(calls, 1, "调用和结果没合成一步: {rows:?}");
+        // 结果只是把这一步收掉，`ok` 不上抬头：主线和前台面板都不写（用户实测：
+        // 后台面板每一步尾巴上都拖着 ` · ok`）。
         assert!(
-            rows.iter().any(|row| row.contains("ok")),
-            "结果的 ok 没盖上去: {rows:?}"
+            !rows.iter().any(|row| row.contains(" · ok")),
+            "ok 盖到抬头上了: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.contains("运行中")),
+            "有结果的那一步还标着运行中: {rows:?}"
         );
         assert!(
             rows.iter().any(|row| row.contains("先看一眼")),
@@ -845,8 +851,19 @@ fn a_log_fold_opens_into_a_timeline_and_the_running_step_spins() {
             .iter()
             .position(|row| row.contains("2 tools"))
             .unwrap_or_else(|| panic!("没收成一行: {rows:?}"));
+        // 合着是 `›`，点开翻成 `⌄`——和主线那条一样。
+        assert!(
+            rows[fold].trim_start().starts_with('›'),
+            "合着的收缩行不是 ›: {:?}",
+            rows[fold]
+        );
         assert!(screen.overlay_toggle(fold), "收缩行点不开");
         let opened = screen.overlay_rows();
+        assert!(
+            opened[fold].trim_start().starts_with('⌄'),
+            "点开的收缩行不是 ⌄: {:?}",
+            opened[fold]
+        );
         let column = |line: &str| line.chars().take_while(|c| *c == ' ').count();
         let head_col = column(&opened[fold]);
         assert_eq!(opened[fold + 1].trim(), "│", "抬头底下不是连线: {opened:?}");
@@ -869,6 +886,55 @@ fn a_log_fold_opens_into_a_timeline_and_the_running_step_spins() {
         assert!(
             running.contains(crate::render::timeline::LIVE_SPINNER_CELL),
             "跑着的那一步没有转轮占位: {running:?}"
+        );
+        // 命令那一步点开：正文第一段是命令本身，不是把抬头再说一遍。
+        let pwd = opened
+            .iter()
+            .position(|row| row.contains("1.2s · pwd"))
+            .expect("pwd 那一步不见了");
+        assert!(screen.overlay_toggle(pwd), "pwd 那一步点不开");
+        let deep = screen.overlay_rows();
+        assert!(
+            deep.iter().any(|row| row.trim() == "pwd"),
+            "点开没有命令本身: {deep:?}"
+        );
+        assert_eq!(
+            deep.iter().filter(|row| row.contains("运行命令")).count(),
+            3,
+            "抬头被再说了一遍: {deep:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+}
+
+/// 日志末尾的 `[统计]` 行不是工具调用：不能被当成「还没回来的那个调用」标成
+/// 运行中、挂上转轮（测具截图：`⠏ 工具调用 3 次　消耗词元 484 · 运行中`）。
+#[test]
+fn a_trailing_stats_line_is_not_a_running_step() {
+    with_blocks(|| {
+        let dir = std::env::temp_dir().join(format!("miyu-log-stats-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建目录");
+        let path = dir.join("job.log");
+        std::fs::write(
+            &path,
+            concat!(
+                "[工具] run_command\t运行命令 · ls\n",
+                "[结果] run_command\t运行命令 ok · 1.2s · ls\n",
+                "[统计] 工具调用 1 次　消耗词元 84\n",
+            ),
+        )
+        .expect("写日志");
+        let mut screen = Screen::detached(100, 30);
+        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None));
+        let rows = screen.overlay_rows_ansi();
+        let stats = rows
+            .iter()
+            .find(|row| row.contains("工具调用 1 次"))
+            .unwrap_or_else(|| panic!("统计那一行不见了: {rows:?}"));
+        assert!(!stats.contains("运行中"), "统计行被标成运行中: {stats:?}");
+        assert!(
+            !stats.contains(crate::render::timeline::LIVE_SPINNER_CELL),
+            "统计行挂了转轮: {stats:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     });

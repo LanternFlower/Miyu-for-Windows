@@ -2160,6 +2160,39 @@ shellhook 走的是 `remote/one_shot.rs` + inline 渲染器（`live = None`）�
 `a_quick_tool_step_does_not_report_zero_seconds`、
 `a_log_fold_opens_into_a_timeline_and_the_running_step_spins`。
 
+### 26.14 第八批：浮层三件（转轮/准备态、Worked for 箭头、命令展开）
+
+- **浮层里的转轮与「准备xx」**：转轮本身（26.13 的占位格）是转的，测具抓两帧
+  确认换帧；两个真问题在别处。一是面板内容只在事件到来时重生成，「准备执行 ·
+  0.0s」和标题上的秒数停在上一次事件那一刻——`tick_spinner` 的时间线分支现在
+  每 100ms 调一次 `refresh_subagent_panels`，把还没收尾的面板重灌。二是**主线
+  REPL 的回合被 daemon 当成网页回合**（常驻连接不带 origin tty），子代理进度走
+  Full 档，而 Full 档下 `tool_call_detail` 对 `run_command` 不发 `__subtool_call__`
+  （怕 inline 画两遍）——面板里最常见的工具从来没有「运行中」那一行，「准备执行」
+  一路挂到结果回来。现在这条事件每个档、每个工具都发；inline Full 档收到命令的
+  call 事件时不画命令块（结果那一条整块画），网页端本来就是 call 记着、result
+  落卡。顺手：参数开始流（preparing）那一刻就把这一段思考结算成一步（原来要等
+  结果回来，「准备执行」一直压在「思考中」上头，思考的耗时还把工具跑的时间算了
+  进去）。
+- **Worked for 左侧箭头**：收缩行合着是 `›`、点开（块内容第一行）翻成 `⌄`——主线
+  就是这么翻的，两个面板原来一直是 `⌄`。前台 `FOLD_GLYPH_CLOSED` + `fold_line_open`，
+  后台 `LogStep.glyph` 仍用 `⌄` 当身份（`is_tool_step`/收缩计数靠它），只在画行时
+  换成 `›`。
+- **命令展开**：后台面板每一步尾巴上拼着 ` · ok`（主线、前台面板都不写 ok，跑砸了
+  靠红色和打叉）；展开正文第一行是把抬头（`运行命令 · 5.3s · echo …`）再说一遍。
+  现在 `LogStep.subject`（`[工具]`/`[结果]` 行 ` · ` 后面那段）当正文第一段，空一
+  行，再是输出；前台 `subagent_tool` 的正文同样改成「主题 / 空行 / 输出」，去掉
+  正文里那个 `$`（它是抬头上的图标）——和主线那一步点开一个样子。
+
+- **顺手（测具截图抓到）**：后台面板日志末尾的 `[统计]` 行被当成「还没回来的那个调用」
+  标成运行中、挂上转轮（`⠏ 工具调用 3 次 · 运行中`）。`is_tool_step` 现在也排除
+  `STATS_GLYPH`。
+
+测具：`testkit/tui/round26.py` 新增 `scenario_panel_spinner`（开着浮层抓两帧：
+转轮换帧、标题秒数上涨、跑着的行有 logo）；`scratchpad` 里的 stream-json 事件倒
+出法（`miyu --output-format stream-json <prompt>` 对着桩 daemon）是坐实「没发
+`__subtool_call__`」的手段。
+
 **opencode Zen 的 FreeUsageLimitError 不是客户端的事**（09-13 实测）：
 - 本机 opencode 1.18.29 指到本地假端点抓包，头与 Miyu 现发的一致
   （`x-opencode-client/project/session/request` + 同款 User-Agent）；
