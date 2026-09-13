@@ -3214,6 +3214,8 @@
     elements.characterCount.hidden = count < 18_000;
     elements.characterCount.classList.toggle("is-error", count > MAX_CONTENT_CHARS);
     updateControlState();
+    // 输入框多行增高时,artifact 浮层的让位高度跟着更新(#2)。
+    if (state.artifactOpen) syncComposerDockHeight();
     window.requestAnimationFrame(updateJumpButtonOffset);
   }
 
@@ -3670,7 +3672,9 @@
     });
 
     if (state.blocked) elements.composerState.textContent = "未授权";
-    else if (hasPendingQuestion()) elements.composerState.textContent = "等待回答";
+    // 被问问题时不再在输入框页脚重复「等待回答」——问题卡自己就写着,页脚这份多余
+    // 且被模型芯片/速度挤成竖排(#3)。留空即可。
+    else if (hasPendingQuestion()) elements.composerState.textContent = "";
     else if (attachmentUploading) elements.composerState.textContent = "正在上传";
     else if (attachmentError) elements.composerState.textContent = "附件上传失败";
     else if (busy) elements.composerState.textContent = state.submitting ? (running ? "正在加入队列" : "正在发送") : "正在处理";
@@ -5044,9 +5048,17 @@
     return Math.min(viewportWidth - 20, Math.max(320, viewportWidth * state.artifactWidthRatio));
   }
 
+  function syncComposerDockHeight() {
+    // 非分栏的桌面浮层态里,artifact 面板是绝对定位、bottom 贴到 10px,会盖住输入框
+    // 页脚(#2)。把页脚实际高度喂给 CSS,浮层的 bottom 就停在页脚上方、页脚照常可用。
+    const height = elements.composerDock?.offsetHeight || 0;
+    if (height) elements.mainStage.style.setProperty("--composer-dock-height", `${Math.round(height)}px`);
+  }
+
   function syncArtifactLayout() {
     const width = artifactWidthPixels();
     elements.mainStage.style.setProperty("--artifact-width", `${Math.round(width)}px`);
+    syncComposerDockHeight();
     const roomForConversation = elements.mainStage.clientWidth - width - 10;
     const split = state.artifactOpen && !state.artifactMaximized && layoutViewportWidth() > 760 && roomForConversation >= 320;
     elements.mainStage.classList.toggle("artifact-split", split);
@@ -6519,6 +6531,10 @@
     // 工具轮次（持久化回合用）。实时那份由事件流按到达顺序往 blocks 里插，
     // 推理、正文、工具卡是交错的；这里从 turn.tool_flow 重建同样的顺序。
     toolRounds = [],
+    // 已回答的问题(#5b):按时序落在它对应的 ask_question 工具位上,不再被整
+    // 堆到助手消息之前(刷新后问答卡跑到正文前面就是这么来的)。ask_question 在
+    // tool_flow 里就是一个调用,这里遇到它就用第 N 个 exchange 顶替那张裸工具卡。
+    questionExchanges = [],
     assets = [],
     timestamp = null,
     tokenTotal = 0,
@@ -6563,6 +6579,7 @@
     //
     // 卡片必须挂在 blocks 里:样式表是 `.assistant-blocks > .tool-card`,
     // 挂在外面选择器不命中,会退化成一行裸文本。
+    const exchangeQueue = Array.isArray(questionExchanges) ? [...questionExchanges] : [];
     for (const round of Array.isArray(toolRounds) ? toolRounds : []) {
       const roundReasoning = String(round?.assistant_reasoning || "");
       if (roundReasoning.trim() && !reasoningHidden()) {
@@ -6578,6 +6595,12 @@
         blocks.appendChild(markdown);
       }
       for (const call of Array.isArray(round?.calls) ? round.calls : []) {
+        // ask_question 这一步:用它对应的已回答卡顶替裸工具卡,落在原时序位。
+        if (String(call?.name || "") === "ask_question" && exchangeQueue.length) {
+          procLineBreak(blocks);
+          blocks.appendChild(createAnsweredQuestionCard(exchangeQueue.shift()));
+          continue;
+        }
         procLineAttach(blocks, createPersistedToolCard(call), true);
         // share_file 的富预览(播放器/图片/下载条)重建:实时靠 tool.finished
         // 的输出渲染,刷新/切换后从落库的 tool_flow 输出里复原同一份。
@@ -6600,6 +6623,12 @@
       renderMarkdown(markdown, content);
       procLineBreak(blocks);
       blocks.appendChild(markdown);
+    }
+    // tool_flow 里没找到对应 ask_question 调用的已回答卡(边角情形)兜底补在末尾,
+    // 总比丢掉强;正常情形上面已按位插完,这里为空。
+    for (const exchange of exchangeQueue) {
+      procLineBreak(blocks);
+      blocks.appendChild(createAnsweredQuestionCard(exchange));
     }
     for (const asset of Array.isArray(assets) ? assets : []) {
       procLineBreak(blocks);
@@ -6762,11 +6791,12 @@
       return stash[stashIndex++].article;
     };
 
-    // 已回答的问题卡在 live article 内部原位保留;仅在无存档时用快照重建。
-    if (!stash && !claimed) {
-      const exchanges = Array.isArray(turn?.question_exchanges) ? turn.question_exchanges : [];
-      for (const exchange of exchanges) elements.timeline.appendChild(createPersistedQuestion(exchange, turnId));
-    }
+    // 已回答的问题卡:live 存档里原位保留;快照重建时**不再**整堆甩在助手消息
+    // 之前(#5b:刷新后问答卡跑到正文前面),而是交给下面的 createAssistantMessage
+    // 按 ask_question 的时序位插进 blocks。只有在没有最终助手块可挂时才在这里兜底。
+    const persistedExchanges = (!stash && !claimed && Array.isArray(turn?.question_exchanges))
+      ? turn.question_exchanges
+      : [];
 
     const followups = Array.isArray(turn?.followups) ? turn.followups : [];
     for (const followup of followups) {
@@ -6819,12 +6849,14 @@
       && (assistantContent.trim()
         || assistantReasoning.trim()
         || assets.length
-        || persistedToolRounds.length)
+        || persistedToolRounds.length
+        || persistedExchanges.length)
     ) {
       elements.timeline.appendChild(createAssistantMessage({
         content: assistantContent,
         reasoning: assistantReasoning,
         toolRounds: persistedToolRounds,
+        questionExchanges: persistedExchanges,
         providerId: turn?.provider_id,
         model: turn?.model,
         assets,
@@ -7188,6 +7220,23 @@
     const status = Array.from(elements.timeline.querySelectorAll("[data-turn-status]"))
       .find((node) => node.dataset.turnStatus === String(turnId));
     status?.remove();
+  }
+
+  /// 中断落定后在原位补一条「本轮已中断」状态行,取代整会话静默重拉。
+  /// 后端实测 cancel→run.cancelled 仅 ~12ms,之前那次 loadSessionView 把整条
+  /// 对话全量重渲染才是中断「不是秒停 / 感觉加载很久」的真因;这里只动这一条。
+  function showInterruptedMarker(turnId, article) {
+    const id = String(turnId || "");
+    removeRunningStatus(turnId);
+    const turn = (id && state.turns.find((item) => String(item?.id) === id)) || { id, status: "interrupted" };
+    const line = createTurnStatus({ ...turn, status: "interrupted" });
+    let anchor = article && article.isConnected ? article : null;
+    if (!anchor && id) {
+      const nodes = Array.from(elements.timeline.querySelectorAll(`[data-turn-id="${CSS.escape(id)}"]`));
+      anchor = nodes.length ? nodes[nodes.length - 1] : null;
+    }
+    if (anchor?.parentNode) anchor.parentNode.insertBefore(line, anchor.nextSibling);
+    else elements.timeline.appendChild(line);
   }
 
   function commitRedoLive(live) {
@@ -9802,16 +9851,21 @@
       && !String(live.assistantText || "").trim()
       && !(live.reasoningParts && live.reasoningParts.length)
       && !(live.tools && live.tools.size);
+    const cancelledInView = kind === "cancelled" && data?.session_id
+      && String(data.session_id) === String(state.viewSessionId || "");
+    const markerTurnId = live.turnId;
+    const markerArticle = (!emptyCancelled && live.article?.isConnected) ? live.article : null;
     if (emptyCancelled) {
       disposeLiveState(live);
       state.liveRuns.delete(runId);
     } else {
       stashLiveArticle(live, "final");
     }
-    if (kind === "cancelled" && data?.session_id && String(data.session_id) === String(state.viewSessionId || "")) {
-      // 中断轮已落库（含部分输出与状态），静默重拉让「本轮已中断」标记
-      // 立即出现，不等下一次轮询。
-      loadSessionView(state.viewSessionId, { quiet: true });
+    if (cancelledInView) {
+      // 中断轮已落库（含部分输出与状态）。以前这里整会话静默重拉，把「本轮已中断」
+      // 标记捎带渲染出来——但那次全量重渲染在长对话里就是中断「特别高延迟 / 感觉
+      // 加载很久」的由来。改成只在原位补这一条状态行（后端 cancel 事件仅 ~12ms）。
+      showInterruptedMarker(markerTurnId, markerArticle);
     }
     if (kind === "completed" || kind === "cancelled") {
       // 上下文条跟着正在看的会话走（没有视图时退回终端车道）。

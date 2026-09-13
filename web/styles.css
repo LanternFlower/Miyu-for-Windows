@@ -4521,7 +4521,10 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   position: absolute;
   top: 10px;
   right: 10px;
-  bottom: 10px;
+  /* 非分栏桌面浮层态:bottom 停在输入框页脚上方(高度由 app.js 量了喂进来),
+     不然绝对定位的面板会盖住页脚、输入框点不到(#2)。分栏/最大化/手机三态各自
+     用 position:relative 或 fixed inset 覆盖这条,不受影响。 */
+  bottom: calc(var(--composer-dock-height, 56px) + 10px);
   z-index: 12;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
