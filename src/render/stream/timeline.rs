@@ -213,6 +213,9 @@ pub(crate) struct Step {
     /// 这一步是它说的一段正文（子代理面板里），不是动作：没有抬头，也不连线，
     /// `body` 就是整段话。按时序占位，后面再想再动手也排不到它前头。
     speech: bool,
+    /// 收缩行：`body` 是收起来的那几步（各自已经是整行、带缩进、连好线），点开时
+    /// 不再缩进——和主线 `Worked for …` 展开成时间线一个样子。
+    fold: bool,
 }
 
 impl Step {
@@ -223,6 +226,7 @@ impl Step {
             overlay,
             block: None,
             speech: false,
+            fold: false,
         }
     }
 
@@ -233,8 +237,36 @@ impl Step {
             overlay: None,
             block: None,
             speech: true,
+            fold: false,
         }
     }
+}
+
+/// 抬头后面带上耗时：`已思考 · 2.6s`。不到十分之一秒的不带——`0.0s` 只是噪音
+///（用户实测）。
+pub(crate) fn timed_label(head: &str, elapsed: Duration) -> String {
+    match reported_seconds(elapsed) {
+        Some(secs) => format!("{head} · {secs}"),
+        None => head.to_string(),
+    }
+}
+
+/// 值得报出来的耗时：至少十分之一秒。
+pub(crate) fn reported_seconds(elapsed: Duration) -> Option<String> {
+    (elapsed.as_millis() >= 100).then(|| format_seconds(elapsed))
+}
+
+/// 面板里「正在进行」那一行左边距上的转轮占位格。
+///
+/// 面板内容是一段静态 ANSI，没人每帧重写它；画面板的那一层每一帧把这个格子换成
+/// 当帧的点阵字形，转轮就转起来了。选私有区末尾的码位：不会和任何文字撞上，
+/// 宽度也是一格。
+pub(crate) const LIVE_SPINNER_CELL: char = '\u{10FFFD}';
+
+/// 面板里正在进行的那一行：转轮占位在第 0 列，logo 留在第 2 列——和主线一样。
+pub(crate) fn panel_live_step_line(glyph: &str, text: &str) -> String {
+    let text = crate::render::clip_to_display_width(text, panel_step_width());
+    format!("\x1b[2m{LIVE_SPINNER_CELL} {glyph} {text}\x1b[0m")
 }
 
 /// live 区里「正在进行」的一行。
@@ -280,7 +312,7 @@ fn flush_subagent_thought(log: &mut SubagentLog) {
     log.steps.push(Step::new(
         step_line_in(
             glyph_think(),
-            &format!("{} · {}", t("thought", "已思考"), format_seconds(elapsed)),
+            &timed_label(t("thought", "已思考"), elapsed),
             panel_step_width(),
         ),
         body,
@@ -336,26 +368,24 @@ fn collapse_subagent_segment(log: &mut SubagentLog) {
     //（用户实测：浮层中的收缩行为异常，会丢失内容）。这些步已经跑完，内容不会
     // 再变，登记一次就够。
     let body: Vec<String> = thread(collapsed.into_iter().map(|step| {
-        let line = undecorate(vec![step.line.clone()])
-            .pop()
-            .unwrap_or_default();
+        let line = step.line.clone();
         if step.body.is_empty() {
             return line;
         }
-        match blocks::register(step_detail(&Step {
-            line: line.clone(),
-            ..step
-        })) {
+        match blocks::register(step_detail(&step)) {
             Some(id) => format!("{}{line}{}", blocks::begin_marker(id), blocks::END_MARKER),
             None => line,
         }
     }));
     log.step_blocks.truncate(from);
-    log.steps.push(Step::new(
+    // 收缩行点开是时间线（`fold`）：抬头、连线、各步同一列，不再当正文缩进。
+    let mut fold = Step::new(
         step_line_in(SUMMARY_GLYPH, &summary, panel_step_width()),
         body,
         None,
-    ));
+    );
+    fold.fold = true;
+    log.steps.push(fold);
     log.segment = Timeline::default();
 }
 
@@ -504,16 +534,11 @@ fn subagent_lines(log: &mut SubagentLog) -> Vec<String> {
             label.push_str(PEEK_SEP);
             label.push_str(peek);
         }
-        entries.push(PanelEntry::Step(step_line_in(
-            glyph,
-            &label,
-            panel_step_width(),
-        )));
+        entries.push(PanelEntry::Step(panel_live_step_line(glyph, &label)));
     } else if let Some((phase, since)) = &log.preparing {
-        entries.push(PanelEntry::Step(step_line_in(
+        entries.push(PanelEntry::Step(panel_live_step_line(
             glyph_tool(),
             &format!("{phase} · {}", format_seconds(since.elapsed())),
-            panel_step_width(),
         )));
     }
     // 还在想的那一段也露一行，不然「正在思考」期间面板看着是死的。
@@ -522,14 +547,13 @@ fn subagent_lines(log: &mut SubagentLog) -> Vec<String> {
     // 此刻最值得看的（用户实测：浮层内最下面一行无法交互）。块 id 存在
     // `live_block` 里复用，每刷新一次只更新内容。
     if !log.reasoning.trim().is_empty() {
-        let line = step_line_in(
+        let line = panel_live_step_line(
             glyph_think(),
             &format!(
                 "{}{PEEK_SEP}{}",
                 t("thinking", "思考中"),
                 peek_tail(&log.reasoning, panel_step_width())
             ),
-            panel_step_width(),
         );
         let detail =
             {
@@ -867,6 +891,14 @@ fn push_wrapped(out: &mut String, line: &str, width: usize) {
 fn step_detail(step: &Step) -> Vec<String> {
     let mut detail = Vec::with_capacity(step.body.len() + 3);
     detail.push(step.line.clone());
+    if step.fold {
+        // 收缩行点开是时间线：抬头、连线、各步同一列，不缩进不铺底
+        //（用户拿主线那份对比：「这个才是正确的」）。
+        detail.push(rail());
+        detail.extend(step.body.iter().cloned());
+        detail.push(String::new());
+        return detail;
+    }
     detail.extend(indented_body(&step.body));
     detail
 }
@@ -1056,7 +1088,11 @@ impl StreamRenderer {
                 // 抬头上要说清楚。
                 failed: stats.error > 0 || !stats.settled(),
                 interrupted: !stats.settled(),
-                elapsed: stats.elapsed(),
+                // 不到十分之一秒的不报（`0.0s` 只是噪音）；交到后台的子代理是
+                // 立刻返回的，它的秒数不是它干活的时间，也不报。
+                elapsed: stats
+                    .elapsed()
+                    .filter(|elapsed| reported_seconds(*elapsed).is_some() && !stats.detached),
                 overlay: crate::render::is_subagent_tool(name)
                     .then(|| self.subagent_overlay_id(name))
                     .flatten(),
@@ -1194,16 +1230,15 @@ impl StreamRenderer {
             .or_else(|| self.reasoning_started_at.map(|at| at.elapsed()))
             .unwrap_or_default();
         self.timeline.note_start_since(elapsed);
-        let mut label = format!("{} · {}", t("thought", "已思考"), format_seconds(elapsed));
+        let mut label = t("thought", "已思考").to_string();
         if self.reasoning_tokens > 0 {
             label = format!(
-                "{} · {} {} · {}",
-                t("thought", "已思考"),
+                "{label} · {} {}",
                 self.reasoning_tokens,
-                t("tokens", "词元"),
-                format_seconds(elapsed)
+                t("tokens", "词元")
             );
         }
+        let label = timed_label(&label, elapsed);
         // 静态版没处点开，思考全文就不留了：抬头上的词元数和秒数说明"想过"，
         // 想了什么本来也只是折叠起来备查的。
         let detail = if self.timeline_static() {
@@ -1812,8 +1847,7 @@ impl StreamRenderer {
         if !self.timeline_enabled() {
             return;
         }
-        let peek = crate::render::tool_subject(tool, args)
-            .or_else(|| command_peek(args))
+        let peek = crate::render::tool_peek(tool, args)
             .filter(|subject| !subject.trim().is_empty())
             .map(|subject| crate::render::clip_to_display_width(&subject, 72));
         let log = self.subagent_logs.entry(name.to_string()).or_default();
@@ -1841,9 +1875,7 @@ impl StreamRenderer {
         // 窥视按工具自己的规矩摘一句，摘不出来才退回原文。原样甩一行
         // `{"patchText": "*** Begin Patch\n…"}` 出来，那一行就再也读不出是在
         // 改哪个文件了（用户实测截图）。
-        let subject = crate::render::tool_subject(tool, args)
-            .or_else(|| command_peek(args))
-            .unwrap_or_else(|| args.trim().to_string());
+        let subject = crate::render::tool_peek(tool, args).unwrap_or_default();
         let peek = (!subject.trim().is_empty())
             .then(|| crate::render::clip_to_display_width(&subject, 72));
         let mut body = Vec::new();
@@ -1882,11 +1914,7 @@ impl StreamRenderer {
             .take()
             .map(|since| since.elapsed())
             .unwrap_or_default();
-        let mut label = if elapsed_of_step.is_zero() {
-            display.to_string()
-        } else {
-            format!("{display} · {}", format_seconds(elapsed_of_step))
-        };
+        let mut label = timed_label(display, elapsed_of_step);
         if let Some(peek) = peek {
             label.push_str(PEEK_SEP);
             label.push_str(&peek);

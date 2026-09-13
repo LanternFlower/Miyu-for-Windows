@@ -607,14 +607,14 @@ fn subtool_summary(json: &str) -> String {
     if let Some(args) = value.get("args").and_then(serde_json::Value::as_str) {
         let args = args.trim();
         if !args.is_empty() {
-            // 先按工具自己的规矩摘一句主题（命令文本、检索词、路径……），
-            // 摘不出来才退回原文。直接贴 JSON 的话日志里全是
-            // `{"command": "cd /very/long/path && …"}` 这种没法读的东西，
-            // 面板里那条时间线也就跟着糊了。
-            let subject =
-                crate::render::tool_subject(name, args).unwrap_or_else(|| args.to_string());
-            out.push_str(" · ");
-            out.push_str(&crate::render::clip_to_display_width(&subject, 200));
+            // 先按工具自己的规矩摘一句主题（命令文本、检索词、路径……），摘不
+            // 出来就把参数的值串起来，**不**原样甩 JSON——`{"action": "info",
+            // "package_name": "zzq"}` 在面板里读起来是一团括号引号（用户实测：
+            // 浮层的参数窥视是裸 JSON）。什么都摘不出来就不带主题。
+            if let Some(subject) = crate::render::tool_peek(name, args) {
+                out.push_str(" · ");
+                out.push_str(&crate::render::clip_to_display_width(&subject, 200));
+            }
         }
     }
     out

@@ -997,3 +997,25 @@ fn native_bash_routes_through_the_command_display() {
         "Bash must not also land in the generic tool summary"
     );
 }
+
+/// 摘不出主题的工具，窥视也不能是裸 JSON：把参数的值串起来（用户实测：子代理
+/// 浮层的参数窥视是 `{"action": "info", …}`）。
+#[test]
+fn tool_peek_spells_out_arguments_instead_of_raw_json() {
+    assert_eq!(
+        tool_peek("aur_query", r#"{"action":"info","package_name":"zzq"}"#).as_deref(),
+        Some("info · zzq")
+    );
+    // 有主题规则的工具照旧走主题；命令工具退回命令文本。
+    assert_eq!(
+        tool_peek("run_command", r#"{"command":"ls -la"}"#).as_deref(),
+        Some("ls -la")
+    );
+    // 数组、嵌套对象跳过；什么都没有就是没有，不是空串也不是 `{}`。
+    assert_eq!(
+        args_peek(r#"{"paths":["a","b"],"limit":3,"deep":{"x":1},"dry":true}"#).as_deref(),
+        Some("3 · true")
+    );
+    assert_eq!(args_peek("{}"), None);
+    assert_eq!(args_peek("not json"), None);
+}

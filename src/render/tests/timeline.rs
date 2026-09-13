@@ -4,7 +4,7 @@
 //! 收缩那一行怎么措辞。改动它们就是改动界面，所以钉死。
 
 use crate::render::stream::timeline::{
-    format_seconds, peek_tail, summary_line, undecorate, Counts,
+    format_seconds, peek_tail, summary_line, undecorate, Counts, LIVE_SPINNER_CELL,
 };
 use crate::render::t;
 use std::time::Duration;
@@ -972,5 +972,182 @@ fn a_subagent_speech_keeps_its_place_when_it_thinks_again() {
             inner.iter().any(|line| line.contains("pwd")),
             "收进去的那一步点开不见了: {inner:?}"
         );
+    });
+}
+
+/// 一行开头有几个空格：面板里各步是不是同一列，就看这个。
+fn column_of(line: &str) -> usize {
+    line.chars().take_while(|c| *c == ' ').count()
+}
+
+/// 子代理面板里的收缩行点开是一条时间线：抬头底下接连线，收起来的每一步和抬头
+/// 同一列——和主线那条 `Worked for …` 一个样子，不是往右缩进的一段正文
+///（用户实测：worked for 底下的内容缩进不对，timeline 也不对）。
+#[test]
+fn the_fold_opens_into_a_timeline_not_an_indented_body() {
+    with_blocks(|| {
+        let mut renderer = timeline_renderer();
+        renderer
+            .write_tool_call("subagent", r#"{"description":"查目录","prompt":"去看看"}"#)
+            .unwrap();
+        renderer.subagent_thought("subagent", "先想想");
+        renderer.subagent_tool(
+            "subagent",
+            "run_command",
+            "运行命令",
+            r#"{"command":"ls"}"#,
+            true,
+            "输出",
+        );
+        renderer.subagent_content("subagent", "查完了。");
+        let id = renderer.subagent_overlay_id("subagent").expect("没登记");
+        let panel = crate::render::blocks::get(id).unwrap_or_default();
+        let fold = panel
+            .iter()
+            .find(|line| crate::render::strip_ansi_text(line).contains('⌄'))
+            .unwrap_or_else(|| panic!("没收成一行: {panel:?}"));
+        let fold_id = block_id_in(fold).expect("收缩行没挂块");
+        let detail: Vec<String> = crate::render::blocks::get(fold_id)
+            .unwrap_or_default()
+            .iter()
+            .map(|line| crate::render::strip_ansi_text(line))
+            .collect();
+        assert!(detail[0].contains('⌄'), "第一行不是抬头: {detail:?}");
+        assert_eq!(detail[1].trim(), "│", "抬头底下不是连线: {detail:?}");
+        let head_col = column_of(&detail[0]);
+        let thought = detail
+            .iter()
+            .position(|line| line.contains(t("thought", "已思考")))
+            .unwrap_or_else(|| panic!("收起来的思考不见了: {detail:?}"));
+        assert!(
+            !detail[thought].contains("0.0s"),
+            "思考那一步报了个 0.0s: {detail:?}"
+        );
+        let tool = detail
+            .iter()
+            .position(|line| line.contains("运行命令"))
+            .unwrap_or_else(|| panic!("收起来的工具不见了: {detail:?}"));
+        assert_eq!(
+            column_of(&detail[thought]),
+            head_col,
+            "思考那一步没和抬头同一列: {detail:?}"
+        );
+        assert_eq!(
+            column_of(&detail[tool]),
+            head_col,
+            "工具那一步没和抬头同一列: {detail:?}"
+        );
+        assert_eq!(
+            detail[thought + 1].trim(),
+            "│",
+            "两步之间没有连线: {detail:?}"
+        );
+    });
+}
+
+/// 面板里正在准备／正在跑的那一步，左边距上有转轮占位格：画面板的那一层每一帧
+/// 把它换成当帧的点阵字形（用户实测：子代理浮层没有转轮）。跑完就没了。
+#[test]
+fn a_running_subagent_step_carries_the_spinner_cell() {
+    with_blocks(|| {
+        let mut renderer = timeline_renderer();
+        renderer
+            .write_tool_call("subagent", r#"{"description":"查目录","prompt":"去看看"}"#)
+            .unwrap();
+        let id = renderer.subagent_overlay_id("subagent").expect("没登记");
+        renderer.subagent_tool_preparing("subagent", "run_command");
+        let preparing = crate::render::blocks::get(id).unwrap_or_default();
+        assert!(
+            preparing.iter().any(|line| {
+                line.contains(LIVE_SPINNER_CELL)
+                    && crate::render::strip_ansi_text(line)
+                        .contains(t("Preparing command", "准备执行"))
+            }),
+            "准备那一行没有转轮占位: {preparing:?}"
+        );
+        renderer.subagent_tool_started(
+            "subagent",
+            "run_command",
+            "运行命令",
+            r#"{"command":"sleep 5"}"#,
+        );
+        let running = crate::render::blocks::get(id).unwrap_or_default();
+        let row = running
+            .iter()
+            .find(|line| crate::render::strip_ansi_text(line).contains("sleep 5"))
+            .unwrap_or_else(|| panic!("跑着的那一步不见了: {running:?}"));
+        let text = crate::render::strip_ansi_text(row);
+        assert!(
+            text.starts_with(&format!("{LIVE_SPINNER_CELL} ")),
+            "占位格不在第 0 列: {text:?}"
+        );
+        renderer.subagent_tool(
+            "subagent",
+            "run_command",
+            "运行命令",
+            r#"{"command":"sleep 5"}"#,
+            true,
+            "输出",
+        );
+        let done = crate::render::blocks::get(id).unwrap_or_default();
+        assert!(
+            !done.iter().any(|line| line.contains(LIVE_SPINNER_CELL)),
+            "跑完了占位格还在: {done:?}"
+        );
+    });
+}
+
+/// 没有主题规则的工具，面板里的窥视是参数的值串起来，不是裸 JSON；不到十分之一
+/// 秒的步也不报 `0.0s`。
+#[test]
+fn a_subagent_step_without_a_subject_rule_spells_out_its_arguments() {
+    with_blocks(|| {
+        let mut renderer = timeline_renderer();
+        renderer
+            .write_tool_call("subagent", r#"{"description":"查包","prompt":"去查"}"#)
+            .unwrap();
+        renderer.subagent_tool(
+            "subagent",
+            "aur_query",
+            "AUR 查询",
+            r#"{"action":"info","package_name":"zzq"}"#,
+            true,
+            "输出",
+        );
+        let id = renderer.subagent_overlay_id("subagent").expect("没登记");
+        let rows: Vec<String> = crate::render::blocks::get(id)
+            .unwrap_or_default()
+            .iter()
+            .map(|line| crate::render::strip_ansi_text(line))
+            .collect();
+        let row = rows
+            .iter()
+            .find(|line| line.contains("AUR 查询"))
+            .unwrap_or_else(|| panic!("那一步不见了: {rows:?}"));
+        assert!(row.contains("info · zzq"), "窥视不是人话: {row:?}");
+        assert!(!row.contains("{\"action\""), "窥视是裸 JSON: {row:?}");
+        assert!(!row.contains("0.0s"), "报了个 0.0s: {row:?}");
+    });
+}
+
+/// 主线上不到十分之一秒的步不报秒数：`· 0.0s` 只是噪音（用户实测）。
+#[test]
+fn a_quick_tool_step_does_not_report_zero_seconds() {
+    with_blocks(|| {
+        let mut renderer = timeline_renderer();
+        renderer
+            .write_tool_call("web_search", r#"{"query":"miyu 转轮"}"#)
+            .unwrap();
+        renderer
+            .write_tool_result("web_search", true, "done")
+            .unwrap();
+        renderer.finalize_tools_summary().unwrap();
+        let step = renderer
+            .timeline_step_lines()
+            .into_iter()
+            .map(|line| crate::render::strip_ansi_text(&line))
+            .find(|line| line.contains("miyu 转轮"))
+            .expect("没有那一步");
+        assert!(!step.contains("0.0s"), "报了个 0.0s: {step:?}");
     });
 }

@@ -182,6 +182,55 @@ pub(crate) fn inline_tool_subject(name: &str) -> bool {
     matches!(tool_event_base_name(name), "load_tools" | "trash_path")
 }
 
+/// 一步的窥视：先按工具自己的规矩摘主题（命令、路径、检索词），命令工具退回
+/// 命令文本，都摘不出来就把参数里的值串起来——**绝不**原样甩 JSON。
+///
+/// `{"action": "info", "package_name": "zzq"}` 这种在面板里读起来是一团括号引号
+/// （用户实测：子代理浮层的参数窥视是裸 JSON）；值串成 `info · zzq` 才是人话。
+pub(crate) fn tool_peek(name: &str, arguments: &str) -> Option<String> {
+    if let Some(subject) = tool_subject(name, arguments) {
+        return Some(subject);
+    }
+    if is_command_tool(tool_event_base_name(name)) {
+        if let Some(command) = crate::render::timeline::command_peek(arguments) {
+            return Some(command);
+        }
+    }
+    args_peek(arguments)
+}
+
+/// 参数对象里的标量值按出现顺序串起来，`·` 隔开。数组、嵌套对象跳过；空的
+/// 就是没有。单个值裁到 48 列，总长交给调用方再裁。
+pub(crate) fn args_peek(arguments: &str) -> Option<String> {
+    let arguments = arguments.trim();
+    let args = serde_json::from_str::<Value>(arguments).ok()?;
+    let object = args.as_object()?;
+    // `serde_json` 的对象是按键名排序的；按模型写出来的次序串才读得顺
+    //（`info · zzq` 而不是 `zzq · info`），所以按键在原文里出现的位置排。
+    let mut entries: Vec<(usize, &Value)> = object
+        .iter()
+        .map(|(key, value)| {
+            let at = arguments.find(&format!("\"{key}\"")).unwrap_or(usize::MAX);
+            (at, value)
+        })
+        .collect();
+    entries.sort_by_key(|(at, _)| *at);
+    let mut parts: Vec<String> = Vec::new();
+    for (_, value) in entries {
+        let text = match value {
+            Value::String(text) => text.split_whitespace().collect::<Vec<_>>().join(" "),
+            Value::Number(number) => number.to_string(),
+            Value::Bool(flag) => flag.to_string(),
+            _ => continue,
+        };
+        if text.is_empty() {
+            continue;
+        }
+        parts.push(crate::render::clip_to_display_width(&text, 48));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
 pub(crate) fn tool_subject(name: &str, arguments: &str) -> Option<String> {
     let args = serde_json::from_str::<Value>(arguments).ok()?;
     let name = tool_event_base_name(name);

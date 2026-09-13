@@ -310,11 +310,19 @@ impl Overlay {
             // 前台那种面板（走事件）和这种（读日志）用的是**同一份**排版代码：
             // 取数的地方不同，长相不该不同（用户原话：后台子代理和前台子代理
             // 应该是一回事啊，为什么感觉你做出来两个浮层）。
-            let line = crate::render::timeline::panel_step_line(
-                &step.glyph,
-                &format!("{head}{status}"),
-                step.status == Some("err"),
-            );
+            // 正在跑／正在准备的那一行左边距上转着点阵，和主线一样。
+            let line = if step.running || step.preparing {
+                crate::render::timeline::panel_live_step_line(
+                    &step.glyph,
+                    &format!("{head}{status}"),
+                )
+            } else {
+                crate::render::timeline::panel_step_line(
+                    &step.glyph,
+                    &format!("{head}{status}"),
+                    step.status == Some("err"),
+                )
+            };
             let detail = if step.inner.is_empty() {
                 log_step_detail(&line, step)
             } else {
@@ -388,7 +396,13 @@ impl Overlay {
                 None => inner_line,
             });
         }
-        crate::render::timeline::panel_step_detail(line, &rows)
+        // 收缩行点开是时间线：抬头、连线、各步同一列，不缩进——和主线那份一个样子。
+        let mut detail = Vec::with_capacity(rows.len() + 3);
+        detail.push(line.to_string());
+        detail.push(crate::render::timeline::panel_rail());
+        detail.extend(rows);
+        detail.push(String::new());
+        detail
     }
 
     /// 内容有变就重取。
@@ -829,9 +843,12 @@ fn step_head(step: &LogStep, head_width: usize) -> String {
         return step.head.clone();
     }
     let mut head = crate::i18n::text("thought", "已思考").to_string();
-    if let Some(elapsed) = step.elapsed.filter(|elapsed| elapsed.as_millis() >= 100) {
+    if let Some(secs) = step
+        .elapsed
+        .and_then(crate::render::timeline::reported_seconds)
+    {
         head.push_str(" · ");
-        head.push_str(&crate::render::timeline::format_seconds(elapsed));
+        head.push_str(&secs);
     }
     head.push_str(crate::render::timeline::PEEK_SEP);
     head.push_str(&crate::render::timeline::peek_tail(&step.head, head_width));
@@ -852,7 +869,10 @@ fn split_thought_elapsed(rest: &str) -> (String, Option<std::time::Duration>) {
 /// 把耗时插进抬头：`运行命令 · ls` → `运行命令 · 1.2s · ls`（名字后面、窥视前面，
 /// 和主线一个次序）。
 fn with_elapsed(head: &str, elapsed: std::time::Duration) -> String {
-    let secs = crate::render::timeline::format_seconds(elapsed);
+    // 不到十分之一秒的不报：`0.0s` 只是噪音（用户实测）。收缩行照样把它算进总数。
+    let Some(secs) = crate::render::timeline::reported_seconds(elapsed) else {
+        return head.to_string();
+    };
     match head.split_once(" · ") {
         Some((name, rest)) => format!("{name} · {secs} · {rest}"),
         None => format!("{head} · {secs}"),
@@ -1136,9 +1156,25 @@ impl Screen {
     }
 
     /// 画覆盖层。返回真表示这一帧由面板接管，正文和活动区都不用画了。
+    /// 面板里转轮当前该画哪一帧。每帧都会来问，但字形最快 80ms 换一次。
+    fn overlay_spinner_frame(&mut self) -> usize {
+        let now = std::time::Instant::now();
+        let (frame, last) = &mut self.overlay_spinner;
+        if last.is_none_or(|last| now.duration_since(last) >= std::time::Duration::from_millis(80))
+        {
+            *frame = frame.wrapping_add(1);
+            *last = Some(now);
+        }
+        *frame
+    }
+
     pub(in crate::cli) fn paint_overlay(&mut self) -> anyhow::Result<bool> {
         let rows = self.rows;
         let cols = self.cols;
+        let spinner = format!(
+            "\x1b[36m{}\x1b[39m",
+            crate::render::wait_spinner::braille_frame(self.overlay_spinner_frame())
+        );
         let Some(panel) = &mut self.overlay else {
             return Ok(false);
         };
@@ -1181,7 +1217,9 @@ impl Screen {
                 } else {
                     spans
                 };
+                // 「正在进行」那一行左边距上的占位格换成当帧的点阵字形。
                 crate::render::clip_to_display_width(&spans_to_ansi(&spans), inner)
+                    .replace(crate::render::timeline::LIVE_SPINNER_CELL, &spinner)
             })
             .collect();
 

@@ -812,3 +812,64 @@ fn job_panel_does_not_hang_tool_output_on_speech_or_the_fold() {
         let _ = std::fs::remove_dir_all(&dir);
     });
 }
+
+/// 后台日志面板：收缩行点开是时间线（抬头底下接连线、各步和抬头同一列），不到
+/// 十分之一秒的耗时不报，还没回来的那一步左边距上是转轮占位格。
+#[test]
+fn a_log_fold_opens_into_a_timeline_and_the_running_step_spins() {
+    with_blocks(|| {
+        let dir = std::env::temp_dir().join(format!("miyu-log-fold-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建目录");
+        let path = dir.join("job.log");
+        std::fs::write(
+            &path,
+            concat!(
+                "[思考] 0.0s\t先想想\n",
+                "[工具] run_command\t运行命令 · ls\n",
+                "[结果] run_command\t运行命令 ok · 0.0s · ls\n",
+                "[工具] run_command\t运行命令 · pwd\n",
+                "[结果] run_command\t运行命令 ok · 1.2s · pwd\n",
+                "[正文] 说完了。\n",
+                "[工具] run_command\t运行命令 · sleep 5\n",
+            ),
+        )
+        .expect("写日志");
+        let mut screen = Screen::detached(100, 30);
+        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None));
+        let rows = screen.overlay_rows();
+        assert!(
+            !rows.iter().any(|row| row.contains("0.0s")),
+            "报了个 0.0s: {rows:?}"
+        );
+        let fold = rows
+            .iter()
+            .position(|row| row.contains("2 tools"))
+            .unwrap_or_else(|| panic!("没收成一行: {rows:?}"));
+        assert!(screen.overlay_toggle(fold), "收缩行点不开");
+        let opened = screen.overlay_rows();
+        let column = |line: &str| line.chars().take_while(|c| *c == ' ').count();
+        let head_col = column(&opened[fold]);
+        assert_eq!(opened[fold + 1].trim(), "│", "抬头底下不是连线: {opened:?}");
+        for needle in ["先想想", "· ls", "1.2s · pwd"] {
+            let row = opened
+                .iter()
+                .find(|row| row.contains(needle))
+                .unwrap_or_else(|| panic!("收起来的 {needle} 不见了: {opened:?}"));
+            assert_eq!(
+                column(row),
+                head_col,
+                "{needle} 那一步没和抬头同一列: {opened:?}"
+            );
+        }
+        let running = screen
+            .overlay_rows_ansi()
+            .into_iter()
+            .find(|row| row.contains("sleep 5"))
+            .unwrap_or_else(|| panic!("跑着的那一步不见了"));
+        assert!(
+            running.contains(crate::render::timeline::LIVE_SPINNER_CELL),
+            "跑着的那一步没有转轮占位: {running:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+}

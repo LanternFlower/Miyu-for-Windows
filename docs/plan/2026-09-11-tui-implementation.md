@@ -2130,6 +2130,36 @@ shellhook 走的是 `remote/one_shot.rs` + inline 渲染器（`live = None`）�
   `resume_at` 又整屏擦掉重画。全屏改走缓冲（`apply_output_frame`），表头用铃铛
   图标、退两格。
 
+### 26.13 第七批：面板转轮、收缩行展开的排版、裸 JSON 窥视、`0.0s`
+
+- **子代理浮层没有转轮**：面板内容是一段静态 ANSI（前台是块内容、后台是日志折出来
+  的行），没人每帧重写它。加一个占位格 `LIVE_SPINNER_CELL`（私有区 U+10FFFD）：
+  面板里正在跑／正在准备／正在想的那一行由 `panel_live_step_line` 生成，占位格在
+  第 0 列、logo 在第 2 列（和主线同列）；`paint_overlay` 每帧把它换成当帧的点阵
+  字形（`Screen.overlay_spinner` 记帧号，80ms 换一帧）。跑完的行不带占位格。
+- **Worked for 底下的缩进与时间线不对**：收缩行的块内容原来走 `indented_body`（当正文
+  缩进四格、铺暗底），而收起来的那几步本来就是整行、带缩进、连好线的时间线。
+  `Step.fold` 标出收缩行，`step_detail` 对它只出 `[抬头, │, 各步…, 空行]`；
+  前台 `collapse_subagent_segment` 不再对步骤行做 `undecorate`（它会把行首的
+  `│ ` 当 inline 装饰剥掉）；后台 `fold_detail` 同样改成抬头 + 连线 + 各步。
+- **窥视是裸 JSON**：没有主题规则的工具（AUR 查询之类）三处都退回了原始
+  `args`。新加 `tool_peek`：主题 → 命令文本 → `args_peek`（参数对象里的标量值按
+  原文次序用 ` · ` 串起来，数组/嵌套跳过）→ 什么都没有就不带主题。`serde_json`
+  的对象按键名排序，所以按键在原文里的位置排，`{"action":"info","package_name":
+  "zzq"}` 出来是 `info · zzq`。前台 `subagent_tool`/`subagent_tool_started` 与后台
+  日志桥 `subtool_summary` 都走它。
+- **`0.0s`**：不是 bug，是所有工具都掐表之后（26.12）几十毫秒的步被印成 `0.0s`。
+  统一走 `reported_seconds`（至少十分之一秒才报）：主线步标签、子代理面板的工具
+  步与思考步、后台面板 `with_elapsed`/`step_head`；交到后台的子代理（立刻返回）
+  不报秒数。收缩行的总耗时照样把这些短步算进去。
+
+单测：`tool_peek_spells_out_arguments_instead_of_raw_json`、
+`the_fold_opens_into_a_timeline_not_an_indented_body`、
+`a_running_subagent_step_carries_the_spinner_cell`、
+`a_subagent_step_without_a_subject_rule_spells_out_its_arguments`、
+`a_quick_tool_step_does_not_report_zero_seconds`、
+`a_log_fold_opens_into_a_timeline_and_the_running_step_spins`。
+
 **opencode Zen 的 FreeUsageLimitError 不是客户端的事**（09-13 实测）：
 - 本机 opencode 1.18.29 指到本地假端点抓包，头与 Miyu 现发的一致
   （`x-opencode-client/project/session/request` + 同款 User-Agent）；
