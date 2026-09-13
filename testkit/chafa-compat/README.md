@@ -94,5 +94,13 @@ E --polite on                  stdin=tty        symbols symbols   sixel   sixel 
 | `pty_probe.py` / `rawmode.py` / `queries.py` | 有，`--polite` 抑制了哪几个序列是它们量出来的 |
 | `sandbox.sh` | **有**，整轮手测都靠它 |
 | `trace_ab.py` | 有限。它和 relay 有同一个盲区（一次读 64KB，把分块抹平） |
-| `e2e.py` | 未跑通（`miyu tool` 子命令已改名 `tool-call`，而 `tool-call` 在 daemon 侧执行、没有终端） |
-| `konsole-probe.sh` / `konsole-stages.sh` / `konsole-overlap.sh` | **没用**。Xvfb 里的 Konsole 压根不画 sixel，三个脚本全程拿不到有效画面。留着是为了记住这条路走不通 |
+
+## 两条走不通的路（脚本已删，教训留着）
+
+- **无头 Konsole**：Xvfb 里的 Konsole 压根不画 sixel。光把它启动起来就要
+  `dbus-run-session` + `QT_QPA_PLATFORM=xcb` + 摘掉 `WAYLAND_DISPLAY`（否则 Qt
+  连的是你的真实 Wayland 会话，窗口开在真桌面上、Xvfb 里拍到一片黑），起来之后
+  截图依然是空的。**真终端的图像问题只能在真终端测。**
+- **拿 `miyu tool-call print_image` 当端到端入口**：`tool-call` 在 daemon 侧执行，
+  那边没有终端，只会返回 `image emitted to the host`，测不到任何渲染。要走真实
+  路径就得进 REPL（见 `HANDTEST.md`）。
