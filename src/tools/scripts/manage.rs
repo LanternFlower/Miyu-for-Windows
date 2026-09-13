@@ -479,7 +479,10 @@ pub(crate) fn unregister_script(
 pub(crate) fn list_scripts_handler(config: &AppConfig, paths: &MiyuPaths) -> Result<String> {
     let roots = script_scan_roots(config, paths);
     let dirs: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
-    let scan = scan_scripts(&dirs)?;
+    let mut scan = scan_scripts(&dirs)?;
+    // 模型看到的目录 = 真挂上的工具面:本人格没启用的脚本不列(用户实测:列了
+    // 又加载不了,只会让它反复去 load)。
+    super::retain_persona_visible(config, paths, &mut scan.entries);
     let layers = user_layers(config, paths);
 
     let canonical_roots: Vec<Option<PathBuf>> =

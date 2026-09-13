@@ -289,29 +289,6 @@ pub(crate) fn default_web_images_timeout() -> u64 {
     20
 }
 
-pub(crate) fn default_deep_research_dir() -> String {
-    default_miyu_home()
-        .join("data/documents/deep-thinking")
-        .display()
-        .to_string()
-}
-
-pub(crate) fn default_deep_research_depth() -> String {
-    "high".to_string()
-}
-
-pub(crate) fn default_deep_research_max_review_revisions() -> usize {
-    0
-}
-
-pub(crate) fn default_deep_research_max_tool_steps() -> usize {
-    0
-}
-
-pub(crate) fn default_deep_research_tool_timeout() -> u64 {
-    90
-}
-
 pub(crate) fn default_subagent_max_tool_steps() -> usize {
     100
 }
@@ -404,18 +381,6 @@ pub(crate) fn default_kb_keyword_strong_score_threshold() -> f32 {
 
 pub(crate) fn default_kb_embedding_timeout_seconds() -> u64 {
     60
-}
-
-pub(crate) fn default_diagnostics_timeout() -> u64 {
-    5
-}
-
-pub(crate) fn default_diagnostics_max_stdout_chars() -> usize {
-    8_000
-}
-
-pub(crate) fn default_diagnostics_max_stderr_chars() -> usize {
-    4_000
 }
 
 pub(crate) fn default_tool_output_spill_bytes() -> usize {

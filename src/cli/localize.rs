@@ -212,14 +212,14 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
             "向助手发送一条消息，一次性对话",
         ),
         (
-            "normal",
-            "Enter the normal-mode REPL (full persona abilities)",
-            "进入普通模式 REPL（人格全能力）",
-        ),
-        (
             "dev",
             "Enter the dev-mode REPL (minimal coding form, no persona)",
             "进入开发模式 REPL（极简编码形态，无人格）",
+        ),
+        (
+            "oobe",
+            "Run the setup guide: persona, features, profile, shell hook, model",
+            "跑一遍新手引导：人格 / 功能 / 认识你 / 终端集成 / 接模型",
         ),
         (
             "tool-call",
@@ -337,8 +337,8 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
     for (index, name) in [
         "init",
         "config",
-        "normal",
         "dev",
+        "oobe",
         "daemon",
         "web",
         "tool-call",

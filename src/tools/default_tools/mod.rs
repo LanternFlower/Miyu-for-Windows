@@ -60,7 +60,7 @@ pub fn register_readonly(
 ) {
     registry.register(ToolSpec::new(
         "check_os_info",
-        "Check basic read-only OS, shell, desktop session, kernel, host, and package-manager context. For concrete Linux input method issues, load the linux-input-method-diagnose skill.",
+        "Check basic read-only OS, shell, desktop session, kernel, host, and package-manager context.",
         json!({"type":"object","properties":{},"additionalProperties":false}),
         |_| async move { check_os_info() },
     ));

@@ -102,7 +102,7 @@ pub(in crate::config_tui) fn plugin_row(
     fixed + &truncate(description, remaining)
 }
 
-pub(in crate::config_tui) fn plugin_names() -> [(&'static str, &'static str, &'static str); 12] {
+pub(in crate::config_tui) fn plugin_names() -> [(&'static str, &'static str, &'static str); 10] {
     [
         (
             "web",
@@ -110,14 +110,6 @@ pub(in crate::config_tui) fn plugin_names() -> [(&'static str, &'static str, &'s
             t(
                 "Search APIs with script fallback",
                 "搜索 API 与脚本 fallback",
-            ),
-        ),
-        (
-            "deep_research",
-            t("Deep research", "深度研究"),
-            t(
-                "Run long research tasks and output Markdown",
-                "长任务研究并输出 Markdown",
             ),
         ),
         (
@@ -162,17 +154,15 @@ pub(in crate::config_tui) fn plugin_names() -> [(&'static str, &'static str, &'s
         (
             "archlinux",
             "Arch Linux",
-            t("AUR status and ArchWiki lookup", "AUR 状态与 ArchWiki 查询"),
+            t(
+                "AUR lookup, PKGBUILD review, ArchWiki",
+                "AUR 查询、PKGBUILD 审查与 ArchWiki",
+            ),
         ),
         (
             "memory",
             t("Memory", "记忆"),
             t("Long-term memory and association", "长期记忆与联想"),
-        ),
-        (
-            "package_advisor",
-            t("AUR review", "AUR 审查"),
-            t("PKGBUILD/AUR security review", "PKGBUILD/AUR 安全审查"),
         ),
         (
             "api_quota",
@@ -188,17 +178,15 @@ pub(in crate::config_tui) fn plugin_names() -> [(&'static str, &'static str, &'s
 pub(in crate::config_tui) fn plugin_enabled(config: &AppConfig, index: usize) -> bool {
     match index {
         0 => config.plugins.web.enabled,
-        1 => config.plugins.deep_research.enabled,
-        2 => config.plugins.vision.enabled,
-        3 => config.plugins.image_generation.enabled,
-        4 => config.plugins.web_images.enabled,
-        5 => config.plugins.print_image.enabled,
-        6 => config.plugins.memes.enabled,
-        7 => config.plugins.knowledge_base.enabled,
-        8 => config.plugins.archlinux.enabled,
-        9 => config.plugins.memory.enabled,
-        10 => config.plugins.package_advisor.enabled,
-        11 => config.plugins.api_quota.enabled,
+        1 => config.plugins.vision.enabled,
+        2 => config.plugins.image_generation.enabled,
+        3 => config.plugins.web_images.enabled,
+        4 => config.plugins.print_image.enabled,
+        5 => config.plugins.memes.enabled,
+        6 => config.plugins.knowledge_base.enabled,
+        7 => config.plugins.archlinux.enabled,
+        8 => config.plugins.memory.enabled,
+        9 => config.plugins.api_quota.enabled,
         _ => false,
     }
 }
@@ -207,17 +195,15 @@ pub(in crate::config_tui) fn toggle_plugin(config: &mut AppConfig, index: usize)
     let value = !plugin_enabled(config, index);
     match index {
         0 => config.plugins.web.enabled = value,
-        1 => config.plugins.deep_research.enabled = value,
-        2 => config.plugins.vision.enabled = value,
-        3 => config.plugins.image_generation.enabled = value,
-        4 => config.plugins.web_images.enabled = value,
-        5 => config.plugins.print_image.enabled = value,
-        6 => config.plugins.memes.enabled = value,
-        7 => config.plugins.knowledge_base.enabled = value,
-        8 => config.plugins.archlinux.enabled = value,
-        9 => config.plugins.memory.enabled = value,
-        10 => config.plugins.package_advisor.enabled = value,
-        11 => config.plugins.api_quota.enabled = value,
+        1 => config.plugins.vision.enabled = value,
+        2 => config.plugins.image_generation.enabled = value,
+        3 => config.plugins.web_images.enabled = value,
+        4 => config.plugins.print_image.enabled = value,
+        5 => config.plugins.memes.enabled = value,
+        6 => config.plugins.knowledge_base.enabled = value,
+        7 => config.plugins.archlinux.enabled = value,
+        8 => config.plugins.memory.enabled = value,
+        9 => config.plugins.api_quota.enabled = value,
         _ => {}
     }
 }
@@ -227,7 +213,7 @@ pub(in crate::config_tui) fn edit_plugin_detail(
     config: &mut AppConfig,
     index: usize,
 ) -> Result<()> {
-    // api_quota 是 plugin_names() 的最后一项(下标 12):它有专门的账号
+    // api_quota 是 plugin_names() 的最后一项(下标 9):它有专门的账号
     // 管理界面,不走通用表单。
     if index == plugin_names().len() - 1 {
         return edit_api_quota(stdout, config);
@@ -274,54 +260,6 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, index: usize) -> 
             Field::new("SearXNG URL", config.plugins.web.searxng_base_url.clone()),
         ],
         1 => vec![
-            Field::boolean(t("Enabled", "启用"), config.plugins.deep_research.enabled),
-            Field::new(
-                t("Output directory", "输出目录"),
-                config.plugins.deep_research.output_dir.clone(),
-            ),
-            Field::new(
-                t("Thinking depth", "思考深度"),
-                config.plugins.deep_research.thinking_depth.clone(),
-            )
-            .choices(&["minimal", "low", "medium", "high", "xhigh"]),
-            Field::new(
-                t("Maximum review revisions", "最大审视修正次数"),
-                config
-                    .plugins
-                    .deep_research
-                    .max_review_revisions
-                    .to_string(),
-            ),
-            Field::new(
-                t("Tool steps per round", "每轮工具步数"),
-                config
-                    .plugins
-                    .deep_research
-                    .max_tool_steps_per_round
-                    .to_string(),
-            ),
-            Field::new(
-                t("Final answer character limit", "最终字数上限"),
-                config
-                    .plugins
-                    .deep_research
-                    .max_final_answer_chars
-                    .to_string(),
-            ),
-            Field::new(
-                t("Tool timeout (seconds)", "工具超时秒数"),
-                config
-                    .plugins
-                    .deep_research
-                    .tool_call_timeout_seconds
-                    .to_string(),
-            ),
-            Field::boolean(
-                t("Show progress", "显示过程进度"),
-                config.plugins.deep_research.show_progress,
-            ),
-        ],
-        2 => vec![
             Field::boolean(t("Enabled", "启用"), config.plugins.vision.enabled),
             Field::boolean(
                 t(
@@ -356,7 +294,7 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, index: usize) -> 
                 config.plugins.vision.image_timeout_seconds.to_string(),
             ),
         ],
-        3 => vec![
+        2 => vec![
             Field::boolean(
                 t("Enabled", "启用"),
                 config.plugins.image_generation.enabled,
@@ -401,7 +339,7 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, index: usize) -> 
                 config.plugins.image_generation.timeout_seconds.to_string(),
             ),
         ],
-        4 => vec![
+        3 => vec![
             Field::boolean(t("Enabled", "启用"), config.plugins.web_images.enabled),
             Field::new(
                 t("Search source mode", "搜索来源模式"),
@@ -437,7 +375,7 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, index: usize) -> 
                 config.plugins.web_images.timeout_seconds.to_string(),
             ),
         ],
-        5 => vec![
+        4 => vec![
             Field::boolean(t("Enabled", "启用"), config.plugins.print_image.enabled),
             Field::new(
                 t("Print width percent", "打印宽度百分比"),
@@ -448,7 +386,7 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, index: usize) -> 
                 config.plugins.print_image.height_percent.to_string(),
             ),
         ],
-        6 => vec![
+        5 => vec![
             Field::boolean(t("Enabled", "启用"), config.plugins.memes.enabled),
             Field::new(
                 t("Send width percent", "发送宽度百分比"),
@@ -489,7 +427,7 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, index: usize) -> 
                 config.plugins.memes.auto_send_probability.to_string(),
             ),
         ],
-        7 => vec![
+        6 => vec![
             Field::boolean(t("Enabled", "启用"), config.plugins.knowledge_base.enabled),
             Field::new(
                 t("Knowledge base directory", "知识库目录"),
@@ -578,11 +516,11 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, index: usize) -> 
                     .to_string(),
             ),
         ],
-        8 => vec![Field::boolean(
+        7 => vec![Field::boolean(
             t("Enabled", "启用"),
             config.plugins.archlinux.enabled,
         )],
-        9 => {
+        8 => {
             let memory = config.memory_config();
             vec![
                 Field::boolean(t("Enabled", "启用"), memory.enabled),
@@ -649,11 +587,7 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, index: usize) -> 
                 ),
             ]
         }
-        10 => vec![Field::boolean(
-            t("Enabled", "启用"),
-            config.plugins.package_advisor.enabled,
-        )],
-        11 => vec![Field::boolean(
+        9 => vec![Field::boolean(
             t("Enabled", "启用"),
             config.plugins.api_quota.enabled,
         )],
@@ -681,18 +615,6 @@ pub(in crate::config_tui) fn apply_plugin_fields(
                 fields[6].value.trim().trim_end_matches('/').to_string();
         }
         1 => {
-            config.plugins.deep_research.enabled = parse_bool_field(&fields[0].value)?;
-            config.plugins.deep_research.output_dir = fields[1].value.trim().to_string();
-            config.plugins.deep_research.thinking_depth = fields[2].value.trim().to_string();
-            config.plugins.deep_research.max_review_revisions = fields[3].value.trim().parse()?;
-            config.plugins.deep_research.max_tool_steps_per_round =
-                fields[4].value.trim().parse()?;
-            config.plugins.deep_research.max_final_answer_chars = fields[5].value.trim().parse()?;
-            config.plugins.deep_research.tool_call_timeout_seconds =
-                fields[6].value.trim().parse()?;
-            config.plugins.deep_research.show_progress = parse_bool_field(&fields[7].value)?;
-        }
-        2 => {
             config.plugins.vision.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.vision.prefer_current_multimodal_model =
                 parse_bool_field(&fields[1].value)?;
@@ -706,7 +628,7 @@ pub(in crate::config_tui) fn apply_plugin_fields(
             config.plugins.vision.image_timeout_seconds =
                 fields[5].value.trim().parse::<u64>()?.max(1);
         }
-        3 => {
+        2 => {
             config.plugins.image_generation.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.image_generation.provider_type = fields[1].value.trim().to_string();
             config.plugins.image_generation.base_url =
@@ -720,7 +642,7 @@ pub(in crate::config_tui) fn apply_plugin_fields(
             config.plugins.image_generation.auto_print = parse_bool_field(&fields[8].value)?;
             config.plugins.image_generation.timeout_seconds = fields[9].value.trim().parse()?;
         }
-        4 => {
+        3 => {
             config.plugins.web_images.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.web_images.source_mode = match fields[1].value.trim() {
                 "auto" | "global" | "mainland" => fields[1].value.trim().to_string(),
@@ -745,12 +667,12 @@ pub(in crate::config_tui) fn apply_plugin_fields(
             config.plugins.web_images.timeout_seconds =
                 fields[8].value.trim().parse::<u64>()?.clamp(5, 120);
         }
-        5 => {
+        4 => {
             config.plugins.print_image.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.print_image.width_percent = fields[1].value.trim().parse::<u8>()?;
             config.plugins.print_image.height_percent = fields[2].value.trim().parse::<u8>()?;
         }
-        6 => {
+        5 => {
             config.plugins.memes.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.memes.width_percent =
                 fields[1].value.trim().parse::<u8>()?.clamp(1, 100);
@@ -766,7 +688,7 @@ pub(in crate::config_tui) fn apply_plugin_fields(
             config.plugins.memes.auto_send_probability =
                 fields[8].value.trim().parse::<f32>()?.clamp(0.0, 1.0);
         }
-        7 => {
+        6 => {
             config.plugins.knowledge_base.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.knowledge_base.data_dir = fields[1].value.trim().to_string();
             config.plugins.knowledge_base.max_search_results = fields[2].value.trim().parse()?;
@@ -790,10 +712,10 @@ pub(in crate::config_tui) fn apply_plugin_fields(
             config.plugins.knowledge_base.embedding_timeout_seconds =
                 fields[15].value.trim().parse()?;
         }
-        8 => {
+        7 => {
             config.plugins.archlinux.enabled = parse_bool_field(&fields[0].value)?;
         }
-        9 => {
+        8 => {
             config.memory = crate::config::MemoryConfig::default();
             config.plugins.memory.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.memory.evicted_context_enabled = parse_bool_field(&fields[1].value)?;
@@ -823,10 +745,7 @@ pub(in crate::config_tui) fn apply_plugin_fields(
                 fields[15].value.trim().parse::<f64>()?;
             config.plugins.memory.association_dedup = parse_bool_field(&fields[16].value)?;
         }
-        10 => {
-            config.plugins.package_advisor.enabled = parse_bool_field(&fields[0].value)?;
-        }
-        11 => {
+        9 => {
             config.plugins.api_quota.enabled = parse_bool_field(&fields[0].value)?;
         }
         _ => {

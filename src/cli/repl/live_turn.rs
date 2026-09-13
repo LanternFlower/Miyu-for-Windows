@@ -245,6 +245,8 @@ pub(in crate::cli) async fn run_live_agent_turn(
                             }
                         }
                         LiveEditorAction::Interrupt | LiveEditorAction::Exit => break Ok(None),
+                        // 回合跑着的时候会话已经不空了,不会出现;出现也不理。
+                        LiveEditorAction::ToggleMode => {}
                     }
                     if live.mode() != mode_before {
                         control.set_mode(live.mode());

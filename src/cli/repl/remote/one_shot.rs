@@ -322,6 +322,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                             )
                             .await;
                         }
+                        LiveEditorAction::ToggleMode => {}
                         LiveEditorAction::Exit => {
                             renderer.finish()?;
                             if let Some(live) = live.as_deref_mut() {

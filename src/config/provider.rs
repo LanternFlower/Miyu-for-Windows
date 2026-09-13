@@ -94,6 +94,9 @@ impl ModelTiersConfig {
     /// accepted values so a config typo is fixable without reading source.
     pub(crate) fn validate_roles(&self) -> Result<()> {
         for (role, tier) in &self.roles {
+            if AuxRole::RETIRED_KEYS.contains(&role.trim()) {
+                continue;
+            }
             if AuxRole::from_key(role).is_none() {
                 bail!(
                     "model_tiers.roles: unknown role '{role}'; accepted roles: {}",
@@ -165,23 +168,21 @@ pub enum AuxRole {
     SessionTitle,
     /// Background diary → long-term memory distillation (memory organizer).
     MemoryOrganizer,
-    /// The `deep_research` tool's researcher/reviewer loop.
-    DeepResearch,
 }
 
 impl AuxRole {
-    pub const ALL: [Self; 3] = [
-        Self::SessionTitle,
-        Self::MemoryOrganizer,
-        Self::DeepResearch,
-    ];
+    pub const ALL: [Self; 2] = [Self::SessionTitle, Self::MemoryOrganizer];
+
+    /// Role keys that used to exist. Old configs still carry them under
+    /// `model_tiers.roles`; they are ignored instead of failing validation.
+    /// `deep_research`: the plugin was removed on 2026-09-13.
+    pub const RETIRED_KEYS: &'static [&'static str] = &["deep_research"];
 
     /// Config key under `model_tiers.roles`.
     pub fn key(&self) -> &'static str {
         match self {
             Self::SessionTitle => "session_title",
             Self::MemoryOrganizer => "memory_organizer",
-            Self::DeepResearch => "deep_research",
         }
     }
 
@@ -194,7 +195,7 @@ impl AuxRole {
             // 整理器要在几十条已有记忆里判断重复、矛盾、归属和可见性,是记忆
             // 系统里最吃判断力的一步;放最便宜的池产出的是通用知识大杂烩(09-10
             // 真实库取证:123 条里六成是技术问答全文)。
-            Self::MemoryOrganizer | Self::DeepResearch => ModelTier::Standard,
+            Self::MemoryOrganizer => ModelTier::Standard,
         }
     }
 

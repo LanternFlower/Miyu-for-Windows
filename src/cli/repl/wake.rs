@@ -229,6 +229,7 @@ pub(in crate::cli) async fn follow_wake_run(
                             // Detach only: the wake turn keeps running.
                             break 'outer;
                         }
+                        LiveEditorAction::ToggleMode => {}
                     }
                 }
                 frame = &mut recv => break frame?,

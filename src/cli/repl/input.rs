@@ -40,8 +40,12 @@ pub(in crate::cli) fn read_live_repl_input(
             revents: 0,
         };
         // 开着面板时轮询放快一倍：面板里的转轮 80ms 一帧，轮询也是 80ms 的话
-        // 差一毫秒就漏一帧，看着一顿一顿。
-        let wait_ms = if live.overlay_open() { 40 } else { 80 };
+        // 差一毫秒就漏一帧，看着一顿一顿。大厅 banner 挂着时同理（星空、扫光）。
+        let wait_ms = if live.overlay_open() || live.banner.is_some() {
+            40
+        } else {
+            80
+        };
         let ready = unsafe { libc::poll(&mut pollfd, 1, wait_ms) };
         if ready == 1 && (pollfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL)) != 0 {
             return Ok(LiveReplOutcome::Exit);
@@ -134,6 +138,8 @@ pub(in crate::cli) fn read_live_repl_input(
                 synchronized_terminal_update(CursorAfterUpdate::Preserve, || live.redraw())?;
             } else {
                 live.tick_job_strip()?;
+                // 空会话的 banner:星星闪、扫光过。打字时和上面一样停。
+                live.tick_banner()?;
             }
             continue;
         }
@@ -243,6 +249,13 @@ pub(in crate::cli) fn read_live_repl_input(
                         entry,
                     ));
                 }
+                LiveEditorAction::ToggleMode => {
+                    let next = match live.mode() {
+                        AgentMode::Normal => AgentMode::Dev,
+                        AgentMode::Dev => AgentMode::Normal,
+                    };
+                    return Ok(LiveReplOutcome::SwitchMode(next));
+                }
                 // Ctrl+C rung 3: the draft was empty and no reply is running, but
                 // this session still has background work — stop that before the
                 // press is allowed to mean "quit". `live.jobs` holds only running
@@ -332,6 +345,7 @@ pub(in crate::cli) fn read_repl_input(
             raw_pasted_lines,
             footer,
             show_shortcut_hint,
+            None,
         )
     };
     render_repl_input(
@@ -811,12 +825,17 @@ pub(in crate::cli) fn render_repl_input_with_footer(
     raw_pasted_lines: usize,
     footer: &ReplFooterStatus,
     show_shortcut_hint: bool,
+    // 全屏空会话的大厅:输入框不在屏底、也不全宽,而是嵌在 banner 下面的一个
+    // 窄框里——(左边距, 宽度)。None = 老样子,从第 0 列画到终端右边。
+    layout: Option<(u16, usize)>,
 ) -> Result<Option<u16>> {
     let suggestions = repl_command_suggestions(input);
     let lines = repl_input_lines(input);
     let prompt_prefix = input_prompt_bar(mode);
     let plain_prefix = "  ";
-    let cols = terminal_cols();
+    let cols = layout.map(|(_, width)| width).unwrap_or_else(terminal_cols);
+    let x0 = layout.map(|(left, _)| left).unwrap_or(0);
+    let blank = layout.map(|(_, width)| " ".repeat(width));
     let display_lines = repl_visible_input_lines(
         &plain_prefix,
         &lines,
@@ -834,26 +853,28 @@ pub(in crate::cli) fn render_repl_input_with_footer(
     let rows_to_clear = (*rendered_rows).max(current_rows).max(1);
     ensure_repl_space(stdout, input_row, rows_to_clear)?;
     for row_offset in 0..rows_to_clear {
-        queue!(
-            stdout,
-            MoveTo(0, (*input_row).saturating_add(row_offset)),
-            Clear(ClearType::CurrentLine)
-        )?;
+        queue!(stdout, MoveTo(x0, (*input_row).saturating_add(row_offset)))?;
+        // 窄框只擦自己那一段:两侧是 banner 的星空,不能整行清掉。
+        match &blank {
+            Some(blank) => queue!(stdout, Print(blank))?,
+            None => queue!(stdout, Clear(ClearType::CurrentLine))?,
+        }
     }
     let mut row_offset = 0u16;
     let footer_row;
-    queue!(stdout, MoveTo(0, *input_row), Print(&prompt_prefix))?;
+    queue!(stdout, MoveTo(x0, *input_row), Print(&prompt_prefix))?;
     row_offset = row_offset.saturating_add(1);
+    let pad = " ".repeat(usize::from(x0));
     for line in &display_rows {
         let row = (*input_row).saturating_add(row_offset);
-        queue!(stdout, MoveTo(0, row))?;
+        queue!(stdout, MoveTo(x0, row))?;
         queue!(stdout, Print(&prompt_prefix), Print(line))?;
-        drawn.push((row, format!("{prompt_prefix}{line}")));
+        drawn.push((row, format!("{pad}{prompt_prefix}{line}")));
         row_offset = row_offset.saturating_add(1);
     }
     queue!(
         stdout,
-        MoveTo(0, (*input_row).saturating_add(row_offset)),
+        MoveTo(x0, (*input_row).saturating_add(row_offset)),
         Print(&prompt_prefix)
     )?;
     row_offset = row_offset.saturating_add(1);
@@ -863,7 +884,7 @@ pub(in crate::cli) fn render_repl_input_with_footer(
         let suggestion_width = cols.saturating_sub(visible_width(&prompt_prefix)).max(1);
         queue!(
             stdout,
-            MoveTo(0, (*input_row).saturating_add(row_offset)),
+            MoveTo(x0, (*input_row).saturating_add(row_offset)),
             Print(&prompt_prefix),
             Print(format!(
                 "\x1b[2m{}\x1b[0m",
@@ -875,14 +896,14 @@ pub(in crate::cli) fn render_repl_input_with_footer(
         footer_row = Some((*input_row).saturating_add(row_offset));
         queue!(
             stdout,
-            MoveTo(0, (*input_row).saturating_add(row_offset)),
+            MoveTo(x0, (*input_row).saturating_add(row_offset)),
             Print(repl_footer_line(mode, footer, cols))
         )?;
         if show_hint {
             row_offset = row_offset.saturating_add(1);
             queue!(
                 stdout,
-                MoveTo(0, (*input_row).saturating_add(row_offset)),
+                MoveTo(x0, (*input_row).saturating_add(row_offset)),
                 Print(repl_shortcut_hint_line(mode, cols))
             )?;
         }
@@ -895,7 +916,7 @@ pub(in crate::cli) fn render_repl_input_with_footer(
             &plain_prefix,
             last_line,
             last_line.chars().count(),
-            terminal_cols(),
+            cols,
         );
         (
             col,
@@ -905,7 +926,7 @@ pub(in crate::cli) fn render_repl_input_with_footer(
     queue!(
         stdout,
         MoveTo(
-            cursor_col,
+            cursor_col.saturating_add(x0),
             (*input_row)
                 .saturating_add(1)
                 .saturating_add(cursor_row_offset)

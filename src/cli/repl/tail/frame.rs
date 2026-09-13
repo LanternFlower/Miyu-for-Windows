@@ -159,7 +159,17 @@ impl LiveReplTail {
         let job_lines =
             background_job_lines(&self.jobs, self.job_spinner_frame(), usize::from(cols));
         let job_rows = job_lines.len().min(u16::MAX as usize) as u16;
+        // 空会话 banner:inline 下占活动区顶上几行;全屏下画进正文区(见下面)。
+        // 终端太矮就不挂:banner 要十几行,把输入框挤出屏幕就本末倒置了。
+        let banner_lines: Vec<String> = match (&self.banner, self.screen.is_some()) {
+            (Some(banner), false) if usize::from(terminal_rows) >= banner.block_rows() + 2 + 10 => {
+                banner.render_ansi(usize::from(cols), banner.block_rows() + 2)
+            }
+            _ => Vec::new(),
+        };
+        let banner_rows = banner_lines.len().min(u16::MAX as usize) as u16;
         let total_rows = 1u16
+            .saturating_add(banner_rows)
             .saturating_add(queue_lines.len().min(u16::MAX as usize) as u16)
             .saturating_add(queue_gap)
             .saturating_add(editor_rows)
@@ -189,6 +199,8 @@ impl LiveReplTail {
         } else {
             Vec::new()
         };
+        // 大厅里输入框的窄框:(左边距, 宽度)。None = 全宽贴左。
+        let mut layout_box: Option<(u16, usize)> = None;
         let placement = if let Some(screen) = &mut self.screen {
             // 全屏：正文归 Screen，活动区固定钉在视口底部。不用「腾地方」
             // 也不用算锚定——屏幕是自己的，底下永远有位置。
@@ -204,12 +216,60 @@ impl LiveReplTail {
             });
             // `total_rows + 1`：活动区底下留一行空，和 inline 的观感一致。
             // 不留的话 footer 直接贴在屏幕最后一行上，挤得没有呼吸。
-            let body = screen.paint(total_rows.saturating_add(1))?;
-            LiveTailPlacement {
-                output_row: body.saturating_sub(1),
-                tail_start: body,
-                overflow: 0,
-                anchored: true,
+            // 空会话大厅:整屏交给 banner 画(星空 + 渐变字),输入框嵌在字下面的
+            // 窄框里,不在屏底。第一句话发出去后 banner 撤掉,回到屏底、全宽。
+            let lobby = self.banner.as_ref().map(|banner| {
+                banner.lobby(
+                    usize::from(cols),
+                    usize::from(terminal_rows),
+                    usize::from(total_rows),
+                )
+            });
+            screen.set_banner(lobby.as_ref().map(|lobby| lobby.rows.clone()));
+            if std::env::var_os("MIYU_LOBBY_TRACE").is_some() {
+                if let Some(lobby) = &lobby {
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("/tmp/miyu-lobby-trace.log")
+                    {
+                        let _ = writeln!(
+                            file,
+                            "cols={cols} rows={terminal_rows} total_rows={total_rows} editor_rows={editor_rows} queue={} jobs={} tail_start={} left={} width={}",
+                            queue_lines.len(),
+                            job_lines.len(),
+                            lobby.tail_start,
+                            lobby.left,
+                            lobby.width
+                        );
+                    }
+                }
+            }
+            screen.set_float_anchor(
+                lobby
+                    .as_ref()
+                    .map(|lobby| (lobby.below.saturating_add(1), lobby.left)),
+            );
+            match lobby {
+                Some(lobby) => {
+                    screen.paint(0)?;
+                    layout_box = Some((lobby.left, usize::from(lobby.width)));
+                    LiveTailPlacement {
+                        output_row: lobby.tail_start.saturating_sub(1),
+                        tail_start: lobby.tail_start,
+                        overflow: 0,
+                        anchored: true,
+                    }
+                }
+                None => {
+                    let body = screen.paint(total_rows.saturating_add(1))?;
+                    LiveTailPlacement {
+                        output_row: body.saturating_sub(1),
+                        tail_start: body,
+                        overflow: 0,
+                        anchored: true,
+                    }
+                }
             }
         } else {
             live_tail_placement(
@@ -232,9 +292,16 @@ impl LiveReplTail {
         let tail_start = placement.tail_start;
 
         let mut stdout = io::stdout();
-        queue!(stdout, MoveTo(0, tail_start), Clear(ClearType::CurrentLine))?;
+        let box_left = layout_box.map(|(left, _)| left).unwrap_or(0);
+        match layout_box {
+            // 窄框只擦自己那一段,两侧的星空归 banner。
+            Some((left, width)) => {
+                queue!(stdout, MoveTo(left, tail_start), Print(" ".repeat(width)))?
+            }
+            None => queue!(stdout, MoveTo(0, tail_start), Clear(ClearType::CurrentLine))?,
+        }
         let mut row = tail_start.saturating_add(1);
-        for line in &queue_lines {
+        for line in &banner_lines {
             queue!(
                 stdout,
                 MoveTo(0, row),
@@ -243,8 +310,18 @@ impl LiveReplTail {
             )?;
             row = row.saturating_add(1);
         }
+        self.banner_rows = banner_rows;
+        for line in &queue_lines {
+            queue!(
+                stdout,
+                MoveTo(box_left, row),
+                Clear(ClearType::CurrentLine),
+                Print(line)
+            )?;
+            row = row.saturating_add(1);
+        }
         if !queue_lines.is_empty() {
-            queue!(stdout, MoveTo(0, row), Clear(ClearType::CurrentLine))?;
+            queue!(stdout, MoveTo(box_left, row), Clear(ClearType::CurrentLine))?;
             row = row.saturating_add(1);
         }
         stdout.flush()?;
@@ -263,6 +340,7 @@ impl LiveReplTail {
             self.editor.raw_pasted_lines,
             &self.footer,
             false,
+            layout_box,
         )?;
         self.footer_offset = footer_row.map(|abs| abs.saturating_sub(tail_start));
         if let Some(screen) = &mut self.screen {
@@ -279,15 +357,21 @@ impl LiveReplTail {
             // 全屏下不问终端（那会吞掉正在打的字），按布局算——反正输入区
             // 是我们自己摆的，算得出来。
             let prefix = input_prompt_bar(self.editor.mode);
+            let width = layout_box
+                .map(|(_, width)| width)
+                .unwrap_or(usize::from(cols));
             let (col, row_offset) = repl_cursor_position_for_cols(
                 &prefix,
                 &self.editor.input,
                 self.editor.cursor,
-                usize::from(cols),
+                width,
             );
             // `input_row` 是输入区**顶上那根空竖条**的行，正文从它下一行才开始，
             // 所以要 +1。少这一行的表现是输入法的预编辑框浮在文字上一行。
-            (col, input_row.saturating_add(1).saturating_add(row_offset))
+            (
+                col.saturating_add(box_left),
+                input_row.saturating_add(1).saturating_add(row_offset),
+            )
         } else {
             cursor_position_or(self.input_cursor)
         };
@@ -526,6 +610,17 @@ impl LiveReplTail {
         }
         self.suspend()?;
         self.resume_at(output_cursor)
+    }
+
+    /// 换会话：画布整个丢掉，回放从屏顶起。inline 没有画布，退化成清屏。
+    pub(in crate::cli) fn wipe_transcript(&mut self) -> Result<()> {
+        if let Some(screen) = &mut self.screen {
+            screen.dismiss_toast();
+            screen.wipe_transcript();
+            let cursor = self.output_cursor;
+            return self.resume_at(cursor);
+        }
+        self.clear_screen()
     }
 
     pub(in crate::cli) fn clear_screen(&mut self) -> Result<()> {

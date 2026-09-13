@@ -50,6 +50,8 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
         daemon_state.context_window_assumed,
     );
     let mut live_repl = LiveReplTail::new(mode, history.clone(), Vec::new(), footer.clone())?;
+    // 空会话:挂 banner,Tab 可换车道;有过回合的会话直接是输入框。
+    live_repl.set_session_empty(&config, paths, session_is_empty(paths, &active_session_id));
     let jobs_shared = spawn_jobs_poll_thread(paths.clone());
     let jobs_feed = JobsFeed::Shared(jobs_shared.clone());
 
@@ -203,11 +205,43 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
             LiveReplOutcome::Submit(next_mode, input, images, entry) => {
                 (next_mode, input, images, entry)
             }
+            LiveReplOutcome::SwitchMode(next) => {
+                match switch_repl_lane(
+                    paths,
+                    &config,
+                    next,
+                    &mut active_session_id,
+                    &mut history,
+                    &mut live_repl,
+                    &mut footer,
+                    &mut cumulative_tokens,
+                )
+                .await
+                {
+                    Ok(()) => mode = next,
+                    Err(error) => {
+                        // 切不过去就留在原车道,把颜色也换回来。
+                        live_repl.set_mode(mode);
+                        repl_note(
+                            &mut live_repl,
+                            &format!(
+                                "\x1b[31m{}: {error:#}\x1b[0m\n",
+                                t("could not switch mode", "切换模式失败")
+                            ),
+                        )?;
+                    }
+                }
+                continue;
+            }
         };
         mode = next_mode;
         let input = input.trim();
         if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {
             break;
+        }
+        // 第一条消息发出去,会话就不空了:banner 撤、模式钉死。斜杠命令不算。
+        if !input.is_empty() && !input.starts_with('/') {
+            live_repl.set_session_empty(&config, paths, false);
         }
         let (slash_command, command_args) = match parse_repl_input(input) {
             ReplInput::Chat => (None, ""),
@@ -722,6 +756,13 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                 }
                 ReplSlashCommand::Config => {
                     crate::config_tui::run(paths)?;
+                    // 设置界面退出时画面原样留着、光标藏着：在一个同步块里把 REPL
+                    // 整屏画回来，光标直接出现在输入框，中间不经过左上角。
+                    if crate::cli::in_fullscreen() {
+                        synchronized_terminal_update(CursorAfterUpdate::Shown, || {
+                            live_repl.resume()
+                        })?;
+                    }
                     let Some((_, _)) =
                         repl_ipc_admin(paths, &mut live_repl, IpcCommand::ReloadConfig).await?
                     else {
@@ -1114,18 +1155,15 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                     // reloaded rather than left showing them.
                     cumulative_tokens = TurnTokens::default();
                     footer.reset_token_usage(state.context_tokens, state.context_window);
+                    // 清空之后又是空会话:banner 回来,Tab 又能换车道。
+                    live_repl.set_session_empty(&config, paths, true);
                     // 存下新数字还不够:footer 不重绘,屏幕上的 Σ 就一直
                     // 挂着重置前的累计(验收问题四)。
                     live_repl.refresh_footer(footer.clone())?;
                     reload_repl_queue(&mut live_repl, paths, &active_session_id)?;
-                    // 全屏：会话清空了，画布也该清空——正文里还留着刚被清掉的那段
-                    // 对话，看着像什么都没发生（用户实测：真 TUI 里 /reset 不会
-                    // 清屏）。`clear_screen` 只是把视口顶空，往回翻还在。
-                    if crate::cli::in_fullscreen() {
-                        synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
-                            live_repl.clear_screen()
-                        })?;
-                    }
+                    // 全屏：画布随会话一起清空（`set_session_empty` 丢掉正文缓冲），
+                    // 下一句话从屏顶起。以前这里是 `clear_screen`（顶空一屏、往回翻
+                    // 还在），第一句话就接在那一屏空行后面、出现在屏底（用户实测）。
                     repl_note(
                         &mut live_repl,
                         &format!(
@@ -1156,6 +1194,8 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                     live_repl.editor.cursor = 0;
                     cumulative_tokens = TurnTokens::default();
                     footer.reset_token_usage(state.context_tokens, state.context_window);
+                    // 清空之后又是空会话:banner 回来,Tab 又能换车道。
+                    live_repl.set_session_empty(&config, paths, true);
                     live_repl.refresh_footer(footer.clone())?;
                     reload_repl_queue(&mut live_repl, paths, &active_session_id)?;
                     repl_note(

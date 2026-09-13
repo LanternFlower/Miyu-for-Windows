@@ -47,7 +47,8 @@ pub(crate) fn prepare_script_refresh(
             return Ok(None);
         }
         let dirs: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
-        let scan = scan_scripts(&dirs)?;
+        let mut scan = scan_scripts(&dirs)?;
+        retain_persona_visible(config, paths, &mut scan.entries);
         let after = catalog_fingerprint(&roots)?;
         if before == after {
             return Ok(Some(ScriptRefreshSnapshot {
@@ -57,6 +58,106 @@ pub(crate) fn prepare_script_refresh(
         }
     }
     bail!("script directories kept changing while they were being scanned")
+}
+
+/// 本人格看得见的脚本:自定义人格下内置脚本只有清单里点了名的才算(没写清单
+/// = 一件不挂,纯净状态);写了白名单就只留名单上的。注册与 `manage_script list`
+/// 共用这一道门——模型看到的目录和真挂上的工具面必须是同一份。
+pub(crate) fn retain_persona_visible(
+    config: &crate::config::AppConfig,
+    paths: &MiyuPaths,
+    entries: &mut Vec<super::ScriptEntry>,
+) {
+    let default_persona = crate::skills::is_default_persona(config);
+    let allow = crate::config::PersonaManifest::load(config, paths, &config.active_persona_scope())
+        .plugins
+        .scripts;
+    // 人格自己那一层(`<scripts>/personas/<人格>/`)永远算数:那是它自己写的、
+    // 或专门给它放的,白名单是给内置层和全局层用的——不然它刚 register 完的
+    // 脚本自己都调不到(用户实测)。
+    let own_layer = config.active_persona_scripts_dir(paths);
+    entries.retain(|entry| {
+        if Path::new(&entry.path).starts_with(&own_layer) {
+            return true;
+        }
+        let listed = allow
+            .as_ref()
+            .is_some_and(|list| list.iter().any(|id| id == &entry.id));
+        if super::is_builtin_script(paths, entry) && !default_persona {
+            return listed;
+        }
+        allow.is_none() || listed
+    });
+}
+
+#[cfg(test)]
+mod persona_gate_tests {
+    use super::*;
+
+    fn entry(id: &str, path: &std::path::Path) -> super::super::ScriptEntry {
+        // 走 serde 和 index.json 同一条路,省得给整个结构体凑 Default。
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "path": path.join(id).to_string_lossy(),
+        }))
+        .unwrap()
+    }
+
+    fn setup(
+        persona: &str,
+        allow: Option<&[&str]>,
+    ) -> (crate::config::AppConfig, MiyuPaths, tempfile::TempDir) {
+        let temp = tempfile::tempdir().unwrap();
+        let mut paths = MiyuPaths::new().unwrap();
+        // 根目录也指到临时目录:人格清单按 root 下的布局标记找位置,不能碰真家。
+        paths.root_dir = temp.path().to_path_buf();
+        paths.system_scripts_dir = temp.path().join("system");
+        paths.scripts_dir = temp.path().join("scripts");
+        paths.data_dir = temp.path().join("data");
+        paths.state_dir = temp.path().join("state");
+        let mut config = crate::config::AppConfig::default();
+        config.prompt.active_persona = persona.to_string();
+        if let Some(allow) = allow {
+            let scope = config.active_persona_scope();
+            let dir = crate::config::PersonaManifest::manifest_path(&config, &paths, &scope);
+            std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+            let mut manifest = crate::config::PersonaManifest::all();
+            manifest.plugins.scripts = Some(allow.iter().map(|id| id.to_string()).collect());
+            std::fs::write(&dir, manifest.to_toml()).unwrap();
+        }
+        (config, paths, temp)
+    }
+
+    #[test]
+    fn own_layer_survives_the_allowlist_and_builtins_need_naming() {
+        let (config, paths, _temp) = setup("alter.md", Some(&["bili"]));
+        let builtin = super::super::builtin_scripts_dir(&paths);
+        let own = config.active_persona_scripts_dir(&paths);
+        let mut entries = vec![
+            entry("bili", &builtin),
+            entry("xhs", &builtin),
+            entry("mine", &own),
+            entry("global_tool", &paths.scripts_dir),
+        ];
+        retain_persona_visible(&config, &paths, &mut entries);
+        let ids: Vec<&str> = entries.iter().map(|entry| entry.id.as_str()).collect();
+        assert_eq!(ids, vec!["bili", "mine"]);
+    }
+
+    #[test]
+    fn custom_persona_without_manifest_hides_builtins_but_keeps_its_own() {
+        let (config, paths, _temp) = setup("alter.md", None);
+        let builtin = super::super::builtin_scripts_dir(&paths);
+        let own = config.active_persona_scripts_dir(&paths);
+        let mut entries = vec![
+            entry("xhs", &builtin),
+            entry("mine", &own),
+            entry("global_tool", &paths.scripts_dir),
+        ];
+        retain_persona_visible(&config, &paths, &mut entries);
+        let ids: Vec<&str> = entries.iter().map(|entry| entry.id.as_str()).collect();
+        assert_eq!(ids, vec!["mine", "global_tool"]);
+    }
 }
 
 pub(crate) fn apply_script_refresh(

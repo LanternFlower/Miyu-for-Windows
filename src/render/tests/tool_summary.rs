@@ -204,8 +204,8 @@ fn tool_status_subagent_tool_keeps_count_suffix() {
         ..ToolStats::default()
     };
     assert_eq!(
-        tool_status_text("deep_research", &stats, true),
-        format!("deep_research×1 {}", t("running", "运行中"))
+        tool_status_text("subagent", &stats, true),
+        format!("subagent×1 {}", t("running", "运行中"))
     );
     let stats = ToolStats {
         calls: 1,
@@ -216,10 +216,7 @@ fn tool_status_subagent_tool_keeps_count_suffix() {
         final_progress: None,
         ..ToolStats::default()
     };
-    assert_eq!(
-        tool_status_text("deep_research", &stats, true),
-        "deep_research×1 ok"
-    );
+    assert_eq!(tool_status_text("subagent", &stats, true), "subagent×1 ok");
 }
 
 #[test]
@@ -245,8 +242,8 @@ fn subagent_status_shows_live_and_frozen_elapsed_time() {
         ..ToolStats::default()
     };
     assert_eq!(
-        tool_status_text("deep_research", &completed, true),
-        "deep_research×1 ok · 1h 02m"
+        tool_status_text("subagent", &completed, true),
+        "subagent×1 ok · 1h 02m"
     );
 }
 
@@ -322,7 +319,7 @@ fn tool_summary_keeps_final_subagent_stats() {
         10,
     );
     renderer.tool_stats.insert(
-        "deep_research".to_string(),
+        "subagent".to_string(),
         ToolStats {
             calls: 1,
             ok: 1,
@@ -338,7 +335,7 @@ fn tool_summary_keeps_final_subagent_stats() {
         renderer.tool_summary_text(),
         format!(
             "~ {}×1 ok\n  ✓ 工具调用 1 次　消耗词元 2.3K",
-            t("Deep research", "深度研究")
+            t("Subagent", "子代理")
         )
     );
 }
@@ -503,7 +500,7 @@ fn committed_summary_keeps_block_headers_when_one_subagent_finishes() {
 
 #[test]
 fn all_subagent_summaries_use_activity_prefix() {
-    for name in ["subagent", "deep_research"] {
+    for name in ["subagent", "task"] {
         let mut renderer = StreamRenderer::new(
             ReasoningDisplayMode::Summary,
             ToolCallDisplayMode::Summary,
@@ -761,9 +758,7 @@ fn only_the_show_action_of_use_meme_is_silent() {
 #[test]
 fn readable_tool_names_translate_known_tools_and_fallback_unknown() {
     for (name, english, chinese) in [
-        ("deep_research", "Deep research", "深度研究"),
         ("read_file", "Read file", "读取文件"),
-        ("check_issue", "Check issue", "检查问题"),
         ("check_os_info", "System information", "查看系统信息"),
         ("get_exchange_rate", "Exchange rates", "汇率查询"),
         ("vision_analyze", "Visual analysis", "视觉分析"),

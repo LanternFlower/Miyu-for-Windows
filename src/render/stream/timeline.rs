@@ -147,15 +147,9 @@ pub(crate) fn tool_glyph(name: &str) -> &'static str {
         | "install_aur_package"
         | "review_aur_package" => "\u{f08c7}",
         // 地球
-        "web_search"
-        | "web_fetch"
-        | "search_web_images"
-        | "check_issue"
-        | "register_deep_research_reference"
-        | "register_deep_research_topic_title"
-        | "remove_deep_research_reference" => "\u{f0ac}",
+        "web_search" | "web_fetch" | "search_web_images" => "\u{f0ac}",
         // 机器人：派出去的那个也是个"它"，不是一条连线。
-        "subagent" | "task" | "deep_research" => "\u{f06a9}",
+        "subagent" | "task" => "\u{f06a9}",
         // 眼睛：看图和"贴一张图"是两件事——它是在**读**。
         "vision_analyze" => "\u{f0208}",
         // 图片

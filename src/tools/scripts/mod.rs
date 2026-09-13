@@ -47,7 +47,23 @@ pub fn register(registry: &mut ToolRegistry, config: &crate::config::AppConfig, 
 /// 全局层(`extensions/scripts` 顶层)能被成员人格勾选的脚本:id、显示名、描述。
 /// 内置脚本只给默认人格,成员的私有人格本就扫不到,不列。
 pub(crate) fn list_global_scripts(paths: &MiyuPaths) -> Vec<(String, String, String)> {
-    match scan_scripts(&[paths.scripts_dir.as_path()]) {
+    list_scripts_in(&[paths.scripts_dir.as_path()])
+}
+
+/// 指定几个目录里能勾选的脚本:id、显示名、描述。
+pub(crate) fn list_scripts_in(dirs: &[&std::path::Path]) -> Vec<(String, String, String)> {
+    list_scripts_with_origin(dirs, None)
+        .into_iter()
+        .map(|(id, display, description, _)| (id, display, description))
+        .collect()
+}
+
+/// 同上,外加「是不是内置层的」。引导要按它决定自定义人格下的默认勾选。
+pub(crate) fn list_scripts_with_origin(
+    dirs: &[&std::path::Path],
+    paths: Option<&MiyuPaths>,
+) -> Vec<(String, String, String, bool)> {
+    match scan_scripts(dirs) {
         Ok(result) => result
             .entries
             .into_iter()
@@ -57,7 +73,8 @@ pub(crate) fn list_global_scripts(paths: &MiyuPaths) -> Vec<(String, String, Str
                 } else {
                     entry.display_name.clone()
                 };
-                (entry.id, display, entry.description)
+                let builtin = paths.is_some_and(|paths| is_builtin_script(paths, &entry));
+                (entry.id, display, entry.description, builtin)
             })
             .collect(),
         Err(error) => {

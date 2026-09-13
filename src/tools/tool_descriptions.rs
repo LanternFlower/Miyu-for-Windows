@@ -29,7 +29,7 @@ pub struct ToolDescription {
     #[serde(default)]
     pub groups: Vec<String>,
     /// 按工具超时（秒）。缺省=吃 registry 默认兜底；0=豁免（自管超时或
-    /// 天生长跑的工具，如 run_command/task/deep_research）。
+    /// 天生长跑的工具，如 run_command/subagent）。
     #[serde(default)]
     pub timeout_seconds: Option<u64>,
     /// 场所信任位:`"trust": "external"` 的工具也给不可信入口(QQ 群、远端
@@ -58,9 +58,7 @@ macro_rules! tool_description_files {
             include_str!("descriptions/ask_question.json"),
             include_str!("descriptions/goal.json"),
             include_str!("descriptions/aur.json"),
-            include_str!("descriptions/check_issue.json"),
             include_str!("descriptions/check_os_info.json"),
-            include_str!("descriptions/deep_research.json"),
             include_str!("descriptions/edit.json"),
             include_str!("descriptions/generate_image.json"),
             include_str!("descriptions/get_exchange_rate.json"),
@@ -80,10 +78,7 @@ macro_rules! tool_description_files {
             include_str!("descriptions/query_api_quota.json"),
             include_str!("descriptions/read.json"),
             include_str!("descriptions/recall_memories.json"),
-            include_str!("descriptions/register_deep_research_reference.json"),
-            include_str!("descriptions/register_deep_research_topic_title.json"),
             include_str!("descriptions/remember_fact.json"),
-            include_str!("descriptions/remove_deep_research_reference.json"),
             include_str!("descriptions/review_aur_package.json"),
             include_str!("descriptions/run_command.json"),
             include_str!("descriptions/search_evicted_context.json"),

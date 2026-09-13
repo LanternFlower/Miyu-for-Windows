@@ -397,7 +397,7 @@ async fn remote_head_bounded(remote: &str, budget: std::time::Duration) -> Resul
     let git = git_command()?;
     // 走 tokio 的 Command 是为了拿 `kill_on_drop`：超时后 future 被丢弃，子进程
     // 跟着被杀，而不是留一个还在等 TCP 的 git 挂在后台。仓库里其它带超时的外部
-    // 命令（diagnostics、package_advisor、rg）都是这个写法。
+    // 命令（archlinux 的 AUR 审查、rg）都是这个写法。
     let output = tokio::time::timeout(
         budget,
         tokio::process::Command::new(git)

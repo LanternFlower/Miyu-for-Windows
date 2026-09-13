@@ -195,7 +195,23 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                 | Some(Command::Import(_))
         )
     {
-        run_init(&paths, InitKind::FirstRun)?;
+        // 紧接着就进引导或全屏画面的,初始化不打字:那几行会留在屏上。
+        let quiet = cli.banner
+            || (matches!(cli.command, None | Some(Command::Oobe))
+                && cli.message.is_empty()
+                && io::stdin().is_terminal());
+        run_init(
+            &paths,
+            if quiet {
+                InitKind::Quiet
+            } else {
+                InitKind::FirstRun
+            },
+        )?;
+    }
+    if cli.banner {
+        let config = AppConfig::load_or_default(&paths)?;
+        return crate::cli::repl::banner::preview::run(&config, &paths);
     }
 
     // Captured before `cli.command` is moved out: one-shot entry points below
@@ -370,8 +386,17 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
             session_cmds::run_session_command(&paths, args.command, plain).await
         }
         Some(Command::Stdio) => stdio::run_stdio(&paths).await,
-        Some(Command::Normal) => run_repl(&paths, AgentMode::Normal).await,
         Some(Command::Dev) => run_repl(&paths, AgentMode::Dev).await,
+        Some(Command::Oobe) => {
+            if run_oobe_flow(&paths).await? {
+                let result = run_repl(&paths, AgentMode::Normal).await;
+                // REPL 没能接过备用屏(启动失败)就自己退回主屏,别把终端留在备用屏上。
+                crate::terminal::release_alt_screen_if_held();
+                result
+            } else {
+                Ok(())
+            }
+        }
         Some(Command::Web(args)) => run_web(&paths, args).await,
         Some(Command::Daemon(args)) => run_daemon_command(&paths, args).await,
         None => {
@@ -386,30 +411,50 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                         )
                     );
                 }
-                // 裸 miyu:按 default_mode 配置分流;未配置则打印模式说明,
-                // 逼一次显式选择(miyu normal / miyu dev)。
-                let default_mode = AppConfig::load_or_default(&paths)
-                    .map(|config| config.default_mode.trim().to_ascii_lowercase())
-                    .unwrap_or_default();
-                match default_mode.as_str() {
-                    "normal" => run_repl(&paths, AgentMode::Normal).await,
-                    "dev" => run_repl(&paths, AgentMode::Dev).await,
-                    "" => {
-                        print_mode_help();
-                        Ok(())
-                    }
-                    other => bail!(
-                        "{}: {other}",
-                        t(
-                            "invalid default_mode (expected normal or dev)",
-                            "default_mode 配置无效(应为 normal 或 dev)"
-                        )
-                    ),
+                // 裸 miyu = 普通 REPL(`miyu dev` 才是开发预设)。第一次先走
+                // 新手引导;老配置在 migrate 里已标成做过,不会被拦。
+                let config = AppConfig::load_or_default(&paths)?;
+                if crate::oobe::needed(&config) && !run_oobe_flow(&paths).await? {
+                    return Ok(());
                 }
+                let result = run_repl(&paths, AgentMode::Normal).await;
+                crate::terminal::release_alt_screen_if_held();
+                result
             } else {
                 run_one_shot(&paths, root_turn, message, root_stdin, plain, mode).await
             }
         }
+    }
+}
+
+/// 跑新手引导,返回「接下来要不要进 REPL」。
+///
+/// 开场就退出(Esc / Ctrl+C)什么都不写、也不进 REPL,下次裸 `miyu` 还会再来;
+/// 选了「进入设置界面」就先开完整设置再进;做完或跳过直接进——空会话的
+/// banner 就是第一帧,不做完成页。引导写了配置,顺手让活着的 daemon 重读。
+async fn run_oobe_flow(paths: &MiyuPaths) -> Result<bool> {
+    spawn_hangup_watchdog();
+    // 后面是全屏 REPL 的话,备用屏一路不退,中间不闪 shell 画面。
+    let keep_alt = crate::cli::repl::tail::screen::requested();
+    let outcome = crate::oobe::run(paths, keep_alt)?;
+    if outcome != crate::oobe::Outcome::Aborted {
+        let _ = send_ipc_command(paths, IpcCommand::ReloadConfig).await;
+    }
+    match outcome {
+        crate::oobe::Outcome::Aborted => {
+            crate::terminal::release_alt_screen_if_held();
+            Ok(false)
+        }
+        crate::oobe::Outcome::OpenSettings => {
+            if keep_alt {
+                crate::config_tui::run_embedded(paths)?;
+            } else {
+                crate::config_tui::run(paths)?;
+            }
+            let _ = send_ipc_command(paths, IpcCommand::ReloadConfig).await;
+            Ok(true)
+        }
+        crate::oobe::Outcome::Completed | crate::oobe::Outcome::Skipped => Ok(true),
     }
 }
 
@@ -1206,6 +1251,8 @@ enum LiveReplOutcome {
     StopJob {
         job_id: String,
     },
+    /// 空会话里按了 Tab:换到另一条车道(普通 ↔ 开发)。调用方负责重绑会话。
+    SwitchMode(AgentMode),
 }
 
 fn repl_history_is_clean(

@@ -32,5 +32,4 @@ python3 testkit/repl-smoke/run.py
 
 ## 两个坑
 
-- 裸 `miyu` 在真终端里先弹模式选择再退出,走查要用 `miyu normal`。
 - 回复刚打完时编辑器还在重绘,立刻按上键会被吞掉;脚本里先静置 1.5 秒。

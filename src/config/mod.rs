@@ -1,4 +1,5 @@
 mod defaults;
+pub mod feature_catalog;
 mod io;
 mod paths;
 mod persona_manifest;
@@ -41,7 +42,7 @@ pub const DEV_PROMPT_FILE: &str = "dev-prompt.md";
 pub const DEFAULT_DEV_SYSTEM_PROMPT: &str = "You are a helpful software engineer assistant.";
 /// Replay redraws whole turns, so a large value floods the screen on startup.
 pub const MAX_REPL_REPLAY_TURNS: usize = 20;
-pub const CURRENT_CONFIG_VERSION: u32 = 2;
+pub const CURRENT_CONFIG_VERSION: u32 = 3;
 const LEGACY_DEFAULT_TEMPERATURE: f32 = 0.7;
 /// 上下文窗口那个数是哪来的。
 ///
@@ -95,12 +96,13 @@ pub struct AppConfig {
     pub memory: MemoryConfig,
     #[serde(default)]
     pub system_prompt_file: Option<String>,
-    /// 裸 `miyu` 的默认模式:"normal" | "dev";空(默认)=打印带模式说明的
-    /// 帮助,逼一次显式选择。`miyu normal` / `miyu dev` 子命令始终可用。
-    #[serde(default)]
-    pub default_mode: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    /// 新手引导（OOBE）做完了或跳过了。新配置默认 false，裸 `miyu` 会先走引导；
+    /// 旧版本升上来的配置在 `migrate` 里直接标成 true，老用户不会被拦。
+    /// `miyu init` 不碰它：脚本化初始化不等于人已经设置过。
+    #[serde(default)]
+    pub oobe_done: bool,
     /// Tiered model pools. The pre-09-05 key `subagent_tiers` stays readable.
     #[serde(
         default,
@@ -553,6 +555,10 @@ pub struct DisplayConfig {
     /// How many finished turns a reopened REPL redraws; 0 disables replay.
     #[serde(default = "default_repl_replay_turns")]
     pub repl_replay_turns: usize,
+    /// 空会话时在输入框上方画 MIYU banner（渐变艺术字 + 星空 + 模式行）。
+    /// 关掉就只剩输入框。艺术字可用 `config/banner.txt` 替换。
+    #[serde(default = "default_true")]
+    pub banner: bool,
     /// 这个版本不认识的显示项，原样留着写回。见 [`AppConfig::extra`]。
     #[serde(flatten, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra: BTreeMap<String, serde_json::Value>,
@@ -610,6 +616,8 @@ struct RawDisplayConfig {
     command_output_lines: Option<usize>,
     #[serde(default)]
     repl_replay_turns: Option<usize>,
+    #[serde(default)]
+    banner: Option<bool>,
     #[serde(flatten, default)]
     extra: BTreeMap<String, serde_json::Value>,
 }
@@ -653,6 +661,7 @@ impl<'de> Deserialize<'de> for DisplayConfig {
             repl_replay_turns: raw
                 .repl_replay_turns
                 .unwrap_or_else(default_repl_replay_turns),
+            banner: raw.banner.unwrap_or(true),
             extra: raw.extra,
         })
     }
@@ -775,7 +784,7 @@ pub struct ToolsConfig {
     #[serde(default = "default_subagent_concurrency")]
     pub subagent_concurrency: usize,
     /// 工具执行兜底超时（秒），0=关闭。防没有自管超时的工具（MCP/web/生图
-    /// 等）把回合无限挂死；run_command/subagent/deep_research 等自管或长跑工具
+    /// 等）把回合无限挂死；run_command/subagent 等自管或长跑工具
     /// 在 descriptions JSON 里以 timeout_seconds=0 豁免。
     #[serde(default = "default_tools_timeout_secs")]
     pub default_timeout_secs: u64,
@@ -917,8 +926,8 @@ impl Default for AppConfig {
             plugins: PluginsConfig::default(),
             memory: MemoryConfig::default(),
             system_prompt_file: Some("system-prompt.md".to_string()),
-            default_mode: String::new(),
             system_prompt: None,
+            oobe_done: false,
             model_tiers: ModelTiersConfig::default(),
             platforms: PlatformsConfig::default(),
             voice: VoiceConfig::default(),
@@ -1012,6 +1021,7 @@ impl Default for DisplayConfig {
             mixed_model_endpoint_display: default_mixed_model_endpoint_display(),
             command_output_lines: default_command_output_lines(),
             repl_replay_turns: default_repl_replay_turns(),
+            banner: true,
             extra: BTreeMap::new(),
         }
     }

@@ -1,14 +1,14 @@
 //! 成员的私有人格(09-10 分层架构阶段 8,OOBE):`home/<用户>/personas/<slug>/`。
 //!
 //! 一个目录就是一个人格:`persona.md`(提示词)、`persona.json`(名字/简介/看板文案)、
-//! `persona.toml`(启用集:记忆开关 + 插件白名单)、`avatar.*` / `board.*`(图片),
+//! `persona.toml`(启用集:插件/脚本/技能白名单)、`avatar.*` / `board.*`(图片),
 //! 以及运行时长出来的 `memory/`、`skills/`、`scripts/`。会话表里它的 scope 是
 //! `home-<用户>-<slug>`(`AppConfig::private_persona_scope`)。
 //!
 //! 成员用哪个人格记在 `home/<用户>/settings.json`(`active_persona`);None = 用
 //! 管理员发布的共享 Miyu。管理员在 `accounts.member_plugins` 里划成员能勾的插件。
 
-use crate::config::{AppConfig, PersonaManifest};
+use crate::config::{feature_catalog, AppConfig, PersonaManifest};
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -202,44 +202,62 @@ pub(crate) struct PersonaDraft<'a> {
     pub(crate) prompt: &'a str,
     pub(crate) board_title: &'a str,
     pub(crate) board_subtitle: &'a str,
-    pub(crate) memory: bool,
+    /// 勾了哪些可开关的内置插件(id);常开项不用写,写了也不会多出东西。
     pub(crate) plugins: Vec<String>,
-    /// 勾了哪些脚本(id);None = 脚本工具整体不启用时无所谓,启用时 = 全部。
+    /// 勾了哪些脚本(id);None = 全部。
     pub(crate) scripts: Option<Vec<String>>,
+    /// 勾了哪些技能(名字);None = 全部。平台级内置技能不受它管。
+    pub(crate) skills: Option<Vec<String>>,
 }
 
-/// 成员人格里不摆开关的核心能力:文件读写、视觉分析、用量查询——永远带上。
-pub(crate) const MEMBER_CORE_PLUGINS: &[&str] = &["files", "print_image", "usage_query"];
 /// 成员永远拿不到的:从对话里往通讯平台发消息是管理员的事。
 pub(crate) const MEMBER_NEVER_PLUGINS: &[&str] = &["platform_outreach"];
 
-/// 成员在引导/人格页里能勾的插件:管理员白名单 − 核心常开 − 永不给。
+/// 成员人格里不摆开关、永远带上的插件:引导真相源里的必开项(文件、看图、
+/// 搜图、用量、知识库、脚本、MCP)去掉永不给的那几个。
+pub(crate) fn member_core_plugins() -> impl Iterator<Item = &'static str> {
+    feature_catalog::always_on_plugins().filter(|id| !MEMBER_NEVER_PLUGINS.contains(id))
+}
+
+/// 成员在引导/人格页里能勾的插件:管理员白名单 − 常开 − 永不给,
+/// 也就是白名单里的那些可开关内置插件。
 pub(crate) fn member_selectable_plugins(config: &AppConfig) -> Vec<String> {
     config
         .accounts
         .allowed_member_plugins()
         .into_iter()
-        .filter(|id| !MEMBER_CORE_PLUGINS.contains(&id.as_str()))
+        .filter(|id| !member_core_plugins().any(|core| core == id))
         .filter(|id| !MEMBER_NEVER_PLUGINS.contains(&id.as_str()))
         .collect()
 }
 
-/// 只留管理员放行的插件,核心三件常开,外发永不给;子系统里语音/情绪对
-/// 成员没意义,一律关。
+/// 成员视角的配置副本:不是默认人格(非平台级内置技能只给默认人格),也不
+/// 指向任何私有目录——建人格时目录还不存在,所以引导里可勾的技能只看
+/// 全局技能目录。
+pub(crate) fn member_view_config(config: &AppConfig) -> AppConfig {
+    let mut view = config.clone();
+    view.prompt.private_persona_dir = None;
+    view.prompt.active_persona = "member.md".to_string();
+    view.prompt.active_identity.clear();
+    view
+}
+
+/// 只留管理员放行的插件,常开项永远带上,外发永不给;记忆、知识库、技能、
+/// MCP 对成员一律常开;语音/情绪对成员没意义,一律关。
 pub(crate) fn manifest_for_member(
     config: &AppConfig,
-    memory: bool,
     plugins: &[String],
     scripts: Option<&[String]>,
+    skills: Option<&[String]>,
 ) -> PersonaManifest {
     let allowed = config.accounts.allowed_member_plugins();
     let mut manifest = PersonaManifest::all();
-    manifest.subsystems.memory = memory;
+    manifest.subsystems.memory = true;
+    manifest.subsystems.skills = true;
     manifest.subsystems.voice = false;
     manifest.subsystems.emotion = false;
-    let mut enabled: Vec<String> = MEMBER_CORE_PLUGINS
-        .iter()
-        .map(|id| id.to_string())
+    let mut enabled: Vec<String> = member_core_plugins()
+        .map(str::to_string)
         .filter(|id| allowed.iter().any(|item| item == id))
         .collect();
     for id in plugins {
@@ -252,6 +270,7 @@ pub(crate) fn manifest_for_member(
     }
     manifest.plugins.enabled = Some(enabled);
     manifest.plugins.scripts = scripts.map(|ids| ids.to_vec());
+    manifest.plugins.skills = skills.map(|names| names.to_vec());
     manifest
 }
 
@@ -295,9 +314,9 @@ pub(crate) fn create_or_update_persona(
     fs::write(dir.join("persona.json"), serde_json::to_vec_pretty(&meta)?)?;
     let manifest = manifest_for_member(
         config,
-        draft.memory,
         &draft.plugins,
         draft.scripts.as_deref(),
+        draft.skills.as_deref(),
     );
     fs::write(dir.join("persona.toml"), manifest.to_toml())?;
     Ok(PrivatePersona {

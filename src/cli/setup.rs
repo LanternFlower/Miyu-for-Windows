@@ -9,15 +9,18 @@ use crate::cli::*;
 pub(in crate::cli) enum InitKind {
     FirstRun,
     Explicit,
+    /// 紧接着要进引导/全屏画面:一个字都不打,免得留在屏上。
+    Quiet,
 }
 
 pub(in crate::cli) fn run_init(paths: &MiyuPaths, kind: InitKind) -> Result<()> {
-    let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
+    let quiet = matches!(kind, InitKind::Quiet);
+    let interactive = !quiet && io::stdin().is_terminal() && io::stdout().is_terminal();
     if interactive {
         println!(
             "{}\n",
             match kind {
-                InitKind::FirstRun => t("Miyu first start", "Miyu 首次启动"),
+                InitKind::FirstRun | InitKind::Quiet => t("Miyu first start", "Miyu 首次启动"),
                 InitKind::Explicit => t("Miyu initialization", "Miyu 初始化"),
             }
         );
@@ -65,7 +68,7 @@ pub(in crate::cli) fn run_init(paths: &MiyuPaths, kind: InitKind) -> Result<()> 
     )?;
     if interactive {
         println!("\n{}\n", t("Initialization complete.", "初始化完成。"));
-    } else {
+    } else if !quiet {
         println!(
             "{} {}",
             t("initialized Miyu at", "Miyu 已初始化于"),

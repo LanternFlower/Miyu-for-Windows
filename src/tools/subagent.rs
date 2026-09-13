@@ -77,7 +77,7 @@ const SUBAGENT_DEV_CONTRACT: &str = "Your reply goes back to the agent that dele
 /// dev 下的 explore 只剩 web 两件套,描述却还在承诺 7 个工具。分类本身
 /// 就是这类漂移的来源,连同 275 字符的 subagent_type 参数一起退场。
 ///
-/// 递归防护保留:这份排除表继续把 subagent/deep_research、技能创作、闹钟和
+/// 递归防护保留:这份排除表继续把 subagent、技能创作、闹钟和
 /// 娱乐类工具挡在子代理之外。
 pub(in crate::tools) const SUBAGENT_EXCLUDED: &[&str] = &[
     "subagent",
@@ -85,7 +85,6 @@ pub(in crate::tools) const SUBAGENT_EXCLUDED: &[&str] = &[
     "task",
     "task_agent",
     "send_subagent_message",
-    "deep_research",
     "load_skill",
     "manage_skill",
     "alarm",
@@ -791,8 +790,9 @@ async fn run_core(
     } else {
         ProgressMode::from_config(&context.config)
     };
-    let enabled = context.config.plugins.deep_research.show_progress;
-    let sa_progress = SubagentProgress::new(progress, mode, enabled);
+    // 过程回显曾借 deep_research 插件的 show_progress 开关;插件 09-13 删除后没有
+    // 独立的子代理插件配置承接它,固定为开。
+    let sa_progress = SubagentProgress::new(progress, mode, true);
 
     // 子过程展开区最上方的任务简介(09-12 #9:后台子代理展开后没有 prompt)。
     // 只在 Full 档(WebUI)发;前台子代理前端从工具参数直接建 brief、并置 sink.brief,

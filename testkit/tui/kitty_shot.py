@@ -210,7 +210,7 @@ def main():
             log("! daemon 没起来")
             return 2
 
-        miyu = subprocess.Popen([str(BIN), "normal"], env=env_for(), cwd=str(OUT))
+        miyu = subprocess.Popen([str(BIN)], env=env_for(), cwd=str(OUT))
         wait_quiet(1.5, timeout=40)
         log("首屏")
         probe.screenshot("tui-start")

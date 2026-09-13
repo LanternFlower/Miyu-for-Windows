@@ -115,7 +115,7 @@ def spawn(tui):
         fcntl.ioctl(1, termios.TIOCSCTTY, 0)
 
     process = subprocess.Popen(
-        [str(BIN), "normal"], stdin=slave, stdout=slave, stderr=slave,
+        [str(BIN)], stdin=slave, stdout=slave, stderr=slave,
         env=env_for(tui), cwd=str(HOME), preexec_fn=child_setup, close_fds=True,
     )
     os.close(slave)

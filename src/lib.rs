@@ -27,6 +27,7 @@ mod memory;
 mod memory_types;
 mod models_cache;
 mod notify;
+mod oobe;
 mod paths;
 mod persona_hint;
 mod platform_types;

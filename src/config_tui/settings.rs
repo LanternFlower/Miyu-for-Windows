@@ -103,20 +103,13 @@ pub(in crate::config_tui) fn edit_settings(
             ),
             config.display.repl_replay_turns.to_string(),
         ),
-        // 验收:default_mode 只能改 config.jsonc 不像话——空=裸 miyu 出帮助。
-        Field::new(
-            t("Bare `miyu` default mode", "裸 miyu 默认模式"),
-            config.default_mode.clone(),
-        )
-        .choices(&["", "normal", "dev"])
-        .empty_choice_label(t("Help screen", "帮助信息")),
     ];
     // The read-back below is by index, so an insert in the middle silently
     // writes every later value into the wrong setting. This catches that in
     // debug builds; new fields go on the end.
     debug_assert_eq!(
         fields.len(),
-        16,
+        15,
         "global settings fields changed: update the positional read-back below"
     );
     run_form_without_buttons(stdout, t(" GLOBAL SETTINGS ", " 全局设置 "), &mut fields)?;
@@ -145,7 +138,6 @@ pub(in crate::config_tui) fn edit_settings(
         .trim()
         .parse::<usize>()?
         .min(MAX_REPL_REPLAY_TURNS);
-    config.default_mode = fields[15].value.trim().to_string();
     Ok(())
 }
 

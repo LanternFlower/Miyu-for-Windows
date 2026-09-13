@@ -157,7 +157,7 @@ pub(crate) fn is_silent_tool(name: &str) -> bool {
 
 pub(crate) fn is_subagent_tool(name: &str) -> bool {
     let name = tool_event_base_name(name);
-    matches!(name, "deep_research" | "subagent" | "task")
+    matches!(name, "subagent" | "task")
 }
 
 pub(crate) fn tool_event_base_name(name: &str) -> &str {
@@ -361,8 +361,6 @@ pub(crate) fn tool_subject(name: &str, arguments: &str) -> Option<String> {
                 .collect::<Vec<_>>()
                 .join(t(", ", "、"))
         }),
-        "deep_research" => string_arg(&args, &["topic"]),
-        "check_issue" => string_arg(&args, &["target", "area", "issue", "symptom"]),
         "get_weather" => string_arg(&args, &["location"])
             .or_else(|| Some(t("missing location", "缺少地点").to_string())),
         "get_exchange_rate" => {
@@ -384,9 +382,6 @@ pub(crate) fn tool_subject(name: &str, arguments: &str) -> Option<String> {
         }
         "generate_image" => string_arg(&args, &["prompt"]),
         "upload_text_to_knowledge_base" => string_arg(&args, &["file_name", "title"]),
-        "register_deep_research_topic_title" => string_arg(&args, &["topic_title"]),
-        "register_deep_research_reference" => string_arg(&args, &["title"]),
-        "remove_deep_research_reference" => string_arg(&args, &["ref"]),
         _ => None,
     }?;
     safe_inline_subject(&value)

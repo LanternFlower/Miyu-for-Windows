@@ -184,6 +184,41 @@ impl AppConfig {
         paths.personas_dir().join(persona_scope_name(persona))
     }
 
+    /// 纯中文人格名以前的 scope 是 `md`(只剩扩展名),09-13 起按名字哈希。
+    /// 当前人格正好是这种名字、老目录还在、新目录还没有,就把老目录搬过去,
+    /// 记忆与状态不丢。只搬当前人格:老 scope 只能容下一个人格,不会有第二个。
+    pub(crate) fn migrate_degenerate_persona_scope(&self, paths: &MiyuPaths) {
+        let name = self.prompt.active_persona.trim();
+        if name.is_empty() || self.private_persona_dir().is_some() {
+            return;
+        }
+        let scope = persona_scope_name(name);
+        let ascii_only: String = name
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if !scope.starts_with("persona-") || ascii_only != "md" {
+            return;
+        }
+        for (old, new) in [
+            (
+                paths.personas_dir().join("md"),
+                paths.personas_dir().join(&scope),
+            ),
+            (
+                paths.state_dir.join("personas").join("md"),
+                paths.state_dir.join("personas").join(&scope),
+            ),
+        ] {
+            if old.is_dir() && !new.exists() {
+                if let Err(error) = std::fs::rename(&old, &new) {
+                    tracing::warn!(error = %error, from = %old.display(), to = %new.display(), "persona scope migration failed");
+                }
+            }
+        }
+    }
+
     pub fn persona_memory_state_dir(&self, paths: &MiyuPaths, persona: &str) -> PathBuf {
         paths
             .state_dir

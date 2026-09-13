@@ -9,7 +9,7 @@ mod plugins;
 mod providers;
 mod quota;
 pub(crate) use cli_catalog::builtin_cli_binary;
-pub(crate) use providers::fetch_models;
+pub(crate) use providers::{auto_configure_model_tags, fetch_models};
 mod real_context;
 mod scheduled_messages;
 mod settings;
@@ -72,27 +72,61 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 pub fn run(paths: &MiyuPaths) -> Result<bool> {
+    // 全屏 REPL 里开设置:备用屏已经是它的,这里退了再进会闪一下 shell 画面。
+    run_with(paths, !crate::cli::in_fullscreen())
+}
+
+/// 调用方自己管着备用屏(引导之后紧接着进全屏 REPL):只进不退。
+pub fn run_embedded(paths: &MiyuPaths) -> Result<bool> {
+    run_with(paths, false)
+}
+
+fn run_with(paths: &MiyuPaths, owns_alt_screen: bool) -> Result<bool> {
     AppConfig::init_files(paths)?;
     crate::models_cache::try_load(paths);
     crate::models_cache::spawn_background_refresh(paths.clone());
     let config = AppConfig::load_or_default(paths)?;
     let thinking_variants = ThinkingVariantPreferences::load(paths);
-    TerminalSession::start()?.run(paths, config, thinking_variants)
+    TerminalSession::start(owns_alt_screen)?.run(paths, config, thinking_variants)
 }
 
 struct TerminalSession {
     stdout: io::Stdout,
+    /// 备用屏是自己进的就自己退;是别人(全屏 REPL / 引导)的就只擦干净还回去。
+    owns_alt_screen: bool,
 }
 
 impl TerminalSession {
-    fn start() -> Result<Self> {
+    fn start(owns_alt_screen: bool) -> Result<Self> {
         terminal::enable_raw_mode()?;
         // 独立 `miyu config` 没有 REPL 的挂断看门狗;不发 SIGHUP 的断开
         // (tmux kill-pane、SSH 掉线)会让 crossterm 对 HUP fd 全速自旋。
         crate::cli::spawn_hangup_watchdog();
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, Hide)?;
-        Ok(Self { stdout })
+        if owns_alt_screen {
+            execute!(stdout, EnterAlternateScreen, Hide)?;
+        } else {
+            execute!(
+                stdout,
+                Hide,
+                terminal::Clear(terminal::ClearType::All),
+                crossterm::cursor::MoveTo(0, 0)
+            )?;
+        }
+        Ok(Self {
+            stdout,
+            owns_alt_screen,
+        })
+    }
+
+    fn release(&mut self) {
+        if self.owns_alt_screen {
+            let _ = execute!(self.stdout, Show, LeaveAlternateScreen);
+        }
+        // 嵌在全屏 REPL / 引导里：画面原样留着、光标继续藏着。接手的一方会在一个
+        // 同步块里整屏重画并把光标放回输入框。以前这里清屏 + 光标归零 + Show，
+        // 用户看到的就是光标先瞬移到左上角、再瞬移到输入框（09-14 实测）。
+        let _ = terminal::disable_raw_mode();
     }
 
     fn run(
@@ -102,16 +136,15 @@ impl TerminalSession {
         mut thinking_variants: ThinkingVariantPreferences,
     ) -> Result<bool> {
         let result = run_main_menu(&mut self.stdout, paths, &mut config, &mut thinking_variants);
-        execute!(self.stdout, Show, LeaveAlternateScreen)?;
-        terminal::disable_raw_mode()?;
+        self.release();
         result
     }
 }
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
-        let _ = execute!(self.stdout, Show, LeaveAlternateScreen);
-        let _ = terminal::disable_raw_mode();
+        // `run` 已经还过一次;再还一次只是幂等的擦屏/退备用屏。
+        self.release();
     }
 }
 

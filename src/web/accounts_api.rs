@@ -3,6 +3,7 @@
 //! 「防君子不防小人」:账号只解决会话别混在一起与按人统计。管理台
 //! (`/api/admin/*`)只有管理员进得去;`/api/account` 是每个人改自己的。
 
+use crate::config::feature_catalog;
 use crate::web::*;
 
 fn account_json(account: &crate::state::Account) -> Value {
@@ -456,29 +457,6 @@ fn member_username(identity: &WebIdentity) -> std::result::Result<String, ApiErr
     Ok(identity.username.clone())
 }
 
-fn plugin_label(id: &str) -> (&'static str, &'static str) {
-    match id {
-        "files" => ("文件", "读写工作区文件"),
-        "usage_query" => ("用量查询", "对话里问用了多少 token"),
-        "alarm" => ("闹钟", "定时提醒"),
-        "exchange_rate" => ("汇率", "货币换算"),
-        "archlinux" => ("Arch Linux", "AUR 查询、Arch 新闻"),
-        "api_quota" => ("API 额度", "查供应商余额"),
-        "print_image" => ("视觉分析", "看图片和截图"),
-        "memes" => ("表情包", "用表情包回复"),
-        "platform_outreach" => ("外发", "从对话里给通讯平台发消息"),
-        "web_images" => ("搜图", "网络找图"),
-        "deep_research" => ("深度研究", "多轮检索写报告"),
-        "image_generation" => ("生图", "AI 画图"),
-        "knowledge_base" => ("知识库", "自己的资料库,对话里能查"),
-        "package_advisor" => ("软件推荐", "推荐与安装软件"),
-        "diagnostics" => ("系统诊断", "看系统信息"),
-        "ledger" => ("记账", "记账本"),
-        "scripts" => ("脚本工具", "逐个勾选"),
-        _ => ("", ""),
-    }
-}
-
 fn persona_json(persona: &member_persona::PrivatePersona) -> Value {
     let scope = persona.scope();
     json!({
@@ -491,23 +469,26 @@ fn persona_json(persona: &member_persona::PrivatePersona) -> Value {
         "memory": persona.manifest.subsystems.memory,
         "plugins": persona.manifest.plugins.enabled.clone().unwrap_or_default(),
         "scripts": persona.manifest.plugins.scripts.clone(),
+        "skills": persona.manifest.plugins.skills.clone(),
         "avatar_url": persona.avatar_path().map(|_| format!("/api/persona/avatar?scope={scope}")),
         "board_image_url": persona.board_path().map(|_| format!("/api/persona/avatar?scope={scope}&board=1")),
         "scope": scope,
     })
 }
 
-/// 成员的人格列表 + 可勾的插件 + 当前用的。
+/// 成员的人格列表 + 可勾的插件/脚本/技能 + 当前用的。
 pub(in crate::web) async fn account_personas(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Response, ApiError> {
     let identity = require_identity(&headers, &state)?;
     let config = state.manager.lock().unwrap().config.clone();
+    // 只摆可开关的内置插件:常开项(记忆、知识库、MCP……)不给开关。
     let options = member_persona::member_selectable_plugins(&config)
         .iter()
+        .filter(|id| feature_catalog::TOGGLE_PLUGINS.contains(&id.as_str()))
         .map(|id| {
-            let (label, hint) = plugin_label(id);
+            let (label, hint) = feature_catalog::plugin_label(id);
             json!({ "id": id, "label": if label.is_empty() { id.as_str() } else { label }, "hint": hint })
         })
         .collect::<Vec<_>>();
@@ -517,6 +498,16 @@ pub(in crate::web) async fn account_personas(
             |(id, display, description)| json!({ "id": id, "label": display, "hint": description }),
         )
         .collect::<Vec<_>>();
+    // 技能按成员视角列:全局技能目录里的、非平台级的,逐个给开关。
+    let skills = crate::skills::persona_skill_options(
+        &member_persona::member_view_config(&config),
+        &state.paths,
+    )
+    .into_iter()
+    // 成员的私有人格不给 Miyu 的内置配件技能,只列目录里的。
+    .filter(|(_, _, builtin)| !builtin)
+    .map(|(name, description, _)| json!({ "id": name, "label": name, "hint": description }))
+    .collect::<Vec<_>>();
     // 预置人格(管理员维护的那份)叫什么、谁维护:引导页那张卡用。
     let shared = {
         let name = crate::web::persona_identity(
@@ -552,6 +543,7 @@ pub(in crate::web) async fn account_personas(
             "member_personas": false,
             "plugins": options,
             "scripts": scripts,
+            "skills": skills,
             "shared": shared,
         }))
         .into_response());
@@ -565,6 +557,7 @@ pub(in crate::web) async fn account_personas(
         "member_personas": config.accounts.member_personas,
         "plugins": options,
         "scripts": scripts,
+        "skills": skills,
         "shared": shared,
         "prompt": std::fs::read_to_string(profile_file_for(&state.paths, &identity)).unwrap_or_default(),
     }))
@@ -584,13 +577,19 @@ pub(in crate::web) struct PersonaRequest {
     pub(in crate::web) board_title: String,
     #[serde(default)]
     pub(in crate::web) board_subtitle: String,
+    /// 记忆对成员常开(09-13 起),这个字段只为旧客户端留着,不看。
     #[serde(default = "default_true_flag")]
+    #[allow(dead_code)]
     pub(in crate::web) memory: bool,
+    /// 勾了哪些可开关的内置插件;None = 管理员放行的全部。
     #[serde(default)]
     pub(in crate::web) plugins: Option<Vec<String>>,
     /// 勾了哪些脚本;None = 全部。
     #[serde(default)]
     pub(in crate::web) scripts: Option<Vec<String>>,
+    /// 勾了哪些技能;None = 全部。
+    #[serde(default)]
+    pub(in crate::web) skills: Option<Vec<String>>,
     /// 建完就切成当前人格(引导里默认 true)。
     #[serde(default = "default_true_flag")]
     pub(in crate::web) activate: bool,
@@ -645,9 +644,9 @@ pub(in crate::web) async fn account_persona_create(
         prompt: &request.prompt,
         board_title: &request.board_title,
         board_subtitle: &request.board_subtitle,
-        memory: request.memory,
         plugins,
         scripts: request.scripts.clone(),
+        skills: request.skills.clone(),
     };
     let persona =
         member_persona::create_or_update_persona(&config, &state.paths, &username, &slug, &draft)
@@ -695,12 +694,15 @@ pub(in crate::web) async fn account_persona_update(
         prompt: &request.prompt,
         board_title: &request.board_title,
         board_subtitle: &request.board_subtitle,
-        memory: request.memory,
         plugins,
         scripts: request
             .scripts
             .clone()
             .or_else(|| existing.manifest.plugins.scripts.clone()),
+        skills: request
+            .skills
+            .clone()
+            .or_else(|| existing.manifest.plugins.skills.clone()),
     };
     let persona =
         member_persona::create_or_update_persona(&config, &state.paths, &username, &slug, &draft)

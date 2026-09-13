@@ -174,6 +174,11 @@ pub(in crate::cli) struct Screen {
     /// 的初值一模一样，diff 会认为「没变」而跳过，于是屏幕上的旧内容擦不掉
     /// （Ctrl+L 之后视口清不干净就是这么来的）。
     force: bool,
+    /// 空会话的画面:正文区不画正文(反正是空的),画这几行。`Some` 时每帧由
+    /// 活动区那边重新生成(星星在动),这里只按行 diff 往屏上写。
+    banner: Option<Vec<String>>,
+    /// 大厅里浮层(斜杠命令候选)的落点:(顶行, 左列)。None = 贴正文底部。
+    float_anchor: Option<(u16, u16)>,
 }
 
 /// 诊断用：当前进程的 RSS（KB）。
@@ -233,6 +238,8 @@ impl Screen {
             command_hint: Vec::new(),
             hint_dismissed: false,
             force: true,
+            banner: None,
+            float_anchor: None,
         }
     }
 
@@ -250,12 +257,17 @@ impl Screen {
         // Shift+拖 仍然走终端原生（kitty 等终端的既定行为），留作后路。
         // 先藏光标再进副屏：副屏的光标初始在 (0,0) 且可见，第一帧画出来之前
         // 它会在左上角明晃晃地停一下。
-        execute!(
-            stdout,
-            crossterm::cursor::Hide,
-            EnterAlternateScreen,
-            EnableMouseCapture
-        )?;
+        // 引导刚把备用屏交过来的话就不再进一次:再进会把上一帧清掉,闪一下。
+        if crate::terminal::take_held_alt_screen() {
+            execute!(stdout, crossterm::cursor::Hide, EnableMouseCapture)?;
+        } else {
+            execute!(
+                stdout,
+                crossterm::cursor::Hide,
+                EnterAlternateScreen,
+                EnableMouseCapture
+            )?;
+        }
         // 渲染器从这一刻起给可折叠的块留展开内容。inline 下不开，字节流
         // 一个标记都不多。
         crate::render::blocks::set_enabled(true);
@@ -303,10 +315,26 @@ impl Screen {
             command_hint: Vec::new(),
             hint_dismissed: false,
             force: true,
+            banner: None,
+            float_anchor: None,
         })
     }
 
     /// 诊断钩子，构造完之后调。
+    /// 空会话 banner 的行(已经是带 SGR 的整行)。挂上/撤掉都要整屏重画一次:
+    /// 正文区的 diff 键是按缓冲行号记的,和 banner 行对不上。
+    /// 大厅里浮层往输入框下面摆,不贴屏底(屏底离输入框太远,读起来要跨半屏)。
+    pub(in crate::cli) fn set_float_anchor(&mut self, anchor: Option<(u16, u16)>) {
+        self.float_anchor = anchor;
+    }
+
+    pub(in crate::cli) fn set_banner(&mut self, rows: Option<Vec<String>>) {
+        if rows.is_some() != self.banner.is_some() {
+            self.invalidate();
+        }
+        self.banner = rows;
+    }
+
     pub(in crate::cli) fn trace_ready(&self) {
         trace_rss("screen-enter-after");
     }
@@ -570,6 +598,27 @@ impl Screen {
         self.invalidate();
     }
 
+    /// 会话清空了，画布也清空：正文缓冲整个丢掉，下一句话从第 0 行起。
+    ///
+    /// 和 `push_blank_screen`（Ctrl+L）不一样：那个是把视口顶空、往回翻还在；
+    /// 这里是 `/reset`、`/new` 回到大厅——旧对话已经不属于这个会话了，留着的话
+    /// 下一句话会接在它后面、出现在屏底而不是屏顶（09-14 用户实测）。
+    pub(in crate::cli) fn wipe_transcript(&mut self) {
+        self.term = Term::default();
+        self.term.set_cols(usize::from(self.cols));
+        self.scroll = 0;
+        self.follow = true;
+        self.floor = 0;
+        self.expanded.clear();
+        self.hover = None;
+        self.selection = None;
+        self.pending_copy = None;
+        // 行缓存按 (行号, 时间戳) 记，新缓冲的时间戳从 0 重来，会和旧的撞上。
+        self.row_keys.clear();
+        self.invalidate();
+        self.needs_clear = true;
+    }
+
     /// 下一帧全量重画。
     fn invalidate(&mut self) {
         self.painted.clear();
@@ -615,12 +664,13 @@ impl Screen {
 
     /// 内容不满一屏时，正文上面垫掉多少行。
     ///
-    /// 正文是**贴着活动区往上长**的。不垫的话内容钉在屏幕最上面，和输入框之间
-    /// 裂着一道几十行的空白——聊了两句就是这个样子，用户报的「内容和输入框中间
-    /// 一个巨大空白」正是它。垫在上面之后，最后一行正文永远紧挨着输入框，
-    /// 和 inline REPL 的观感一致；输入框本身还是钉死在底部，不会跟着内容上下跳。
+    /// 09-14 定为 **0**：正文顶部对齐、输入框钉死在底部，中间允许留白。
+    /// 09-11 那版是贴着活动区往上长（垫 `body - content_rows` 行），为的是
+    /// 和 inline REPL 一样"最后一行紧挨输入框"；空会话大厅落地后用户拍板改成
+    /// 第一条消息落在屏幕顶上。留着这个函数是因为 `suspend`/点选换算/面板上方
+    /// 重画都从这里取偏移，以后要改回去只动这一处。
     pub(in crate::cli) fn top_pad(&self) -> usize {
-        usize::from(self.body()).saturating_sub(self.content_rows())
+        0
     }
 
     /// 把终端让给外部输出（选择器 / 提问面板 / 图片自己往 stdout 打）。
@@ -781,8 +831,33 @@ impl Screen {
             queue!(stdout, Clear(ClearType::All))?;
             self.needs_clear = false;
         }
-        // 内容不满一屏时上面垫空行，让正文**贴着活动区往上长**。
-        let pad = usize::from(body).saturating_sub(total);
+        // 正文顶部对齐（`top_pad` = 0）。
+        if let Some(rows) = self.banner.clone() {
+            // 空会话:正文区就是 banner 那几行,逐行 diff 往上写。
+            for y in 0..body {
+                let slot = usize::from(y);
+                let line = rows.get(slot).cloned().unwrap_or_default();
+                if let Some(key) = self.row_keys.get_mut(slot) {
+                    *key = None;
+                }
+                if self.painted[slot] == line {
+                    continue;
+                }
+                queue!(
+                    stdout,
+                    MoveTo(0, y),
+                    Clear(ClearType::UntilNewLine),
+                    Print(&line)
+                )?;
+                self.painted[slot] = line;
+            }
+            self.paint_toast(&mut stdout, body)?;
+            self.paint_command_hint(&mut stdout, body)?;
+            stdout.flush()?;
+            return Ok(body);
+        }
+        // 正文顶部对齐(见 `top_pad`)。
+        let pad = 0usize;
         for y in 0..body {
             let slot = usize::from(y);
             let line = match usize::from(y).checked_sub(pad) {

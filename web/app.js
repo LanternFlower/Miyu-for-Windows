@@ -321,7 +321,6 @@
     oobePrompt: document.getElementById("oobePrompt"),
     oobeSharedName: document.getElementById("oobeSharedName"),
     oobeSharedHint: document.getElementById("oobeSharedHint"),
-    oobeMemory: document.getElementById("oobeMemory"),
     oobePlugins: document.getElementById("oobePlugins"),
     oobeProfile: document.getElementById("oobeProfile"),
     oobeDoneAvatar: document.getElementById("oobeDoneAvatar"),
@@ -8055,7 +8054,7 @@
     if (["recall_memories", "recall_past_events", "remember_fact", "search_evicted_context"].includes(n)) return "brain";
     if (["create_goal", "get_goal", "update_goal"].includes(n)) return "target";
     if (n === "todowrite" || n === "todoupdate") return "list-todo";
-    if (isSubagentTool(n) || n === "deep_research") return "bot";
+    if (isSubagentTool(n)) return "bot";
     if (n.includes("knowledge_base")) return "book-open";
     if (n === "ask_question") return "circle-help";
     if (n === "generate_image") return "paintbrush";
@@ -8534,7 +8533,7 @@
       } else if (message.startsWith("__subagent_detach__")) {
         message = message.slice("__subagent_detach__".length).trim();
       }
-      // 任何持续汇报进度的工具(插件子代理如深度研究/兼容性调查)都惰性获得实时进度面板,
+      // 任何持续汇报进度的工具(插件子代理如兼容性调查)都惰性获得实时进度面板,
       // 不再仅限内置 task 工具
       if (!tool.liveProgress && !tool.finished && message) {
         tool.liveProgress = document.createElement("div");
@@ -11929,33 +11928,50 @@
     if (!options.length) elements.oobePlugins.innerHTML = `<p class="u-hint">没有可选的功能。</p>`;
   }
 
-  function oobeRenderScripts(scripts, enabled) {
-    const wrap = document.getElementById("oobeScriptsWrap");
-    const container = document.getElementById("oobeScripts");
+  /// 脚本/技能这类「逐个勾」的块:没有条目就整块藏起来;enabled 为 null = 全勾。
+  function oobeRenderChecklist(wrapId, containerId, items, enabled) {
+    const wrap = document.getElementById(wrapId);
+    const container = document.getElementById(containerId);
     container.replaceChildren();
-    wrap.hidden = !scripts.length;
+    wrap.hidden = !items.length;
     const on = enabled ? new Set(enabled) : null;
-    for (const script of scripts) {
+    for (const item of items) {
       const label = document.createElement("label");
       label.className = "oobe-plugin";
       const input = document.createElement("input");
       input.type = "checkbox";
-      input.value = script.id;
-      input.checked = on ? on.has(script.id) : true;
+      input.value = item.id;
+      input.checked = on ? on.has(item.id) : true;
       const text = document.createElement("span");
       const title = document.createElement("b");
-      title.textContent = script.label || script.id;
+      title.textContent = item.label || item.id;
       text.appendChild(title);
-      text.append(script.hint || "");
+      text.append(item.hint || "");
       label.append(input, text);
       container.appendChild(label);
     }
   }
 
+  /// 块藏着(没东西可勾)= null = 全部;摆出来了就按勾选发明细。
+  function oobeSelectedChecklist(wrapId, containerId) {
+    if (document.getElementById(wrapId).hidden) return null;
+    return [...document.querySelectorAll(`#${containerId} input:checked`)].map((input) => input.value);
+  }
+
+  function oobeRenderScripts(scripts, enabled) {
+    oobeRenderChecklist("oobeScriptsWrap", "oobeScripts", scripts, enabled);
+  }
+
+  function oobeRenderSkills(skills, enabled) {
+    oobeRenderChecklist("oobeSkillsWrap", "oobeSkills", skills, enabled);
+  }
+
   function oobeSelectedScripts() {
-    const wrap = document.getElementById("oobeScriptsWrap");
-    if (wrap.hidden) return null;
-    return [...document.querySelectorAll("#oobeScripts input:checked")].map((input) => input.value);
+    return oobeSelectedChecklist("oobeScriptsWrap", "oobeScripts");
+  }
+
+  function oobeSelectedSkills() {
+    return oobeSelectedChecklist("oobeSkillsWrap", "oobeSkills");
   }
 
   function oobeSelectedPlugins() {
@@ -11985,16 +12001,17 @@
     elements.oobePrompt.value = "";
     elements.oobeAvatarPreview.hidden = true;
     elements.oobeAvatarPreview.removeAttribute("src");
-    elements.oobeMemory.checked = persona ? persona.memory !== false : true;
     elements.oobeProfile.value = "";
     oobeSetMode("private");
     elements.oobe.querySelector(".oobe-choice").hidden = reason !== "first";
     let options = [];
     let scripts = [];
+    let skills = [];
     try {
       const data = await apiRequest("/api/account/personas").then((response) => response.json());
       options = data.plugins || [];
       scripts = data.scripts || [];
+      skills = data.skills || [];
       if (data.shared?.name) elements.oobeSharedName.textContent = data.shared.name;
       elements.oobeSharedHint.textContent = data.shared?.maintainer
         ? `${data.shared.maintainer} 维护的预置人格,不可修改`
@@ -12019,6 +12036,7 @@
     }
     oobeRenderPlugins(options, persona ? persona.plugins : null);
     oobeRenderScripts(scripts, persona ? persona.scripts : null);
+    oobeRenderSkills(skills, persona ? persona.skills : null);
     oobeSetStep(1);
   }
 
@@ -12052,9 +12070,9 @@
         const body = {
           name, prompt,
           description: elements.oobeDesc.value.trim(),
-          memory: elements.oobeMemory.checked,
           plugins: oobeSelectedPlugins(),
           scripts: oobeSelectedScripts(),
+          skills: oobeSelectedSkills(),
           activate: true,
         };
         let persona;
@@ -12152,6 +12170,16 @@
     return span.innerHTML;
   }
 
+  /// 账号页人格卡的一行摘要:插件数,脚本/技能勾了明细才报数(null = 全开)。
+  /// 记忆对新建的人格常开,只有旧人格关着时才提一句。
+  function personaSummary(persona) {
+    const parts = [`${(persona.plugins || []).length} 个插件`];
+    if (Array.isArray(persona.scripts)) parts.push(`${persona.scripts.length} 个脚本`);
+    if (Array.isArray(persona.skills)) parts.push(`${persona.skills.length} 个技能`);
+    if (persona.memory === false) parts.unshift("记忆关");
+    return parts.join(" · ");
+  }
+
   function renderPersonaList(data) {
     const list = elements.personaList;
     list.replaceChildren();
@@ -12177,7 +12205,7 @@
       const title = document.createElement("b");
       title.textContent = persona.name + (active ? "(当前)" : "");
       const sub = document.createElement("small");
-      sub.textContent = persona.description || (persona.shared ? "" : `记忆${persona.memory ? "开" : "关"} · ${(persona.plugins || []).length} 个插件`);
+      sub.textContent = persona.description || (persona.shared ? "" : personaSummary(persona));
       text.append(title, sub);
       row.appendChild(text);
       const actions = document.createElement("div");

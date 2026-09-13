@@ -3,7 +3,7 @@
 > **2026-09-07 更新：Phase 2「机械轻量层」已整层退役，本文该节只作历史记录。**
 > 它折的是 `turns.tool_reports`，而那一列从 07-01 起就只装
 > `extract_persistable_tool_report` 的白名单精选小结（artifact 操作 /
-> `load_tools` / 表情包 / `remember_fact` / `task`、deep_research 结论），
+> `load_tools` / 表情包 / `remember_fact` / `task` 结论），
 > 从来不装工具输出本体——实测线上库 370 轮全空、09-04 备份 410 轮共 ~1.2KB，
 > 连单批 12,500 字节的收割闸门都够不着，一次都没触发过。工具输出的真实体量
 > 在 08-18 引入的 `tool_flow` 列（实测占终端会话回放字节的 63%，加上调用参数

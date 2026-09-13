@@ -87,7 +87,7 @@ def spawn_repl():
 
     process = subprocess.Popen(
         # 裸 `miyu` 在真终端里先弹模式选择再退出;走查要的是普通模式的 REPL。
-        [str(BIN), "normal"], stdin=slave, stdout=slave, stderr=slave,
+        [str(BIN)], stdin=slave, stdout=slave, stderr=slave,
         env=ENV, cwd=str(HOME), preexec_fn=child_setup, close_fds=True,
     )
     os.close(slave)

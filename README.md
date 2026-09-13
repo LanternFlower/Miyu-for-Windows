@@ -86,7 +86,7 @@ miyu config
 
 - REPL TUI
 
-  `miyu normal` 进入普通模式的 REPL； `miyu dev` 进入开发模式的 REPL。
+  裸 `miyu` 进入普通模式的 REPL； `miyu dev` 进入开发预设的 REPL。
 
 - webui 局域网网页
 
@@ -263,9 +263,9 @@ miyu import miyu-export-*.tar.gz
 
     ![](./pics/archwiki.png)
 
-  - PKGBUILD 审查
+  - PKGBUILD 审查（Arch Linux 插件的一部分）
 
-    AUR 投毒的事件搞得人心惶惶，但现在，Miyu 可以帮忙审查 PKGBUILD 啦！
+    AUR 投毒的事件搞得人心惶惶，但现在，Miyu 可以帮忙审查 PKGBUILD 啦！审查通过且你确认后才会安装。
 
     ![](./pics/pkgbuild审核.png)
 
@@ -290,18 +290,6 @@ miyu import miyu-export-*.tar.gz
   `/reset` 只清理当前会话，不删除人格记忆；终端或 WebUI 的 `/reset all` 会清空当前人格的短期日记、长期日记、知识点、修订记录和待整理状态。主体记忆在一个事务中清理，淘汰上下文随后独立清理。即使后台模型当时正在整理，旧结果也会因数据库身份或记忆代数变化而被拒绝，不能在清理后重新写回；重置前已经启动的其他会话也不能再写入旧日记。
 
   ![](./pics/记忆.png)
-
-- 深度研究
-
-  >Token 燃烧警告
-
-  重量级插件。对于一个命题，Miyu 可以引经据典，有理有据地进行深度研究并写出研究报告。
-
-  ![](./pics/深度研究.png)
-
-- Linux 输入法问题诊断
-
-  从 Linux 输入法实现原理出发，对软件输入法问题进行深度诊断。
 
 - Fcitx5 wiki 查询
 

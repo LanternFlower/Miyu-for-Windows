@@ -111,9 +111,10 @@ def spawn_tui():
         os.setsid()
         fcntl.ioctl(1, termios.TIOCSCTTY, 0)
 
-    # 裸 `miyu` 在真终端里先弹模式选择；走查要普通模式。
+    # 裸 `miyu` 直接进普通模式(09-13 起 `miyu normal` 退役,只留 `miyu dev`);
+    # 沙箱配置没有 config_version,迁移会把 oobe_done 标成 true,不会撞上引导。
     process = subprocess.Popen(
-        [str(BIN), "normal"], stdin=slave, stdout=slave, stderr=slave,
+        [str(BIN)], stdin=slave, stdout=slave, stderr=slave,
         env=ENV, cwd=str(HOME), preexec_fn=child_setup, close_fds=True,
     )
     os.close(slave)

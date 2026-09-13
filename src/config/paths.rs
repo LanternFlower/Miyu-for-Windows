@@ -103,7 +103,9 @@ pub(crate) fn persona_scope_name(name: &str) -> String {
         .collect::<String>()
         .trim_matches('-')
         .to_string();
-    if normalized.is_empty() {
+    // 纯中文名只剩扩展名那两个字母:所有这样的人格会挤进同一个 `md` 目录,
+    // 按名字哈希分开(09-13)。
+    if normalized.is_empty() || normalized == "md" {
         format!("persona-{}", &blake3::hash(name.as_bytes()).to_hex()[..12])
     } else {
         normalized

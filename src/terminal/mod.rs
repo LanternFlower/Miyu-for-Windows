@@ -51,3 +51,33 @@ pub enum CommandOutputStream {
     Stdout,
     Stderr,
 }
+
+/// 备用屏交接：引导结束后紧接着进全屏 REPL，备用屏不退不进，中间不闪、不清屏。
+///
+/// 引导退出时 `hold_alt_screen()`；全屏后端进屏时 `take_held_alt_screen()` 为真就
+/// 跳过 `EnterAlternateScreen`（终端已经在备用屏上，再进一次会把上一帧清掉）；
+/// 没人接手（REPL 启动失败）就 `release_alt_screen_if_held()` 退回主屏。
+static ALT_SCREEN_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn hold_alt_screen() {
+    ALT_SCREEN_HELD.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn take_held_alt_screen() -> bool {
+    ALT_SCREEN_HELD.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
+pub(crate) fn release_alt_screen_if_held() {
+    if take_held_alt_screen() {
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::cursor::Show,
+            crossterm::terminal::LeaveAlternateScreen
+        );
+    }
+}
+
+/// 色板与色深降级（引导、空会话 banner 共用）。
+pub(crate) mod palette;
+/// 星空、渐变艺术字、扫光。
+pub(crate) mod starfield;

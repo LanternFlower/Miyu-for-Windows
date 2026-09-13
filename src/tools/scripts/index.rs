@@ -107,12 +107,28 @@ pub(crate) fn script_scan_roots(
     config: &crate::config::AppConfig,
     paths: &MiyuPaths,
 ) -> Vec<PathBuf> {
-    vec![
-        paths.system_scripts_dir.clone(),
-        config.active_persona_system_scripts_dir(paths),
-        paths.scripts_dir.clone(),
-        config.active_persona_scripts_dir(paths),
-    ]
+    // 09-13:内置脚本对自定义人格改成**可选**——目录照扫,能不能用由
+    // `prepare_script_refresh` 按人格清单的 `plugins.scripts` 白名单裁决
+    // (自定义人格没写清单 = 一件内置都不挂,纯净状态不变)。
+    let builtin = builtin_scripts_dir(paths);
+    let persona_system = config.active_persona_system_scripts_dir(paths);
+    let mut roots = vec![paths.system_scripts_dir.clone(), builtin.clone()];
+    if persona_system != builtin {
+        roots.push(persona_system);
+    }
+    roots.push(paths.scripts_dir.clone());
+    roots.push(config.active_persona_scripts_dir(paths));
+    roots
+}
+
+/// 内置脚本的目录:`<system>/personas/default/`。
+pub(crate) fn builtin_scripts_dir(paths: &MiyuPaths) -> PathBuf {
+    paths.system_scripts_dir.join("personas").join("default")
+}
+
+/// 这条脚本是不是内置层的(装在 `<system>/` 下)。
+pub(crate) fn is_builtin_script(paths: &MiyuPaths, entry: &ScriptEntry) -> bool {
+    Path::new(&entry.path).starts_with(&paths.system_scripts_dir)
 }
 
 pub(crate) fn script_specs(

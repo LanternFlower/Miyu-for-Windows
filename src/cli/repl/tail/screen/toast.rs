@@ -21,6 +21,8 @@ use std::time::{Duration, Instant};
 enum FloatAlign {
     Left,
     Right,
+    /// 从指定列起画(大厅里对齐输入框)。
+    Column(u16),
 }
 
 /// 停留多久。够读完一句话，又不至于赖在屏幕上。
@@ -114,7 +116,14 @@ impl Screen {
         let align = toast.align;
         match align {
             FloatAlign::Right => self.paint_float_at(stdout, 0, &lines, align),
-            FloatAlign::Left => self.paint_float(stdout, body, &lines),
+            FloatAlign::Left | FloatAlign::Column(_) => {
+                // 大厅里输入框不在屏底：「讲输入框的」通知跟着候选面板的锚点走，
+                // 待在输入框底下。掉到左下角就和输入框对不上号了（用户实测）。
+                if let Some((top, left)) = self.float_anchor {
+                    return self.paint_float_at(stdout, top, &lines, FloatAlign::Column(left));
+                }
+                self.paint_float(stdout, body, &lines)
+            }
         }
     }
 
@@ -165,6 +174,9 @@ impl Screen {
             return Ok(());
         }
         let lines = self.command_hint.clone();
+        if let Some((top, left)) = self.float_anchor {
+            return self.paint_float_at(stdout, top, &lines, FloatAlign::Column(left));
+        }
         self.paint_float(stdout, body, &lines)
     }
 
@@ -203,6 +215,11 @@ impl Screen {
         }
         let left = match align {
             FloatAlign::Left => 2,
+            FloatAlign::Column(column) => column.min(
+                u16::try_from(cols.saturating_sub(width + 4))
+                    .unwrap_or(2)
+                    .max(2),
+            ),
             FloatAlign::Right => u16::try_from(cols.saturating_sub(width + 6))
                 .unwrap_or(2)
                 .max(2),
@@ -261,7 +278,7 @@ impl Screen {
         }
         Some(match toast.align {
             FloatAlign::Right => (0, height),
-            FloatAlign::Left => (body - height, height),
+            FloatAlign::Left | FloatAlign::Column(_) => (body - height, height),
         })
     }
 }

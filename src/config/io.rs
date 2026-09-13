@@ -46,6 +46,7 @@ impl AppConfig {
         config.normalize_platform_model_routes();
         config.validate()?;
         config.validate_persona_files(paths)?;
+        config.migrate_degenerate_persona_scope(paths);
         Ok(config)
     }
 
@@ -129,6 +130,11 @@ impl AppConfig {
                 "config file is newer than this build; reading it as-is"
             );
             return Ok(());
+        }
+        // v3 之前没有引导这回事：已经在用的机器视为「设置过了」，
+        // 别让老用户升级后被引导拦一道。
+        if self.config_version < 3 {
+            self.oobe_done = true;
         }
         if self.config_version < 1 {
             for provider in &mut self.providers {
@@ -250,9 +256,6 @@ impl AppConfig {
         let Some(base) = directories::BaseDirs::new() else {
             return;
         };
-        let documents = directories::UserDirs::new()
-            .and_then(|dirs| dirs.document_dir().map(PathBuf::from))
-            .unwrap_or_else(|| base.home_dir().join("Documents"));
         let pictures = std::env::var_os("XDG_PICTURES_DIR")
             .map(PathBuf::from)
             .or_else(|| {
@@ -264,19 +267,6 @@ impl AppConfig {
         // fields onto it and persisted the result, so the value we now have to
         // heal is one this function itself wrote.
         let legacy_data = base.data_dir().join("miyu");
-        if let Some((from, to)) = remap_managed_output_dir(
-            &mut self.plugins.deep_research.output_dir,
-            &[
-                documents.join("Miyu"),
-                documents.join("miyu"),
-                legacy_data.join("documents"),
-                paths.data_dir.join("documents"),
-            ],
-            &paths.documents_dir(),
-            base.home_dir(),
-        ) {
-            relocate_managed_output(&from, &to);
-        }
         if let Some((from, to)) = remap_managed_output_dir(
             &mut self.plugins.image_generation.output_dir,
             &[
@@ -372,10 +362,6 @@ impl AppConfig {
         }
         if self.plugins.web.max_results == 0 {
             bail!("plugins.web.max_results must be greater than 0");
-        }
-        match self.plugins.deep_research.thinking_depth.as_str() {
-            "minimal" | "low" | "medium" | "high" | "xhigh" => {}
-            value => bail!("plugins.deep_research.thinking_depth is invalid: {value}"),
         }
         match self.plugins.image_generation.provider_type.as_str() {
             "openai" | "rightcode" => {}

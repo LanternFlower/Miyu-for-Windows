@@ -59,7 +59,7 @@ class Repl:
         self.log = open(log, "wb")
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
-        self.proc = subprocess.Popen([str(BIN), "normal"], stdin=slave, stdout=slave, stderr=slave,
+        self.proc = subprocess.Popen([str(BIN)], stdin=slave, stdout=slave, stderr=slave,
                                      env=ENV, cwd=str(HOME), close_fds=True, preexec_fn=os.setsid)
         os.close(slave)
         self.raw = bytearray()

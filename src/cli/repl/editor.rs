@@ -78,6 +78,8 @@ pub(in crate::cli) fn restore_history_entry(
 
 pub(in crate::cli) struct LiveReplEditor {
     pub(in crate::cli) mode: AgentMode,
+    /// 会话还是空的:Tab 可以换车道(普通 ↔ 开发)。第一条消息一发就钉死。
+    pub(in crate::cli) mode_switchable: bool,
     pub(in crate::cli) input: String,
     pub(in crate::cli) cursor: usize,
     pub(in crate::cli) history: Vec<ReplHistoryEntry>,
@@ -104,6 +106,8 @@ pub(in crate::cli) enum LiveEditorAction {
     Submit(LiveSubmission),
     Interrupt,
     Exit,
+    /// 空会话里按了 Tab:换到另一条车道。
+    ToggleMode,
 }
 
 impl LiveReplEditor {
@@ -111,6 +115,7 @@ impl LiveReplEditor {
         let history_index = history.len();
         Self {
             mode,
+            mode_switchable: false,
             input: String::new(),
             cursor: 0,
             history,
@@ -227,9 +232,10 @@ impl LiveReplEditor {
                             self.cursor = self.input.chars().count();
                             self.history_clean_index = None;
                         }
-                    } else {
-                        // 会话模式创建时定死:Tab 切换已随闲聊模式一并删除
+                    } else if self.mode_switchable && self.input.trim().is_empty() {
+                        // 只有空会话能换车道:一旦有了回合,模式就钉死
                         // (中途换模式=系统提示词换血=全量缓存作废)。
+                        return Ok(LiveEditorAction::ToggleMode);
                     }
                 }
                 KeyCode::Esc => {

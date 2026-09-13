@@ -36,8 +36,8 @@ fn tier_rows_show_one_localized_name_and_inheritance() {
 fn aux_roles_are_localized_and_never_repeat_the_fallback_note() {
     let config = AppConfig::default();
     assert_eq!(
-        aux_role_label(AuxRole::DeepResearch),
-        t("Deep research", "深度研究")
+        aux_role_label(AuxRole::MemoryOrganizer),
+        t("Diary organizer", "日记整理")
     );
     // 缺省档的池是空的，行内只写档名；空池回退全局池是档位行自己的事。
     assert_eq!(
@@ -45,7 +45,7 @@ fn aux_roles_are_localized_and_never_repeat_the_fallback_note() {
         t("lite", "轻量")
     );
     assert_eq!(
-        aux_role_summary(&config, AuxRole::DeepResearch),
+        aux_role_summary(&config, AuxRole::MemoryOrganizer),
         t("standard", "普通")
     );
     let mut config = config;

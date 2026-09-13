@@ -7,10 +7,8 @@ mod share_file;
 pub use share_file::set_share_url_bases;
 mod ask_question;
 mod cross_hints;
-mod deep_research;
 mod default_tools;
 pub(crate) use default_tools::TOOL_SUMMARY_PREFIX;
-mod diagnostics;
 pub(crate) mod exchange_rate;
 pub mod goal;
 mod html_conversion;
@@ -24,7 +22,6 @@ mod mcp;
 pub(crate) mod memes;
 mod memory;
 pub(crate) mod net_guard;
-mod package_advisor;
 mod patch_preview;
 pub(crate) mod platform_outreach;
 mod registry;
@@ -60,9 +57,10 @@ pub use registry::{
     ToolPermission, ToolProgress, ToolProgressEvent, ToolRegistry, ToolSpec, ToolTrust,
 };
 pub(crate) use scripts::{
-    apply_script_refresh, list_global_scripts, prepare_script_refresh, scripts_dashboard_delete,
-    scripts_dashboard_disable, scripts_dashboard_enable, scripts_dashboard_overview,
-    scripts_dashboard_register, scripts_dashboard_source,
+    apply_script_refresh, builtin_scripts_dir, list_global_scripts, list_scripts_with_origin,
+    prepare_script_refresh, scripts_dashboard_delete, scripts_dashboard_disable,
+    scripts_dashboard_enable, scripts_dashboard_overview, scripts_dashboard_register,
+    scripts_dashboard_source,
 };
 pub(crate) use skills::{apply_skill_refresh, prepare_skill_refresh};
 
@@ -210,7 +208,7 @@ pub fn preparing_phase(name: &str) -> Option<&'static str> {
         "trash_path" => t("Preparing delete", "准备删除"),
         // A subagent brief is long, and its own timed block only appears once
         // the arguments have all arrived.
-        "subagent" | "deep_research" => t("Preparing task", "准备任务"),
+        "subagent" => t("Preparing task", "准备任务"),
         "ask_question" => t("Preparing question", "准备问题"),
         // 整张清单都在参数里,条目一多就是几百字节,和批量删是同一个窗口。
         "todowrite" => t("Preparing list", "准备清单"),
@@ -253,7 +251,6 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "grep" => t("Search text", "搜索文本"),
         "get_current_directory" => t("Current directory", "当前目录"),
         "get_current_time" => t("Current time", "当前时间"),
-        "check_issue" => t("Check issue", "检查问题"),
         "check_os_info" => t("System information", "查看系统信息"),
         "web_search" => t("Web search", "网络搜索"),
         "web_fetch" => t("Fetch webpage", "读取网页"),
@@ -269,7 +266,6 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "send_qq_message" => t("Send to QQ", "发送到 QQ"),
         "send_voice_message" => t("Send voice message", "发送语音"),
         "sponsor" => t("Sponsorships", "赞助记账"),
-        "deep_research" => t("Deep research", "深度研究"),
         "upload_knowledge_base_file" | "upload_text_to_knowledge_base" => {
             t("Import knowledge base", "导入知识库")
         }
@@ -287,7 +283,6 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "aur" => t("AUR query", "AUR 查询"),
         "archlinux_official_package_query" => t("Query Arch package", "查询 Arch 官方包"),
         "query_api_quota" => t("Query API quota", "查询大模型 API 额度"),
-        "pacman_search" => t("Search packages", "搜索软件包"),
         "archwiki_query" => t("Query ArchWiki", "查询 ArchWiki"),
         "archlinux_news" => t("Arch news", "Arch 新闻"),
         "exchange_rate" | "get_exchange_rate" => t("Exchange rates", "汇率查询"),
@@ -301,10 +296,6 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "goal" => t("Long-task goal", "长任务目标"),
         "review_aur_package" => t("Review AUR package", "审查 AUR 包"),
         "install_aur_package" => t("Install AUR package", "安装 AUR 包"),
-        "review_pkgbuild_directory" => t("Review PKGBUILD directory", "审查 PKGBUILD 目录"),
-        "register_deep_research_topic_title" => t("Register research title", "注册研究标题"),
-        "register_deep_research_reference" => t("Register reference", "注册引用来源"),
-        "remove_deep_research_reference" => t("Remove reference", "移除引用来源"),
         _ => return None,
     })
 }
@@ -328,7 +319,7 @@ fn builtin_readable_group_name(group: &str) -> Option<&'static str> {
         "memory" => t("Memory tools", "记忆工具组"),
         "memes" => t("Meme tools", "表情包工具组"),
         "planning" => t("Planning tools", "任务规划工具组"),
-        "research" => t("Research tools", "深度研究工具组"),
+        "research" => t("Research tools", "研究工具组"),
         "scripts" => t("Script tools", "脚本工具组"),
         "scripting" => t("Script management", "脚本管理工具组"),
         "shell" => t("Shell tools", "Shell 工具组"),
@@ -342,7 +333,7 @@ fn builtin_readable_group_name(group: &str) -> Option<&'static str> {
 }
 
 pub fn clear_aur_review_state(paths: &MiyuPaths) -> anyhow::Result<()> {
-    package_advisor::clear_aur_review_state(paths)
+    archlinux::aur_review::clear_aur_review_state(paths)
 }
 
 /// AUR 装包互斥:review 与 install 不同轮,逼一次"给用户看过再装"的确认。
@@ -537,10 +528,6 @@ pub fn compose_registry(
     if plugin("web_images") && config.plugins.web_images.enabled {
         web_images::register(&mut registry, config.clone(), paths.clone(), true);
     }
-    if plugin("deep_research") && config.plugins.deep_research.enabled {
-        let research_tools = registry.clone();
-        deep_research::register(&mut registry, config.clone(), paths.clone(), research_tools);
-    }
     if config.plugins.vision.enabled {
         // 看图对 coding 也是刚需(UI 截图排错、设计稿、测试产出的图表);
         // 聊天模型不带眼睛时由 vision 插件路由给专用视觉模型。
@@ -551,12 +538,6 @@ pub fn compose_registry(
     }
     if plugin("knowledge_base") && config.plugins.knowledge_base.enabled {
         knowledge_base::register(&mut registry, config.clone(), paths.clone());
-    }
-    if plugin("package_advisor") && config.plugins.package_advisor.enabled {
-        package_advisor::register(&mut registry, paths.clone());
-    }
-    if plugin("diagnostics") && config.plugins.diagnostics.enabled {
-        diagnostics::register(&mut registry, config.clone());
     }
     // 记忆整套按 persona 清单构造:关着就一件工具都不注册(联想注入、日记、
     // 前言在 agent 侧同样按清单裁决)。
@@ -572,11 +553,9 @@ pub fn compose_registry(
         ledger::register(&mut registry, config.clone(), paths.clone());
     }
     if plugin("scripts") {
-        // 人格清单可以按 id 勾脚本(成员人格的引导里逐个勾);白名单记在注册表上,
-        // 热刷新照样过滤。
-        if let Some(ids) = &manifest.plugins.scripts {
-            registry.set_script_allowlist(ids);
-        }
+        // 人格清单的脚本白名单在扫描层裁决(`scripts::retain_persona_visible`,
+        // 注册与热刷新同一条路;人格自己那一层不受白名单管),这里不再往注册表
+        // 挂一份按名字的过滤。
         // 不可信场所只收头部写了 `Trust: external` 的脚本;范围记在注册表上,
         // 热刷新走同一条 replace_script_tools 时照样过滤。
         if external {
@@ -585,8 +564,14 @@ pub fn compose_registry(
             scripts::register(&mut registry, config, paths);
         }
     }
-    if config.mcp.enabled {
-        mcp::register(&mut registry, config.clone());
+    // MCP 与脚本同级:人格闸(`mcp` 插件)之上按服务器 id 白名单再筛一道,
+    // 关掉的服务器连 tools/list 都不拉。
+    if plugin("mcp") && config.mcp.enabled {
+        mcp::register(
+            &mut registry,
+            config.clone(),
+            manifest.plugins.mcp.as_deref(),
+        );
     }
     if manifest.subsystems.skills && config.skills.enabled {
         if let Err(error) = skills::register_skills(&mut registry, config, paths) {
@@ -1063,13 +1048,10 @@ mod tests {
             preparing_phase("trash_path"),
             Some(crate::i18n::text("Preparing delete", "准备删除"))
         );
-        for name in ["subagent", "deep_research"] {
-            assert_eq!(
-                preparing_phase(name),
-                Some(crate::i18n::text("Preparing task", "准备任务")),
-                "{name}"
-            );
-        }
+        assert_eq!(
+            preparing_phase("subagent"),
+            Some(crate::i18n::text("Preparing task", "准备任务"))
+        );
         assert_eq!(
             preparing_phase("ask_question"),
             Some(crate::i18n::text("Preparing question", "准备问题"))

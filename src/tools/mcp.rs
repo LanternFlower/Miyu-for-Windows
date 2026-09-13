@@ -193,12 +193,15 @@ fn resolve_listings(servers: &[&McpServerConfig]) -> Vec<Option<Arc<Vec<McpToolI
     resolved
 }
 
-pub fn register(registry: &mut ToolRegistry, config: AppConfig) {
+/// `allowlist`:人格清单里 `plugins.mcp` 的服务器 id 白名单;None = 全部。
+/// 在拉 tools/list **之前**过滤,关掉的服务器不会被拉起。
+pub fn register(registry: &mut ToolRegistry, config: AppConfig, allowlist: Option<&[String]>) {
     let servers: Vec<&McpServerConfig> = config
         .mcp
         .servers
         .iter()
         .filter(|server| server.enabled && !server.id.trim().is_empty())
+        .filter(|server| allowlist.is_none_or(|list| list.iter().any(|item| item == &server.id)))
         .collect();
     let listings = resolve_listings(&servers);
     for (server, tools) in servers.into_iter().zip(listings) {
@@ -656,9 +659,9 @@ for line in sys.stdin:
         let config = config_with(vec![mock_server("cache-hit", &marker, 0.0, false)]);
 
         let mut first = ToolRegistry::new();
-        register(&mut first, config.clone());
+        register(&mut first, config.clone(), None);
         let mut second = ToolRegistry::new();
-        register(&mut second, config);
+        register(&mut second, config, None);
 
         assert!(first.contains("mcp_cache_hit_echo"));
         assert!(second.contains("mcp_cache_hit_echo"));
@@ -672,9 +675,9 @@ for line in sys.stdin:
         let config = config_with(vec![mock_server("cache-miss", &marker, 0.0, true)]);
 
         let mut first = ToolRegistry::new();
-        register(&mut first, config.clone());
+        register(&mut first, config.clone(), None);
         let mut second = ToolRegistry::new();
-        register(&mut second, config);
+        register(&mut second, config, None);
 
         assert!(!first.contains("mcp_cache_miss_echo"));
         assert!(!second.contains("mcp_cache_miss_echo"));
@@ -697,7 +700,7 @@ for line in sys.stdin:
 
         let started = Instant::now();
         let mut registry = ToolRegistry::new();
-        register(&mut registry, config);
+        register(&mut registry, config, None);
         let elapsed = started.elapsed();
 
         assert!(registry.contains("mcp_parallel_a_echo"));

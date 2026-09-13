@@ -1,6 +1,7 @@
 //! 交互式 REPL。
 //!
 //! 按职责分文件：宽度计算、输入编辑、活动区渲染、远端与直连两条回合驱动。
+pub(in crate::cli) mod banner;
 pub(in crate::cli) mod commands;
 pub(in crate::cli) mod dictation;
 pub(in crate::cli) mod jobs;

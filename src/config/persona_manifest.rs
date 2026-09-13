@@ -32,14 +32,17 @@ pub const PLUGIN_IDS: &[&str] = &[
     "memes",
     "platform_outreach",
     "web_images",
-    "deep_research",
     "image_generation",
     "knowledge_base",
-    "package_advisor",
-    "diagnostics",
     "ledger",
     "scripts",
+    // MCP 与脚本同级:插件闸之上还能按服务器 id 逐个勾(`plugins.mcp`)。
+    "mcp",
 ];
+
+/// 已退役的插件 id:存量 persona.toml 里写着也当没写(09-13 删 deep_research /
+/// diagnostics,package_advisor 并入 archlinux)。
+pub const RETIRED_PLUGIN_IDS: &[&str] = &["deep_research", "diagnostics", "package_advisor"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -78,6 +81,15 @@ pub struct PluginSelection {
     /// 只在 `scripts` 插件开着时有意义。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scripts: Option<Vec<String>>,
+    /// 技能按名字的白名单;None = 全部。平台级内置技能(skill-creator /
+    /// script-creator)不受它管——那是「如何扩展自己」的元能力。
+    /// 只在 `subsystems.skills` 开着时有意义。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
+    /// MCP 服务器按 id 的白名单;None = 配置里开着的全部。关掉的服务器
+    /// 连 tools/list 都不拉。只在 `mcp` 插件开着时有意义。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,7 +116,7 @@ impl PersonaManifest {
 
     /// dev:core 之上一件都不挂。唯一例外是 `platform_outreach`(写代码时
     /// 「跑完发我手机」是真需求,09-05 用户拍板),它自己还受「终端外发开着且
-    /// QQ 连着」的机器条件。
+    /// QQ 连着」的机器条件。MCP 也不挂(09-13 用户拍板:dev 只留核心工具)。
     pub fn core_only() -> Self {
         Self {
             subsystems: Subsystems {
@@ -117,6 +129,8 @@ impl PersonaManifest {
             plugins: PluginSelection {
                 enabled: Some(vec!["platform_outreach".to_string()]),
                 scripts: None,
+                skills: None,
+                mcp: None,
             },
         }
     }
@@ -165,13 +179,15 @@ impl PersonaManifest {
     }
 
     /// 白名单里出现不认识的插件 id 是错误——静默忽略会让用户以为开了。
+    /// 已退役的 id(见 [`RETIRED_PLUGIN_IDS`])除外:存量 persona.toml 还写着
+    /// 它们,当成"没有这件"跳过,别让一次删插件把整个人格锁在门外。
     pub fn validate(&self) -> anyhow::Result<()> {
         if let Some(enabled) = &self.plugins.enabled {
             let known: BTreeSet<&str> = PLUGIN_IDS.iter().copied().collect();
             let unknown: Vec<&str> = enabled
                 .iter()
                 .map(String::as_str)
-                .filter(|id| !known.contains(id))
+                .filter(|id| !known.contains(id) && !RETIRED_PLUGIN_IDS.contains(id))
                 .collect();
             if !unknown.is_empty() {
                 anyhow::bail!(
@@ -195,11 +211,54 @@ impl PersonaManifest {
     pub fn memory_enabled(&self, config: &AppConfig) -> bool {
         self.subsystems.memory && config.memory_config().enabled
     }
+
+    /// 脚本 id 在不在白名单里(None = 全部)。
+    pub fn script_enabled(&self, id: &str) -> bool {
+        allowed(&self.plugins.scripts, id)
+    }
+
+    /// 技能名在不在白名单里(None = 全部)。平台级内置技能由调用方另行放行。
+    pub fn skill_enabled(&self, name: &str) -> bool {
+        allowed(&self.plugins.skills, name)
+    }
+
+    /// MCP 服务器 id 在不在白名单里(None = 全部)。
+    pub fn mcp_server_enabled(&self, id: &str) -> bool {
+        allowed(&self.plugins.mcp, id)
+    }
+}
+
+fn allowed(list: &Option<Vec<String>>, id: &str) -> bool {
+    match list {
+        None => true,
+        Some(list) => list.iter().any(|item| item == id),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allowlists_gate_scripts_skills_and_mcp() {
+        let all = PersonaManifest::all();
+        assert!(
+            all.script_enabled("anything") && all.skill_enabled("x") && all.mcp_server_enabled("s")
+        );
+        assert!(all.plugin_enabled("mcp"));
+        let parsed = PersonaManifest::parse(
+            "[plugins]\nscripts = [\"a\"]\nskills = [\"k\"]\nmcp = [\"srv\"]\n",
+        )
+        .unwrap();
+        assert!(parsed.script_enabled("a") && !parsed.script_enabled("b"));
+        assert!(parsed.skill_enabled("k") && !parsed.skill_enabled("z"));
+        assert!(parsed.mcp_server_enabled("srv") && !parsed.mcp_server_enabled("other"));
+        // dev 不带 MCP(09-13 用户拍板)。
+        assert!(!PersonaManifest::core_only().plugin_enabled("mcp"));
+        // 全开时白名单不落盘。
+        assert!(!all.to_toml().contains("skills = ["));
+        assert!(!all.to_toml().contains("mcp = ["));
+    }
 
     #[test]
     fn defaults_are_all_on_and_dev_is_core_only() {
@@ -233,6 +292,20 @@ mod tests {
     fn unknown_plugin_ids_are_rejected() {
         let error = PersonaManifest::parse("[plugins]\nenabled = [\"weather\"]\n").unwrap_err();
         assert!(error.to_string().contains("unknown plugin id"), "{error}");
+    }
+
+    /// 09-13 退役的插件 id 还留在存量 persona.toml 里:当没写,不报错。
+    #[test]
+    fn retired_plugin_ids_are_tolerated() {
+        let manifest = PersonaManifest::parse(
+            "[plugins]\nenabled = [\"deep_research\", \"package_advisor\", \"diagnostics\", \"memes\"]\n",
+        )
+        .unwrap();
+        assert!(manifest.plugin_enabled("memes"));
+        assert!(!manifest.plugin_enabled("archlinux"));
+        for id in RETIRED_PLUGIN_IDS {
+            assert!(!PLUGIN_IDS.contains(id), "{id} 不该同时在两张表里");
+        }
     }
 
     #[test]

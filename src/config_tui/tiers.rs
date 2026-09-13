@@ -1,5 +1,5 @@
-//! 分级模型池：四个档位池的成员编辑，以及旁路请求（会话标题 / 日记整理 /
-//! 深度研究）指向哪一档。
+//! 分级模型池：四个档位池的成员编辑，以及旁路请求（会话标题 / 日记整理）
+//! 指向哪一档。
 //!
 //! 一屏平铺：四档在上、旁路在下，每行 Enter 打开子菜单——档位行打开与文本池
 //! 一样的多选框，旁路行打开单选（四档 + 全局池）。`d` 只对旁路行生效：清掉显式
@@ -28,7 +28,6 @@ pub(in crate::config_tui) fn aux_role_label(role: AuxRole) -> &'static str {
     match role {
         AuxRole::SessionTitle => t("Session title", "会话标题"),
         AuxRole::MemoryOrganizer => t("Diary organizer", "日记整理"),
-        AuxRole::DeepResearch => t("Deep research", "深度研究"),
     }
 }
 

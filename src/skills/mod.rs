@@ -42,11 +42,6 @@ const BUILTIN_SKILLS: &[(&str, &str, bool)] = &[
         true,
     ),
     (
-        "linux-input-method-diagnose",
-        include_str!("../skills/personas/default/linux-input-method-diagnose.md"),
-        false,
-    ),
-    (
         "linux-game-compatibility",
         include_str!("../skills/personas/default/linux-game-compatibility.md"),
         false,
@@ -63,7 +58,93 @@ const MAX_SKILL_CATALOG_ENTRIES: usize = 256;
 const MAX_SKILL_ROOT_DIRECTORIES: usize = 1_024;
 const MAX_SKILL_RESOURCE_ENTRIES: usize = 256;
 
+/// 人格清单里的技能白名单(`plugins.skills`);None = 全部。
+fn skill_allowlist(config: &AppConfig, paths: &MiyuPaths) -> Option<Vec<String>> {
+    crate::config::PersonaManifest::load(config, paths, &config.active_persona_scope())
+        .plugins
+        .skills
+}
+
+/// 平台级内置技能(skill-creator / script-creator):任何人格、任何白名单都放行。
+pub(crate) fn is_platform_wide_builtin(name: &str) -> bool {
+    BUILTIN_SKILLS
+        .iter()
+        .any(|(builtin, _, platform_wide)| *builtin == name && *platform_wide)
+}
+
+/// 非平台级的内置技能(linux-game-compatibility 这类 Miyu 配件)。
+fn is_optional_builtin(name: &str) -> bool {
+    BUILTIN_SKILLS
+        .iter()
+        .any(|(builtin, _, platform_wide)| *builtin == name && !*platform_wide)
+}
+
+/// 这个技能在本人格下能不能用。
+///
+/// - 平台级内置技能永远能用。
+/// - 非平台级内置技能:默认人格全开(再看白名单);自定义人格只有清单里
+///   点了名的才开——没写清单 = 一件不挂,换上自定义人格还是纯净状态(09-01),
+///   但引导里能逐个勾回来(09-13)。
+/// - 其余(目录里的)技能:看白名单,None = 全部。
+fn allowed_by(
+    default_persona: bool,
+    allowlist: &Option<Vec<String>>,
+    name: &str,
+    source: SkillSource,
+) -> bool {
+    // 人格自己那一层永远算数:那是它自己写的、或专门给它放的,白名单是给
+    // 全局层与内置层用的(与脚本同一规则)。
+    if source == SkillSource::Persona || is_platform_wide_builtin(name) {
+        return true;
+    }
+    let listed = allowlist
+        .as_ref()
+        .is_some_and(|list| list.iter().any(|item| item == name));
+    if is_optional_builtin(name) && !default_persona {
+        return listed;
+    }
+    allowlist.is_none() || listed
+}
+
+/// 引导里可以逐个勾的技能:目录里的 + 非平台级内置的,(名字, 描述, 是否内置)。
+/// **不看白名单**——表要摆全,勾选状态由调用方按清单填。
+pub(crate) fn persona_skill_options(
+    config: &AppConfig,
+    paths: &MiyuPaths,
+) -> Vec<(String, String, bool)> {
+    discover_visible(config, paths)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|entry| !is_platform_wide_builtin(&entry.metadata.name))
+        .map(|entry| {
+            (
+                entry.metadata.name.clone(),
+                entry.metadata.description.clone(),
+                entry.source == SkillSource::BuiltIn,
+            )
+        })
+        .collect()
+}
+
+/// 本人格看得见的技能,再过一道清单白名单——这才是模型面上的目录。
 pub fn discover(config: &AppConfig, paths: &MiyuPaths) -> Result<Vec<SkillEntry>> {
+    let allowlist = skill_allowlist(config, paths);
+    let default_persona = is_default_persona(config);
+    Ok(discover_visible(config, paths)?
+        .into_iter()
+        .filter(|entry| {
+            allowed_by(
+                default_persona,
+                &allowlist,
+                &entry.metadata.name,
+                entry.source,
+            )
+        })
+        .collect())
+}
+
+/// 目录扫描 + 全部内置技能(含非平台级的),不含人格门与白名单——门在 `allowed_by`。
+fn discover_visible(config: &AppConfig, paths: &MiyuPaths) -> Result<Vec<SkillEntry>> {
     let mut entries = Vec::new();
     let mut seen = BTreeSet::new();
     for (root, source) in skill_roots(config, paths) {
@@ -105,11 +186,7 @@ pub fn discover(config: &AppConfig, paths: &MiyuPaths) -> Result<Vec<SkillEntry>
             }
         }
     }
-    let default_persona = is_default_persona(config);
-    for (name, raw, platform_wide) in BUILTIN_SKILLS {
-        if !platform_wide && !default_persona {
-            continue;
-        }
+    for (name, raw, _) in BUILTIN_SKILLS {
         if !seen.contains(*name) {
             entries.push(SkillEntry {
                 metadata: parse_skill_metadata(raw, Some(name))?,
@@ -142,11 +219,21 @@ pub fn catalog_fingerprint(config: &AppConfig, paths: &MiyuPaths) -> Result<[u8;
         hasher.update(name.as_bytes());
         hasher.update(raw.as_bytes());
     }
+    // 白名单同理:清单一改,可见集合就变了(自定义人格靠它把内置技能勾回来)。
+    if let Some(allowlist) = skill_allowlist(config, paths) {
+        hasher.update(b"allowlist");
+        for name in allowlist {
+            hasher.update(name.as_bytes());
+            hasher.update(b"\0");
+        }
+    }
     Ok(*hasher.finalize().as_bytes())
 }
 
 pub fn load(name: &str, config: &AppConfig, paths: &MiyuPaths) -> Result<LoadedSkill> {
     let name = name.trim();
+    // 白名单外的技能加载不了:下面按 `discover` 找,它已经把可见性裁过了——
+    // 模型照着历史 load 也捞不回关掉的技能。
     if name.is_empty() {
         bail!("skill name is required");
     }
@@ -182,12 +269,9 @@ pub fn load(name: &str, config: &AppConfig, paths: &MiyuPaths) -> Result<LoadedS
     }
     // 非默认人格看不见非平台级内置技能,自然也加载不了——与 discover 的
     // 可见性保持一致,不然模型照着历史 load 能把隐藏技能捞回来。
-    let default_persona = is_default_persona(config);
     let raw = BUILTIN_SKILLS
         .iter()
-        .find(|(builtin_name, _, platform_wide)| {
-            *builtin_name == name && (*platform_wide || default_persona)
-        })
+        .find(|(builtin_name, _, _)| *builtin_name == name)
         .map(|(_, raw, _)| *raw)
         .with_context(|| format!("skill not found: {name}"))?;
     let (metadata, body) = parse_skill_document(raw, Some(name))?;

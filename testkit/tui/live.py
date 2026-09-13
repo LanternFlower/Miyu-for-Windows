@@ -119,7 +119,7 @@ def spawn():
         TERM="xterm-256color",
     )
     process = subprocess.Popen(
-        [str(BIN), "normal"],
+        [str(BIN)],
         stdin=slave,
         stdout=slave,
         stderr=slave,

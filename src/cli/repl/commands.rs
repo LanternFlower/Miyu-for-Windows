@@ -5,20 +5,6 @@
 
 use crate::cli::*;
 
-pub(in crate::cli) fn print_mode_help() {
-    if crate::i18n::is_zh() {
-        println!("请选择模式。想让裸 miyu 命令直接进某个模式,可以在设置中修改(config.jsonc 的 default_mode)。\n");
-        println!("  miyu normal   普通模式。可使用全部工具,适合日常使用。支持角色扮演、娱乐聊天、记忆、技能等全部能力。");
-        println!("  miyu dev      开发模式。与普通模式明确区分,用于开发工作;移除与开发无关的角色扮演与娱乐工具,提示词极简可编辑,记忆独立。");
-        println!("  miyu '<your_prompts>'   使用普通模式进行一次性对话");
-    } else {
-        println!("Pick a mode. To make bare `miyu` enter one directly, set default_mode in config.jsonc.\n");
-        println!("  miyu normal   full-capability mode: persona, memory, every tool.");
-        println!("  miyu dev      development mode: minimal editable prompt, coding tools only, separate memory.");
-        println!("  miyu '<your_prompts>'   one-shot ask in normal mode");
-    }
-}
-
 /// 帮助全文。**要能拿到字符串**：全屏下它得走缓冲进正文（直接 `println!`
 /// 的话字节不在缓冲里，下一帧重画就被抹掉，回翻也找不到）。
 pub(in crate::cli) fn repl_help_text() -> String {
@@ -54,8 +40,8 @@ pub(in crate::cli) fn repl_help_text() -> String {
         out,
         "  Tab         {}",
         t(
-            "cycle NORMAL/CHAT, or complete slash commands",
-            "循环切换 普通/闲聊，或补全斜杠菜单"
+            "switch normal/dev while the session is empty, or complete slash commands",
+            "空会话时切换 普通/开发，或补全斜杠命令"
         )
     );
     let _ = writeln!(out, "  Enter       {}", t("send message", "发送消息"));

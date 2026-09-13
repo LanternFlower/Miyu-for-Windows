@@ -36,7 +36,7 @@
   `load_skill` / `manage_skill`）。和压缩、提示词组装咬在一起，市场装不了。
 - **插件**（只往工具面加东西，persona 看不出内置与外装的区别）：
   - 内置（编译进）：ledger、knowledge_base、memes、alarm、image_generation、web_images、
-    deep_research、package_advisor、diagnostics、usage_query、api_quota、send_qq_message。
+    archlinux（含 AUR 审查安装）、usage_query、api_quota、send_qq_message。
   - 外装（目录扫描）：scripts、skills、MCP 服务器、插件包。
   - 每件清单声明五个字段：trust 位、分组归属、指路句、跨工具闸、附件投递
     （阶段 1 已补，`src/tools/scripts/header.rs`）。

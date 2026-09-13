@@ -188,6 +188,13 @@ pub(in crate::cli) struct LiveReplTail {
     /// 活动区靠 DECSTBM 钉在底下。`Some` 时正文改由它持有，活动区照旧
     /// 由 `render_repl_input_with_footer` 打，只是 `tail_start` 指向视口底部。
     pub(in crate::cli) screen: Option<screen::Screen>,
+    /// 空会话的画面(渐变 MIYU + 星空 + 模式行)。会话一有回合就撤。
+    pub(in crate::cli) banner: Option<crate::cli::repl::banner::BannerScene>,
+    /// inline 后端里 banner 占了活动区顶上的几行(全屏下为 0,画在正文区)。
+    pub(in crate::cli) banner_rows: u16,
+    /// 空会话按 Tab 换车道:下一次会话切换不打「已切换到会话」——用户看到的是
+    /// 模式行变色,不是换会话。一次性,用过即清。
+    pub(in crate::cli) suppress_switch_note: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -632,6 +639,113 @@ impl LiveReplTail {
                 }
                 built
             },
+            banner: None,
+            banner_rows: 0,
+            suppress_switch_note: false,
+        })
+    }
+
+    /// 会话空不空。空 → 挂 banner、Tab 可换车道;非空 → 撤掉、钉死模式。
+    pub(in crate::cli) fn set_session_empty(
+        &mut self,
+        config: &AppConfig,
+        paths: &MiyuPaths,
+        empty: bool,
+    ) {
+        self.editor.mode_switchable = empty;
+        if empty {
+            if self.banner.is_none() {
+                let mut banner =
+                    crate::cli::repl::banner::BannerScene::load(config, paths, self.editor.mode);
+                // 已经在画面里了(/reset、/new 回到大厅)就不淡入;只有启动那一次淡入。
+                if self.rendered {
+                    if let Some(banner) = &mut banner {
+                        banner.settle();
+                    }
+                }
+                self.banner = banner;
+            }
+            // 回到大厅就是新会话：旧对话不再属于它，画布一起清掉，下一句话从
+            // 屏顶起。启动那次还没画过，缓冲本来就是空的。
+            if self.rendered {
+                if let Some(screen) = &mut self.screen {
+                    screen.wipe_transcript();
+                }
+            }
+        } else {
+            self.banner = None;
+            self.banner_rows = 0;
+            if let Some(screen) = &mut self.screen {
+                screen.set_banner(None);
+            }
+        }
+    }
+
+    pub(in crate::cli) fn session_empty(&self) -> bool {
+        self.editor.mode_switchable
+    }
+
+    /// 换车道:输入框竖条换色、banner 的模式行跟着走。
+    pub(in crate::cli) fn set_mode(&mut self, mode: AgentMode) {
+        self.editor.mode = mode;
+        if let Some(banner) = &mut self.banner {
+            banner.set_mode(mode);
+        }
+    }
+
+    /// 空会话 banner 走一帧:星星闪、扫光过。全屏走整帧 diff,inline 只覆写那几行。
+    pub(in crate::cli) fn tick_banner(&mut self) -> Result<()> {
+        if !self.rendered || self.banner.is_none() {
+            return Ok(());
+        }
+        if self
+            .screen
+            .as_ref()
+            .is_some_and(screen::Screen::overlay_open)
+        {
+            return Ok(());
+        }
+        let advanced = self
+            .banner
+            .as_mut()
+            .is_some_and(crate::cli::repl::banner::BannerScene::tick);
+        if !advanced {
+            return Ok(());
+        }
+        if self.screen.is_some() {
+            // 一帧一个同步块：这一帧会把输入框那几行先擦再写，不裹起来的话终端
+            // （和 pyte 探针）都可能撞见擦了还没写的半帧，看着像输入框闪没了。
+            let cursor = self.output_cursor;
+            return synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
+                self.resume_at_own(cursor)
+            });
+        }
+        if self.banner_rows == 0 {
+            return Ok(());
+        }
+        let (cols, _) = terminal::size().unwrap_or((80, 24));
+        let lines = self
+            .banner
+            .as_ref()
+            .map(|banner| banner.render_ansi(usize::from(cols), usize::from(self.banner_rows)))
+            .unwrap_or_default();
+        let start = self.tail_start.saturating_add(1);
+        let input_cursor = self.input_cursor;
+        synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
+            let mut stdout = io::stdout();
+            let mut row = start;
+            for line in &lines {
+                queue!(
+                    stdout,
+                    MoveTo(0, row),
+                    Clear(ClearType::CurrentLine),
+                    Print(line)
+                )?;
+                row = row.saturating_add(1);
+            }
+            queue!(stdout, MoveTo(input_cursor.0, input_cursor.1))?;
+            stdout.flush()?;
+            Ok(())
         })
     }
 

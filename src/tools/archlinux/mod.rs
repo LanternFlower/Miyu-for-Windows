@@ -1,3 +1,8 @@
+//! Arch Linux 插件:AUR/官方包/ArchWiki/新闻查询,外加 AUR 包的 PKGBUILD
+//! 审查与确认后安装(`aur_review`,09-13 自 package_advisor 并入,工具名不变)。
+
+pub(crate) mod aur_review;
+
 use super::{html_conversion, http_response, ToolRegistry, ToolSpec};
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
@@ -57,6 +62,7 @@ pub fn register(registry: &mut ToolRegistry, paths: &MiyuPaths) {
             async move { archlinux_news(args, &state_dir).await }
         },
     ));
+    aur_review::register(registry, paths.clone());
 }
 
 async fn official_package_query(args: Value) -> Result<String> {

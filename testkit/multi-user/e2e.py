@@ -423,8 +423,10 @@ def main():
         check("成员人格列表(空)+ 可勾插件", status == 200 and data.get("personas") == [] and data.get("plugins"),
               json.dumps(data)[:160])
         plugin_ids = {item["id"] for item in data.get("plugins", [])}
-        check("核心工具(files/print_image)与外发不在可勾清单里",
-              not ({"files", "print_image", "platform_outreach"} & plugin_ids) and "knowledge_base" in plugin_ids,
+        # 09-13:记忆/知识库/MCP/技能常开不摆开关,可勾的只剩生活助理配件(feature_catalog::TOGGLE_PLUGINS)。
+        check("核心与必开项不在可勾清单里,表情包在",
+              not ({"files", "print_image", "platform_outreach", "knowledge_base", "mcp"} & plugin_ids)
+              and "memes" in plugin_ids,
               json.dumps(sorted(plugin_ids)))
         script_ids = {item["id"]: item.get("label") for item in data.get("scripts", [])}
         check("全局脚本可逐个勾选(带显示名)", script_ids.get("e2e_hello") == "打招呼", json.dumps(script_ids))
@@ -441,10 +443,12 @@ def main():
                                     "memory": False, "plugins": ["knowledge_base", "memes", "not-a-plugin"],
                                     "scripts": ["e2e_hello", "not-a-script"], "activate": True})
         persona = data.get("persona", {})
-        check("成员建人格", status == 201 and persona.get("name") == "小满" and persona.get("memory") is False,
+        check("成员建人格(记忆常开,请求里的 memory=false 被忽略)",
+              status == 201 and persona.get("name") == "小满" and persona.get("memory") is True,
               json.dumps(data)[:200])
-        check("插件=核心常开+勾选的,未知 id 被丢",
-              set(persona.get("plugins", [])) == {"files", "print_image", "usage_query", "knowledge_base", "memes"},
+        check("插件=核心与必开常开+勾选的,未知 id 被丢",
+              set(persona.get("plugins", [])) == {"files", "print_image", "usage_query", "web_images",
+                                                  "knowledge_base", "scripts", "mcp", "memes"},
               json.dumps(persona.get("plugins")))
         check("脚本白名单原样存下", persona.get("scripts") == ["e2e_hello", "not-a-script"], json.dumps(persona.get("scripts")))
         # 知识库/记账 dashboard 对成员开放,且落在成员自己家里
@@ -466,7 +470,8 @@ def main():
         check("成员点名别人的表情包库 403", status == 403, str(status))
         status, boot = member.call("GET", "/api/bootstrap")
         dashboards = boot.get("account", {}).get("persona", {}).get("dashboards")
-        check("bootstrap 带面板清单(记忆关、知识库+表情包开)", sorted(dashboards or []) == ["kb", "memes"], json.dumps(dashboards))
+        check("bootstrap 带面板清单(记忆、知识库、表情包都开)", sorted(dashboards or []) == ["kb", "memes", "memory"],
+              json.dumps(dashboards))
         slug = persona.get("slug")
         pdir = HOME / f"home/alice/personas/{slug}"
         check("人格目录落在 home/alice/personas", pdir.is_dir() and (pdir / "persona.md").is_file()

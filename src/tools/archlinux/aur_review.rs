@@ -1,5 +1,9 @@
-use super::{ToolRegistry, ToolSpec};
+//! AUR 包的 PKGBUILD 审查与确认后安装(review_aur_package / install_aur_package)。
+//! 审查状态落盘到 state_dir,install 只认「审过且用户在后续回复里确认」。
+
+use super::required;
 use crate::paths::MiyuPaths;
+use crate::tools::{ToolRegistry, ToolSpec};
 use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
 use serde_json::{json, Value};
@@ -9,14 +13,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
-const AUR_REVIEW_RULES: &str = include_str!("../prompts/aur-review.md");
+const AUR_REVIEW_RULES: &str = include_str!("../../prompts/aur-review.md");
 const MAX_FILE_CHARS: usize = 24_000;
 const MAX_FILES: usize = 80;
 const FETCH_TIMEOUT_SECONDS: u64 = 120;
 const INSTALL_TIMEOUT_SECONDS: u64 = 900;
 const MAKEPKG_TIMEOUT_SECONDS: u64 = 1800;
 
-pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
+pub(super) fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
     let review_paths = paths.clone();
     registry.register(ToolSpec::new(
         "review_aur_package",
@@ -415,7 +419,7 @@ fn heuristic_risk(files: &[Value]) -> Value {
     json!({"level": level, "findings": findings})
 }
 
-pub fn clear_aur_review_state(paths: &MiyuPaths) -> Result<()> {
+pub(crate) fn clear_aur_review_state(paths: &MiyuPaths) -> Result<()> {
     let path = aur_review_state_path(paths);
     if path.exists() {
         std::fs::remove_file(path)?;
@@ -491,18 +495,6 @@ fn validate_package_name(package: &str) -> Result<()> {
         bail!("invalid package name: {package}");
     }
     Ok(())
-}
-
-fn required(args: &Value, key: &str) -> Result<String> {
-    let value = args
-        .get(key)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    if value.is_empty() {
-        bail!("missing required argument: {key}")
-    }
-    Ok(value.to_string())
 }
 
 #[cfg(test)]

@@ -34,7 +34,7 @@ def run(trace: bool, cols=138, rows=67, timeout=70):
         os.setsid()
         fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
 
-    proc = subprocess.Popen([SB, "normal"], stdin=slave, stdout=slave, stderr=slave,
+    proc = subprocess.Popen([SB], stdin=slave, stdout=slave, stderr=slave,
                             env=env, preexec_fn=setup, close_fds=True)
     os.close(slave)
     out = b""

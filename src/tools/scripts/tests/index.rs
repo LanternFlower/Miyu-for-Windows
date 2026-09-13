@@ -372,9 +372,10 @@ fn malformed_index_entries_do_not_hide_valid_scripts() {
 }
 
 /// 四层扫描根:内置(system)与全局(data)各含「顶层 + personas/<人格>」。
-/// 内置脚本装在 `<system>/personas/default/`——默认人格解析到该目录,自定义
-/// 人格解析到不存在的 `<system>/personas/alter`,天然拿不到内置(隐式门,
-/// 09-01)。覆盖顺序低→高:内置平台 < 内置人格 < 全局 < 全局人格。
+/// 内置脚本装在 `<system>/personas/default/`。09-13 起这一层对**每个**人格都扫
+/// (自定义人格能在引导里逐个勾内置脚本),自定义人格是否真挂由
+/// `prepare_script_refresh` 按清单白名单裁决;没写清单 = 一件不挂,纯净不变。
+/// 覆盖顺序低→高:内置平台 < 内置默认 < 内置人格 < 全局 < 全局人格。
 #[test]
 fn script_scan_roots_resolve_persona_substructure_per_layer() {
     let temp = tempfile::tempdir().unwrap();
@@ -402,16 +403,17 @@ fn script_scan_roots_resolve_persona_substructure_per_layer() {
         custom_roots,
         vec![
             paths.system_scripts_dir.clone(),
+            paths.system_scripts_dir.join("personas/default"),
             paths.system_scripts_dir.join("personas/alter"),
             paths.scripts_dir.clone(),
             paths.scripts_dir.join("personas/alter"),
         ],
-        "自定义人格:内置人格层指向不存在的 personas/alter,扫不到内置"
+        "自定义人格:内置默认层照扫(可选件),再多一层不存在的 personas/alter"
     );
-    // 顶层(平台)两层无论人格都在;差异只在 personas/<人格> 这一维。
+    // 顶层(平台)与内置默认层无论人格都在;差异只在 personas/<人格> 这一维。
     assert_eq!(roots[0], custom_roots[0]);
-    assert_eq!(roots[2], custom_roots[2]);
-    assert_ne!(roots[1], custom_roots[1]);
+    assert_eq!(roots[1], custom_roots[1]);
+    assert_eq!(roots[2], custom_roots[3]);
 }
 
 /// 用户机器实查(09-05):`gpustoggle.bak`(无描述头)与 index 里的 gpustoggle

@@ -413,12 +413,15 @@ def scenario_new_session(report):
         os.write(master, b"\r")
         h.drain_until(master, sink, "走查的回复", 40.0)
         h.settle(master, sink)
+        mark = len(sink)
         os.write(master, b"/new\r")
-        h.settle(master, sink, quiet=0.6, timeout=20.0)
+        # 新会话是空会话：全屏画的是大厅（星空每 40ms 一帧，等不到"静默"，settle 会
+        # 跑满超时），「已切换到会话」是一条几秒就走的通知，所以到字节流里找。
+        h.settle(master, sink, quiet=0.6, timeout=6.0)
         fresh = h.render(bytes(sink))
         save("new-session", fresh)
         report["r26_08_new_session_clears_screen"] = not any("走查的回复" in l for l in fresh)
-        report["r26_08_new_session_says_switched"] = any("已切换到会话" in l for l in fresh)
+        report["r26_08_new_session_says_switched"] = "已切换到会话".encode() in bytes(sink[mark:])
         # 切回旧会话：列表按最近活动排，/new 之后新会话多半是 1 号、旧的是 2 号，
         # 但不赌次序——2 号没回放出旧对话就再试 1 号。
         replayed = False

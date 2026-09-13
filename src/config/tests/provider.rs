@@ -425,18 +425,14 @@ fn aux_roles_default_per_role_and_accept_global_and_old_aliases() {
             "providers": [],
             "model_tiers": {
                 "cheap": [ { "provider_id": "p", "model": "m" } ],
-                "roles": { "memory_organizer": "cheap", "deep_research": "strong", "session_title": "global" }
+                "roles": { "memory_organizer": "strong", "session_title": "global" }
             }
         }"#,
     )
     .unwrap();
-    assert_eq!(
-        parsed.model_tiers.role_tier(AuxRole::MemoryOrganizer),
-        Some(ModelTier::Cheap)
-    );
     // Old tier name keeps working in role values.
     assert_eq!(
-        parsed.model_tiers.role_tier(AuxRole::DeepResearch),
+        parsed.model_tiers.role_tier(AuxRole::MemoryOrganizer),
         Some(ModelTier::Flagship)
     );
     // "global" pins the role to the global pool.
@@ -455,10 +451,6 @@ fn aux_roles_default_per_role_and_accept_global_and_old_aliases() {
     );
     assert_eq!(
         config.model_tiers.role_tier(AuxRole::MemoryOrganizer),
-        Some(ModelTier::Standard)
-    );
-    assert_eq!(
-        config.model_tiers.role_tier(AuxRole::DeepResearch),
         Some(ModelTier::Standard)
     );
     assert!(!serde_json::to_string(&config).unwrap().contains("roles"));
@@ -1304,4 +1296,32 @@ fn provider_renames_are_detected_only_when_the_endpoint_pairs_up() {
         provider_at("keep", "https://keep.example/v1"),
     ];
     assert!(detect_provider_renames(&before, &moved).is_empty());
+}
+
+/// 09-13 删掉 deep_research 插件后,存量 config.jsonc 的 `model_tiers.roles`
+/// 里还写着 `deep_research` 这一档:读取和校验都得照常通过,不能让一次删插件
+/// 把整份配置锁死。
+#[test]
+fn old_config_with_deep_research_tier_key_still_loads() {
+    use crate::config::AuxRole;
+    let parsed: AppConfig = serde_json::from_str(
+        r#"{
+            "active_provider": "opencode",
+            "providers": [],
+            "model_tiers": {
+                "standard": [ { "provider_id": "p", "model": "m" } ],
+                "roles": { "deep_research": "flagship", "session_title": "global" }
+            }
+        }"#,
+    )
+    .unwrap();
+    assert!(parsed.model_tiers.validate_roles().is_ok());
+    assert!(AuxRole::from_key("deep_research").is_none());
+    assert_eq!(parsed.model_tiers.role_tier(AuxRole::SessionTitle), None);
+    // 真正拼错的角色名照旧报错,退役键的豁免不是放水。
+    let mut typo = parsed.clone();
+    typo.model_tiers
+        .roles
+        .insert("deep_reserch".to_string(), "lite".to_string());
+    assert!(typo.model_tiers.validate_roles().is_err());
 }

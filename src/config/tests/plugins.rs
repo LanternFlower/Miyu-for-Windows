@@ -316,3 +316,31 @@ fn meme_library_defaults_follow_persona() {
     assert_eq!(memes.search_max_results, 1);
     assert_eq!(memes.auto_send_probability, 0.05);
 }
+
+/// 09-13 删掉 `default_mode` 字段与 deep_research / diagnostics / package_advisor
+/// 三个插件段后,存量 config.jsonc 里的这些键必须被静默忽略(AppConfig 不设
+/// deny_unknown_fields),其余插件开关照常读出。
+#[test]
+fn old_config_with_default_mode_and_retired_plugin_blocks_still_loads() {
+    let config: AppConfig = serde_json::from_str(
+        r#"{
+            "active_provider": "opencode",
+            "providers": [],
+            "default_mode": "normal",
+            "plugins": {
+                "deep_research": { "enabled": true, "thinking_depth": "high", "show_progress": false },
+                "diagnostics": { "enabled": true, "command_timeout_seconds": 5 },
+                "package_advisor": { "enabled": false },
+                "archlinux": { "enabled": false }
+            }
+        }"#,
+    )
+    .unwrap();
+    assert!(!config.plugins.archlinux.enabled);
+    assert!(config.plugins.web.enabled, "没写的插件保持默认");
+    // 写回时退役键不再出现。
+    let json = serde_json::to_string(&config).unwrap();
+    assert!(!json.contains("default_mode"));
+    assert!(!json.contains("deep_research"));
+    assert!(!json.contains("package_advisor"));
+}

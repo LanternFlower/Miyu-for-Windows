@@ -11,6 +11,9 @@ use std::path::PathBuf;
 pub struct Cli {
     #[arg(long, global = true)]
     pub debug: bool,
+    /// 只看空会话的 banner(星空 + 渐变 MIYU),按任意键退出
+    #[arg(long)]
+    pub banner: bool,
 
     /// 纯文本输出(= `--output-format text --quiet`),保留给老脚本。
     #[arg(long)]
@@ -126,10 +129,10 @@ pub enum Command {
     Wipe(WipeArgs),
     Web(WebArgs),
     Daemon(DaemonArgs),
-    /// 进入普通模式 REPL(人格全能力)
-    Normal,
     /// 进入开发模式 REPL(极简编码形态,无人格)
     Dev,
+    /// 新手引导:人格 / 功能 / 认识你 / 终端集成 / 接模型(裸 miyu 第一次会自动进)
+    Oobe,
     /// 工具桥:以当前会话身份调用一个结构化工具(供 run_command 脚本编排)
     #[command(name = "tool-call")]
     ToolCallCmd(ToolCallArgs),

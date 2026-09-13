@@ -118,7 +118,7 @@ pub(in crate::config_tui) fn catalog_entry(
 /// 从目录自动同步模型元数据:输入模态、上下文窗口,只补空缺不覆盖手填
 /// (09-04,与 WebUI 「从目录补全」同一语义)。价格不落盘——运行时本来就按
 /// 目录价估算,编辑表单里只把目录价显示出来。
-pub(in crate::config_tui) fn auto_configure_model_tags(
+pub(crate) fn auto_configure_model_tags(
     paths: &MiyuPaths,
     provider: &mut ProviderConfig,
     model: &str,

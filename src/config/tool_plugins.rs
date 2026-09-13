@@ -13,8 +13,6 @@ pub struct PluginsConfig {
     #[serde(default)]
     pub web_images: WebImagesPluginConfig,
     #[serde(default)]
-    pub deep_research: DeepResearchPluginConfig,
-    #[serde(default)]
     pub vision: VisionPluginConfig,
     #[serde(default)]
     pub exchange_rate: ExchangeRatePluginConfig,
@@ -28,10 +26,6 @@ pub struct PluginsConfig {
     pub knowledge_base: KnowledgeBasePluginConfig,
     #[serde(default)]
     pub archlinux: PluginEnabledConfig,
-    #[serde(default)]
-    pub package_advisor: PluginEnabledConfig,
-    #[serde(default)]
-    pub diagnostics: DiagnosticsPluginConfig,
     #[serde(default)]
     pub api_quota: ApiQuotaPluginConfig,
     #[serde(default)]
@@ -244,26 +238,6 @@ pub struct WebImagesPluginConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeepResearchPluginConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default = "default_deep_research_dir")]
-    pub output_dir: String,
-    #[serde(default = "default_deep_research_depth")]
-    pub thinking_depth: String,
-    #[serde(default = "default_deep_research_max_review_revisions")]
-    pub max_review_revisions: usize,
-    #[serde(default = "default_deep_research_max_tool_steps")]
-    pub max_tool_steps_per_round: usize,
-    #[serde(default)]
-    pub max_final_answer_chars: usize,
-    #[serde(default = "default_deep_research_tool_timeout")]
-    pub tool_call_timeout_seconds: u64,
-    #[serde(default = "default_true")]
-    pub show_progress: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisionPluginConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -427,18 +401,6 @@ pub struct KnowledgeBasePluginConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DiagnosticsPluginConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default = "default_diagnostics_timeout")]
-    pub command_timeout_seconds: u64,
-    #[serde(default = "default_diagnostics_max_stdout_chars")]
-    pub max_stdout_chars: usize,
-    #[serde(default = "default_diagnostics_max_stderr_chars")]
-    pub max_stderr_chars: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiQuotaPluginConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -544,7 +506,6 @@ impl Default for PluginsConfig {
             file_sharing: FileSharingPluginConfig::default(),
             web: WebPluginConfig::default(),
             web_images: WebImagesPluginConfig::default(),
-            deep_research: DeepResearchPluginConfig::default(),
             vision: VisionPluginConfig::default(),
             exchange_rate: ExchangeRatePluginConfig::default(),
             image_generation: ImageGenerationPluginConfig::default(),
@@ -552,8 +513,6 @@ impl Default for PluginsConfig {
             memes: MemesPluginConfig::default(),
             knowledge_base: KnowledgeBasePluginConfig::default(),
             archlinux: PluginEnabledConfig::default(),
-            package_advisor: PluginEnabledConfig::default(),
-            diagnostics: DiagnosticsPluginConfig::default(),
             api_quota: ApiQuotaPluginConfig::default(),
             memory: MemoryConfig::default(),
             claude_code: ClaudeCodePluginConfig::default(),
@@ -620,21 +579,6 @@ impl Default for WebImagesPluginConfig {
             auto_preview: default_true(),
             preview_count: default_web_images_preview_count(),
             timeout_seconds: default_web_images_timeout(),
-        }
-    }
-}
-
-impl Default for DeepResearchPluginConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_true(),
-            output_dir: default_deep_research_dir(),
-            thinking_depth: default_deep_research_depth(),
-            max_review_revisions: default_deep_research_max_review_revisions(),
-            max_tool_steps_per_round: default_deep_research_max_tool_steps(),
-            max_final_answer_chars: 0,
-            tool_call_timeout_seconds: default_deep_research_tool_timeout(),
-            show_progress: default_true(),
         }
     }
 }
@@ -749,17 +693,6 @@ impl Default for KnowledgeBasePluginConfig {
             semantic_min_score: default_kb_semantic_min_score(),
             keyword_strong_score_threshold: default_kb_keyword_strong_score_threshold(),
             embedding_timeout_seconds: default_kb_embedding_timeout_seconds(),
-        }
-    }
-}
-
-impl Default for DiagnosticsPluginConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_true(),
-            command_timeout_seconds: default_diagnostics_timeout(),
-            max_stdout_chars: default_diagnostics_max_stdout_chars(),
-            max_stderr_chars: default_diagnostics_max_stderr_chars(),
         }
     }
 }

@@ -60,7 +60,7 @@ pub(in crate::tools) fn check_os_info() -> Result<String> {
         "package_manager_guess": package_manager_guess,
         "notes": [
             "This tool is read-only and does not execute shell commands.",
-            "This only reports basic OS context. For concrete Linux input method issues, load the linux-input-method-diagnose skill."
+            "This only reports basic OS context."
         ],
     }))?)
 }

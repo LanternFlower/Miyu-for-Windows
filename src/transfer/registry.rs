@@ -130,7 +130,7 @@ pub const UNITS: &[DataUnit] = &[
         kind: UnitKind::Dir,
         tier: Tier::Core,
         secret: false,
-        why: "deep-research output",
+        why: "written output (reports and documents)",
     },
     DataUnit {
         id: "data.memes",
@@ -473,7 +473,7 @@ pub const UNITS: &[DataUnit] = &[
         kind: UnitKind::Dir,
         tier: Tier::Core,
         secret: false,
-        why: "deep-research reports and other written output (home layout)",
+        why: "reports and other written output (home layout)",
     },
     DataUnit {
         id: "home.ledger",
