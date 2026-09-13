@@ -58,6 +58,13 @@ pub enum ContextWindowSource {
 pub struct AppConfig {
     #[serde(default)]
     pub config_version: u32,
+    /// 这个版本不认识的顶层字段，原样留着、原样写回。
+    ///
+    /// 几个分支的二进制会轮流读写同一份配置（比如另一个工作树先把版本号抬到 3、
+    /// 加了 `oobe_done`）：这边不认识的字段要是读进来就丢、写回去就没了，那边
+    /// 再启动时就当没设置过。字段跟着走，谁也不弄丢谁的东西。
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra: BTreeMap<String, serde_json::Value>,
     pub active_provider: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_provider_models: Option<Vec<ActiveProviderModelConfig>>,
@@ -546,6 +553,9 @@ pub struct DisplayConfig {
     /// How many finished turns a reopened REPL redraws; 0 disables replay.
     #[serde(default = "default_repl_replay_turns")]
     pub repl_replay_turns: usize,
+    /// 这个版本不认识的显示项，原样留着写回。见 [`AppConfig::extra`]。
+    #[serde(flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 /// Desktop notifications. Both kinds are suppressed while the REPL window has
@@ -600,6 +610,8 @@ struct RawDisplayConfig {
     command_output_lines: Option<usize>,
     #[serde(default)]
     repl_replay_turns: Option<usize>,
+    #[serde(flatten, default)]
+    extra: BTreeMap<String, serde_json::Value>,
 }
 
 impl<'de> Deserialize<'de> for DisplayConfig {
@@ -641,6 +653,7 @@ impl<'de> Deserialize<'de> for DisplayConfig {
             repl_replay_turns: raw
                 .repl_replay_turns
                 .unwrap_or_else(default_repl_replay_turns),
+            extra: raw.extra,
         })
     }
 }
@@ -887,6 +900,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             config_version: CURRENT_CONFIG_VERSION,
+            extra: BTreeMap::new(),
             active_provider: OPENCODE_PROVIDER_ID.to_string(),
             active_provider_models: None,
             active_multimodal_provider_models: None,
@@ -998,6 +1012,7 @@ impl Default for DisplayConfig {
             mixed_model_endpoint_display: default_mixed_model_endpoint_display(),
             command_output_lines: default_command_output_lines(),
             repl_replay_turns: default_repl_replay_turns(),
+            extra: BTreeMap::new(),
         }
     }
 }

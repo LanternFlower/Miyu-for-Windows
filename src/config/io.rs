@@ -120,11 +120,15 @@ impl AppConfig {
 
     pub(crate) fn migrate(&mut self) -> Result<()> {
         if self.config_version > CURRENT_CONFIG_VERSION {
-            bail!(
-                "unsupported config version {}; maximum supported version is {}",
-                self.config_version,
-                CURRENT_CONFIG_VERSION
+            // 比这个版本新的配置：不认识的字段已经原样留在 `extra` 里，剩下的
+            // 按默认值读就行——别拒绝。版本号也不动：写回时还是那个数，新版本
+            // 的二进制再启动时不会把它当老配置重新迁移一遍。
+            tracing::warn!(
+                config_version = self.config_version,
+                supported = CURRENT_CONFIG_VERSION,
+                "config file is newer than this build; reading it as-is"
             );
+            return Ok(());
         }
         if self.config_version < 1 {
             for provider in &mut self.providers {

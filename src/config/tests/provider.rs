@@ -116,8 +116,11 @@ fn legacy_provider_temperatures_migrate_once() {
     config.migrate().unwrap();
     assert_eq!(config.providers[0].temperature, LEGACY_DEFAULT_TEMPERATURE);
 
+    // 比这个版本新的配置：读得进、不降级（别的分支的二进制先抬了版本号，
+    // 两个二进制来回用不能互相拒绝）。
     config.config_version = CURRENT_CONFIG_VERSION + 1;
-    assert!(config.migrate().is_err());
+    config.migrate().unwrap();
+    assert_eq!(config.config_version, CURRENT_CONFIG_VERSION + 1);
 }
 
 #[test]
