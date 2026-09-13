@@ -1,4 +1,5 @@
 /target/
+/out/distribution/
 /.idea/
 /.vscode/
 .DS_Store

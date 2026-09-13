@@ -228,9 +228,7 @@ fn import_snapshot(
 }
 
 fn default_kb_source_dir() -> PathBuf {
-    std::env::var_os("MIYU_DEFAULT_KB_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/usr/share/miyu/default-kb"))
+    crate::paths::resources::directory(crate::paths::resources::ResourceKind::DefaultKb)
 }
 
 fn state_file(paths: &MiyuPaths) -> PathBuf {

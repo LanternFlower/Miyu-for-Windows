@@ -1,0 +1,16 @@
+{
+  "arch": "amd64",
+  "platform": "linux",
+  "section": "utils",
+  "priority": "optional",
+  "depends": [
+    "libc6 (>= 2.41)",
+    "libgcc-s1",
+    "libstdc++6",
+    "libasound2t64",
+    "ripgrep",
+    "chafa",
+    "ca-certificates",
+    "python3"
+  ]
+}

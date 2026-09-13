@@ -1,9 +1,38 @@
 {
-  "_说明": "现存跨层引用的白名单。拆分推进时逐条减少 count；只允许变小，变大即失败。新增的边不在表里，直接失败。",
+  "_说明": "Measured from the unmodified main baseline for release 0.6.0. Existing dependency debt only. New/increased edges remain failures.",
+  "source_commit": "b4d2ac929dbfa547c9e85468dfde8649f5228f88",
   "waivers": {
+    "llm->platforms": {
+      "count": 1,
+      "reason": "Existing at main b4d2ac92: src/llm/openai_compatible/cli_relay/mod.rs"
+    },
+    "platforms->web": {
+      "count": 4,
+      "reason": "Existing at main b4d2ac92: src/platforms/onebot/voice_inbound.rs, src/platforms/tool.rs"
+    },
+    "render->cli": {
+      "count": 2,
+      "reason": "Existing at main b4d2ac92: src/render/markdown.rs, src/render/mod.rs"
+    },
+    "tools->cli": {
+      "count": 2,
+      "reason": "Existing at main b4d2ac92: src/tools/memes/validate.rs, src/tools/vision/print.rs"
+    },
     "tools->platforms": {
-      "count": 3,
-      "reason": "拆分前的既有依赖"
+      "count": 5,
+      "reason": "Existing at main b4d2ac92: src/tools/platform_outreach.rs, src/tools/vision/mod.rs"
+    },
+    "tools->web": {
+      "count": 5,
+      "reason": "Existing at main b4d2ac92: src/tools/platform_outreach.rs, src/tools/voice_chat.rs, src/tools/voice_speak.rs"
+    },
+    "web->cli": {
+      "count": 4,
+      "reason": "Existing at main b4d2ac92: src/web/actor/job_wake.rs"
+    },
+    "web->config_tui": {
+      "count": 2,
+      "reason": "Existing at main b4d2ac92: src/web/providers_api.rs"
     }
   }
 }

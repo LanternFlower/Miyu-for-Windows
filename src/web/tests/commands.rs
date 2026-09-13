@@ -56,6 +56,10 @@ async fn web_memory_reset_all_clears_the_mode_it_was_asked_for() {
     let paths = test_paths(temp.path());
     let state = DaemonState::for_test(paths.clone(), 8301).unwrap();
     let config = state.manager.lock().unwrap().config.clone();
+    let session = state
+        .state_store
+        .create_session(crate::state::DEV_PERSONA, "dev memory", "user", None)
+        .unwrap();
 
     let normal = crate::memory::MemoryStore::new(&config, &paths);
     // dev 作用域的记忆开关是关的,种子数据走一份手工打开的副本——库路径
@@ -81,7 +85,12 @@ async fn web_memory_reset_all_clears_the_mode_it_was_asked_for() {
     let response = reset_all_memory_http(
         axum::extract::State(state.clone()),
         HeaderMap::new(),
-        axum::Json(serde_json::from_value(serde_json::json!({ "mode": "dev" })).unwrap()),
+        axum::Json(
+            serde_json::from_value(
+                serde_json::json!({ "mode": "dev", "session_id": session.session_id }),
+            )
+            .unwrap(),
+        ),
     )
     .await
     .unwrap();
@@ -106,16 +115,25 @@ async fn web_memory_reset_clears_only_the_session_it_was_asked_for() {
     let paths = test_paths(temp.path());
     let state = DaemonState::for_test(paths.clone(), 8302).unwrap();
     let config = state.manager.lock().unwrap().config.clone();
+    let persona = active_persona_scope(&state);
+    let session_a = state
+        .state_store
+        .create_session(&persona, "session A", "user", None)
+        .unwrap();
+    let session_b = state
+        .state_store
+        .create_session(&persona, "session B", "user", None)
+        .unwrap();
 
     let store = crate::memory::MemoryStore::new(&config, &paths);
     store
         .clone()
-        .with_session_id("session-a")
+        .with_session_id(&session_a.session_id)
         .remember_fact("A 会话记住 XMODIFIERS 这件事", "test")
         .unwrap();
     store
         .clone()
-        .with_session_id("session-b")
+        .with_session_id(&session_b.session_id)
         .remember_fact("B 会话记住 XMODIFIERS 这件事", "test")
         .unwrap();
     let recalled = || {
@@ -131,7 +149,8 @@ async fn web_memory_reset_clears_only_the_session_it_was_asked_for() {
         axum::extract::State(state.clone()),
         HeaderMap::new(),
         axum::Json(
-            serde_json::from_value(serde_json::json!({ "session_id": "session-a" })).unwrap(),
+            serde_json::from_value(serde_json::json!({ "session_id": session_a.session_id }))
+                .unwrap(),
         ),
     )
     .await

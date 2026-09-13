@@ -1,6 +1,7 @@
 mod home_layout;
 mod legacy_migration;
 mod resource_migration;
+pub(crate) mod resources;
 pub(crate) use home_layout::*;
 pub(crate) use legacy_migration::*;
 pub(crate) use resource_migration::*;
@@ -131,9 +132,7 @@ impl MiyuPaths {
         // 目录,沙盒放行)照样能算出来。任何 mcp-serve 调用都走(默认 home 也可能被
         // 沙盒关着;config_dir 就算和 daemon 的旧布局不一致也无所谓,桥不读它)。
         if std::env::args().any(|arg| arg == "mcp-serve") {
-            let system_scripts_dir = std::env::var_os("MIYU_SYSTEM_SCRIPTS_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("/usr/share/miyu/scripts"));
+            let system_scripts_dir = resources::directory(resources::ResourceKind::Scripts);
             return Ok(Self {
                 config_file: config_dir.join("config.jsonc"),
                 skills_dir: config_dir.join("skills"),
@@ -256,9 +255,7 @@ impl MiyuPaths {
         };
         // 内置脚本目录默认在系统前缀下,`MIYU_SYSTEM_SCRIPTS_DIR` 可覆盖——
         // 打包到非标准前缀、或隔离测试时用得上。
-        let system_scripts_dir = std::env::var_os("MIYU_SYSTEM_SCRIPTS_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/usr/share/miyu/scripts"));
+        let system_scripts_dir = resources::directory(resources::ResourceKind::Scripts);
 
         Ok(Self {
             // The canonical home even inside the transient legacy window: that

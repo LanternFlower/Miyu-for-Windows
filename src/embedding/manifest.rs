@@ -1,8 +1,8 @@
 //! 本地模型资产：目录布局与查找链。
 //!
 //! 一个模型就是一个目录（`manifest.json` + ONNX + tokenizer），目录名即模型 id。
-//! 查找顺序照抄 `assets/fonts`：环境变量 → `~/.miyu/models` → 源码树 →
-//! `/usr/share/miyu/models` → 可执行文件所在前缀。
+//! 查找顺序：环境变量 → `~/.miyu/models` → 安装前缀 → Linux 系统目录 →
+//! 仅 debug 的源码目录。候选链由 paths::resources 统一生成。
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -84,6 +84,10 @@ impl LocalModel {
 /// `name` is either a model id looked up along the search chain, or a path to
 /// a model directory (anything containing a separator, or an existing dir).
 pub(crate) fn resolve_local_model(name: &str) -> Result<LocalModel> {
+    resolve_local_model_from(name, &candidate_model_dirs())
+}
+
+fn resolve_local_model_from(name: &str, candidates: &[PathBuf]) -> Result<LocalModel> {
     let name = name.trim();
     if name.is_empty() {
         bail!("embedding.local_model is empty");
@@ -92,8 +96,7 @@ pub(crate) fn resolve_local_model(name: &str) -> Result<LocalModel> {
     if as_path.is_absolute() || name.contains('/') || name.contains('\\') {
         return load_model_dir(as_path);
     }
-    let candidates = candidate_model_dirs();
-    for base in &candidates {
+    for base in candidates {
         let dir = base.join(name);
         if dir.join(MANIFEST_FILE).is_file() {
             return load_model_dir(&dir);
@@ -110,29 +113,7 @@ pub(crate) fn resolve_local_model(name: &str) -> Result<LocalModel> {
 }
 
 pub(crate) fn candidate_model_dirs() -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Some(path) = std::env::var_os(MODELS_DIR_ENV) {
-        candidates.push(PathBuf::from(path));
-    }
-    if let Some(home) = crate::paths::miyu_home_dir() {
-        candidates.push(home.join("models"));
-    }
-    #[cfg(debug_assertions)]
-    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/models"));
-    candidates.push(PathBuf::from("/usr/share/miyu/models"));
-    if let Ok(executable) = crate::paths::miyu_executable() {
-        if let Some(prefix) = executable.parent().and_then(Path::parent) {
-            candidates.push(prefix.join("share/miyu/models"));
-        }
-        if let Some(workspace) = executable
-            .parent()
-            .and_then(Path::parent)
-            .and_then(Path::parent)
-        {
-            candidates.push(workspace.join("assets/models"));
-        }
-    }
-    candidates
+    crate::paths::resources::candidates(crate::paths::resources::ResourceKind::Models)
 }
 
 pub(crate) fn load_model_dir(dir: &Path) -> Result<LocalModel> {
@@ -180,4 +161,55 @@ pub(crate) fn installed_local_models() -> Vec<LocalModel> {
         }
     }
     models
+}
+
+#[cfg(test)]
+mod distribution_resources {
+    use super::*;
+
+    fn model(base: &Path) -> PathBuf {
+        let dir = base.join("fixture-model");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("manifest.json"),
+            r#"{"id":"fixture-model","dims":512}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("model.onnx"), b"model fixture").unwrap();
+        std::fs::write(dir.join("tokenizer.json"), b"{}").unwrap();
+        dir
+    }
+
+    #[test]
+    fn model_override_missing_manifest_falls_back_but_invalid_manifest_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let explicit = temp.path().join("override");
+        let user = temp.path().join("user");
+        let installed = temp.path().join("installed");
+        let candidates = vec![explicit.clone(), user.clone(), installed.clone()];
+        assert!(resolve_local_model_from("fixture-model", &candidates).is_err());
+        let installed_dir = model(&installed);
+        assert_eq!(
+            resolve_local_model_from("fixture-model", &candidates)
+                .unwrap()
+                .dir,
+            installed_dir
+        );
+        let user_dir = model(&user);
+        assert_eq!(
+            resolve_local_model_from("fixture-model", &candidates)
+                .unwrap()
+                .dir,
+            user_dir
+        );
+        let explicit_dir = model(&explicit);
+        assert_eq!(
+            resolve_local_model_from("fixture-model", &candidates)
+                .unwrap()
+                .dir,
+            explicit_dir
+        );
+        std::fs::write(explicit_dir.join("manifest.json"), "not JSON").unwrap();
+        assert!(resolve_local_model_from("fixture-model", &candidates).is_err());
+    }
 }

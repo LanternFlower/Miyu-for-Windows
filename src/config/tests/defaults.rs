@@ -151,8 +151,7 @@ fn memory_diary_lifecycle_defaults_and_roundtrip_are_stable() {
     assert_eq!(parsed.organizer_timeout_seconds, 90);
 }
 
-/// 别的分支的二进制先把版本号抬上去、加了字段（09-13：另一个工作树把
-/// `config_version` 抬到 3、加了 `oobe_done` / `display.banner`），这边读同一份配置
+/// 更新的二进制先把版本号抬上去、加了当前版本仍不认识的字段，这边读同一份配置
 /// 不拒绝、不降级，不认识的字段原样留着写回——两个二进制来回用谁也不弄丢谁的。
 #[test]
 fn a_newer_config_is_read_as_is_and_its_unknown_fields_survive() {
@@ -160,23 +159,26 @@ fn a_newer_config_is_read_as_is_and_its_unknown_fields_survive() {
         "config_version": 99,
         "active_provider": "stub",
         "providers": [],
-        "oobe_done": true,
-        "display": {"banner": false, "reasoning": "summary"},
+        "future_top_level_option": true,
+        "display": {"future_display_option": false, "reasoning": "summary"},
     });
     let mut config: AppConfig = serde_json::from_value(raw).expect("更新的配置读不进");
     config.migrate().expect("更新的配置不该被拒绝");
     assert_eq!(config.config_version, 99, "版本号被降了");
     assert_eq!(
-        config.extra.get("oobe_done"),
+        config.extra.get("future_top_level_option"),
         Some(&serde_json::Value::Bool(true)),
         "顶层的陌生字段没留住"
     );
     assert_eq!(config.display.reasoning, "summary");
     let out = serde_json::to_value(&config).expect("写不出");
     assert_eq!(out["config_version"], 99);
-    assert_eq!(out["oobe_done"], serde_json::Value::Bool(true));
     assert_eq!(
-        out["display"]["banner"],
+        out["future_top_level_option"],
+        serde_json::Value::Bool(true)
+    );
+    assert_eq!(
+        out["display"]["future_display_option"],
         serde_json::Value::Bool(false),
         "display 里的陌生字段没写回"
     );

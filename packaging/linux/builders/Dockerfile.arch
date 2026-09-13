@@ -1,0 +1,18 @@
+FROM archlinux@sha256:b944cc65c5f28665dfd5fdbf5ed2997c88f5bb4a0aefac7ee8a7ef01893e5ed9
+LABEL io.miyu.distribution.owner="distribution-2026-09-14"
+# Share the installation verifier's fixed repository snapshot.
+RUN printf 'Server = https://archive.archlinux.org/repos/2026/09/13/$repo/os/$arch\n' > /etc/pacman.d/mirrorlist \
+    && pacman -Syuu --noconfirm --disable-download-timeout \
+    && pacman -S --needed --noconfirm --disable-download-timeout base-devel python git pkgconf alsa-lib clang cmake curl ca-certificates zstd namcap \
+    && pacman -Scc --noconfirm \
+    && useradd --create-home --uid 1000 builder \
+    && pacman -Q > /opt/builder-packages.txt
+ENV CARGO_HOME=/opt/cargo RUSTUP_HOME=/opt/rustup
+ENV PATH=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ARG RUST_VERSION=1.96.1
+RUN curl --proto '=https' --tlsv1.2 -fsS https://sh.rustup.rs -o /tmp/rustup.sh \
+    && sh /tmp/rustup.sh -y --profile minimal --default-toolchain ${RUST_VERSION} \
+    && rm /tmp/rustup.sh \
+    && chmod -R a+rX /opt/cargo /opt/rustup \
+    && rustc --version
+WORKDIR /build

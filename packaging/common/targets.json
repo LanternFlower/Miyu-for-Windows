@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "targets": {
+    "arch-x86_64": {"build_id": "arch-x86_64", "arch": "x86_64", "core": "arch-core", "voice": "arch-voice", "format": "archlinux"},
+    "debian13-x86_64": {"build_id": "gnu-x86_64", "arch": "amd64", "core": "deb-core", "voice": "deb-voice", "format": "deb"},
+    "ubuntu2510-x86_64": {"build_id": "gnu-x86_64", "arch": "amd64", "core": "deb-core", "voice": "deb-voice", "format": "deb"},
+    "ubuntu2604-x86_64": {"build_id": "gnu-x86_64", "arch": "amd64", "core": "deb-core", "voice": "deb-voice", "format": "deb"},
+    "fedora-current-x86_64": {"build_id": "gnu-x86_64", "arch": "x86_64", "core": "rpm-core", "voice": "rpm-voice", "format": "rpm"},
+    "macos-arm64": {"build_id": "macos-arm64", "arch": "arm64", "core": "macos-core", "voice": "macos-voice", "format": "tar.gz"}
+  },
+  "builds": {
+    "gnu-x86_64": {"target": "x86_64-unknown-linux-gnu", "runner_variable": "LINUX_X64_RUNNER", "runner_default": "ubuntu-26.04"},
+    "arch-x86_64": {"target": "x86_64-unknown-linux-gnu", "runner_variable": "LINUX_X64_RUNNER", "runner_default": "ubuntu-26.04"},
+    "macos-arm64": {"target": "aarch64-apple-darwin", "runner_variable": "MACOS_ARM64_RUNNER", "runner_default": "macos-15"}
+  }
+}

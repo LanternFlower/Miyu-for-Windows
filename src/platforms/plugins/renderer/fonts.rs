@@ -29,29 +29,13 @@ pub(in crate::platforms::plugins::renderer) const RENDERER_FONTS_ENV: &str =
     "MIYU_RENDERER_FONTS_DIR";
 
 pub(in crate::platforms::plugins::renderer) fn renderer_fonts_dir() -> Result<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Some(path) = std::env::var_os(RENDERER_FONTS_ENV) {
-        candidates.push(PathBuf::from(path));
-    }
-    #[cfg(debug_assertions)]
-    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"));
-    candidates.push(PathBuf::from("/usr/share/miyu/fonts"));
-    if let Ok(executable) = crate::paths::miyu_executable() {
-        if let Some(prefix) = executable.parent().and_then(std::path::Path::parent) {
-            candidates.push(prefix.join("share/miyu/fonts"));
-        }
-        if let Some(workspace) = executable
-            .parent()
-            .and_then(std::path::Path::parent)
-            .and_then(std::path::Path::parent)
-        {
-            candidates.push(workspace.join("assets/fonts"));
-        }
-    }
-    // 兜底:发行版 noto-fonts-cjk 的标准安装路径。miyu 专用字体目录缺失
-    // (比如误装了不带字体的 release 资产包)时,长文转图靠系统字体继续工作。
-    candidates.push(PathBuf::from("/usr/share/fonts/noto-cjk"));
-    for candidate in &candidates {
+    let candidates =
+        crate::paths::resources::candidates(crate::paths::resources::ResourceKind::Fonts);
+    renderer_fonts_dir_from(&candidates)
+}
+
+fn renderer_fonts_dir_from(candidates: &[PathBuf]) -> Result<PathBuf> {
+    for candidate in candidates {
         if candidate.join(CJK_FONT_FILE).is_file() {
             return Ok(candidate.clone());
         }
@@ -103,4 +87,29 @@ pub(in crate::platforms::plugins::renderer) struct ResolvedFonts {
     pub(in crate::platforms::plugins::renderer) title: Option<String>,
     pub(in crate::platforms::plugins::renderer) code: Option<String>,
     pub(in crate::platforms::plugins::renderer) emoji: Option<String>,
+}
+
+#[cfg(test)]
+mod distribution_resources {
+    use super::*;
+
+    #[test]
+    fn font_override_missing_file_falls_back_and_absence_is_an_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let absent = temp.path().join("override");
+        let installed = temp.path().join("installed");
+        std::fs::create_dir_all(&installed).unwrap();
+        assert!(renderer_fonts_dir_from(&[absent.clone(), installed.clone()]).is_err());
+        std::fs::write(installed.join(CJK_FONT_FILE), b"font fixture").unwrap();
+        assert_eq!(
+            renderer_fonts_dir_from(&[absent.clone(), installed.clone()]).unwrap(),
+            installed
+        );
+        std::fs::create_dir_all(&absent).unwrap();
+        std::fs::write(absent.join(CJK_FONT_FILE), b"override fixture").unwrap();
+        assert_eq!(
+            renderer_fonts_dir_from(&[absent.clone(), installed]).unwrap(),
+            absent
+        );
+    }
 }

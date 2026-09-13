@@ -13,9 +13,9 @@ url='https://github.com/SHORiN-KiWATA/miyu-agent'
 license=('MIT')
 options=('!strip' '!debug')
 export LC_ALL=C.UTF-8
-depends=('miyu' 'alsa-lib' 'gcc-libs' 'glibc')
-optdepends=('libnotify: desktop notifications when Miyu hears you')
 _release_pkgrel=2
+depends=("miyu=${pkgver}-${_release_pkgrel}" 'alsa-lib' 'bzip2' 'gcc-libs' 'glibc')
+optdepends=('libnotify: desktop notifications when Miyu hears you')
 source=(
   "${pkgname}-${pkgver}-${_release_pkgrel}-${CARCH}.release.pkg.tar.zst::${url}/releases/download/v${pkgver}/${pkgname}-${pkgver}-${_release_pkgrel}-${CARCH}.pkg.tar.zst"
 )
@@ -23,7 +23,9 @@ sha256sums=(
   '93f903d245c11c094fde35edd9ded86837f7923b295dbd3277122c1ea134a57f'
 )
 
+# Keep the last published version and checksum until channel_update records
+# the newly verified release asset. Never use SKIP for a binary release asset.
 package() {
-  install -Dm755 "${srcdir}/usr/bin/miyu-voice" "${pkgdir}/usr/bin/miyu-voice"
-  install -Dm644 "${srcdir}/usr/share/licenses/${pkgname}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -d "${pkgdir}/usr"
+  cp -a "${srcdir}/usr/." "${pkgdir}/usr/"
 }

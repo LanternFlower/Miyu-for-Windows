@@ -22,11 +22,13 @@ CHECKED_KEYS = {"description", "summary", "stub_example"}
 #   get_exchange_rate: 示例 "USD or 美元" 告诉模型该工具接受中文货币名;
 #   glob: 示例 *ai*测试* 演示模式匹配支持 CJK 文件名;
 #   manage_script: "Description:/描述：" 是脚本头被逐字解析的协议标记。
+#   ledger.account: 枚举账本实际默认账户名（src/ledger/books.rs），是参数数据。
 ALLOWED = {
     ("get_exchange_rate.json", "$.parameters.properties.base.description"),
     ("get_exchange_rate.json", "$.parameters.properties.target.description"),
     ("glob.json", "$.parameters.properties.pattern.description"),
     ("manage_script.json", "$.parameters.properties.description.description"),
+    ("ledger.json", "$.parameters.properties.account.description"),
 }
 
 def walk(node, path, hits):

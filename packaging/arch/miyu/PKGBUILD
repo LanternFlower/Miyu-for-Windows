@@ -13,7 +13,7 @@ url='https://github.com/SHORiN-KiWATA/miyu-agent'
 license=('MIT' 'OFL-1.1')
 options=('!strip' '!debug')
 export LC_ALL=C.UTF-8
-depends=('chafa' 'gcc-libs' 'ripgrep' 'alsa-lib' 'onnxruntime')
+depends=('alsa-lib' 'chafa' 'gcc-libs' 'glibc' 'onnxruntime' 'python' 'ripgrep')
 optdepends=(
   'miyu-voice: voice wake word + speech recognition front end'
   'git: update default Shorin Wiki knowledge base'
@@ -33,7 +33,9 @@ sha256sums=(
   '0943349a9cc70675fb1bf4a197dd822f165ed9792e263bcca134003c069beb88'
 )
 
+# Keep the last published version and checksum until channel_update records
+# the newly verified release asset. Never use SKIP for a binary release asset.
 package() {
-  install -Dm755 "${srcdir}/usr/bin/miyu" "${pkgdir}/usr/bin/miyu"
-  cp -a "${srcdir}/usr/share" "${pkgdir}/usr/"
+  install -d "${pkgdir}/usr"
+  cp -a "${srcdir}/usr/." "${pkgdir}/usr/"
 }

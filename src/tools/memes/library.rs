@@ -8,8 +8,6 @@
 
 use crate::tools::memes::*;
 
-pub(crate) const BUILTIN_MEMES_DIR: &str = "/usr/share/miyu/memes";
-
 pub(crate) const MIN_SHORT_MEME_ID_LEN: usize = 7;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -366,14 +364,10 @@ pub(crate) fn sanitize_library(value: &str) -> String {
 }
 
 pub(crate) fn builtin_library_dir(library: &str) -> PathBuf {
-    if let Some(path) = std::env::var_os("MIYU_MEMES_DIR") {
-        return PathBuf::from(path).join(library);
-    }
-    let dev = PathBuf::from("src/memes").join(library);
-    if dev.is_dir() {
-        return dev;
-    }
-    PathBuf::from(BUILTIN_MEMES_DIR).join(library)
+    crate::paths::resources::child_directory(
+        crate::paths::resources::ResourceKind::Memes,
+        Path::new(library),
+    )
 }
 
 pub(crate) fn user_library_dir(paths: &MiyuPaths, library: &str) -> PathBuf {

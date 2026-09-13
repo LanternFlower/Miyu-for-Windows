@@ -22,13 +22,23 @@ fn main() {
     println!("cargo:rerun-if-changed=web/index.html");
     println!("cargo:rerun-if-changed=web/styles.css");
     println!("cargo:rerun-if-changed=web/app.js");
-    println!(
-        "cargo:rustc-env=MIYU_BUILD_ID={}",
+    println!("cargo:rerun-if-env-changed=MIYU_BUILD_ID");
+    let build_id = env::var("MIYU_BUILD_ID").unwrap_or_else(|_| {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or(0)
+            .to_string()
+    });
+    assert!(
+        !build_id.is_empty()
+            && build_id.len() <= 128
+            && build_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')),
+        "MIYU_BUILD_ID must contain 1 to 128 ASCII letters, digits, dots, underscores or hyphens"
     );
+    println!("cargo:rustc-env=MIYU_BUILD_ID={build_id}");
 
     let obfuscate = |path: &str| {
         let content = fs::read(path).unwrap_or_else(|_| panic!("read {path}"));

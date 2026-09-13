@@ -1502,7 +1502,13 @@ fn auto_compact_folds_its_summary_into_a_block_in_fullscreen() {
         renderer.finish_compact().unwrap();
         let frame = String::from_utf8_lossy(&renderer.take_output_frame()).into_owned();
         let plain = crate::render::strip_ansi_text(&frame);
-        assert!(plain.contains("› 上下文已压缩"), "没收成一块: {plain:?}");
+        assert!(
+            plain.contains(&format!(
+                "› {}",
+                crate::i18n::text("context compacted", "上下文已压缩")
+            )),
+            "没收成一块: {plain:?}"
+        );
         assert!(!plain.contains("摘要第二段"), "摘要平铺出来了: {plain:?}");
         let id = block_id_in(&frame).expect("那一块没登记");
         let detail = crate::render::blocks::get(id)

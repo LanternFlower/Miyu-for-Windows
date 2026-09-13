@@ -25,16 +25,32 @@ const RUNTIME_LIB_FILE: &str = "onnxruntime.dll";
 const RUNTIME_LIB_FILE: &str = "libonnxruntime.so";
 
 pub(crate) fn candidate_runtime_libs() -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    for env in [RUNTIME_LIB_ENV, "ORT_DYLIB_PATH"] {
-        if let Some(path) = std::env::var_os(env) {
-            if !path.is_empty() {
-                candidates.push(PathBuf::from(path));
-            }
-        }
+    let overrides: Vec<PathBuf> = [RUNTIME_LIB_ENV, "ORT_DYLIB_PATH"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    candidate_runtime_libs_from(
+        &overrides,
+        crate::paths::miyu_home_dir().as_deref(),
+        crate::paths::miyu_executable().ok().as_deref(),
+        RUNTIME_LIB_FILE,
+    )
+}
+
+fn candidate_runtime_libs_from(
+    overrides: &[PathBuf],
+    home: Option<&Path>,
+    executable: Option<&Path>,
+    filename: &str,
+) -> Vec<PathBuf> {
+    let mut candidates = overrides.to_vec();
+    if let Some(home) = home {
+        candidates.push(home.join("lib").join(filename));
     }
-    if let Some(home) = crate::paths::miyu_home_dir() {
-        candidates.push(home.join("lib").join(RUNTIME_LIB_FILE));
+    if let Some(prefix) = crate::paths::resources::installation_prefix(executable) {
+        candidates.push(prefix.join("lib/miyu").join(filename));
     }
     for dir in [
         "/usr/lib",
@@ -43,9 +59,10 @@ pub(crate) fn candidate_runtime_libs() -> Vec<PathBuf> {
         "/usr/lib/x86_64-linux-gnu",
         "/usr/lib/aarch64-linux-gnu",
         "/opt/homebrew/lib",
+        "/opt/homebrew/opt/onnxruntime/lib",
         "/usr/local/opt/onnxruntime/lib",
     ] {
-        candidates.push(Path::new(dir).join(RUNTIME_LIB_FILE));
+        candidates.push(Path::new(dir).join(filename));
     }
     candidates
 }
@@ -212,5 +229,73 @@ impl LocalEncoder {
             );
         }
         Ok(vector)
+    }
+}
+
+#[cfg(test)]
+mod distribution_resources {
+    use super::*;
+
+    #[test]
+    fn runtime_overrides_and_home_precede_private_prefix_and_system_fallbacks() {
+        let overrides = vec![
+            PathBuf::from("/explicit/lib.so"),
+            PathBuf::from("/ort-dylib/lib.so"),
+        ];
+        let paths = candidate_runtime_libs_from(
+            &overrides,
+            Some(Path::new("/miyu-home")),
+            Some(Path::new("/安装 prefix/bin/miyu")),
+            "libonnxruntime.so",
+        );
+        assert_eq!(
+            &paths[..4],
+            &[
+                PathBuf::from("/explicit/lib.so"),
+                PathBuf::from("/ort-dylib/lib.so"),
+                PathBuf::from("/miyu-home/lib/libonnxruntime.so"),
+                PathBuf::from("/安装 prefix/lib/miyu/libonnxruntime.so"),
+            ]
+        );
+        assert_eq!(paths[4], Path::new("/usr/lib/libonnxruntime.so"));
+        assert!(paths.contains(&PathBuf::from(
+            "/usr/lib/x86_64-linux-gnu/libonnxruntime.so"
+        )));
+    }
+
+    #[test]
+    fn missing_runtime_override_stays_a_candidate_and_invalid_existing_file_wins() {
+        let temp = tempfile::tempdir().unwrap();
+        let explicit = temp.path().join("invalid.so");
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(home.join("lib")).unwrap();
+        let user_lib = home.join("lib/libonnxruntime.so");
+        std::fs::write(&user_lib, b"fixture").unwrap();
+        let paths = candidate_runtime_libs_from(
+            std::slice::from_ref(&explicit),
+            Some(&home),
+            None,
+            "libonnxruntime.so",
+        );
+        assert_eq!(paths.iter().find(|path| path.is_file()), Some(&user_lib));
+        std::fs::write(&explicit, b"invalid shared library").unwrap();
+        assert_eq!(paths.iter().find(|path| path.is_file()), Some(&explicit));
+    }
+
+    #[test]
+    fn runtime_private_and_homebrew_candidates_support_dylibs() {
+        let paths = candidate_runtime_libs_from(
+            &[],
+            None,
+            Some(Path::new("/opt/homebrew/Cellar/miyu/0.6.0/bin/miyu")),
+            "libonnxruntime.dylib",
+        );
+        assert_eq!(
+            paths[0],
+            Path::new("/opt/homebrew/Cellar/miyu/0.6.0/lib/miyu/libonnxruntime.dylib")
+        );
+        assert!(paths.contains(&PathBuf::from(
+            "/opt/homebrew/opt/onnxruntime/lib/libonnxruntime.dylib"
+        )));
     }
 }

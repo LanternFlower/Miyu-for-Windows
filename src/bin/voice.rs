@@ -7,7 +7,11 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "miyu-voice", about = "Miyu 语音前端(唤醒词 + 本地识别)")]
+#[command(
+    name = "miyu-voice",
+    version,
+    about = "Miyu 语音前端(唤醒词 + 本地识别)"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,

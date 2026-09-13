@@ -720,7 +720,10 @@ fn job_panel_folds_its_steps_once_the_subagent_talks() {
             "正文没进面板: {rows:?}"
         );
         // 「提示词」那一行钉在最前面，不参与收缩。
-        assert!(rows[0].contains("提示词"), "提示词被收进去了: {rows:?}");
+        assert!(
+            rows[0].contains(crate::i18n::text("prompt", "提示词")),
+            "提示词被收进去了: {rows:?}"
+        );
         // 收起来的那几步点开还在。
         let head = rows
             .iter()

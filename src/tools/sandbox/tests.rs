@@ -1,0 +1,117 @@
+use super::*;
+
+/// 只读根 + 可写 /tmp 目录:目录里能写,别处不能;规则随 exec 继承到 sh。
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn member_policy_confines_shell_writes() {
+    let abi = probe().expect("BLOCKED: kernel without Landlock");
+    eprintln!("Landlock ABI: {abi}");
+    let temp = tempfile::tempdir().unwrap();
+    let allowed = temp.path().join("allowed");
+    std::fs::create_dir_all(&allowed).unwrap();
+    let denied = temp.path().join("denied");
+    std::fs::create_dir_all(&denied).unwrap();
+    let policy = Arc::new(SandboxPolicy {
+        root: allowed.clone(),
+        read_only: vec![PathBuf::from("/")],
+        read_write: vec![allowed.clone(), PathBuf::from("/dev/null")],
+        home: Some(allowed.clone()),
+        ..Default::default()
+    });
+    let script = format!(
+        "echo ok > {}/a.txt && ! (echo no > {}/b.txt) 2>/dev/null && cat /etc/hostname >/dev/null",
+        allowed.display(),
+        denied.display()
+    );
+    let status = with_sandbox(Some(policy), async move {
+        let mut command = tokio::process::Command::new("sh");
+        command.arg("-c").arg(script);
+        confine(&mut command);
+        command.status().await.unwrap()
+    })
+    .await;
+    assert!(status.success(), "sandboxed shell script failed: {status}");
+    assert!(allowed.join("a.txt").is_file());
+    assert!(!denied.join("b.txt").exists());
+}
+
+/// 进程内守卫:可写根里能读能写,只读根里只能读,别处都不行;`..` 绕不出去。
+#[tokio::test]
+async fn in_process_guard_follows_the_policy() {
+    let temp = tempfile::tempdir().unwrap();
+    let rw = temp.path().join("rw");
+    let ro = temp.path().join("ro");
+    std::fs::create_dir_all(&rw).unwrap();
+    std::fs::create_dir_all(&ro).unwrap();
+    std::fs::write(ro.join("a.txt"), "a").unwrap();
+    let policy = Arc::new(SandboxPolicy {
+        root: rw.clone(),
+        read_only: vec![ro.clone()],
+        read_write: vec![rw.clone()],
+        ..Default::default()
+    });
+    let outside = temp.path().join("outside.txt");
+    let outside_in = outside.clone();
+    with_sandbox(Some(policy), async move {
+        let outside = outside_in;
+        assert!(guard_read(&ro.join("a.txt")).is_ok());
+        assert!(guard_write(&ro.join("a.txt")).is_err());
+        assert!(guard_read(&rw.join("new.txt")).is_ok());
+        assert!(guard_write(&rw.join("new.txt")).is_ok());
+        assert!(guard_read(&outside).is_err());
+        assert!(guard_write(&rw.join("../outside.txt")).is_err());
+        assert!(guard_read(std::path::Path::new("/etc/hostname")).is_err());
+    })
+    .await;
+    assert!(guard_read(&outside).is_ok(), "no policy = no guard");
+}
+
+/// 工具链直通:HOME 换根、策略里的环境变量透传、PATH 头部补目录。
+#[tokio::test]
+async fn child_env_carries_home_toolchain_and_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root");
+    let bin = temp.path().join("bin");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&bin).unwrap();
+    let policy = SandboxPolicy {
+        root: root.clone(),
+        home: Some(root.clone()),
+        env: vec![("CARGO_HOME".to_string(), "/real/.cargo".to_string())],
+        path_prepend: vec![bin.clone()],
+        ..Default::default()
+    };
+    let env = child_env(&policy, false);
+    let get = |key: &str| {
+        env.iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.to_string_lossy().into_owned())
+    };
+    assert_eq!(get("HOME").as_deref(), Some(root.to_str().unwrap()));
+    assert_eq!(get("CARGO_HOME").as_deref(), Some("/real/.cargo"));
+    let path = get("PATH").unwrap();
+    assert!(path.starts_with(bin.to_str().unwrap()), "{path}");
+    assert!(
+        path.len() > bin.to_str().unwrap().len(),
+        "daemon PATH must follow"
+    );
+    // 中转线:HOME 不换,其余照给。
+    let relay = child_env(&policy, true);
+    assert!(relay.iter().all(|(name, _)| name != "HOME"));
+    assert!(relay.iter().any(|(name, _)| name == "CARGO_HOME"));
+}
+
+#[tokio::test]
+async fn no_policy_means_no_confinement() {
+    let temp = tempfile::tempdir().unwrap();
+    let target = temp.path().join("free.txt");
+    let mut command = tokio::process::Command::new("sh");
+    command
+        .arg("-c")
+        .arg(format!("echo hi > {}", target.display()));
+    confine(&mut command);
+    assert!(command.status().await.unwrap().success());
+    assert!(target.is_file());
+}
+
+mod distribution_sandbox;

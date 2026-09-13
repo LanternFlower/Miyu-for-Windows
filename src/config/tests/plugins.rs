@@ -338,9 +338,13 @@ fn old_config_with_default_mode_and_retired_plugin_blocks_still_loads() {
     .unwrap();
     assert!(!config.plugins.archlinux.enabled);
     assert!(config.plugins.web.enabled, "没写的插件保持默认");
-    // 写回时退役键不再出现。
+    // 顶层未知字段按跨版本兼容契约保留，但不再影响模式选择。
+    // 插件结构没有未知字段透传，退役插件写回时消失。
     let json = serde_json::to_string(&config).unwrap();
-    assert!(!json.contains("default_mode"));
+    assert_eq!(
+        config.extra.get("default_mode"),
+        Some(&serde_json::json!("normal"))
+    );
     assert!(!json.contains("deep_research"));
     assert!(!json.contains("package_advisor"));
 }
