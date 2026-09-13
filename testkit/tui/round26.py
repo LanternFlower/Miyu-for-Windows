@@ -61,7 +61,7 @@ def wait_screen(master, sink, predicate, timeout):
     return None
 
 
-def start(stub_env):
+def start(stub_env, config_extra=None):
     if h.HOME.exists():
         shutil.rmtree(h.HOME)
     h.EDIT_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -70,6 +70,13 @@ def start(stub_env):
     Path(h.RUNTIME).mkdir(exist_ok=True)
     h.OUT.mkdir(parents=True, exist_ok=True)
     h.write_config()
+    if config_extra:
+        # 在桩配置上再盖几项（比如把压缩的尾巴预算压到几十个词元，好让几轮
+        # 小对话也压得动）。
+        path = h.HOME / "config" / "config.jsonc"
+        config = json.loads(path.read_text(encoding="utf-8"))
+        config.update(config_extra)
+        path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
     h.kill_stale_daemon()
     stub = subprocess.Popen(
         [sys.executable, str(h.SMOKE / "stub_llm.py")],
@@ -428,6 +435,58 @@ def scenario_new_session(report):
         stop(tui, daemon, stub)
 
 
+def scenario_compact(report):
+    """全屏里 `/compact`：正文里有「正在压缩」和「上下文已压缩」两行（不是右上角的
+    通知），后者是一块，点开是摘要（桩模型的摘要就是它那句回复）。"""
+    # 尾巴预算默认 16k 词元，桩模型几轮小对话全在尾巴里、没东西可折；压到几十个
+    # 词元，三轮之后前面的就能折进摘要。
+    stub, daemon, tui, master, sink = start(
+        {"STUB_CHUNK_SLEEP": "0.02"},
+        config_extra={"context": {"compact_tail_tokens": 40}},
+    )
+    try:
+        # 只有一轮的会话 daemon 会说「没有可压缩的上下文」，多聊几轮再压。
+        for round_index in range(1, 4):
+            os.write(master, f"{h.PROMPT} 第{round_index}遍".encode())
+            h.drain_until(master, sink, f"第{round_index}遍", 3.0)
+            os.write(master, b"\r")
+            wait_screen(
+                master, sink,
+                lambda s, n=round_index: sum(1 for l in s if "走查的回复" in l) >= n,
+                40.0,
+            )
+            h.settle(master, sink)
+        os.write(master, b"/compact\r")
+        done = ("上下文已压缩", "没有可压缩的上下文")
+        screen = wait_screen(
+            master, sink,
+            lambda s: any(any(mark in l for mark in done) for l in s),
+            60.0,
+        )
+        report["r26_09_compact_writes_result_line"] = screen is not None
+        if screen is None:
+            save("compact-timeout", LAST["screen"] or [])
+            return
+        h.settle(master, sink, quiet=0.6, timeout=5.0)
+        screen = h.render(bytes(sink))
+        save("compact", screen)
+        # 提示行和结果行都在正文里、退两格：不是右上角那种贴着右边的通知。
+        report["r26_09_compact_notice_in_body"] = any(
+            l.startswith("  ") and "正在压缩上下文" in l for l in screen
+        ) and any(l.startswith("  ") and any(mark in l for mark in done) for l in screen)
+        row = next((i for i, l in enumerate(screen) if "上下文已压缩" in l and l.lstrip().startswith("›")), None)
+        report["r26_09_compact_result_is_a_fold"] = row is not None
+        if row is not None:
+            before = sum(1 for l in screen if "走查的回复" in l)
+            h.click(master, sink, 3, row, quiet=0.3, timeout=2.0)
+            opened = h.render(bytes(sink))
+            save("compact-open", opened)
+            after = sum(1 for l in opened if "走查的回复" in l)
+            report["r26_09_compact_summary_expands"] = after > before
+    finally:
+        stop(tui, daemon, stub)
+
+
 def main():
     if not h.BIN.exists():
         print(f"! 先 cargo build：{h.BIN} 不存在", file=sys.stderr)
@@ -440,6 +499,7 @@ def main():
     scenario_panel_spinner(report)
     scenario_links(report)
     scenario_new_session(report)
+    scenario_compact(report)
     (h.OUT / "round26-report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
