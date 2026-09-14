@@ -1,6 +1,6 @@
 # Miyu 发布流程
 
-本手册按 0.6.0 实际执行的 Linux 容器构建、安装和发布链更新。工具入口在
+本手册按 2026-09-14 的 **0.6.0-2** 实际构建、容器验收、发布、AUR 推送与本机升级更新。工具入口在
 `packaging/ci/`，资源清单在 `packaging/common/assets.json`，Arch 四份配方仍以
 `packaging/arch/` 为真相源。远端 CI 的职责与凭据契约见
 [CI 说明](docs/plan/distribution/ci.md)。
@@ -14,7 +14,8 @@ GNU tar 使用独立安装前缀与 MIYU_HOME。物理麦克风、Mac 和完整�
 
 在独立 worktree 操作。是否合并 main、部署宿主、推送 AUR 或更新另一个软件源，取决于
 当前任务的明确范围；这些都不是“创建 GitHub Release”自动执行的附带步骤。
-不要覆盖其他工作区、AUR 检出的未提交改动，也不要无条件删除 `~/.local/bin/miyu`。
+任务已授权合并、push、AUR 或本机升级时，应连续完成并核对结果，不再重复等待验收。
+保留其他工作区和 AUR 检出的未提交内容；用户要求清理时，只移除已确认由旧安装留下的 Miyu 覆盖文件。
 
 ## 1. 准备与源码门禁
 
@@ -25,6 +26,14 @@ GNU tar 使用独立安装前缀与 MIYU_HOME。物理麦克风、Mac 和完整�
 `cargo check --locked --all-targets` 和 Python 打包测试。产品测试必须使用临时
 HOME/MIYU_HOME/XDG；进程与目录清理由 `Sandbox`、`ProcessSupervisor` 管理。
 `packaging/ci/run_tests.py` 提供预定义源码测试入口。
+
+CI 的本机开发依赖还必须包含 **ripgrep**；搜索测试会实际调用 `rg`，缺失即 ENOENT。
+图片/表情包尺寸在 `cfg(test)` 下固定为 80×24，测试不得依赖 runner 是否有控制终端或 TERM。
+生产终端探测保持真实值。测试回归应同时在无控制终端、删除 TERM/COLORTERM 的环境执行。
+
+测试清理按本进程收养关系识别后代，排除启动前已有的子进程；不要读取可变或因
+non-dumpable 而无法访问的 `/proc/<pid>/environ` 来证明归属。发出信号后必须 wait 确认回收。
+命令原始退出码、tests.txt 与 cleanup_error 分别保留，清理失败不能掩盖源测试失败。
 
 ```bash
 python3 -m unittest discover -s packaging/ci/tests -v
@@ -37,19 +46,29 @@ python3 packaging/ci/run_tests.py --suite source-unit --report-dir out/distribut
 
 ## 2. 冻结并准备最终输入
 
-以下为 0.6.0 的实际入口；重跑应选新的空输出目录。metadata 同时保存源码快照和文件清单。
+以下参数对应 0.6.0-2。每次构建使用新的空输出目录，不能覆盖上一轮证据。
+metadata 同时保存源码快照和文件清单。运行前必须检出待发布源码提交；不要在后续
+渠道/文档提交的 HEAD 上直接重跑旧版本 tag。新版本使用 revision 1，同版本重编见最后一节。
 
 ```bash
 python3 packaging/ci/metadata.py --mode release --source-ref HEAD --tag v0.6.0 \
-  --profile linux-smoke --revision 1 --out out/distribution/release-0.6.0/release-input.json
-python3 packaging/ci/prepare.py --manifest out/distribution/release-0.6.0/release-input.json \
-  --out out/distribution/release-0.6.0/inputs
+  --profile linux-smoke --revision 2 --out out/distribution/revision-2/release-input.json
+python3 packaging/ci/prepare.py --manifest out/distribution/revision-2/release-input.json \
+  --out out/distribution/revision-2/inputs
 ```
 
 已验证的下载缓存和相同 Cargo.lock 的 vendor 可通过 `--cache`、`--vendor-cache` 复用；
 `--offline` 要求缓存完整，否则失败。Wiki、模型、ORT、sherpa 与工具下载均受锁定 hash 校验。
 GNU 构建镜像基于 Debian 13；Arch 使用锁定基础镜像和 Archive 2026/09/13 软件快照。
 两个 Dockerfile 位于 `packaging/linux/builders/`。记录准备出的实际 image ID。
+
+```bash
+docker build -t miyu-release-gnu -f packaging/linux/builders/Dockerfile.gnu .
+docker build -t miyu-release-arch -f packaging/linux/builders/Dockerfile.arch .
+```
+
+冷构建时依赖下载和最终链接可能数分钟不刷新日志。查看下载文件增长、容器状态与编译进程，
+不能把“暂时没新日志”直接当成卡死。
 
 ## 3. 构建与打包
 
@@ -71,9 +90,9 @@ GNU 使用私有 CPU ORT。Arch namcap E 会拒绝打包，RPM 不声明发行�
 对 manifest 的五个 target-id 分别运行 `verify.py`：
 
 ```bash
-python3 packaging/ci/verify.py --manifest out/distribution/release-0.6.0/release-input.json \
-  --packages out/distribution/release-0.6.0/packages --target-id debian13-x86_64 \
-  --report-dir out/distribution/release-0.6.0/reports/debian13-x86_64 \
+python3 packaging/ci/verify.py --manifest out/distribution/revision-2/release-input.json \
+  --packages out/distribution/revision-2/packages --target-id debian13-x86_64 \
+  --report-dir out/distribution/revision-2/reports/debian13-x86_64 \
   --provider-config /home/shorin/.miyu/config/config.jsonc
 ```
 
@@ -82,6 +101,11 @@ python3 packaging/ci/verify.py --manifest out/distribution/release-0.6.0/release
 上传为 artifact。成功要求请求退出正常、最终回复非空、provider/model 正确，不要求人格
 逐字照抄某个测试口令。
 
+五个目标是 `arch-x86_64`、`debian13-x86_64`、`ubuntu2510-x86_64`、
+`ubuntu2604-x86_64`、`fedora-current-x86_64`。0.6.0-2 共 36 项必需检查，均需 PASS。
+变更 CLI 默认行为时还要运行真实 PTY：本次确认不设置 MIYU_TUI 默认全屏，
+MIYU_TUI=0 回退 inline。不能在验收命令里继续设置 MIYU_TUI=1 而把默认行为缺陷藏起来。
+
 所有目标报告都必须指向最终包 hash。首次失败报告保留，重试用新目录。最终聚合目录只放
 各目标适用的成功报告。容器必须确认已移除，才能删除 bind-mounted home 并宣布清理完成。
 不要按日期猜测 Ubuntu 旧版本已经迁到 old-releases，保留能实际验证的官方源。
@@ -89,37 +113,128 @@ python3 packaging/ci/verify.py --manifest out/distribution/release-0.6.0/release
 ## 5. 聚合、上传与回读
 
 ```bash
-python3 packaging/ci/verify_release.py --manifest out/distribution/release-0.6.0/release-input.json \
-  --artifacts out/distribution/release-0.6.0/packages --reports out/distribution/release-0.6.0/reports \
-  --publish-dir out/distribution/release-0.6.0/publish
-python3 packaging/ci/publish.py --manifest out/distribution/release-0.6.0/release-input.json \
-  --dir out/distribution/release-0.6.0/publish --dry-run
+python3 packaging/ci/verify_release.py --manifest out/distribution/revision-2/release-input.json \
+  --artifacts out/distribution/revision-2/packages --reports out/distribution/revision-2/reports \
+  --publish-dir out/distribution/revision-2/publish
+python3 packaging/ci/publish.py --manifest out/distribution/revision-2/release-input.json \
+  --dir out/distribution/revision-2/publish --dry-run
 ```
 
-聚合生成精确资产清单、SHA256SUMS、文件清单 SPDX、实际构建来源和脱敏 acceptance JSON。
-OOBE 截图来自真实 PTY；图片与说明放 `docs/releases/<version>/`，图片使用仓库链接，不作为 Release 附件。校验值放在正文折叠区。
-文件清单 SPDX 不等于完整依赖 SBOM。
+### 公开附件与内部证据
 
-全部验证成功后推送已批准的分支和 tag，再把 dry-run 换为 `--execute`，同时传
-`--notes docs/releases/0.6.0/release-notes.md`。内部 bundle 完整验证后，只选取六个发行版包。上传先创建 draft，每个文件上传后下载回读
-hash，完整 allowlist 再次核对后才转正式。已有同名异内容或额外远端资产会失败，禁止 clobber。
+`verify_release.py` 生成并验证完整内部 bundle；`publish.py` 只从中选择
+`archlinux`、`deb`、`rpm`。两者职责不同，不得遍历 publish 目录直接全部上传。
 
-## 6. 同步渠道与收尾
+| 发行版 | 主包 | 语音包 |
+| --- | --- | --- |
+| Arch | `.pkg.tar.zst` | `.pkg.tar.zst` |
+| Debian / Ubuntu（共用） | `.deb` | `.deb` |
+| Fedora | `.rpm` | `.rpm` |
 
-正式 Release 回读成功后，运行 `channel_update.py`，传最终 manifest、release-output、
-published-url、空 out、builder-image；`--apply` 同步仓库 AUR 包装器和 `.SRCINFO`。
-用生成的配方从正式 URL 下载并在容器重包安装，确认主包/voice 版本、资源和别名一致。
-渠道变更单独提交，不能移动已经公开的 release tag。是否推送独立 AUR 仓库按当前任务授权；
-有本地改动的检出先保留，不能直接覆盖。`miyu-git` 的远端 main 必须实际包含新资源脚本后
-才能发对应 VCS 配方。
+公开附件固定为上述六个。GNU tar、截图、SHA256SUMS、acceptance、SPDX、provenance、
+release-input 与 release-manifest 都不上传 Release。GitHub 自动生成的两项 Source code
+下载由平台提供，不计入六个手动附件。内部 bundle 及 CI artifact 仍保留完整证据。
+SPDX 在当前工具中是文件清单，不等于完整依赖 SBOM；provenance 是构建来源，
+release-input / release-manifest 分别记录输入与输出，不是供用户安装的文件。
 
-发布说明先归档到版本 changelog，再整理下一版记录。记录最终 tag、资产 hash、验收报告和
-清理结果。移除本次的临时 homes、进程、容器、已登记镜像、重复源码与构建/下载缓存，保留
-最终发行资产和必要证据。禁止全局 Docker prune，也不删除生产数据或共享的用户工具链缓存。
+### 发布说明与图片
 
-宿主升级、daemon 轮换和额外软件源同步属于独立部署步骤，本次容器发布不执行。
+先逐条核对 `next-release-note.md`，完整归档到 `docs/releases/<version>/changelog.md`。
+正文按用户能感知的主题整理，并保留重要功能、修复、命令变化与升级注意事项，
+不能只挑 OOBE 或 UI 而漏掉 CLI 后端、沙盒、压缩、记账等整块更新。
 
-## 同版本重编（仅在用户明确要求替换发布包时）
+图片放在仓库 `docs/releases/<version>/`，使用 `raw.githubusercontent.com` 的 tag 或
+确定提交链接嵌入正文。可以收折次要图片，保留真实截图，不将截图作为 Release 附件。
+0.6.0-2 使用四张 OOBE 图和三张实机截图。发布前逐个读取图片 URL，核对返回内容与
+仓库原图 hash；删除旧图片附件前先更新正文链接。六个最终包的 SHA256 放正文
+`<details>` 折叠区，并链接完整 changelog。正文完成并确认没有遗漏后才清空已归档记录。
+
+### 上传与回读
+
+全部验证成功后推送已授权的分支和 tag，再把 dry-run 换为 `--execute`，同时传
+`--notes docs/releases/0.6.0/release-notes.md`。首次上传创建 draft，每个包上传后下载
+回读 hash，六附件名单核对后才转正式。已有同名异内容或额外远端资产会失败，不能
+使用 clobber 绕过；同版本替换按最后一节的单独迁移步骤处理。
+
+## 6. 合并 main 并推送
+
+先检查主工作区脏文件。待发布记录先备份并逐条确认已归档；用户 todolist 等无关改动
+原样保留。可快进时使用 `git merge --ff-only <发布分支或提交>`，随后明确执行
+`git push origin main`，并用 `git ls-remote origin refs/heads/main` 对照本地 HEAD。
+本地合并或 commit 不能算完成 push。后续渠道/CI/文档修复也要推送，不能只推 release tag。
+
+`miyu-git` 的远端 main 必须先包含其 PKGBUILD 调用的资源脚本，再更新 AUR VCS 配方。
+
+## 7. 同步 AUR
+
+正式 Release 回读成功后执行渠道生成，以下为本次参数形态：
+
+```bash
+python3 packaging/ci/channel_update.py \
+  --manifest out/distribution/revision-2/release-input.json \
+  --release-output out/distribution/revision-2/publish/release-manifest-0.6.0-2.json \
+  --published-url https://github.com/SHORiN-KiWATA/miyu-agent/releases/tag/v0.6.0 \
+  --out out/distribution/revision-2/channels \
+  --builder-image miyu-release-arch --apply
+```
+
+仓库 `packaging/arch/` 是真相源：`miyu` / `miyu-voice` 的 pkgver、pkgrel、
+_release_pkgrel、URL、SHA256、精确主包依赖与 .SRCINFO 必须一致；`miyu-release`
+源码配方也同步包修订。`miyu-git` 根据当前已推送源码版本、提交计数与短 SHA 更新
+快照 pkgver，生成并维护其 .SRCINFO。VCS 的 pkgver() 在用户构建时继续计算实际源码版本。
+
+从正式 URL 下载，用新配方在容器重包并安装，检查资源、版本、别名与真实模型回复。
+0.6.0-2 的 AUR 渠道另外完成 6 项检查。
+
+同步独立 AUR 检出前 fetch 并检查 HEAD/远端与脏文件。未跟踪的旧包、日志、pkg/src
+不是未提交的配方修改，应保留；若配方本身有改动，先保留并合并，不能直接覆盖。
+只复制、提交 PKGBUILD 与 .SRCINFO，分别 push miyu、miyu-voice、miyu-git 的实际分支。
+最后对照 AUR 远端 HEAD，并确认这三个检出的两份文件与主仓逐字节一致。
+
+## 8. 升级本机与清理覆盖文件（任务已授权时）
+
+升级使用正式回读通过的包，不能把未验收候选装进生产机。先记录 pacman 版本、PATH
+实际解析、8300 监听 PID、对应 exe、生产 MIYU_HOME 与服务归属；只轮换这个 home
+的生产 daemon，保留其他工作区/测试 home 的进程。不要读取并打印完整环境或密钥。
+
+```bash
+sudo pacman -U --noconfirm \
+  out/distribution/revision-2/publish/miyu-0.6.0-2-x86_64.pkg.tar.zst \
+  out/distribution/revision-2/publish/miyu-voice-0.6.0-2-x86_64.pkg.tar.zst
+MIYU_HOME="$HOME/.miyu" /usr/bin/miyu daemon stop
+```
+
+本机已有语音包时，应同时升级主包与语音包。用包管理器版本和安装后文件 hash 确认升级，
+再移除用户已要求清理且确认为旧覆盖的 `~/.local/bin/miyu`。其他 `.local/bin` 工具保留。
+Arch 的 `/usr/sbin` 与 `/usr/bin` 可能指向同一目录，以解析后的实际路径判断。
+
+已有托管服务时复用其服务管理方式；未托管时可以用用户 systemd 启动，避免临时测试 shell
+结束后带走生产 daemon。本次采用下面的临时用户服务，不额外设置开机自启：
+
+```bash
+systemd-run --user --collect --unit=miyu-daemon \
+  --property=Restart=on-failure --working-directory="$HOME" \
+  -E "MIYU_HOME=$HOME/.miyu" -E LANG=zh_CN.UTF-8 -E LANGUAGE=zh_CN:en \
+  /usr/bin/miyu __daemon --port 8300
+```
+
+端口、语言与 MIYU_HOME 按实际部署保持原值。检查服务 active、监听 PID 的 exe 为包内
+程序、PATH 不再命中旧覆盖、WebUI/既有平台连接恢复。版本/模型黑盒测试仍在隔离 home
+执行，不向生产会话或 QQ 发送验收消息。已有终端会话需重新打开才使用新前端。
+
+## 9. 清理与最终确认
+
+记录本轮创建的目录、容器、镜像及原有资源基线。停止并确认本轮进程/容器消失后，再删
+其临时 HOME/MIYU_HOME/XDG、准备输入、重复源码、stage、独立 Cargo target、下载缓存
+与重包目录。只删除已登记的本轮镜像，禁止全局 Docker prune。用户原有工具链缓存、
+既有镜像/卷、AUR 未跟踪文件与生产数据保留。活库备份使用 VACUUM INTO，禁止 fs::copy。
+
+保留最终发行 bundle、原资产替换备份和必要日志/报告。最后核对：main 与远端一致，
+release tag 对应真实构建源码，附件精确六个且 hash/正文/图片一致，AUR 远端及配方一致，
+本机版本及实际 exe 正确，测试资源无残留。源码/CI 修复必须有修前红测和修后绿测；
+新 CI 若失败先读测试日志与清理记录，不以“只有清理失败”推断 Rust 已全过。
+
+## 10. 同版本重编（仅在用户明确要求替换发布包时）
 
 默认应发布新的应用补丁版本。用户明确要求同版本重编时，递增 package revision，
 重新提交源代码、构建全部包并执行真实安装验收。保留旧 tag commit 与原资产本地备份，
@@ -130,3 +245,13 @@ force-with-lease 条件），使自动源码下载对应实际构建源码；不
 替换期间暂停正常发布器的“远端不得有额外资产”步骤；这是人工执行的有旧新资产
 清单及 hash 校验的迁移，正常发布器继续拒绝冲突与额外资产。之后用正常发布器再次
 核验最终状态。按新 hash 更新仓库/AUR 配方和正文 SHA256，不能沿用旧校验值。
+
+
+0.6.0-2 的实际顺序是：保存旧 release body / asset IDs / tag 对象 → 本地更新 tag 并
+冻结新源码 → 四个二进制重编、五目标验收 → 推送源码 main → 用旧 tag **对象 ID**
+作 force-with-lease 条件推送 tag → 上传并回读六个新包 → 验证仓库图片并更新正文 →
+按已保存的旧 asset ID 删除旧附件 → 正常发布器再验精确六附件 → 更新 AUR、升级本机。
+删除时拒绝未在原清单中的并发新增资产；重试时同名新包先比 hash，不重复覆盖。
+
+仅渠道、测试夹具或文档的后续修正不改变已发布二进制的源码身份，不能因此悄悄把
+release tag 移到后续 HEAD。0.6.0-2 二进制对应 9142225c，后续 CI 修复单独记录在 main。
