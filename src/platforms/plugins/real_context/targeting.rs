@@ -95,20 +95,22 @@ impl TriggerKind {
         locale: Locale,
     ) -> String {
         if locale == Locale::Zh {
-            let kind = if self == Self::Continuation {
-                "续聊窗口判断"
-            } else {
-                "主动回复判断"
+            // 标题里就写清是哪一路:三种判断的门槛不一样,日志里混成一句
+            // 「主动回复判断」看不出这一条为什么没回(用户 09-15)。
+            let kind = match self {
+                Self::Continuation => "续聊窗口判断",
+                Self::AfterSpeaking => "刚说过话判断",
+                _ => "主动回复判断",
             };
             format!(
                 "【{kind}：{}】",
                 if should_reply { "回复" } else { "不回复" }
             )
         } else {
-            let kind = if self == Self::Continuation {
-                "Continuation decision"
-            } else {
-                "Active reply decision"
+            let kind = match self {
+                Self::Continuation => "Continuation decision",
+                Self::AfterSpeaking => "After-speaking decision",
+                _ => "Active reply decision",
             };
             format!(
                 "[{kind}: {}]",
