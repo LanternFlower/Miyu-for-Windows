@@ -2352,7 +2352,7 @@
               min: 1,
               max: 86400,
               unit: "秒",
-              default: 60,
+              default: 30,
             },
             {
               key: "continuation_window_seconds",

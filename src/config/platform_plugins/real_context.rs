@@ -69,7 +69,7 @@ pub struct RealContextPluginSettings {
     pub continuation_window_seconds: u64,
     /// 她在群里发完消息之后,多少秒内把**任何人**的消息都送去判一次
     /// (TriggerKind::AfterSpeaking)。续聊窗口只认「她刚回的那个人」,这个不挑人,
-    /// 所以单独一个值——默认 60s,比续聊的 15s 宽。
+    /// 所以单独一个值——默认 30s,比续聊的 15s 宽(用户先定 60,实测后收到 30)。
     #[serde(default = "default_after_speaking_window_seconds")]
     pub after_speaking_window_seconds: u64,
     pub continuation_boost_score: f64,
@@ -999,5 +999,5 @@ pub(crate) fn default_real_context_moderation_keywords() -> Vec<String> {
 }
 
 fn default_after_speaking_window_seconds() -> u64 {
-    60
+    30
 }

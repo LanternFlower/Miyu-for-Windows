@@ -134,7 +134,7 @@ impl SessionRuntime {
         true
     }
 
-    /// 她刚在这个群发过言吗(窗口 after_speaking_window_seconds,默认 60s)。
+    /// 她刚在这个群发过言吗(窗口 after_speaking_window_seconds,默认 30s)。
     ///
     /// 直接拿 `last_reply` 算,不另存状态:那个字段就是「最后一次真发出去的回复」,
     /// 与 mark_continuation 在同一处更新。窗口内**任何人**的消息都会来一次判断——
