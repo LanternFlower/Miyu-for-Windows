@@ -4108,6 +4108,11 @@
     parent.appendChild(link);
   }
 
+  // 无属性的 <br>/<br/>/<br />(大小写不限)是正文里唯一放行的 HTML 标签:表格单元格
+  // 内换行只能靠它。带属性的 <br class=x>、以及任何别的标签继续当纯文本走,既不解码
+  // &lt;br&gt; 再当标签认,也不给 innerHTML 开口子。粘性匹配,直接从游标处试。
+  const BREAK_TAG = /<br[ \t]*\/?>/iy;
+
   function appendInline(parent, source, depth = 0) {
     const text = String(source || "");
     if (depth > 8) {
@@ -4211,6 +4216,18 @@
             plainStart = index;
             continue;
           }
+        }
+      }
+      // <br> 排在 ` 之后:行内代码里的 <br> 仍是字面量。
+      if (text[index] === "<") {
+        BREAK_TAG.lastIndex = index;
+        const br = BREAK_TAG.exec(text);
+        if (br) {
+          flushPlain(index);
+          parent.appendChild(document.createElement("br"));
+          index += br[0].length;
+          plainStart = index;
+          continue;
         }
       }
       // <https://…> 与裸链接。放在 ` 与 [](…) 之后:行内代码和 md 链接先被吃掉,
