@@ -126,6 +126,11 @@ impl StateStore {
         let source_key = canonical.to_string_lossy().to_string();
         let session_id = self.session();
         let managed_session_dir = self.artifacts_dir.join(session_id.as_ref());
+        // canonical 已解开符号链接;目录也得解开,否则 macOS 上 /var → /private/var
+        // 这类链接会让 starts_with 失配,同一文件每轮换一个 ID。
+        let managed_session_dir = managed_session_dir
+            .canonicalize()
+            .unwrap_or(managed_session_dir);
         let identity_scope = if canonical.starts_with(&managed_session_dir) {
             session_id.as_ref()
         } else {

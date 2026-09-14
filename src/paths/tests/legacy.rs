@@ -278,6 +278,11 @@ fn unified_layout_cross_source_conflict_has_zero_migration_writes() {
     let (legacy, next) = test_layouts(temp.path());
     fs::create_dir_all(&legacy.config_dir).unwrap();
     fs::create_dir_all(&legacy.pictures_dirs[0]).unwrap();
+    if legacy.pictures_dirs[1].exists() {
+        // 大小写不敏感的文件系统上 Pictures/miyu 与 Pictures/Miyu 是同一个
+        // 目录,造不出跨源冲突;合并那一侧由上面的去重用例覆盖。
+        return;
+    }
     fs::create_dir_all(&legacy.pictures_dirs[1]).unwrap();
     fs::write(legacy.config_dir.join("config.jsonc"), "must stay").unwrap();
     fs::write(legacy.pictures_dirs[0].join("conflict.png"), "lower").unwrap();

@@ -323,6 +323,8 @@ fn stat_parse_survives_hostile_comm() {
 /// 真 PTY 全链路:python pty.fork 造出「会话首进程挂在 pts 上且是前台」的
 /// 假 shell(exec sleep),验证 ① 在提示符判定为真 ② 写回的字节真从 master
 /// 端读出来 ③ 进程死后判定翻假。覆盖 /proc 探测和 tty 写入两段真实内核路径。
+/// 依赖 /proc 与 /dev/pts,只在 Linux 上成立。
+#[cfg(target_os = "linux")]
 #[test]
 fn origin_tty_gates_and_writeback_against_real_pty() {
     // 这段 Python 的缩进是语义的一部分。拆分模块时被重排过一次(缩进全被

@@ -5,7 +5,9 @@
 //! 根因是看门狗裸 poll stdin——管道写端退出后 stdin 常驻 POLLHUP，被当成
 //! 「终端没了」，5 秒后 `exit(1)`，daemon 又把一次性客户端的断线当取消。
 
-use crate::cli::{fd_hung_up, hangup_watch_fd};
+#[cfg(target_os = "linux")]
+use crate::cli::fd_hung_up;
+use crate::cli::hangup_watch_fd;
 
 /// stdin 是终端时盯 stdin；stdin 被管道占用时盯控制终端。
 #[test]
@@ -28,6 +30,8 @@ fn a_piped_stdin_moves_the_watch_to_the_controlling_terminal() {
 }
 
 /// 记下真实形态：写端关掉的管道在 poll 里就是 POLLHUP。
+/// 这是 Linux 内核的形态;macOS 的管道 EOF 只报可读、不置 POLLHUP。
+#[cfg(target_os = "linux")]
 #[test]
 fn a_pipe_with_a_closed_writer_reports_hangup() {
     let mut fds = [0; 2];

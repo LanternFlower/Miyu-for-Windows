@@ -36,8 +36,10 @@ const MAX_TEXTS_PER_REQUEST: usize = 256;
 /// 09-05 实测:int8 bge-small 单线程逐条 12 ms/条、峰值 129 MB;1 GiB 是给
 /// 意外留的天花板,不是预算。debug 二进制未优化,放宽。
 #[cfg(not(debug_assertions))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const WORKER_ADDRESS_SPACE_LIMIT: u64 = 1024 * 1024 * 1024;
 #[cfg(debug_assertions)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const WORKER_ADDRESS_SPACE_LIMIT: u64 = 4 * 1024 * 1024 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT_BASE: Duration = Duration::from_secs(20);
@@ -158,7 +160,9 @@ fn lower_scheduling_priority() {}
 #[cfg(unix)]
 const WORKER_NICE: libc::c_int = 10;
 
-#[cfg(unix)]
+/// 只在 Linux 上设:macOS 不支持收紧 RLIMIT_AS,setrlimit 直接回 EINVAL,
+/// worker 起不来,语义检索整个不可用。
+#[cfg(target_os = "linux")]
 fn apply_address_space_limit() -> Result<()> {
     let limit = libc::rlimit {
         rlim_cur: WORKER_ADDRESS_SPACE_LIMIT as libc::rlim_t,
@@ -170,7 +174,7 @@ fn apply_address_space_limit() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(not(target_os = "linux"))]
 fn apply_address_space_limit() -> Result<()> {
     Ok(())
 }

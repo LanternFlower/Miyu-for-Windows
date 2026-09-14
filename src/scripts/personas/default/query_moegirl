@@ -69,14 +69,17 @@ from html.parser import HTMLParser
 MAX_PAGE_BYTES = 512 * 1024
 MAX_HTML_RESPONSE_BYTES = 5 * 1024 * 1024
 MAX_OUTPUT_CHARS = 20_000
-TIMEOUT = 10
+TIMEOUT = 5
 USER_AGENT = "miyu/0.1"
 
 SITES = {
+    "zh": ("https://zh.moegirl.org.cn", "https://zh.moegirl.org.cn", "https://zh.moegirl.org.cn/"),
+    "cn": ("https://zh.moegirl.org.cn", "https://zh.moegirl.org.cn", "https://zh.moegirl.org.cn/"),
     "uk": ("https://moegirl.uk", "https://moegirl.uk", "https://moegirl.uk/"),
     "ja": ("https://ja.moegirl.org", "https://ja.moegirl.org", "https://ja.moegirl.org/"),
 }
-DEFAULT_SITE = ("https://zh.moegirl.org.cn", "https://zh.moegirl.org.cn", "https://zh.moegirl.org.cn/")
+DEFAULT_SITE = SITES["uk"]
+FALLBACK_SITE = SITES["uk"]
 
 
 class Failed(RuntimeError):
@@ -444,7 +447,8 @@ def read_text_prefix(url, max_bytes):
 # ---------------------------------------------------------------- tool logic
 
 def site_for(value):
-    return SITES.get(value or "", DEFAULT_SITE)
+    val = (value or "").strip().lower()
+    return SITES.get(val, DEFAULT_SITE)
 
 
 def encode(text):
@@ -490,9 +494,8 @@ def fetch_page(site, title):
     return f"Source: {page}{encode(title)}\n\n{clip(markdown)}"
 
 
-def query(args):
+def _execute_query(args, site):
     mode = args.get("mode") if isinstance(args.get("mode"), str) else "auto"
-    site = site_for(args.get("site") if isinstance(args.get("site"), str) else "zh")
     q = (args.get("query") if isinstance(args.get("query"), str) else "").strip()
     title = (args.get("title") if isinstance(args.get("title"), str) else "").strip()
     if mode == "search" or (mode == "auto" and not title):
@@ -506,6 +509,8 @@ def query(args):
         except Failed:
             raise
         except Exception as exc:  # noqa: BLE001
+            if mode == "auto":
+                return fetch_page(site, keyword)
             raise Failed(_describe(exc), "检查网络，或换 site（zh/uk/ja）再试") from exc
         if mode == "search":
             return json.dumps(data, ensure_ascii=False, indent=2)
@@ -515,7 +520,25 @@ def query(args):
             first = None
         if isinstance(first, str):
             return fetch_page(site, first)
+        return fetch_page(site, keyword)
     return fetch_page(site, title or q)
+
+
+def query(args):
+    site_arg = args.get("site") if isinstance(args.get("site"), str) else ""
+    site_key = site_arg.strip().lower()
+    site = site_for(site_key)
+    try:
+        return _execute_query(args, site)
+    except Exception as exc:
+        if site != FALLBACK_SITE:
+            try:
+                return _execute_query(args, FALLBACK_SITE)
+            except Exception:
+                pass
+        if isinstance(exc, Failed):
+            raise
+        raise Failed(_describe(exc), "检查网络，或换 site（zh/uk/ja）再试") from exc
 
 
 def read_args():

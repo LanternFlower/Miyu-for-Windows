@@ -5,6 +5,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::Arc;
@@ -126,6 +127,10 @@ fn list_pipewire_sources() -> Vec<InputSource> {
 
 /// cpal 经 ALSA 枚举出的设备名(退路)。大半是采样率转换/路由插件
 /// (lavrate、speexrate、upmix…),只留真正指向声卡的条目。
+///
+/// `CARD=` 是 **ALSA 的设备名约定**,只在 Linux 上成立。macOS 的 CoreAudio
+/// 设备叫「MacBook Air麦克风」这种名字,永远不含 `CARD=`——套这条过滤器会把
+/// 所有设备滤光,`miyu-voice devices` 于是永远是空的(09-13 macOS 实测)。
 pub fn list_input_devices() -> Vec<String> {
     let _quiet = SilencedStderr::new();
     let host = cpal::default_host();
@@ -133,10 +138,51 @@ pub fn list_input_devices() -> Vec<String> {
         .map(|devices| {
             devices
                 .filter_map(|device| device.name().ok())
-                .filter(|name| name.contains("CARD=") && !name.starts_with("surround"))
+                .filter(|name| {
+                    if cfg!(target_os = "linux") {
+                        name.contains("CARD=") && !name.starts_with("surround")
+                    } else {
+                        !name.is_empty()
+                    }
+                })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// 优先按 [`SAMPLE_RATE`](super::pipeline::SAMPLE_RATE) 开流,设备不支持才退回默认格式。
+///
+/// **为什么必须先问一句**(09-13 macOS 实测定位):`LinearResampler` 是纯线性插值,
+/// 没有抗混叠低通。48k→16k 是 3:1 抽取,8kHz 以上的能量会整体折叠回语音带内,
+/// 而汉语声母里 q/x/sh 这类擦音的判别特征正好在高频——KWS 于是永不命中。
+///
+/// Linux 走 PipeWire(`PIPEWIRE_NODE`)拿到的就是 16kHz,`ratio == 1.0` 时重采样器
+/// 直通,这条烂路**在 Linux 上根本不执行**;macOS 走 cpal 拿原生 48kHz,每次都过。
+/// 直接向设备要 16kHz,由 CoreAudio 自己的 HAL 做带正经滤波器的速率转换。
+fn preferred_input_config(device: &cpal::Device) -> Result<cpal::SupportedStreamConfig> {
+    let wanted = cpal::SampleRate(SAMPLE_RATE);
+    if let Ok(ranges) = device.supported_input_configs() {
+        let native = device.default_input_config().ok();
+        let native_format = native.as_ref().map(|config| config.sample_format());
+        let mut fallback = None;
+        for range in ranges {
+            if range.min_sample_rate() > wanted || range.max_sample_rate() < wanted {
+                continue;
+            }
+            let config = range.with_sample_rate(wanted);
+            // 同格式优先,免得为了采样率换掉样本类型。
+            if Some(config.sample_format()) == native_format {
+                return Ok(config);
+            }
+            fallback.get_or_insert(config);
+        }
+        if let Some(config) = fallback {
+            return Ok(config);
+        }
+    }
+    device
+        .default_input_config()
+        .context("查询输入设备默认格式失败")
 }
 
 /// 打开麦克风开始采集。返回 16kHz 单声道帧的接收端。
@@ -208,9 +254,7 @@ fn open_stream(
             .default_input_device()
             .ok_or_else(|| anyhow!("没有可用的输入设备"))?,
     };
-    let config = device
-        .default_input_config()
-        .context("查询输入设备默认格式失败")?;
+    let config = preferred_input_config(&device)?;
     let source_rate = config.sample_rate().0;
     let channels = config.channels() as usize;
     let description = format!(
@@ -287,16 +331,49 @@ pub struct LinearResampler {
     /// 上一批的最后一个样本,用于跨批插值。
     carry: Option<f32>,
     consumed: u64,
+    /// 抗混叠滑动平均的窗长(1 = 不降采样,不滤波)。
+    taps: usize,
+    /// 滤波窗口,跨批保留,批边界不留断点。
+    history: VecDeque<f32>,
 }
 
 impl LinearResampler {
     pub fn new(source_rate: u32, target_rate: u32) -> Self {
+        let ratio = f64::from(source_rate) / f64::from(target_rate);
+        // 降采样才需要抗混叠:窗长取抽取比,把 target_rate/2 以上压下去。
+        // 线性插值自己那点低通远远不够——48k→16k 是 3:1 抽取,8kHz 以上会整体
+        // 折叠回语音带,毁掉 q/x/sh 这类擦音的判别特征(09-13 macOS 实测)。
+        // 只有在拿不到 16kHz 输入时才走到这儿,见 `preferred_input_config`。
+        let taps = if ratio > 1.0 {
+            (ratio.round() as usize).clamp(2, 16)
+        } else {
+            1
+        };
         Self {
-            ratio: f64::from(source_rate) / f64::from(target_rate),
+            ratio,
             position: 0.0,
             carry: None,
             consumed: 0,
+            taps,
+            history: VecDeque::new(),
         }
+    }
+
+    /// 抽取前的滑动平均(boxcar FIR)。窗口跨批保留,批边界不会留下断点。
+    fn antialias(&mut self, input: &[f32]) -> Vec<f32> {
+        if self.taps <= 1 {
+            return input.to_vec();
+        }
+        let mut out = Vec::with_capacity(input.len());
+        for &sample in input {
+            self.history.push_back(sample);
+            while self.history.len() > self.taps {
+                self.history.pop_front();
+            }
+            let sum: f32 = self.history.iter().copied().sum();
+            out.push(sum / self.history.len() as f32);
+        }
+        out
     }
 
     pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
@@ -306,6 +383,8 @@ impl LinearResampler {
         if (self.ratio - 1.0).abs() < f64::EPSILON {
             return input.to_vec();
         }
+        let filtered = self.antialias(input);
+        let input = filtered.as_slice();
         // 拼上跨批 carry 后,本批可插值的绝对区间是
         // [consumed-1(有 carry 时), consumed+input.len()-1)。
         let base = self.consumed as f64 - if self.carry.is_some() { 1.0 } else { 0.0 };
