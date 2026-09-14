@@ -21,10 +21,12 @@ pub(in crate::platforms::plugins::renderer) const RENDER_TIMEOUT: Duration =
 // debug 二进制未优化可到 550MB+,光映射自身就会撞 512MB 上限,worker
 // 秒死只留下一句 "communication failed"——开发构建放宽到 2GB。
 #[cfg(not(debug_assertions))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(in crate::platforms::plugins::renderer) const WORKER_ADDRESS_SPACE_LIMIT: u64 =
     512 * 1024 * 1024;
 
 #[cfg(debug_assertions)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(in crate::platforms::plugins::renderer) const WORKER_ADDRESS_SPACE_LIMIT: u64 =
     2 * 1024 * 1024 * 1024;
 
@@ -175,7 +177,8 @@ pub(crate) async fn run_renderer_worker() -> Result<()> {
     }
 }
 
-#[cfg(unix)]
+/// 只在 Linux 上设:macOS 不支持收紧 RLIMIT_AS,setrlimit 直接回 EINVAL。
+#[cfg(target_os = "linux")]
 pub(in crate::platforms::plugins::renderer) fn apply_worker_address_space_limit() -> Result<()> {
     let limit = libc::rlimit {
         rlim_cur: WORKER_ADDRESS_SPACE_LIMIT as libc::rlim_t,
@@ -187,7 +190,7 @@ pub(in crate::platforms::plugins::renderer) fn apply_worker_address_space_limit(
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(not(target_os = "linux"))]
 pub(in crate::platforms::plugins::renderer) fn apply_worker_address_space_limit() -> Result<()> {
     Ok(())
 }
