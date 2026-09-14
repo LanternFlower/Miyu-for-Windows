@@ -119,7 +119,7 @@ pub(crate) fn scripts_dashboard_overview(config: &AppConfig, paths: &MiyuPaths) 
             .unwrap_or((None, Vec::new()));
         scripts.push(json!({
             "id": entry.id,
-            "display_name": entry.display_name,
+            "display_name": entry_display_name(entry),
             "description": entry.description,
             "layer": layer,
             "builtin": layer.starts_with("builtin"),

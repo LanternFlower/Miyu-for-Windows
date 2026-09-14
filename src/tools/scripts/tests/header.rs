@@ -1,5 +1,6 @@
 //! 头部元数据解析:键识别、多行 Parameters 块、跳过无关注释行、id 归一化。
 
+use crate::i18n::Locale;
 use crate::tools::scripts::*;
 
 #[test]
@@ -46,6 +47,48 @@ fn unknown_comment_lines_do_not_end_the_header() {
     let metadata = extract_metadata(raw);
     assert_eq!(metadata.display_names.zh, Some("小红书搜索".to_string()));
     assert_eq!(metadata.descriptions.en, Some("Search notes".to_string()));
+}
+
+/// 英文界面只认英文槽:回退中文会让英文 UI 里蹦出「小红书搜索」,而缺英文名
+/// 时调用方要走 `humanize_script_id` 兜底,不是把中文端上去。
+#[test]
+fn english_display_name_never_falls_back_to_chinese() {
+    let metadata = extract_metadata("#!/bin/bash\n# 显示名称：小红书搜索\n\necho ok");
+    assert_eq!(
+        select_display_name_for(Locale::Zh, &metadata.display_names),
+        Some("小红书搜索".to_string())
+    );
+    assert_eq!(
+        select_display_name_for(Locale::En, &metadata.display_names),
+        None
+    );
+}
+
+/// 反向则仍回退:中文界面上一个英文名远好过一个裸 id。
+#[test]
+fn chinese_display_name_falls_back_to_english() {
+    let metadata = extract_metadata("#!/bin/bash\n# Display name: Lookup\n\necho ok");
+    assert_eq!(
+        select_display_name_for(Locale::Zh, &metadata.display_names),
+        Some("Lookup".to_string())
+    );
+    assert_eq!(
+        select_display_name_for(Locale::En, &metadata.display_names),
+        Some("Lookup".to_string())
+    );
+}
+
+#[test]
+fn humanizes_ids_for_scripts_without_an_english_name() {
+    assert_eq!(humanize_script_id("xhs_search"), "Xhs search");
+    assert_eq!(
+        humanize_script_id("bilibili_live_stream"),
+        "Bilibili live stream"
+    );
+    assert_eq!(humanize_script_id("codec"), "Codec");
+    // id 归一化保证首字符是字母,但兜底函数自己也不能被怪 id 噎住。
+    assert_eq!(humanize_script_id("_leading"), "Leading");
+    assert_eq!(humanize_script_id("__"), "__");
 }
 
 #[test]

@@ -78,7 +78,7 @@ impl PlatformPlugin for AccessManagerPlugin {
                 },
             )
             .writes()
-            .with_display_name("管理通讯平台权限"),
+            .with_display_name(crate::i18n::text("Manage platform access", "管理通讯平台权限")),
         );
         Ok(())
     }

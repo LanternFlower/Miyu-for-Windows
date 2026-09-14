@@ -63,7 +63,7 @@ fn register_activity_ranking(
                 async move { activity_ranking(arguments, context, store).await }
             },
         )
-        .with_display_name("Rank group activity"),
+        .with_display_name(crate::i18n::text("Rank group activity", "群活跃榜")),
     );
 }
 
@@ -221,7 +221,7 @@ fn register_search(
                 }
             },
         )
-        .with_display_name("Search real chat history"),
+        .with_display_name(crate::i18n::text("Search real chat history", "搜索聊天记录")),
     );
 }
 
@@ -523,7 +523,7 @@ pub(super) fn register_group_members(
                 }
             },
         )
-        .with_display_name("Query group members"),
+        .with_display_name(crate::i18n::text("Query group members", "查询群成员")),
     );
 }
 
@@ -556,7 +556,7 @@ pub(super) fn register_avatar(registry: &mut ToolRegistry, context: Arc<Platform
                 async move { download_avatar(arguments, context).await }
             },
         )
-        .with_display_name("QQ avatar"),
+        .with_display_name(crate::i18n::text("QQ avatar", "QQ 头像")),
     );
 }
 

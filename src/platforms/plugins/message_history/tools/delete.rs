@@ -42,7 +42,7 @@ pub(crate) fn register_delete(
             },
         )
         .writes()
-        .with_display_name("Delete real chat history"),
+        .with_display_name(crate::i18n::text("Delete real chat history", "删除聊天记录")),
     );
 }
 

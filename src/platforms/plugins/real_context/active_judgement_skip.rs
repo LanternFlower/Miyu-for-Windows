@@ -326,7 +326,7 @@ pub(super) fn register_tools(registry: &mut ToolRegistry, context: Arc<PlatformT
             },
         )
         .writes()
-        .with_display_name("添加跳过主动判断 QQ 号"),
+        .with_display_name(crate::i18n::text("Skip proactive judgement", "添加跳过主动判断 QQ 号")),
     );
     registry.register(
         ToolSpec::new(
@@ -339,7 +339,7 @@ pub(super) fn register_tools(registry: &mut ToolRegistry, context: Arc<PlatformT
             },
         )
         .writes()
-        .with_display_name("移除跳过主动判断 QQ 号"),
+        .with_display_name(crate::i18n::text("Unskip proactive judgement", "移除跳过主动判断 QQ 号")),
     );
 }
 

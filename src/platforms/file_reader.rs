@@ -62,7 +62,7 @@ pub(crate) fn register(
                 async move { read(arguments, state).await }
             },
         )
-        .with_display_name("Read uploaded file"),
+        .with_display_name(crate::i18n::text("Read uploaded file", "读取上传文件")),
     );
 }
 

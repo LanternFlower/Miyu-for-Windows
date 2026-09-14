@@ -33,7 +33,7 @@ Comment lines right after the shebang, written as `# Key: value`. Unknown commen
 
 ```
 #!/usr/bin/env python3
-# Display name: 番组日历
+# 显示名称：番组日历
 # Description: Query the Bangumi airing calendar. Use for "what airs today" and subject details.
 # Timeout: 60
 # Group: research
@@ -48,7 +48,8 @@ Comment lines right after the shebang, written as `# Key: value`. Unknown commen
 ```
 
 - `Description` is what the model sees. Write it in English. Keep the first sentence under 60 characters: in stub loading mode only that sentence is visible until the tool is loaded. Say what the tool does and when to use it first, caveats later.
-- `Display name` is for humans and may be Chinese.
+- `显示名称` is the human-facing name and is required. Write it in Chinese. Without it a Chinese UI can only show the tool id.
+- `Display name` is the English-UI name and is optional: the tool id is already English, so an English UI falls back to a humanized id (`xhs_search` becomes `Xhs search`). The two are separate slots, not aliases, so never put a Chinese name in `Display name` — that is what makes Chinese leak into an English UI.
 - `Parameters` is a JSON Schema object with `type: object`. Give every property a `description`. Omit the block for free-form tools.
 - `Id` overrides the tool name derived from the file name. `battery-care.py` becomes `battery_care` without it.
 - `Group` places the tool in a `load_tools` group. `Argv: flags` turns on argv expansion. `Timeout` is in seconds.
@@ -60,7 +61,7 @@ Python, stdin JSON:
 
 ```python
 #!/usr/bin/env python3
-# Display name: Example
+# 显示名称：示例
 # Description: One sentence under 60 characters. Then when to use it.
 # Parameters: {"type":"object","properties":{"query":{"type":"string","description":"what to look up"}},"required":["query"]}
 import json
@@ -90,7 +91,7 @@ Bash, argv flags:
 
 ```bash
 #!/usr/bin/env bash
-# Display name: Example
+# 显示名称：示例
 # Description: One sentence under 60 characters.
 # Argv: flags
 # Parameters: {"type":"object","properties":{"query":{"type":"string","description":"what to look up"}},"required":["query"]}

@@ -11,7 +11,7 @@ pub(crate) use refresh::*;
 
 use super::registry::{ScriptScope, UnregisteredScript};
 use super::{ToolPermission, ToolProgress, ToolRegistry, ToolSpec, ToolTrust};
-use crate::i18n::is_zh;
+use crate::i18n::{locale, Locale};
 use crate::paths::MiyuPaths;
 use crate::tools::tool_descriptions::LoadPolicy;
 use anyhow::{bail, Context, Result};
@@ -68,11 +68,7 @@ pub(crate) fn list_scripts_with_origin(
             .entries
             .into_iter()
             .map(|entry| {
-                let display = if entry.display_name.trim().is_empty() {
-                    entry.id.clone()
-                } else {
-                    entry.display_name.clone()
-                };
+                let display = entry_display_name(&entry);
                 let builtin = paths.is_some_and(|paths| is_builtin_script(paths, &entry));
                 (entry.id, display, entry.description, builtin)
             })

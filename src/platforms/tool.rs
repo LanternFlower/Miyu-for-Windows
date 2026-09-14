@@ -90,7 +90,7 @@ pub(crate) fn register(registry: &mut ToolRegistry, context: Arc<PlatformTurnCon
             },
         )
         .writes()
-        .with_display_name("Send message"),
+        .with_display_name(crate::i18n::text("Send message", "发送消息")),
     );
 }
 
@@ -148,7 +148,7 @@ fn register_voice_message(registry: &mut ToolRegistry, context: Arc<PlatformTurn
             },
         )
         .writes()
-        .with_display_name("Send voice message"),
+        .with_display_name(crate::i18n::text("Send voice message", "发送语音")),
     );
 }
 
@@ -180,7 +180,7 @@ fn register_mention(registry: &mut ToolRegistry, context: Arc<PlatformTurnContex
             },
         )
         .writes()
-        .with_display_name("Mention group members"),
+        .with_display_name(crate::i18n::text("Mention group members", "@群成员")),
     );
 }
 
@@ -462,7 +462,7 @@ fn register_usage_query(registry: &mut ToolRegistry, context: Arc<PlatformTurnCo
                 async move { query_token_usage(arguments, context).await }
             },
         )
-        .with_display_name("Token usage"),
+        .with_display_name(crate::i18n::text("Token usage", "词元用量")),
     );
 }
 

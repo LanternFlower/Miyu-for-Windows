@@ -507,7 +507,7 @@ pub(crate) fn list_scripts_handler(config: &AppConfig, paths: &MiyuPaths) -> Res
         .map(|entry| {
             json!({
                 "id": entry.id,
-                "display_name": entry.display_name,
+                "display_name": entry_display_name(entry),
                 "layer": layer_of(&entry.path),
                 "path": entry.path,
                 "parameters": if entry.parameters.is_null() { "generic stdin" } else { "schema" },

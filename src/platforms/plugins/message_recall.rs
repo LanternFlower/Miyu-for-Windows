@@ -358,7 +358,7 @@ impl PlatformPlugin for MessageRecallPlugin {
                 },
             )
             .writes()
-            .with_display_name("撤回 QQ 消息"),
+            .with_display_name(crate::i18n::text("Recall QQ message", "撤回 QQ 消息")),
         );
         Ok(())
     }

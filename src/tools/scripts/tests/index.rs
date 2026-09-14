@@ -24,7 +24,8 @@ fn auto_detects_executable_script() {
     .unwrap();
     let entry = auto_detect_script(&script_path).unwrap();
     assert_eq!(entry.id, "hello");
-    assert_eq!(entry.display_name, "hello");
+    // 一个显示名都没写:按 id 兜一个人话名,不再端出裸 id。
+    assert_eq!(entry.display_name, "Hello");
     assert_eq!(entry.description, "Say hello");
     assert_eq!(entry.path, "hello.sh");
     assert!(entry.parameters.is_null());
@@ -53,8 +54,25 @@ fn auto_detect_uses_script_display_name_and_normalized_id() {
     .unwrap();
     let entry = auto_detect_script(&script_path).unwrap();
     assert_eq!(entry.id, "battery_care");
-    assert_eq!(entry.display_name, "电池护理");
+    // 只写了中文名:中文界面拿中文名,英文界面不回退中文而是按 id 兜底。
+    // 断言跟着 locale 走,测试才能在两种语言环境下都成立。
+    let expected = match crate::i18n::locale() {
+        crate::i18n::Locale::Zh => "电池护理",
+        crate::i18n::Locale::En => "Battery care",
+    };
+    assert_eq!(entry.display_name, expected);
     assert_eq!(entry.description, "管理电池充电阈值");
+}
+
+/// 展示边界的兜底:`ScriptEntry.display_name` 空着就按 id 兜一个,但空值本身
+/// 不被改写——register 落盘时不该把某次运行时 locale 挑出来的名字固化进
+/// index.json。
+#[test]
+fn display_name_falls_back_to_a_humanized_id_at_the_display_boundary() {
+    let mut entry = ScriptEntry::overlay("xhs_search".to_string(), "xhs-search".to_string());
+    assert_eq!(entry_display_name(&entry), "Xhs search");
+    entry.display_name = "小红书搜索".to_string();
+    assert_eq!(entry_display_name(&entry), "小红书搜索");
 }
 
 #[test]

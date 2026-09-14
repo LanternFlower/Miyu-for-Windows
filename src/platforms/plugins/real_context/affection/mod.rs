@@ -335,7 +335,7 @@ pub(super) fn register_query_tool(
                 async move { query_relationship(arguments, context, settings).await }
             },
         )
-        .with_display_name("查询 QQ 好感与关系"),
+        .with_display_name(crate::i18n::text("QQ affection and relations", "查询 QQ 好感与关系")),
     );
 }
 

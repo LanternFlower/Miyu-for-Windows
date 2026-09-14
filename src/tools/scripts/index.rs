@@ -453,7 +453,7 @@ pub(crate) fn inspect_script(path: &Path) -> Option<DetectedScript> {
         .map(str::to_string)
         .or_else(|| normalize_script_id(&stem));
     let display_name = select_script_display_name(&metadata.display_names)
-        .unwrap_or_else(|| id.clone().unwrap_or_else(|| stem.clone()));
+        .unwrap_or_else(|| humanize_script_id(id.as_deref().unwrap_or(&stem)));
     Some(DetectedScript {
         id,
         stem,
@@ -486,6 +486,18 @@ pub(crate) fn auto_detect_script(path: &Path) -> Option<ScriptEntry> {
     (!entry.description.is_empty()).then_some(entry)
 }
 
+/// 展示用的名字:头部或 index 给了就用,没给按 id 兜一个(英文界面下只写了
+/// 中文名的脚本走的就是这条——[`select_script_display_name`] 不回退中文)。
+/// 落盘的 `ScriptEntry.display_name` 保持原样为空:兜底只发生在展示边界,
+/// 免得 register 把某次运行时 locale 挑出来的名字固化进 index.json。
+pub(crate) fn entry_display_name(entry: &ScriptEntry) -> String {
+    if entry.display_name.trim().is_empty() {
+        humanize_script_id(&entry.id)
+    } else {
+        entry.display_name.clone()
+    }
+}
+
 pub(crate) fn entry_to_spec(
     entry: &ScriptEntry,
     scripts_dir: &Path,
@@ -495,11 +507,7 @@ pub(crate) fn entry_to_spec(
     if id.is_empty() {
         bail!("script id is empty");
     }
-    let display_name = if entry.display_name.is_empty() {
-        id.clone()
-    } else {
-        entry.display_name.clone()
-    };
+    let display_name = entry_display_name(entry);
     if entry.description.trim().is_empty() {
         bail!("registered script is missing a description: {id}");
     }

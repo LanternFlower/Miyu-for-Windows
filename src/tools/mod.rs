@@ -225,7 +225,10 @@ pub fn batch_preparing_phase() -> &'static str {
     t("Preparing tools", "准备工具")
 }
 
-fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
+/// 内建工具的双语显示名。`descriptions/*.json` 里的 `display_name` 是中文单槽,
+/// 英文界面拿它就会端出中文名(09-14 A/B:英文目录里 36 个工具名是中文),所以
+/// `ToolSpec` 也从这张表取名 —— 渲染层与注册表从此说同一个名字。
+pub(crate) fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
     Some(match name {
         "run_command" => t("Run command", "运行命令"),
         "job" => t("Background jobs", "后台任务"),

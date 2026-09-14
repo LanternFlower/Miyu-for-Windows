@@ -135,12 +135,51 @@ pub(crate) fn select_script_description(descriptions: &ScriptDescriptions) -> Op
 }
 
 pub(crate) fn select_script_display_name(display_names: &ScriptDisplayNames) -> Option<String> {
-    let preferred = if is_zh() {
-        display_names.zh.as_ref().or(display_names.en.as_ref())
+    select_display_name_for(locale(), display_names)
+}
+
+/// 英文界面拿不到英文名时**不回退中文**:内建工具的可读名是双语硬编码表
+/// (`builtin_readable_tool_name`),英文 UI 上它们全是人话;脚本这边一回退,
+/// 同一排里就会蹦出「小红书搜索」。缺英文名时调用方改用
+/// [`humanize_script_id`] 从 id 兜一个。中文界面仍吃英文名兜底——中文 UI 上
+/// 一个英文名远好过一个裸 id。
+pub(crate) fn select_display_name_for(
+    locale: Locale,
+    display_names: &ScriptDisplayNames,
+) -> Option<String> {
+    match locale {
+        Locale::Zh => display_names.zh.as_ref().or(display_names.en.as_ref()),
+        Locale::En => display_names.en.as_ref(),
+    }
+    .cloned()
+}
+
+/// 没写英文名的脚本在英文界面上的兜底名:`xhs_search` → `Xhs search`。
+/// 用户自己写的脚本几乎不会写英文名(本机三个自建脚本全是只写中文),兜底
+/// 得保证英文 UI 至少拿到一个 ASCII 名字;内置脚本仍该手写 `Display name:`,
+/// 因为 `procusage`、`showenv` 这类 id 折出来的英文不达意。
+pub(crate) fn humanize_script_id(id: &str) -> String {
+    let mut humanized = String::with_capacity(id.len());
+    let mut capitalize = true;
+    for character in id.chars() {
+        if character == '_' || character == '-' {
+            if !humanized.is_empty() {
+                humanized.push(' ');
+            }
+            continue;
+        }
+        if capitalize {
+            humanized.extend(character.to_uppercase());
+            capitalize = false;
+        } else {
+            humanized.push(character);
+        }
+    }
+    if humanized.is_empty() {
+        id.to_string()
     } else {
-        display_names.en.as_ref().or(display_names.zh.as_ref())
-    }?;
-    Some(preferred.clone())
+        humanized
+    }
 }
 
 /// 注释体:`#`/`//` 起头的行去掉前缀与两侧空白;其它行返回 None。

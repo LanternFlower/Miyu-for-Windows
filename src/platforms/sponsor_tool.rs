@@ -83,7 +83,7 @@ pub(crate) fn register(registry: &mut ToolRegistry, context: Arc<PlatformTurnCon
         )
         .writes()
         .with_always_loaded(false)
-        .with_display_name("Sponsorships"),
+        .with_display_name(crate::i18n::text("Sponsorships", "赞助记账")),
     );
 }
 

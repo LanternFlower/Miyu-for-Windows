@@ -20,7 +20,7 @@
 
 ```
 #!/usr/bin/env python3
-# Display name: 番组日历
+# 显示名称：番组日历
 # Description: Query the Bangumi airing calendar. Use for "what airs today" questions.
 # Timeout: 60
 # Group: research
@@ -38,7 +38,8 @@
 | 键 | 别名 | 说明 |
 |---|---|---|
 | `Description` | `描述`、`功能介绍` | 模型看的描述。**英文**，首句 ≤60 字符（stub 加载模式下只显示首句）。先说做什么、何时用，再说注意事项 |
-| `Display name` | `显示名称`、`工具名称` | 人看的名字，可中文 |
+| `显示名称` | `工具名称` | 人看的名字，写中文。**必填**——不写，中文界面只能端出工具 id |
+| `Display name` | | 英文界面的名字，**可选**：工具 id 本来就是英文，不写就按 id 折一个（`xhs_search` → `Xhs search`）。它与 `显示名称` 是两个槽而不是别名，所以别把中文写在这里——那样英文界面反倒会露出中文 |
 | `Id` | | 工具名，`^[a-zA-Z][a-zA-Z0-9_]*$`。不写则用文件名 stem，非字母数字折成 `_`（`battery-care.py` → `battery_care`） |
 | `Parameters` | `params`、`schema`、`参数` | JSON Schema 对象，可单行或多行块；每个属性写 `description`。不写=接受任意 JSON 对象 |
 | `Timeout` | `timeout_seconds`、`超时` | 秒，默认 120，上限 300 |
@@ -77,7 +78,7 @@ Python（stdin JSON）：
 
 ```python
 #!/usr/bin/env python3
-# Display name: Example
+# 显示名称：示例
 # Description: One sentence under 60 characters. Then when to use it.
 # Parameters: {"type":"object","properties":{"query":{"type":"string","description":"what to look up"}},"required":["query"]}
 import json, os, sys
@@ -100,7 +101,7 @@ Bash（argv flags）：
 
 ```bash
 #!/usr/bin/env bash
-# Display name: Example
+# 显示名称：示例
 # Description: One sentence under 60 characters.
 # Argv: flags
 # Parameters: {"type":"object","properties":{"query":{"type":"string","description":"what to look up"}},"required":["query"]}

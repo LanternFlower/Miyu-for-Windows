@@ -371,7 +371,14 @@ impl ToolSpec {
                 self.description = desc.description.clone();
             }
             self.parameters = desc.parameters.clone();
-            self.display_name = Some(desc.display_name.clone());
+            // 显示名走双语表(内建工具 41/41 全覆盖),JSON 里那一份只是中文单槽:
+            // 直接用它,英文界面就会把「查找文件」端给英文用户。表里没有的
+            // (动态注册的工具)退回 JSON。
+            self.display_name = Some(
+                crate::tools::builtin_readable_tool_name(&self.name)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| desc.display_name.clone()),
+            );
             self.always_loaded = desc.always_loaded;
             self.load_policy = desc.load_policy;
             self.groups = desc.groups.clone();

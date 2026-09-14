@@ -192,7 +192,7 @@ impl GroupManagementPlugin {
                 },
             )
             .writes()
-            .with_display_name("QQ群管理"),
+            .with_display_name(crate::i18n::text("QQ group management", "QQ群管理")),
         );
     }
 

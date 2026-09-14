@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Display name: 包管理器示例
+# 显示名称：包管理器示例
 # Description: Echo a greeting; sample script installed by miyu pm.
 # Timeout: 10
 # Permission: read-only

@@ -876,7 +876,7 @@ fn job_spec() -> ToolSpec {
             }
         },
     )
-    .with_display_name("Background jobs")
+    .with_display_name(crate::i18n::text("Background jobs", "后台任务"))
 }
 
 #[cfg(test)]

@@ -42,7 +42,7 @@ pub fn register(
                 async move { query(arguments, history_file, config).await }
             },
         )
-        .with_display_name("Token usage"),
+        .with_display_name(crate::i18n::text("Token usage", "词元用量")),
     );
 }
 
