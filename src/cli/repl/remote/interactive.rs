@@ -508,7 +508,21 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                     }
                 }
                 ReplSlashCommand::Sandbox => {
-                    let arg = command_args.trim();
+                    let (arg, allow_read) =
+                        crate::slash_commands::take_repl_flag(command_args, "--allow-read");
+                    if arg.is_empty() && allow_read {
+                        repl_note(
+                            &mut live_repl,
+                            &format!(
+                                "\x1b[31m{}\x1b[0m\n",
+                                t(
+                                    "usage: /sandbox <path> [--allow-read]",
+                                    "用法:/sandbox <路径> [--allow-read]"
+                                )
+                            ),
+                        )?;
+                        continue;
+                    }
                     if arg.is_empty() {
                         let Some(state) = repl_get_session_state(
                             paths,
@@ -550,6 +564,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                                     id: active_session_id.clone(),
                                 },
                                 root: None,
+                                allow_read: false,
                             },
                         )
                         .await?
@@ -589,21 +604,31 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                                 id: active_session_id.clone(),
                             },
                             root: Some(path.clone()),
+                            allow_read,
                         },
                     )
                     .await?
                     .is_some()
                     {
+                        // 读放开是把「防提示注入读走密钥」那一半关掉,回执得说清楚
+                        // ——网络本来就不在 Landlock 管辖内。
+                        let scope = if allow_read {
+                            t(
+                                "later turns write only inside it (plus /tmp and the configured dirs); reading is unrestricted, including ~/.ssh and your API keys",
+                                "之后的回合只能往这里面写(外加 /tmp 与配置里的目录);读不设限,~/.ssh 与 API key 也读得到",
+                            )
+                        } else {
+                            t(
+                                "later turns read and write only inside it (plus /tmp and the configured toolchain dirs)",
+                                "之后的回合只能在这里面读写(外加 /tmp 与配置里的工具链目录)",
+                            )
+                        };
                         repl_note(
                             &mut live_repl,
                             &format!(
-                                "\x1b[2m{}: {}\n{}\x1b[0m\n",
+                                "\x1b[2m{}: {}\n{scope}\x1b[0m\n",
                                 t("sandbox bound", "已绑定沙盒"),
                                 path.display(),
-                                t(
-                                    "later turns read and write only inside it (plus /tmp and the configured toolchain dirs)",
-                                    "之后的回合只能在这里面读写(外加 /tmp 与配置里的工具链目录)"
-                                )
                             ),
                         )?;
                     }

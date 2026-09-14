@@ -230,6 +230,7 @@ mod tests {
             turns: 0,
             snippet: String::new(),
             sandbox: None,
+            sandbox_read_all: false,
             mode: "normal".to_string(),
         }
     }

@@ -182,6 +182,12 @@ state/cache/models。目录名用用户名，账号 id 另存账号表，princip
   GIT_CONFIG_GLOBAL` 指回真家，`~/.cargo/bin ~/.local/bin` 补进 PATH。绑定时探测内核，成员会话拒绝。
   环境块 `<host-environment sandbox="landlock" root=… writable=… readable=…>` 由策略摘要生成
   （成员回合同一条路径），绑定/解绑各一次缓存冷启动；没有 on/off。
+- **只锁写**：`/sandbox <root> --allow-read`（会话列 `sandbox_read_all`，v37）把只读侧换成一条
+  `/` 规则——Landlock 是 allow-list，这一条就覆盖全盘；写侧一个字不动，`guard_read` 吃的是同一个
+  列表所以进程内工具跟着放开，摘要写成 `readable="everything (read-only)"`。开关在绑定时定，解绑
+  时归零，因此缓存代价与绑定同一次，没有额外冷启动。**代价**：Landlock 不管网络，读放开等于
+  `~/.ssh`、`~/.miyu` 里的 key 都读得到再外发——它防的是误写，不防提示注入。工具链直通仍只看
+  `tools.sandbox` 两份清单（`granted()` 用放开前的显式清单判，否则 `CARGO_HOME` 会指到只读目录上）。
 - **进程内守卫**：read / edit / glob / grep / trash / apply_patch / print_image / vision /
   artifact / memes 都在进程内查一遍路径；`rg` 子进程也套沙盒。
 - **中转线 CLI 关进沙盒**：成员用 claude-code / codex / antigravity 时，整个 CLI 进程套同一套

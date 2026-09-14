@@ -318,6 +318,10 @@ pub enum Command {
         target: SessionRef,
         #[serde(default)]
         root: Option<std::path::PathBuf>,
+        /// `--allow-read`:读放开到整个文件系统,写照旧只在根与放行清单里。
+        /// 解绑(`root: None`)时忽略。默认 false = 读也锁,老客户端发来的帧照旧。
+        #[serde(default)]
+        allow_read: bool,
     },
     /// Pins the target session to its own model pool. An empty list clears
     /// the override so the session follows the global active pool again.

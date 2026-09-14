@@ -207,10 +207,15 @@ const MIGRATIONS: &[Migration] = &[
         name: "sandbox_root",
         apply: apply_v36_sandbox_root,
     },
+    Migration {
+        version: 37,
+        name: "sandbox_read_all",
+        apply: apply_v37_sandbox_read_all,
+    },
 ];
 
 /// Latest schema version this build produces.
-pub const LATEST_VERSION: i64 = 36;
+pub const LATEST_VERSION: i64 = 37;
 
 /// Returns the schema version currently recorded in the database.
 pub fn current_version(conn: &Connection) -> Result<i64> {
@@ -765,6 +770,30 @@ mod tests {
             )
             .unwrap();
         assert_eq!(bound, None);
+    }
+
+    /// v37 给老会话补上读放开开关,默认关:升级不会把已绑沙盒的会话读权限放开。
+    #[test]
+    fn v37_defaults_sandbox_read_all_to_locked() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&mut conn, 0, &MIGRATIONS[..36]).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), 36);
+        conn.execute(
+            "INSERT INTO sessions (session_id, persona, name, kind, workspace, created_at, updated_at) \
+             VALUES ('s1', 'miyu', 'bound', 'user', '/tmp/root', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        run_migrations(&mut conn).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), LATEST_VERSION);
+        let read_all: i64 = conn
+            .query_row(
+                "SELECT sandbox_read_all FROM sessions WHERE session_id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(read_all, 0);
     }
 
     #[test]

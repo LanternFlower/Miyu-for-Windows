@@ -7,7 +7,7 @@
 
 use crate::state::conversation_db::*;
 
-pub(crate) const SESSION_COLUMNS: &str = "session_id, persona, name, kind, parent_session_id, workspace, archived, created_at, updated_at, sort_key, owner";
+pub(crate) const SESSION_COLUMNS: &str = "session_id, persona, name, kind, parent_session_id, workspace, sandbox_read_all, archived, created_at, updated_at, sort_key, owner";
 
 pub(crate) fn session_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
     Ok(SessionRecord {
@@ -17,6 +17,7 @@ pub(crate) fn session_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Resu
         kind: row.get("kind")?,
         parent_session_id: row.get("parent_session_id")?,
         sandbox: row.get("workspace")?,
+        sandbox_read_all: row.get("sandbox_read_all")?,
         archived: row.get("archived")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,

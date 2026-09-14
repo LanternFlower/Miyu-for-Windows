@@ -8,7 +8,8 @@
 //!   自己的二进制;管理员的家、`~/.miyu` 的配置与库都摸不到。
 //! - 管理员会话绑了沙盒根(`/sandbox <路径>`,会话记录 `sandbox`)→ 工作区 = 根,
 //!   管理员策略:同样读写都锁,只比成员多配置里的工具链清单(`tools.sandbox`)与
-//!   Miyu 自己的产出目录(artifact 库、生图/深研落盘)。
+//!   Miyu 自己的产出目录(artifact 库、生图/深研落盘)。绑的时候给了
+//!   `--allow-read`(会话记录 `sandbox_read_all`)就只锁写:读放开成整个文件系统。
 //! - 其余(管理员没绑、终端、平台回合)→ 客户端 cwd,否则 daemon cwd,不套沙盒。
 
 use crate::tools::sandbox::SandboxPolicy;
@@ -53,11 +54,12 @@ pub(in crate::web) fn session_scope(
         .session_record(session_id)
         .ok()
         .flatten()
-        .and_then(|record| record.sandbox)
-        .map(PathBuf::from)
-        .filter(|root| root.is_dir());
-    if let Some(root) = bound {
-        return admin_scope(paths, config, root);
+        .and_then(|record| {
+            let root = PathBuf::from(record.sandbox?);
+            root.is_dir().then_some((root, record.sandbox_read_all))
+        });
+    if let Some((root, read_all)) = bound {
+        return admin_scope(paths, config, root, read_all);
     }
     let workspace = client_cwd
         .filter(|path| path.is_dir())
@@ -170,10 +172,13 @@ fn member_scope(
 
 /// 管理员 `/sandbox <root>` 的策略。`/sandbox` 查看也走这里,所以摘要里列的就是
 /// 真正装进规则集的东西(清单里不存在的路径不会出现)。
+///
+/// `read_all` = `--allow-read`:读放开成整个文件系统,写侧一个字不动。
 pub(in crate::web) fn admin_scope(
     paths: &MiyuPaths,
     config: &AppConfig,
     root: PathBuf,
+    read_all: bool,
 ) -> TurnScope {
     let home = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
     let expand = |value: &str| -> Option<PathBuf> {
@@ -222,8 +227,20 @@ pub(in crate::web) fn admin_scope(
     }
     read_write.retain(|path| path.exists());
 
+    // 工具链直通按**显式**清单判,所以在读放开之前留一份:不然下面那条 `/`
+    // 会让 granted() 恒真,CARGO_HOME 这类变量指到一个只读的目录上(cargo 拿不到
+    // 锁,报错比不设更难懂)。放不放行工具链仍只看 `tools.sandbox` 两份清单。
+    let toolchain_read = read_only.clone();
+    if read_all {
+        // Landlock 是 allow-list:`/` 上一条读+执行的规则就覆盖全盘,写侧不受影响
+        // (写只认 read_write)。`guard_read` 判的是同一个列表,进程内工具跟着放开
+        // ——两层一处开关。系统目录等条目被它整个包住,不必再逐条装。
+        read_only = vec![PathBuf::from("/")];
+        readable_summary = vec!["everything (read-only)".to_string()];
+    }
+
     let granted = |path: &std::path::Path| {
-        read_only
+        toolchain_read
             .iter()
             .chain(read_write.iter())
             .any(|allowed| path.starts_with(allowed))

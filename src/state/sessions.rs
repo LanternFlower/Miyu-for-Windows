@@ -325,8 +325,13 @@ impl StateStore {
         self.conv_db.reorder_sessions(ordered_ids)
     }
 
-    pub fn set_session_sandbox(&self, session_id: &str, root: Option<&str>) -> Result<()> {
-        self.conv_db.set_session_sandbox(session_id, root)
+    pub fn set_session_sandbox(
+        &self,
+        session_id: &str,
+        root: Option<&str>,
+        read_all: bool,
+    ) -> Result<()> {
+        self.conv_db.set_session_sandbox(session_id, root, read_all)
     }
 
     /// Per-session model pool override. None follows the global active pool.

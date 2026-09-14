@@ -272,7 +272,18 @@ window.MiyuCommands = (() => {
         // 与 REPL 同一条 IPC(SetSandbox):校验目录、探测内核、拒绝成员都在服务端;
         // 这里只负责把回执贴进对话流。路径是 daemon 那台机器上的路径。
         const base = `/api/sessions/${encodeURIComponent(ctx.sessionId)}`;
-        const trimmed = args.trim();
+        // `--allow-read` 前后都认，剩下的整段是路径——路径里可以有空格，所以不切词
+        // （与 REPL 的 take_repl_flag 同一套规矩）。
+        const FLAG = "--allow-read";
+        let trimmed = args.trim();
+        let allowRead = false;
+        if (trimmed === FLAG || trimmed.startsWith(`${FLAG} `)) {
+          allowRead = true;
+          trimmed = trimmed.slice(FLAG.length).trim();
+        } else if (trimmed.endsWith(` ${FLAG}`)) {
+          allowRead = true;
+          trimmed = trimmed.slice(0, -FLAG.length).trim();
+        }
         const describe = async () => {
           const response = await ctx.apiRequest(`${base}/context`);
           const info = await response.json();
@@ -283,14 +294,21 @@ window.MiyuCommands = (() => {
           const readable = (info.sandbox_readable || []).join("、");
           return `沙盒根：${info.sandbox} ｜ 可写：${writable} ｜ 可读：${readable}`;
         };
-        if (!trimmed) return done(await describe());
+        if (!trimmed) {
+          return done(allowRead ? "用法：/sandbox <路径> [--allow-read]" : await describe());
+        }
         const clearing = trimmed.toLowerCase() === "clear";
         await ctx.apiRequest(base, {
           method: "PATCH",
-          body: JSON.stringify({ sandbox: clearing ? "" : trimmed }),
+          body: JSON.stringify({
+            sandbox: clearing ? "" : trimmed,
+            sandbox_allow_read: !clearing && allowRead,
+          }),
         });
         if (clearing) return done("已解绑沙盒；之后的回合不设限");
-        return done(`已绑定：${await describe()}（只影响之后的回合）`);
+        // 读放开=把「读不到密钥」那一半关掉，回执里说明白。
+        const caveat = allowRead ? "；只锁写，读不设限（~/.ssh 与 API key 也读得到）" : "";
+        return done(`已绑定：${await describe()}（只影响之后的回合${caveat}）`);
       }
       if (spec.name === "/stop") {
         // 和点停止按钮完全一致：不留命令回显、不留回执（按钮也不留）。

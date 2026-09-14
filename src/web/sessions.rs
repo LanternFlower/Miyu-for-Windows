@@ -181,6 +181,10 @@ pub(in crate::web) struct UpdateSessionRequest {
     /// `Some("")` unbinds the session sandbox; a non-empty path binds it.
     #[serde(default)]
     pub(in crate::web) sandbox: Option<String>,
+    /// `/sandbox <路径> --allow-read`:读放开到整个文件系统,写照旧锁在根里。
+    /// 只在同一个请求里绑定时有意义。
+    #[serde(default)]
+    pub(in crate::web) sandbox_allow_read: bool,
 }
 
 #[derive(Deserialize)]
@@ -238,6 +242,7 @@ pub(in crate::web) async fn update_session_http(
             IpcCommand::SetSandbox {
                 target: target(),
                 root,
+                allow_read: request.sandbox_allow_read,
             },
         )
         .await
@@ -680,6 +685,7 @@ pub(in crate::web) fn session_record_json(record: &crate::state::SessionRecord) 
         "name": record.name,
         "kind": record.kind,
         "sandbox": record.sandbox,
+        "sandbox_read_all": record.sandbox_read_all,
         "created_at": record.created_at,
         "updated_at": record.updated_at,
         "mode": session_mode_label(record),
@@ -1109,12 +1115,13 @@ pub(in crate::web) fn session_state_for(
         context.window_assumed = matches!(source, crate::config::ContextWindowSource::Assumed);
     }
     // `/sandbox` 查看:摘要来自真正会装进规则集的策略(清单里不存在的路径不列)。
+    let read_all = record.sandbox_read_all;
     let (sandbox_writable, sandbox_readable) = record
         .sandbox
         .as_deref()
         .map(PathBuf::from)
         .filter(|root| root.is_dir())
-        .and_then(|root| admin_scope(&state.paths, &config, root).policy)
+        .and_then(|root| admin_scope(&state.paths, &config, root, read_all).policy)
         .map(|policy| {
             (
                 policy.writable_summary.clone(),

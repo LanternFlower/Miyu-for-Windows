@@ -66,6 +66,56 @@ async fn in_process_guard_follows_the_policy() {
     assert!(guard_read(&outside).is_ok(), "no policy = no guard");
 }
 
+/// `--allow-read` 的策略形状(只读根 = `/`):读哪儿都行,写仍然只在根里。
+/// 守卫与 Landlock 吃的是同一个列表,所以这里两层一起验。
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn allow_read_policy_locks_writes_only() {
+    probe().expect("BLOCKED: kernel without Landlock");
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root");
+    let outside = temp.path().join("outside");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("secret.txt"), "OUTSIDE-MARKER").unwrap();
+    let policy = Arc::new(SandboxPolicy {
+        root: root.clone(),
+        read_only: vec![PathBuf::from("/")],
+        read_write: vec![root.clone(), PathBuf::from("/dev/null")],
+        home: Some(root.clone()),
+        ..Default::default()
+    });
+    let script = format!(
+        "cat {}/secret.txt && echo ok > {}/a.txt && ! (echo no > {}/b.txt) 2>/dev/null",
+        outside.display(),
+        root.display(),
+        outside.display()
+    );
+    let (outside_in, root_in) = (outside.clone(), root.clone());
+    let (status, stdout) = with_sandbox(Some(policy), async move {
+        // 进程内守卫:根外读得到,根外写不了。
+        assert!(guard_read(&outside_in.join("secret.txt")).is_ok());
+        assert!(guard_read(std::path::Path::new("/etc/hostname")).is_ok());
+        assert!(guard_write(&outside_in.join("b.txt")).is_err());
+        assert!(guard_write(&root_in.join("a.txt")).is_ok());
+        let mut command = tokio::process::Command::new("sh");
+        command.arg("-c").arg(script);
+        confine(&mut command);
+        let output = command.output().await.unwrap();
+        (
+            output.status,
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        )
+    })
+    .await;
+    assert!(status.success(), "sandboxed shell script failed: {status}");
+    assert!(
+        stdout.contains("OUTSIDE-MARKER"),
+        "root-outside read: {stdout}"
+    );
+    assert!(!outside.join("b.txt").exists(), "write escaped the root");
+}
+
 /// 工具链直通:HOME 换根、策略里的环境变量透传、PATH 头部补目录。
 #[tokio::test]
 async fn child_env_carries_home_toolchain_and_path() {

@@ -25,6 +25,29 @@ fn usage_and_persona_are_repl_commands() {
     );
 }
 
+/// `--allow-read` 前后都摘得掉,且不按空白切词——路径里可以有空格。
+#[test]
+fn allow_read_flag_is_taken_from_either_end() {
+    assert_eq!(
+        take_repl_flag("/home/a b/c --allow-read", "--allow-read"),
+        ("/home/a b/c", true)
+    );
+    assert_eq!(
+        take_repl_flag("--allow-read /home/a b/c", "--allow-read"),
+        ("/home/a b/c", true)
+    );
+    assert_eq!(take_repl_flag("--allow-read", "--allow-read"), ("", true));
+    assert_eq!(
+        take_repl_flag("  /home/proj  ", "--allow-read"),
+        ("/home/proj", false)
+    );
+    // 前缀像但不是开关的路径不能被吃掉。
+    assert_eq!(
+        take_repl_flag("--allow-readme", "--allow-read"),
+        ("--allow-readme", false)
+    );
+}
+
 #[test]
 fn command_suggestions_are_prefixed_and_truncated() {
     let suggestions = repl_command_suggestions("/");

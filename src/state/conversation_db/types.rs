@@ -450,6 +450,9 @@ pub struct SessionRecord {
     pub parent_session_id: Option<String>,
     /// `/sandbox` 绑的根目录(列名仍叫 `workspace`,09-13 起语义=沙盒根;None=没绑)。
     pub sandbox: Option<String>,
+    /// `--allow-read`(v37):读放开到整个文件系统,写照旧只在根与放行清单里。
+    /// 没绑沙盒时无意义。
+    pub sandbox_read_all: bool,
     pub archived: bool,
     pub created_at: String,
     pub updated_at: String,

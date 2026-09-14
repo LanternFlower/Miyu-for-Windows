@@ -357,6 +357,60 @@ fn debug_is_a_global_cli_option() {
     assert_eq!(cli.message, ["--debug"]);
 }
 
+/// `miyu session sandbox <会话> <目录> --allow-read`:开关解析得出来,且与
+/// `--clear` 互斥、离开目录就不成立(clap 的 requires/conflicts 接的是字段名,
+/// 写错在 release 档是静默失效,所以这里钉一遍)。
+#[test]
+fn session_sandbox_parses_the_allow_read_switch() {
+    let parse = |args: &[&str]| {
+        parse_args(args.iter().map(OsString::from).collect()).map(|cli| match cli.command {
+            Some(Command::Session(args)) => args.command,
+            other => panic!("expected a session subcommand, got {other:?}"),
+        })
+    };
+    let command = parse(&[
+        "miyu",
+        "session",
+        "sandbox",
+        "work",
+        "/tmp/proj",
+        "--allow-read",
+    ])
+    .expect("valid invocation");
+    match command {
+        SessionCommand::Sandbox {
+            target,
+            dir,
+            clear,
+            allow_read,
+        } => {
+            assert_eq!(target, "work");
+            assert_eq!(dir.as_deref(), Some(std::path::Path::new("/tmp/proj")));
+            assert!(!clear);
+            assert!(allow_read);
+        }
+        other => panic!("expected sandbox, got {other:?}"),
+    }
+    let plain = parse(&["miyu", "session", "sandbox", "work", "/tmp/proj"]).expect("valid");
+    assert!(matches!(
+        plain,
+        SessionCommand::Sandbox {
+            allow_read: false,
+            ..
+        }
+    ));
+    assert!(parse(&[
+        "miyu",
+        "session",
+        "sandbox",
+        "work",
+        "--clear",
+        "--allow-read"
+    ])
+    .is_err());
+    assert!(parse(&["miyu", "session", "sandbox", "work", "--allow-read"]).is_err());
+}
+
 #[test]
 fn session_selection_defaults_to_the_current_entry() {
     let entry = |id: &str, is_current: bool| SessionListEntry {
@@ -366,6 +420,7 @@ fn session_selection_defaults_to_the_current_entry() {
         turns: 0,
         snippet: String::new(),
         sandbox: None,
+        sandbox_read_all: false,
         mode: "normal".to_string(),
     };
     let entries = vec![entry("default", true), entry("active", false)];

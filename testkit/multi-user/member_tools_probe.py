@@ -10,6 +10,10 @@ e2e_hello)跑一轮,把脚本工具、read、glob、edit、run_command、print_i
 读写都锁在根下、环境块带 sandbox 属性;不存在的目录 / 成员会话被拒;解绑后同一会话
 再跑一轮恢复不受限、环境块不再带 sandbox。
 
+09-14 加 `--allow-read`(同一接口带 `"sandbox_allow_read": true`):读侧整个放开(读得到
+`config/secret`、glob 得到家目录)、写侧与读写都锁时逐条相同,环境块 `readable="everything
+(read-only)"`;不带这个开关重绑一次必须归零。
+
     BIN=<miyu> python3 testkit/multi-user/member_tools_probe.py
 """
 import json
@@ -70,7 +74,7 @@ def raw_get(client, path):
     return resp.status
 
 
-def run_actor(client, sid, label, home, workspace, sandboxed):
+def run_actor(client, sid, label, home, workspace, sandboxed, read_all=False):
     view = e2e.run_turn(client, sid, "把工具都试一遍")
     turn = view["turns"][-1]
     calls = [c for r in turn.get("tool_flow", []) for c in r.get("calls", [])]
@@ -87,18 +91,26 @@ def run_actor(client, sid, label, home, workspace, sandboxed):
     reads = names.get("read", [])
     check(f"{label}: 读工作区文件成功", reads and reads[0]["ok"], reads[0]["output"][:60] if reads else "no call")
     if sandboxed:
-        check(f"{label}: 读 config/secret 被拒", len(reads) > 1 and not reads[1]["ok"] and "sandbox" in reads[1]["output"], reads[1]["output"][:80] if len(reads) > 1 else "")
+        globs = names.get("glob", [])
+        cmds = names.get("run_command", [])
+        out = cmds[0]["output"] if cmds else ""
+        if read_all:
+            # `--allow-read`(09-14):读侧整个放开,进程内守卫与 Landlock 两层都放。
+            check(f"{label}: 读 config/secret 放行(只锁写)", len(reads) > 1 and reads[1]["ok"] and "TOP-SECRET" in reads[1]["output"], reads[1]["output"][:80] if len(reads) > 1 else "")
+            check(f"{label}: glob config 目录放行", globs and globs[0]["ok"], globs[0]["output"][:80] if globs else "")
+            check(f"{label}: run_command 读得到 secret", "TOP-SECRET" in out, out[:120].replace("\n", " "))
+        else:
+            check(f"{label}: 读 config/secret 被拒", len(reads) > 1 and not reads[1]["ok"] and "sandbox" in reads[1]["output"], reads[1]["output"][:80] if len(reads) > 1 else "")
+            check(f"{label}: glob config 目录被拒", globs and not globs[0]["ok"], globs[0]["output"][:80] if globs else "")
+            denied = "Permission denied" in out or "权限不够" in out
+            check(f"{label}: run_command 读 secret 被拒", denied and "TOP-SECRET" not in out, out[:120].replace("\n", " "))
         # 系统目录(/etc /usr …)只读放行:跑程序离不开;私人的家与 ~/.miyu 才是要挡的
         check(f"{label}: 读 /etc/hostname 放行(系统目录只读)", len(reads) > 2 and reads[2]["ok"], reads[2]["output"][:80] if len(reads) > 2 else "")
-        globs = names.get("glob", [])
-        check(f"{label}: glob config 目录被拒", globs and not globs[0]["ok"], globs[0]["output"][:80] if globs else "")
+        # 写侧两档一模一样:`--allow-read` 只碰读。
         edits = names.get("edit", [])
         check(f"{label}: edit 写 config 之外被拒", edits and not edits[0]["ok"] and "sandbox" in edits[0]["output"], edits[0]["output"][:80] if edits else "")
         check(f"{label}: edit 写工作区成功", len(edits) > 1 and edits[1]["ok"] and Path(f"{workspace}/made.txt").is_file(), edits[1]["output"][:80] if len(edits) > 1 else "")
-        cmds = names.get("run_command", [])
-        out = cmds[0]["output"] if cmds else ""
-        denied = "Permission denied" in out or "权限不够" in out
-        check(f"{label}: run_command 读 secret 被拒、写工作区成功", denied and "TOP-SECRET" not in out and "WROTE" in out and Path(f"{workspace}/cmd.txt").is_file(), out[:120].replace("\n", " "))
+        check(f"{label}: run_command 写工作区成功", "WROTE" in out and Path(f"{workspace}/cmd.txt").is_file(), out[:120].replace("\n", " "))
         check(f"{label}: 沙盒外没被写", not Path(f"{home}/config/secret.txt.new").exists())
     else:
         check(f"{label}: 管理员读 config/secret 不受限", len(reads) > 1 and reads[1]["ok"], reads[1]["output"][:60] if len(reads) > 1 else "")
@@ -232,6 +244,28 @@ def main():
             check("admin-sandbox: 环境块带 sandbox 根与放行摘要",
                   'sandbox="landlock"' in system and f'root="{real_ws}"' in system and 'writable="root, /tmp' in system and 'readable="root, /tmp, system dirs' in system,
                   system[max(at - 2, 0):at + 200] if at >= 0 else system[:120])
+            # `--allow-read`(09-14):同一个根重绑一次,只锁写。读侧全开、写侧不变。
+            status, body = admin.call("PATCH", f"/api/sessions/{ssid}",
+                                      {"sandbox": str(admin_ws), "sandbox_allow_read": True})
+            check("admin-allow-read: 绑定成功", status == 200, f"{status} {json.dumps(body, ensure_ascii=False)[:80]}")
+            status, listing = admin.call("GET", "/api/sessions")
+            bound = next((s for s in listing.get("sessions", []) if s.get("session_id") == ssid), {})
+            check("admin-allow-read: 会话记录带 sandbox_read_all", bound.get("sandbox_read_all") is True, json.dumps(bound.get("sandbox_read_all")))
+            for name in ("made.txt", "cmd.txt"):
+                (admin_ws / name).unlink(missing_ok=True)
+            run_actor(admin, ssid, "admin-allow-read", str(HOME), str(admin_ws), sandboxed=True, read_all=True)
+            system = last_system()
+            at = system.find("sandbox=")
+            check("admin-allow-read: 环境块读侧写成 everything",
+                  'sandbox="landlock"' in system and f'root="{real_ws}"' in system
+                  and 'writable="root, /tmp' in system and 'readable="everything (read-only)"' in system,
+                  system[max(at - 2, 0):at + 220] if at >= 0 else system[:120])
+            # 回到读写都锁:不给开关的重绑必须把它关掉,不能继承上一次的尺度。
+            status, body = admin.call("PATCH", f"/api/sessions/{ssid}", {"sandbox": str(admin_ws)})
+            status, listing = admin.call("GET", "/api/sessions")
+            bound = next((s for s in listing.get("sessions", []) if s.get("session_id") == ssid), {})
+            check("admin-allow-read: 不带开关重绑后归零", bound.get("sandbox_read_all") is False, json.dumps(bound.get("sandbox_read_all")))
+
             status, body = admin.call("PATCH", f"/api/sessions/{ssid}", {"sandbox": str(HOME / "does-not-exist")})
             check("admin-sandbox: 绑不存在的目录被拒", status >= 400, f"{status} {json.dumps(body, ensure_ascii=False)[:100]}")
             status, body = member.call("PATCH", f"/api/sessions/{sid}", {"sandbox": str(member_ws)})

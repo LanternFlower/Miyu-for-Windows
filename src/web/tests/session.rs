@@ -1003,3 +1003,35 @@ fn session_model_override_is_applied_to_the_target_session_config() {
     apply_session_model_override_to(&mut fresh, &state.state_store, &session_id);
     assert_eq!(fresh.active_provider_models, global.active_provider_models);
 }
+
+/// `--allow-read`:只读侧塌成一条 `/`(Landlock 是 allow-list,这一条就是全盘),
+/// 可写侧一个字不动;不给这个开关时读侧仍是逐条放行的清单。
+#[test]
+fn allow_read_opens_reads_without_touching_the_write_side() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_paths(temp.path());
+    let root = temp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+    let config = AppConfig::default();
+
+    let locked = admin_scope(&paths, &config, root.clone(), false)
+        .policy
+        .expect("bound sessions always carry a policy");
+    assert!(!locked.read_only.contains(&PathBuf::from("/")));
+    assert!(locked.read_only.contains(&PathBuf::from("/usr")));
+    assert!(locked
+        .readable_summary
+        .iter()
+        .any(|entry| entry == "system dirs"));
+
+    let open = admin_scope(&paths, &config, root.clone(), true)
+        .policy
+        .expect("bound sessions always carry a policy");
+    assert_eq!(open.read_only, vec![PathBuf::from("/")]);
+    assert_eq!(open.readable_summary, vec!["everything (read-only)"]);
+    // 写侧与锁读时逐字节相同:这个开关只碰读。
+    assert_eq!(open.read_write, locked.read_write);
+    assert_eq!(open.writable_summary, locked.writable_summary);
+    assert_eq!(open.root, root);
+    assert_eq!(open.home, Some(root));
+}

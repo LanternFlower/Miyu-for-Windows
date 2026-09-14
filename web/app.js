@@ -2463,7 +2463,11 @@
     if (!renaming) {
       const snippet = firstLine(session?.last_user_content || "");
       const sandbox = String(session?.sandbox || "").trim();
-      const details = [snippet, sandbox ? `sandbox: ${sandbox}` : ""].filter(Boolean).join("\n");
+      // 只锁写的会话要和读写都锁的区分开，不然悬浮提示里长得一样。
+      const sandboxLine = sandbox
+        ? `sandbox: ${sandbox}${session?.sandbox_read_all ? "（只锁写）" : ""}`
+        : "";
+      const details = [snippet, sandboxLine].filter(Boolean).join("\n");
       if (details) {
         main.title = `${sessionDisplayName(session)}\n${details}`;
       }
@@ -3104,6 +3108,7 @@
           name: String(data?.name || ""),
           kind: "",
           sandbox: "",
+          sandbox_read_all: false,
           mode: data?.mode === "dev" ? "dev" : "normal",
           created_at: null,
           updated_at: new Date().toISOString(),
@@ -3127,6 +3132,7 @@
       const target = findSession(sessionId);
       if (target && Object.prototype.hasOwnProperty.call(data || {}, "sandbox")) {
         target.sandbox = String(data?.sandbox || "");
+        target.sandbox_read_all = Boolean(data?.sandbox_read_all);
       }
       if (Object.prototype.hasOwnProperty.call(data || {}, "model_override") && sessionId === state.viewSessionId) {
         setSessionModelOverride(sessionId, data.model_override);

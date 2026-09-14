@@ -601,7 +601,15 @@ pub(in crate::cli) fn localize_session_command(command: clap::Command) -> clap::
     for (name, en, zh) in subs {
         command = command.mut_subcommand(name, |sub| sub.about(t(en, zh)));
     }
-    command
+    // 子命令自己的开关也要跟语言走(args.rs 里的文档注释是中文)。
+    command.mut_subcommand("sandbox", |sub| {
+        sub.mut_arg("allow_read", |arg| {
+            arg.help(t(
+                "Lock writes only: reads are unrestricted (~/.ssh and API keys included)",
+                "只锁写:读不设限(~/.ssh 与 API key 也读得到)",
+            ))
+        })
+    })
 }
 
 pub(in crate::cli) fn localize_models_command(command: clap::Command) -> clap::Command {

@@ -479,6 +479,7 @@ impl ConversationDb {
             kind: "user".to_string(),
             parent_session_id: None,
             sandbox: None,
+            sandbox_read_all: false,
             archived: false,
             created_at: now.clone(),
             updated_at: now,
@@ -498,9 +499,30 @@ impl ConversationDb {
         self.update_session_field(session_id, "persona", Some(persona))
     }
 
-    /// `/sandbox` 绑定/解绑:根目录进 `workspace` 列(列名沿用,语义=沙盒根)。
-    pub fn set_session_sandbox(&self, session_id: &str, root: Option<&str>) -> Result<()> {
-        self.update_session_field(session_id, "workspace", root)
+    /// `/sandbox` 绑定/解绑:根目录进 `workspace` 列(列名沿用,语义=沙盒根),
+    /// `--allow-read` 的读放开开关进 `sandbox_read_all`。两列一条语句写,解绑时
+    /// 开关跟着归零——不然下次绑定会悄悄继承上一次的尺度。
+    pub fn set_session_sandbox(
+        &self,
+        session_id: &str,
+        root: Option<&str>,
+        read_all: bool,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let updated = conn.execute(
+            "UPDATE sessions SET workspace = ?2, sandbox_read_all = ?3, updated_at = ?4 \
+             WHERE session_id = ?1",
+            params![
+                session_id,
+                root,
+                root.is_some() && read_all,
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        if updated == 0 {
+            bail!("session not found: {session_id}");
+        }
+        Ok(())
     }
 
     /// JSON-encoded per-session model pool override

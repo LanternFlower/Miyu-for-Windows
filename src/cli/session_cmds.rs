@@ -8,7 +8,9 @@ use crate::cli::args::{ModelsArgs, SessionCommand};
 use crate::cli::exit_code::usage_error;
 use crate::cli::model_cmds::{run_models_for_session, session_model_override_snapshot};
 use crate::cli::pop_cmds::{print_pop_outcome, PopOutcome};
-use crate::cli::repl::session::{session_admin, session_admin_streaming, SessionListEntry};
+use crate::cli::repl::session::{
+    sandbox_tag, session_admin, session_admin_streaming, SessionListEntry,
+};
 use crate::cli::turn_request::{
     create_named_session, list_managed_sessions, resolve_managed_session,
 };
@@ -39,11 +41,7 @@ fn print_session_table(entries: &[SessionListEntry]) {
     }
     for (index, entry) in entries.iter().enumerate() {
         let current = if entry.is_current { "*" } else { " " };
-        let sandbox = entry
-            .sandbox
-            .as_deref()
-            .map(|path| format!("  [sandbox {path}]"))
-            .unwrap_or_default();
+        let sandbox = sandbox_tag(entry);
         println!(
             "{current}{:>3}  {:<6} {:>4}  {}{}  {}",
             index + 1,
@@ -84,6 +82,7 @@ async fn session_detail(paths: &MiyuPaths, entry: &SessionListEntry) -> Result<V
         "turn_count": entry.turns,
         "last_user_content": entry.snippet,
         "sandbox": sandbox.or_else(|| entry.sandbox.clone()),
+        "sandbox_read_all": entry.sandbox_read_all,
         "context_tokens": context_tokens,
         "context_window": context_window,
         "context_window_assumed": context_window_assumed,
@@ -105,12 +104,23 @@ fn print_session_detail(detail: &Value) {
             })
             .unwrap_or_else(|| "-".to_string())
     };
+    let sandbox = match field("sandbox") {
+        root if root != "-"
+            && detail
+                .get("sandbox_read_all")
+                .and_then(Value::as_bool)
+                .unwrap_or(false) =>
+        {
+            format!("{root}  [{}]", t("writes only", "只锁写"))
+        }
+        root => root,
+    };
     let rows = [
         (t("session", "会话"), field("name")),
         ("id", field("session_id")),
         (t("mode", "模式"), field("mode")),
         (t("turns", "轮数"), field("turn_count")),
-        (t("sandbox", "沙盒"), field("sandbox")),
+        (t("sandbox", "沙盒"), sandbox),
         (
             t("context", "上下文"),
             format!("{} / {}", field("context_tokens"), field("context_window")),
@@ -305,16 +315,21 @@ pub(in crate::cli) async fn run_session_command(
             .await
             .map(|_| ())
         }
-        SessionCommand::Sandbox { target, dir, clear } => {
+        SessionCommand::Sandbox {
+            target,
+            dir,
+            clear,
+            allow_read,
+        } => {
             let entry = resolve_managed_session(paths, &target).await?;
             if !clear && dir.is_none() {
-                println!(
-                    "{}",
-                    entry
-                        .sandbox
-                        .as_deref()
-                        .unwrap_or(t("(no sandbox bound)", "(未绑定沙盒)"))
-                );
+                match entry.sandbox.as_deref() {
+                    Some(root) if entry.sandbox_read_all => {
+                        println!("{root}  [{}]", t("writes only", "只锁写"))
+                    }
+                    Some(root) => println!("{root}"),
+                    None => println!("{}", t("(no sandbox bound)", "(未绑定沙盒)")),
+                }
                 return Ok(());
             }
             let root = match dir {
@@ -332,15 +347,21 @@ pub(in crate::cli) async fn run_session_command(
                 IpcCommand::SetSandbox {
                     target: session_ref(&entry),
                     root: root.clone(),
+                    allow_read,
                 },
             )
             .await?;
             match root {
                 Some(root) => println!(
-                    "{}: {} → {}",
+                    "{}: {} → {}{}",
                     t("sandbox bound", "已绑定沙盒"),
                     entry.name,
-                    root.display()
+                    root.display(),
+                    if allow_read {
+                        format!("  [{}]", t("writes only", "只锁写"))
+                    } else {
+                        String::new()
+                    }
                 ),
                 None => println!("{}: {}", t("sandbox cleared", "已解绑沙盒"), entry.name),
             }

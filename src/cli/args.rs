@@ -328,6 +328,9 @@ pub enum SessionCommand {
         dir: Option<PathBuf>,
         #[arg(long, conflicts_with = "dir")]
         clear: bool,
+        /// 只锁写:读不设限(~/.ssh 与 API key 也读得到)
+        #[arg(long = "allow-read", requires = "dir", conflicts_with = "clear")]
+        allow_read: bool,
     },
 }
 

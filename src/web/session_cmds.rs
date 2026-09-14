@@ -477,7 +477,11 @@ pub(in crate::web) async fn handle_session_command(
             );
             Ok(json!({}))
         }
-        IpcCommand::SetSandbox { target, root } => {
+        IpcCommand::SetSandbox {
+            target,
+            root,
+            allow_read,
+        } => {
             let record = resolve_local_session_ref(state, &target)?;
             // 成员的沙盒定死在自己家里,不归他们自己管。
             if let Some(owner) = state.stores.owner_of_session(&record.session_id) {
@@ -525,14 +529,19 @@ pub(in crate::web) async fn handle_session_command(
                 }
                 None => None,
             };
+            let read_all = root.is_some() && allow_read;
             state
                 .stores
                 .for_session(&record.session_id)
-                .set_session_sandbox(&record.session_id, root.as_deref())
+                .set_session_sandbox(&record.session_id, root.as_deref(), read_all)
                 .map_err(|error| safe_error_message(&error))?;
             state.events.publish(
                 "session.updated",
-                json!({ "session_id": record.session_id, "sandbox": root }),
+                json!({
+                    "session_id": record.session_id,
+                    "sandbox": root,
+                    "sandbox_read_all": read_all,
+                }),
             );
             Ok(json!({}))
         }

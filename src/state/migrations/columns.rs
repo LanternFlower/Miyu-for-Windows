@@ -330,3 +330,14 @@ pub(in crate::state) fn apply_v36_sandbox_root(conn: &Connection) -> Result<()> 
     )?;
     Ok(())
 }
+
+/// v37: `/sandbox <路径> --allow-read` 的读放开开关(09-14)。没绑沙盒时这一列没有
+/// 意义;默认 0 = 读也锁,老会话升级后尺度不变。
+pub(in crate::state) fn apply_v37_sandbox_read_all(conn: &Connection) -> Result<()> {
+    add_column_if_missing(
+        conn,
+        "sessions",
+        "sandbox_read_all",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+}

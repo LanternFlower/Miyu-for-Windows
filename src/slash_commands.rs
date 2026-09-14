@@ -17,6 +17,25 @@ pub(crate) fn split_repl_command(input: &str) -> (&str, &str) {
     };
     (command, args)
 }
+
+/// 从参数串里摘掉一个开关(前后都认),剩下的整段原样留给调用方。
+///
+/// **不按空白切词**:`/sandbox` 的参数是路径,路径里可以有空格,今天
+/// `/sandbox /home/a b/c` 是能用的,切词会把它拆坏。
+pub(crate) fn take_repl_flag<'a>(args: &'a str, flag: &str) -> (&'a str, bool) {
+    let args = args.trim();
+    if let Some(rest) = args.strip_prefix(flag) {
+        if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+            return (rest.trim(), true);
+        }
+    }
+    if let Some(rest) = args.strip_suffix(flag) {
+        if rest.ends_with(char::is_whitespace) {
+            return (rest.trim(), true);
+        }
+    }
+    (args, false)
+}
 /// Identity of a REPL slash command, dispatched via `parse_repl_input`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReplSlashCommand {
@@ -114,9 +133,9 @@ pub(crate) const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     ReplCommandSpec {
         name: "/sandbox",
         command: ReplSlashCommand::Sandbox,
-        arg_hint: "[path|clear]",
-        help_en: "confine this session to a directory (Landlock); no arg shows, `clear` unbinds",
-        help_zh: "把本会话关进某个目录(Landlock 沙盒);不带参数查看,clear 解绑",
+        arg_hint: "[path [--allow-read]|clear]",
+        help_en: "confine this session to a directory (Landlock); `--allow-read` locks writes only, no arg shows, `clear` unbinds",
+        help_zh: "把本会话关进某个目录(Landlock 沙盒);--allow-read 只锁写、读放开,不带参数查看,clear 解绑",
         // WebUI 也开(09-13 用户拍板):浏览器里没有别的入口能做这件事。成员会话
         // 本来就关在自己家里,daemon 侧一律拒绝。
         web: true,

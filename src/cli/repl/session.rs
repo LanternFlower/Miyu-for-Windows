@@ -384,6 +384,8 @@ pub(in crate::cli) struct SessionListEntry {
     pub(in crate::cli) snippet: String,
     /// `/sandbox` 绑的根;None = 没绑。
     pub(in crate::cli) sandbox: Option<String>,
+    /// 绑的时候给了 `--allow-read`:只锁写,读不设限。
+    pub(in crate::cli) sandbox_read_all: bool,
     /// "dev" | "normal",由 daemon 按会话人格推导。
     pub(in crate::cli) mode: String,
 }
@@ -425,6 +427,10 @@ pub(in crate::cli) fn session_list_entry(session: &serde_json::Value) -> Session
             })
             .unwrap_or_default(),
         sandbox: text("sandbox"),
+        sandbox_read_all: session
+            .get("sandbox_read_all")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
         mode: text("mode").unwrap_or_else(|| "normal".to_string()),
     }
 }
@@ -468,10 +474,18 @@ pub(in crate::cli) fn session_select_line(
         line.push_str(" · ");
         line.push_str(&entry.snippet);
     }
-    if let Some(sandbox) = &entry.sandbox {
-        line.push_str(&format!("  [sandbox {sandbox}]"));
-    }
+    line.push_str(&sandbox_tag(entry));
     line
+}
+
+/// 列表行尾的沙盒标。读放开的会话要看得出来——否则「关进去了」和「只关了写」
+/// 在列表里长得一模一样。
+pub(in crate::cli) fn sandbox_tag(entry: &SessionListEntry) -> String {
+    match (&entry.sandbox, entry.sandbox_read_all) {
+        (Some(root), true) => format!("  [sandbox {root}, {}]", t("writes only", "只锁写")),
+        (Some(root), false) => format!("  [sandbox {root}]"),
+        (None, _) => String::new(),
+    }
 }
 
 pub(in crate::cli) fn session_select_search(entry: &SessionListEntry) -> String {
