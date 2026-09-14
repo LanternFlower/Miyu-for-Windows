@@ -97,6 +97,21 @@ def run_capture(cmd, args):
 
 
 def list_clipboard_targets():
+    if sys.platform == "darwin":
+        out = run_capture("osascript", ["-e", "clipboard info"])
+        if out is None:
+            return []
+        targets = []
+        raw = out.decode("utf-8", errors="replace").strip()
+        if "PNG" in raw or "PNGf" in raw:
+            targets.append("image/png")
+        if "JPEG" in raw or "JPEGf" in raw:
+            targets.append("image/jpeg")
+        if "TIFF" in raw or "TIFFf" in raw:
+            targets.append("image/tiff")
+        if "utf8" in raw or "string" in raw or "Unicode text" in raw:
+            targets.append("text/plain")
+        return targets
     for cmd, args in (("wl-paste", ["-l"]),
                       ("xclip", ["-selection", "clipboard", "-t", "TARGETS", "-o"])):
         out = run_capture(cmd, args)
@@ -110,9 +125,12 @@ def list_clipboard_targets():
 
 
 def read_clipboard_text():
-    for cmd, args in (("wl-paste", []),
-                      ("xclip", ["-selection", "clipboard", "-o"]),
-                      ("xsel", ["--clipboard", "--output"])):
+    commands = (("pbpaste", []),) if sys.platform == "darwin" else (
+        ("wl-paste", []),
+        ("xclip", ["-selection", "clipboard", "-o"]),
+        ("xsel", ["--clipboard", "--output"])
+    )
+    for cmd, args in commands:
         out = run_capture(cmd, args)
         if out is None:
             continue
@@ -123,6 +141,23 @@ def read_clipboard_text():
 
 
 def read_clipboard_image_of(mime):
+    if sys.platform == "darwin":
+        if command_exists("pngpaste"):
+            out = run_capture("pngpaste", ["-"])
+            if out is not None and len(out) <= MAX_CLIPBOARD_IMAGE_BYTES:
+                return "image/png", out
+        out = run_capture("osascript", ["-e", "try", "-e", "get the clipboard as «class PNGf»", "-e", "end try"])
+        if out is not None:
+            text = out.decode("utf-8", errors="replace").strip()
+            if text.startswith("«data PNGf") and text.endswith("»"):
+                hex_str = text[len("«data PNGf"):-1]
+                try:
+                    img_bytes = bytes.fromhex(hex_str)
+                    if len(img_bytes) <= MAX_CLIPBOARD_IMAGE_BYTES:
+                        return "image/png", img_bytes
+                except ValueError:
+                    pass
+        return None
     for cmd, args in (("wl-paste", ["-t", mime]),
                       ("xclip", ["-selection", "clipboard", "-t", mime, "-o"])):
         out = run_capture(cmd, args)
@@ -295,19 +330,21 @@ def read_args():
 
 def main():
     try:
-        if sys.platform != "linux":
-            raise Failed("read_clipboard currently only supports Linux", None, {"kind": "clipboard"})
+        if sys.platform not in ("linux", "darwin"):
+            raise Failed("read_clipboard currently only supports Linux and macOS", None, {"kind": "clipboard"})
         args = read_args()
         preferred = args.get("preferred_type")
         preferred = (preferred.strip() if isinstance(preferred, str) else "auto") or "auto"
         if preferred not in ("auto", "text", "image"):
             raise Failed(f"unsupported preferred_type: {preferred}", "use auto, text or image")
-        if preferred == "image":
+        if sys.platform == "darwin":
+            backends, required_tools = ("pbpaste", "osascript"), ["pbpaste"]
+        elif preferred == "image":
             backends, required_tools = ("wl-paste", "xclip"), ["wl-clipboard", "xclip"]
         else:
             backends, required_tools = ("wl-paste", "xclip", "xsel"), ["wl-clipboard", "xclip", "xsel"]
         if not any(command_exists(b) for b in backends):
-            raise Failed("No supported clipboard backend found. Install wl-clipboard, xclip, or xsel.",
+            raise Failed("No supported clipboard backend found.",
                          f"install one of: {', '.join(required_tools)}",
                          {"kind": "clipboard", "required_tools": required_tools})
         # preferred_type is a legacy hint: every value runs the same auto-detection
