@@ -2167,6 +2167,13 @@
           default: "",
           nullable: true,
         },
+        {
+          key: "ignore_sleep_hours",
+          label: "忽略睡眠时间",
+          hint: "勾上之后,就算配置了睡眠时间,这个会话在睡眠时段照样正常对话",
+          kind: "boolean",
+          default: false,
+        },
       ],
     },
   };

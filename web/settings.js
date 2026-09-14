@@ -2409,6 +2409,7 @@ window.MiyuSettings = (() => {
     if (route.session_limits) chips.push(chip(`并行 ${route.session_limits.running}`, "is-soft"));
     if (route.probability_reply === false) chips.push(chip("概率主动回复：关", "is-soft"));
     else if (route.probability_reply === true) chips.push(chip("概率主动回复：开", "is-soft"));
+    if (route.ignore_sleep_hours === true) chips.push(chip("忽略睡眠时间", "is-soft"));
     return chips;
   }
 
@@ -2458,6 +2459,17 @@ window.MiyuSettings = (() => {
             if (value === "on") route.probability_reply = true;
             else if (value === "off") route.probability_reply = false;
             else delete route.probability_reply;
+            dirty();
+          }
+        };
+      }
+      // 忽略睡眠时间:缺省与 false 是同一个意思,关掉就把键删了别留死值。
+      if (key === "ignore_sleep_hours") {
+        return {
+          get: () => route.ignore_sleep_hours === true,
+          set: (value) => {
+            if (value) route.ignore_sleep_hours = true;
+            else delete route.ignore_sleep_hours;
             dirty();
           }
         };
