@@ -36,22 +36,19 @@ class OwnedReaper:
                 pass
 
     def reap(self, home):
+        """Stop adopted descendants. Environment values do not prove ownership."""
         if not self.enabled:
             return []
         records = []
-        children = Path(f'/proc/self/task/{os.getpid()}/children')
-        expected = f'MIYU_HOME={home}'.encode()
         deadline = time.monotonic() + 5
         while True:
             owned = []
-            for value in children.read_text().split():
-                pid = int(value)
+            # The supervisor launches serially. Its subreaper boundary owns new
+            # direct children, including detached/execed/cleared-environment ones.
+            # Preexisting children remain outside that boundary, even if their
+            # environment happens to contain the same MIYU_HOME.
+            for pid in self._children() - self.preexisting:
                 try:
-                    # Only direct children adopted by this harness, matched to its exact home.
-                    with open(f'/proc/{pid}/environ', 'rb') as stream:
-                        environment = stream.read().split(b'\0')
-                    if expected not in environment:
-                        continue
                     identity = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]
                     owned.append((pid, identity))
                 except (FileNotFoundError,ProcessLookupError):
@@ -61,7 +58,10 @@ class OwnedReaper:
             for pid, identity in owned:
                 # Unreaped direct children cannot have their PID reused.
                 os.kill(pid, signal.SIGKILL)
-                os.waitpid(pid, 0)
+                while os.waitpid(pid, os.WNOHANG) == (0, 0):
+                    if time.monotonic() > deadline:
+                        raise RuntimeError('Test descendants did not terminate within cleanup deadline.')
+                    time.sleep(.01)
                 records.append({'pid': pid, 'start_ticks': identity})
             if time.monotonic() > deadline:
                 raise RuntimeError('Test descendants did not terminate within cleanup deadline.')

@@ -349,6 +349,13 @@ pub fn configured_print_size(print_config: &PrintImagePluginConfig) -> Option<St
 ///
 /// 全屏下按**正文区**，不是整屏：正文左右有页边距、下边压着活动区，按整屏的
 /// 百分比算出来的格子数会比实际能放的多，一张图就能把输入框顶出屏幕。
+#[cfg(test)]
+fn display_grid() -> Option<(u16, u16)> {
+    // Unit tests run without a controlling terminal on CI.
+    Some((80, 24))
+}
+
+#[cfg(not(test))]
 fn display_grid() -> Option<(u16, u16)> {
     if let Some(viewport) = crate::cli::content_viewport() {
         return Some(viewport);

@@ -6,21 +6,21 @@
 
 pkgname=miyu-voice
 pkgver=0.6.0
-pkgrel=1
+pkgrel=2
 pkgdesc='Miyu 语音前端：唤醒词 + 本地语音识别(SenseVoice / sherpa-onnx)，可选组件'
 arch=('x86_64')
 url='https://github.com/SHORiN-KiWATA/miyu-agent'
 license=('MIT')
 options=('!strip' '!debug')
 export LC_ALL=C.UTF-8
-_release_pkgrel=1
+_release_pkgrel=2
 depends=("miyu=${pkgver}-${_release_pkgrel}" 'alsa-lib' 'bzip2' 'gcc-libs' 'glibc')
 optdepends=('libnotify: desktop notifications when Miyu hears you')
 source=(
   "${pkgname}-${pkgver}-${_release_pkgrel}-${CARCH}.release.pkg.tar.zst::${url}/releases/download/v${pkgver}/${pkgname}-${pkgver}-${_release_pkgrel}-${CARCH}.pkg.tar.zst"
 )
 sha256sums=(
-  '3d44ff473f1e21200add04ae8e017e62a1857ed7f21106b39c227f3efaeffb0a'
+  '83434e45c7099d7717569a262fa32e7d1ae8eaf244aade299775b684d24ac343'
 )
 
 # Keep the last published version and checksum until channel_update records

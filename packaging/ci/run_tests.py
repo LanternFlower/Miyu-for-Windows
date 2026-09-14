@@ -59,6 +59,7 @@ def main():
     except ValueError as error:
         parser.error(str(error))
     report = {'schema_version': 1, 'suite': args.suite, 'status': 'BLOCKED', 'commands': []}
+    supervisor = None
     try:
         with Sandbox() as box, ProcessSupervisor() as supervisor:
             report.update(run_id=box.run_id, sandbox_root=str(box.root))
@@ -68,6 +69,10 @@ def main():
         report['reason'] = str(error)
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         report.update(status='FAIL', reason=str(error))
+    finally:
+        if supervisor is not None:
+            # A cleanup exception must not erase discovery/test exit codes or logs.
+            report['commands'] = supervisor.results
     write_json(report_dir/'report.json', report)
     print(f"{report['status']}: {report.get('reason', '')} Report: {report_dir/'report.json'}")
     return {'PASS': 0, 'FAIL': 1, 'BLOCKED': 3}[report['status']]

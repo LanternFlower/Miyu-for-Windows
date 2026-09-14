@@ -27,7 +27,7 @@
 
 思考、命令、编辑和回答串成一条时间线。运行中的步骤有转轮，命令下方显示六行实时输出，编辑可以查看 diff。过程结束后收成 `Worked for … · tools · thoughts` 一行，点开还能逐步查看参数、完整输出与修改。
 
-![TUI 时间线，用户提供的实机截图](https://raw.githubusercontent.com/SHORiN-KiWATA/miyu-agent/v0.6.0/docs/releases/0.6.0/screenshots/tui-timeline.png)
+![TUI 时间线实机截图](https://raw.githubusercontent.com/SHORiN-KiWATA/miyu-agent/v0.6.0/docs/releases/0.6.0/screenshots/tui-timeline.png)
 
 - 正文从顶部开始，输入框固定在底部；可以滚动回看、拖选复制、点击链接。
 - 子代理和后台子代理各有自己的时间线浮层，显示思考、工具、Markdown 正文、实时词元与耗时；运行期间也可以继续给后台子代理追加指令。
@@ -42,7 +42,7 @@
 
 AI 正文直接铺在页面上，工具过程用细线连接图标，失败步骤单独标红。思考收起时仍能看到尾部内容；连续工具调用结束后默认自动收起，耗时落库，刷新或换设备回看仍保留。回复运行中继续发送的消息会出现在对话末尾，并可在轮到之前撤下。
 
-![WebUI 时间线，用户提供的实机截图](https://raw.githubusercontent.com/SHORiN-KiWATA/miyu-agent/v0.6.0/docs/releases/0.6.0/screenshots/webui-timeline.png)
+![WebUI 时间线实机截图](https://raw.githubusercontent.com/SHORiN-KiWATA/miyu-agent/v0.6.0/docs/releases/0.6.0/screenshots/webui-timeline.png)
 
 - **可交互 artifact**：HTML 预览可以执行脚本、响应按钮和绘制图表；内置 ECharts 6.1.0、KaTeX 与 Prism，无需联网取库。预览继续隔离登录凭证、浏览器存储和外网访问。
 - SVG 与 PNG / JPEG / WebP / GIF 可缩放、平移；CSV / TSV 显示为表格；源码预览有语法高亮。
@@ -102,7 +102,7 @@ AI 正文直接铺在页面上，工具过程用细线连接图标，失败步�
 
 ## 下载与安装
 
-附件仅提供 **Linux x86_64** 的六个发行版安装包。主包自带字体、语义模型、表情、脚本、默认知识库和许可证；语音为可选包，需要与主包安装相同修订。
+附件仅提供 **Linux x86_64** 的六个发行版安装包。主包自带字体、语义模型、表情、脚本、默认知识库和许可证；语音为可选包，需要与主包安装相同修订。已安装语音的用户请在同一条安装命令中同时指定主包与语音包。
 
 | 发行版 | 主包 | 可选语音包 |
 | --- | --- | --- |
@@ -122,3 +122,21 @@ sudo dnf install ./miyu-0.6.0-2.fc44.x86_64.rpm
 ```
 
 [完整更新记录（根据 next-release-note 归档）](https://github.com/SHORiN-KiWATA/miyu-agent/blob/v0.6.0/docs/releases/0.6.0/changelog.md)
+
+五个干净容器的实际安装、资源与版本检查以及 `opencodego/deepseek-v4.1-flash` 回复验收全部通过（36 项检查）。
+
+本次包修订重新编译了默认全屏修复，`v0.6.0` 的源码指向同步更新为 [9142225c](https://github.com/SHORiN-KiWATA/miyu-agent/commit/9142225c0adeb4e3740586c440ab085d5f36feb2)。
+
+<details>
+<summary>SHA256 校验值（六个安装包）</summary>
+
+```text
+95989eae52241c6c29929add6b98f7934ceb1e631a67b950cdfedc6d42824eeb  miyu-0.6.0-2-x86_64.pkg.tar.zst
+09bbfc8c01a03fc06e9ded278f79a75cdc11c2bb395442433a52d636d8480fee  miyu-0.6.0-2.fc44.x86_64.rpm
+83434e45c7099d7717569a262fa32e7d1ae8eaf244aade299775b684d24ac343  miyu-voice-0.6.0-2-x86_64.pkg.tar.zst
+8f29451f30a325030264bae12b1a5389556bf530188e4ef0056ef3cb628e82a7  miyu-voice-0.6.0-2.fc44.x86_64.rpm
+a0bf7ef5a704cec949abfab78b59edcc280a09894b964aaa997ef827b08b7de0  miyu-voice_0.6.0-2_amd64.deb
+0699d521ae34a7628c2acd15c661247dfe9d47462388f7db25ca2438179bbe29  miyu_0.6.0-2_amd64.deb
+```
+
+</details>

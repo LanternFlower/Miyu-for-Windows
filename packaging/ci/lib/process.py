@@ -12,6 +12,7 @@ from .reaper import OwnedReaper
 class ProcessSupervisor:
     def __init__(self):
         self.children = []
+        self.results = []
         self.reaper = OwnedReaper()
         self.homes = set()
 
@@ -31,6 +32,7 @@ class ProcessSupervisor:
             result = {'command': list(map(str, argv)), 'pid': child.pid,
                       'started_monotonic_ns': time.monotonic_ns(), 'timed_out': False,
                       'log': str(log)}
+            self.results.append(result)
             # A live unreaped child pins its PID; it cannot be reused during cleanup.
             try:
                 deadline = time.monotonic() + timeout
@@ -42,13 +44,21 @@ class ProcessSupervisor:
                     time.sleep(0.02)
             finally:
                 # Also stop workers still in the owned group after parent exit.
-                self._stop(child)
-                self.children.remove(child)
-                result['reaped_descendants'] = self.reaper.reap(env.get('MIYU_HOME', ''))
-                reader.join(timeout=5)
-                if reader.is_alive():
-                    raise RuntimeError('A test descendant retained the output pipe after cleanup.')
-                child.stdout.close()
+                try:
+                    self._stop(child)
+                    self.children.remove(child)
+                    result['exit_code'] = child.returncode
+                    result['reaped_descendants'] = self.reaper.reap(env.get('MIYU_HOME', ''))
+                except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                    result['cleanup_error'] = str(error)
+                    raise
+                finally:
+                    reader.join(timeout=5)
+                    if reader.is_alive():
+                        error = 'A test descendant retained the output pipe after cleanup.'
+                        result.setdefault('cleanup_error', error)
+                        raise RuntimeError(error)
+                    child.stdout.close()
             result['exit_code'] = child.returncode
             return result
 
