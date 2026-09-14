@@ -63,6 +63,7 @@ pub(crate) use scripts::{
     scripts_dashboard_source,
 };
 pub(crate) use skills::{apply_skill_refresh, prepare_skill_refresh};
+pub(crate) use web::search_for_webui;
 
 /// 把「一串字符串」参数收成 Vec，容忍模型真会传的几种形状。
 ///

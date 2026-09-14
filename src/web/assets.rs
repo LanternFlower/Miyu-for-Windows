@@ -189,6 +189,10 @@ pub(in crate::web) async fn index_asset(headers: HeaderMap) -> Response {
                 concat!("src=\"/todos.js?v=", env!("MIYU_BUILD_ID"), "\""),
             )
             .replace(
+                "src=\"/selectionmenu.js\"",
+                concat!("src=\"/selectionmenu.js?v=", env!("MIYU_BUILD_ID"), "\""),
+            )
+            .replace(
                 "src=\"/shared.js\"",
                 concat!("src=\"/shared.js?v=", env!("MIYU_BUILD_ID"), "\""),
             )
@@ -287,6 +291,14 @@ pub(in crate::web) async fn todos_js_asset(headers: HeaderMap) -> Response {
     embedded_asset(
         &headers,
         TODOS_JS.as_bytes(),
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(in crate::web) async fn selectionmenu_js_asset(headers: HeaderMap) -> Response {
+    embedded_asset(
+        &headers,
+        SELECTION_MENU_JS.as_bytes(),
         "application/javascript; charset=utf-8",
     )
 }

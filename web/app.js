@@ -12674,6 +12674,16 @@
     elements.sidebarSettingsButton.addEventListener("click", (event) => openSettings(event.currentTarget));
     elements.artifactToggleButton.addEventListener("click", () => setArtifactWorkspaceOpen(!state.artifactOpen));
     elements.artifactCloseButton.addEventListener("click", () => setArtifactWorkspaceOpen(false));
+    // 聊天正文选中文字的右键菜单(selectionmenu.js)。
+    window.MiyuSelectionMenu?.mount({
+      root: elements.chatScroll,
+      composer: elements.composerInput,
+      resizeComposer,
+      apiRequest,
+      renderMarkdown,
+      getSessionId: () => state.viewSessionId || state.currentSessionId,
+      toast: showToast,
+    });
     elements.artifactPreviewButton.addEventListener("click", () => setArtifactMode("preview"));
     elements.artifactSourceButton.addEventListener("click", () => setArtifactMode("source"));
     elements.artifactImageZoomOutButton.addEventListener("click", () => changeArtifactImageZoom(-0.25));
