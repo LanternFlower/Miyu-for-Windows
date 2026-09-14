@@ -375,8 +375,15 @@ mod tests {
         let hook = hook();
         // 取未展开的原文:--tokens-expanded 会真的跑命令替换,放在每次回车上按不得。
         assert!(hook.contains("commandline --input=\"$argv[1]\" --tokens-raw"));
-        // --tokens-expanded 只剩原来那一处(多行分支/兜底走它),新路没再加一处。
-        assert_eq!(hook.matches("--tokens-expanded").count(), 1);
+        // 真正调用 --tokens-expanded 的只剩原来那一处(多行分支/兜底走它),新路
+        // 没再加一处。只数代码行:hook 里的注释也提到这个名字,连注释一起数会
+        // 把「改了一句注释」变成红测。
+        let expanded_calls = hook
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .filter(|line| line.contains("--tokens-expanded"))
+            .count();
+        assert_eq!(expanded_calls, 1, "{hook}");
         // 通配符不在首词黑名单里:命令位上出现 * ? [ ],本来就说明这不是命令名。
         let class = "'[\\x27\"$()~{}%;&|<>#^!\\x5c\\s]'";
         assert!(hook.contains(class), "首词黑名单变了:\n{hook}");
