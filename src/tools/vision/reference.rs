@@ -41,6 +41,21 @@ pub(crate) struct ScopedVisionState {
     pub(crate) total_bytes: AtomicUsize,
 }
 
+/// 取一次抓取配额:没超上限就 +1 并返回 true,超了返回 false(计数不动)。
+///
+/// `try_update` 是 `fetch_update` 的新名字,但它到 1.96 才稳定,而 CI 按
+/// Cargo.toml 的 rust-version=1.89 跑 MSRV 检查(`cargo check --locked
+/// --all-targets`),那边用新名会 E0658。MSRV 抬到 1.96 之后换成 try_update
+/// 并删掉这个 allow——两个调用点共用这一个函数,就是为了那时只改一处。
+#[allow(deprecated)]
+fn take_fetch_budget(fetches: &AtomicUsize) -> bool {
+    fetches
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            (count < MAX_SCOPED_CONTEXT_FETCHES).then_some(count + 1)
+        })
+        .is_ok()
+}
+
 /// 生图参考图的引用解析器:把一个引用(本轮图片路径 / context_image_N /
 /// 可信头像 URL / 普通本地路径或 URL)解析成图片字节与 MIME。
 ///
@@ -163,13 +178,7 @@ pub(crate) async fn resolve_context_image(
         .platform_context
         .as_ref()
         .context("platform image lookup is unavailable")?;
-    if state
-        .fetches
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-            (count < MAX_SCOPED_CONTEXT_FETCHES).then_some(count + 1)
-        })
-        .is_err()
-    {
+    if !take_fetch_budget(&state.fetches) {
         bail!("context image fetch limit reached for the current platform turn")
     }
     let images = match context.message_images_task(source.message_id.clone()).await {
@@ -282,13 +291,7 @@ pub(crate) async fn resolve_context_file(
         .platform_context
         .as_ref()
         .context("platform file lookup is unavailable")?;
-    if state
-        .fetches
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-            (count < MAX_SCOPED_CONTEXT_FETCHES).then_some(count + 1)
-        })
-        .is_err()
-    {
+    if !take_fetch_budget(&state.fetches) {
         bail!("context media fetch limit reached for the current platform turn")
     }
     let download = match context.fetch_platform_file_task(source.clone()).await {

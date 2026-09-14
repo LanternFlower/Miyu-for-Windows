@@ -80,14 +80,17 @@ impl SessionTurnTicket {
                     return Err(SessionTurnAcquireError::Closed)
                 }
                 Err(tokio::sync::TryAcquireError::NoPermits) => {
-                    if self
-                        .state
-                        .waiting
-                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |waiting| {
-                            (waiting < self.state.max_queued).then_some(waiting + 1)
-                        })
-                        .is_err()
-                    {
+                    // `try_update` 是同一个方法的新名字,但它到 1.96 才稳定,而
+                    // CI 按 Cargo.toml 的 rust-version=1.89 跑 MSRV 检查
+                    // (`cargo check --locked --all-targets`),那边用新名会 E0658。
+                    // MSRV 抬到 1.96 之后把这里换成 try_update 并删掉 allow。
+                    #[allow(deprecated)]
+                    let queued = self.state.waiting.fetch_update(
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                        |waiting| (waiting < self.state.max_queued).then_some(waiting + 1),
+                    );
+                    if queued.is_err() {
                         return Err(SessionTurnAcquireError::Full);
                     }
                     let acquired = self.state.slots.clone().acquire_owned().await;
