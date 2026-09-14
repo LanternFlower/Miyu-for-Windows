@@ -275,6 +275,14 @@ pub(crate) fn existing_mappings(mappings: &[MigrationMapping]) -> Result<Vec<Mig
         if mapping.source == mapping.destination || !entry_exists(&mapping.source)? {
             continue;
         }
+        // 大小写不敏感的文件系统(macOS 默认 APFS)上 Pictures/miyu 与
+        // Pictures/Miyu 是同一个目录:只搬一次,否则搬第二回时源已经不在了。
+        if active
+            .iter()
+            .any(|seen: &MigrationMapping| same_entry(&seen.source, &mapping.source))
+        {
+            continue;
+        }
         if mapping.destination.starts_with(&mapping.source)
             || mapping.source.starts_with(&mapping.destination)
         {
@@ -301,6 +309,16 @@ pub(crate) fn existing_mappings(mappings: &[MigrationMapping]) -> Result<Vec<Mig
         }
     }
     Ok(active)
+}
+
+/// 两个路径是否落在同一个目录项上(同设备同 inode)。路径字面不同也可能是
+/// 同一个东西:大小写不敏感的文件系统、或者经由符号链接。
+fn same_entry(left: &Path, right: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (fs::symlink_metadata(left), fs::symlink_metadata(right)) {
+        (Ok(left), Ok(right)) => left.dev() == right.dev() && left.ino() == right.ino(),
+        _ => false,
+    }
 }
 
 pub(crate) fn entry_exists(path: &Path) -> Result<bool> {

@@ -62,6 +62,14 @@ pub(super) async fn write_truncated_sse_response(stream: &mut tokio::net::TcpStr
     stream.write_all(response.as_bytes()).await.unwrap();
     stream.flush().await.unwrap();
     stream.shutdown().await.unwrap();
+    // 只读了请求头,请求体还躺在内核缓冲里;带着未读数据 close 会发 RST。
+    // macOS 上 RST 常抢在客户端读完响应前到,优雅断开就成了 connection reset。
+    // 先把对端剩下的读干净(客户端读到 EOF 会自己关),再放手。
+    let mut sink = [0u8; 4096];
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while matches!(stream.read(&mut sink).await, Ok(read) if read > 0) {}
+    })
+    .await;
 }
 
 pub(super) async fn read_http_headers(stream: &mut tokio::net::TcpStream) {

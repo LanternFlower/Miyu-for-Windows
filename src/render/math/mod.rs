@@ -444,14 +444,29 @@ mod pty_tests {
             )
             .expect("gauss integral renders");
             let payload = art.lines.join("\r\n") + "\r\n";
-            // 非阻塞排空 master,防止写满 PTY 缓冲。
+            // 两端都非阻塞,边写边排空 master。macOS 的 PTY 缓冲只有 1KB 量级,
+            // 一次阻塞写整段会写满后永远等人读,而读在写返回之后——死锁。
             let flags = libc::fcntl(master, libc::F_GETFL);
             libc::fcntl(master, libc::F_SETFL, flags | libc::O_NONBLOCK);
-            let bytes = payload.as_bytes();
-            let written = libc::write(slave, bytes.as_ptr().cast(), bytes.len());
-            assert!(written > 0, "pty write failed");
+            let slave_flags = libc::fcntl(slave, libc::F_GETFL);
+            libc::fcntl(slave, libc::F_SETFL, slave_flags | libc::O_NONBLOCK);
+            let mut bytes = payload.as_bytes();
             let mut sink = [0u8; 65536];
-            while libc::read(master, sink.as_mut_ptr().cast(), sink.len()) > 0 {}
+            while !bytes.is_empty() {
+                let written = libc::write(slave, bytes.as_ptr().cast(), bytes.len());
+                if written > 0 {
+                    bytes = &bytes[written as usize..];
+                } else {
+                    let error = std::io::Error::last_os_error();
+                    assert_eq!(
+                        error.raw_os_error(),
+                        Some(libc::EAGAIN),
+                        "pty write failed: {error}"
+                    );
+                }
+                while libc::read(master, sink.as_mut_ptr().cast(), sink.len()) > 0 {}
+            }
+            libc::fcntl(slave, libc::F_SETFL, slave_flags);
 
             let mut after: libc::termios = std::mem::zeroed();
             assert_eq!(libc::tcgetattr(slave, &mut after), 0);
