@@ -11001,6 +11001,10 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 /* 收起之后底下要留一口气,不然总结行贴着浮窗底边。 */
 .sel-pop-body { padding-bottom: 14px; }
 
+/* 容器带 assistant-blocks 是为了吃到时间线那套样式;主对话里的外边距在浮窗
+   里太空,这里收掉。 */
+.sel-blocks { margin: 0; }
+
 /* 流式思考只给四行刷新空间,滚到底跟着新字走;想完自动收起,点标题行能展开。 */
 .sel-pop .reasoning-block.sel-think.is-streaming .reasoning-text {
   max-height: calc(4 * 1.55em);

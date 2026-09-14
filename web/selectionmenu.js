@@ -376,7 +376,7 @@ window.MiyuSelectionMenu = (() => {
     // 图标就是节点。直接用 createReasoningBlock + procLineAttach,不再自己
     // 摆一个独立的标签块。正文一来就 procLineBreak 切断,「过程自动收起」
     // 开着时收成一行总结,点它能展开回看。
-    const blocks = el("div", "sel-blocks");
+    const blocks = el("div", "assistant-blocks sel-blocks");
     const thinking = () => {
       if (think) return think;
       think = ctx.createReasoningBlock?.("", "正在思考", true) || null;
