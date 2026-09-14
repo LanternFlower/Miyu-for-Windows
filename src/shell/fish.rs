@@ -201,6 +201,44 @@ function __miyu_first_command
     return 1
 end
 
+# 只看首词长什么样,所以取未展开的原文:--tokens-expanded 会真的跑命令替换,
+# 放在每次回车上按不得。老版本 fish 不认 --tokens-raw,拿不到就当判不出来。
+function __miyu_first_token_raw
+    set -l tokens (commandline --input="$argv[1]" --tokens-raw 2>/dev/null)
+    while test (count $tokens) -gt 0
+        set -l token $tokens[1]
+        if string match -qr '^[A-Za-z_][A-Za-z0-9_]*=' -- "$token"
+            set -e tokens[1]
+            continue
+        end
+        printf '%s' "$token"
+        return 0
+    end
+    return 1
+end
+
+# 首词是不是一个「展开后还是它自己」的普通词。$ ( ) ~ { } % 引号反斜杠这些会把
+# 首词换成别的东西,判不出来就交回 fish 自己展开,这里不猜;; & | < > # ^ ! 和空白
+# 同理,出现了说明这行有 fish 语法结构。
+# 通配符 * ? [ ] 故意不在名单里:命令位上出现通配符,本来就说明这不是个命令名。
+# 不能用 \w 白名单——fish 的正则里 \w 只认 ASCII,中文会被当成元字符。
+function __miyu_head_is_plain_word
+    test -n "$argv[1]"; or return 1
+    string match -qr '[\x27"$()~{}%;&|<>#^!\x5c\s]' -- "$argv[1]"; and return 1
+    return 0
+end
+
+function __miyu_hand_to_ai
+    set -e __miyu_image_counter
+    __miyu_wrap_fish_prompt
+    set -g __miyu_cursor_hidden 1
+    history append -- "$argv[1]"
+    set -g __miyu_pending_buffer "$argv[1]"
+    commandline -b -- ""
+    printf '\e[?25l'
+    commandline -f execute
+end
+
 function __miyu_accept_line
     status is-interactive; or return
 
@@ -213,7 +251,16 @@ function __miyu_accept_line
     end
 
     if not __miyu_buffer_is_multiline "$buffer"
-        __miyu_execute_or_continue
+        # 单行本来靠 fish_command_not_found 兜底,但 fish 是先展开再找命令:
+        # 自然语言里带个没匹配上的通配符(「输出这段命令 …/core.*.zst」),
+        # fish 在展开阶段就报「未找到通配符的匹配项」,命令根本没开始找,
+        # 兜底函数也就永远不触发。首词是普通词又不是任何命令时提前接管。
+        set -l head (__miyu_first_token_raw "$buffer")
+        if not __miyu_head_is_plain_word "$head"; or type -q -- "$head"
+            __miyu_execute_or_continue
+            return
+        end
+        __miyu_hand_to_ai "$buffer"
         return
     end
 
@@ -233,14 +280,7 @@ function __miyu_accept_line
         return
     end
 
-    set -e __miyu_image_counter
-    __miyu_wrap_fish_prompt
-    set -g __miyu_cursor_hidden 1
-    history append -- "$buffer"
-    set -g __miyu_pending_buffer "$buffer"
-    commandline -b -- ""
-    printf '\e[?25l'
-    commandline -f execute
+    __miyu_hand_to_ai "$buffer"
 end
 
 bind enter __miyu_accept_line
@@ -327,6 +367,32 @@ mod tests {
         assert!(hook.contains("return 127"));
     }
 
+    /// 单行的自然语言原本全靠 fish_command_not_found 兜底,可 fish 是先展开再找
+    /// 命令:句子里带个没匹配上的通配符(「…/core.*.zst」),fish 在展开阶段就报
+    /// 「未找到通配符的匹配项」,兜底函数永远不触发。所以回车时先看首词。
+    #[test]
+    fn fish_hook_routes_single_line_prose_before_fish_expands_globs() {
+        let hook = hook();
+        // 取未展开的原文:--tokens-expanded 会真的跑命令替换,放在每次回车上按不得。
+        assert!(hook.contains("commandline --input=\"$argv[1]\" --tokens-raw"));
+        // --tokens-expanded 只剩原来那一处(多行分支/兜底走它),新路没再加一处。
+        assert_eq!(hook.matches("--tokens-expanded").count(), 1);
+        // 通配符不在首词黑名单里:命令位上出现 * ? [ ],本来就说明这不是命令名。
+        let class = "'[\\x27\"$()~{}%;&|<>#^!\\x5c\\s]'";
+        assert!(hook.contains(class), "首词黑名单变了:\n{hook}");
+        // [ ] 是类的定界符,没法这么查;能查的是这两个。
+        for glob in ['*', '?'] {
+            assert!(!class.contains(glob), "{glob} 不该进首词黑名单");
+        }
+        // 单行分支:首词是普通词又不是命令 -> 走 AI,其余交回 fish。
+        assert!(hook.contains(
+            "if not __miyu_head_is_plain_word \"$head\"; or type -q -- \"$head\"\n            __miyu_execute_or_continue"
+        ));
+        // 单行与多行共用同一条交接路径,别分叉出第二套。
+        assert_eq!(hook.matches("__miyu_hand_to_ai \"").count(), 2);
+        assert!(hook.contains("printf '%s' \"$buffer\" | miyu --shell-intercept"));
+    }
+
     #[test]
     fn fish_hook_defines_curated_top_level_completions() {
         let hook = hook();
@@ -379,8 +445,8 @@ mod tests {
         assert!(hook.contains("__miyu_first_command"));
         assert!(hook.contains("commandline --input=\"$argv[1]\" --tokens-expanded"));
         assert!(hook.contains("type -q -- \"$first_command\""));
-        assert!(hook.contains("set -g __miyu_pending_buffer \"$buffer\""));
-        assert!(hook.contains("history append -- \"$buffer\""));
+        assert!(hook.contains("set -g __miyu_pending_buffer \"$argv[1]\""));
+        assert!(hook.contains("history append -- \"$argv[1]\""));
         assert!(hook.contains("commandline -b -- \"\""));
         assert!(hook.contains("commandline -f execute"));
         assert!(hook.contains("commandline -f expand-abbr"));
