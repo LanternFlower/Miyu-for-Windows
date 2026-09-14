@@ -217,6 +217,7 @@
         {
           path: "display.command_output_lines",
           label: "命令输出显示行数",
+          hint: "TUI 与 shell 无缝对话里命令输出的预览行数,0 = 不显示预览",
           kind: "number",
           integer: true,
           min: 0,
@@ -226,7 +227,7 @@
         },
         {
           path: "display.repl_replay_turns",
-          label: "重开 REPL 回放的轮数",
+          label: "重开 TUI 回放的轮数",
           hint: "0 = 不回放",
           kind: "number",
           integer: true,

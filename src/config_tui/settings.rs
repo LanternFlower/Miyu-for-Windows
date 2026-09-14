@@ -98,8 +98,8 @@ pub(in crate::config_tui) fn edit_settings(
         // Appended rather than inserted: the read-back below is positional.
         Field::new(
             t(
-                "Turns replayed when reopening the REPL",
-                "重开 REPL 回放的轮数",
+                "Turns replayed when reopening the TUI",
+                "重开 TUI 回放的轮数",
             ),
             config.display.repl_replay_turns.to_string(),
         ),

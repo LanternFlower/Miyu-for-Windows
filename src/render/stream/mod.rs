@@ -544,7 +544,7 @@ impl StreamRenderer {
         let (detail, tail) = if self.timeline_static() {
             (display.static_detail(width, true), Vec::new())
         } else {
-            let tail = display.detail_tail(width, true, timeline::LIVE_PREVIEW_ROWS);
+            let tail = display.detail_tail(width, true, self.command_output_lines);
             (display.timeline_detail(width), tail)
         };
         // 命令工具在统计里叫什么名字（`run_command` / `Bash`）由事件决定，

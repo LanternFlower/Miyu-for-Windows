@@ -134,12 +134,17 @@ fn with_blocks<T>(body: impl FnOnce() -> T) -> T {
 }
 
 fn timeline_renderer() -> crate::render::StreamRenderer {
+    timeline_renderer_with_preview_rows(10)
+}
+
+/// `display.command_output_lines`:命令跑着/跑完时抬头底下露几行输出。
+fn timeline_renderer_with_preview_rows(rows: usize) -> crate::render::StreamRenderer {
     let mut renderer = crate::render::StreamRenderer::new(
         crate::render::ReasoningDisplayMode::Summary,
         crate::render::ToolCallDisplayMode::Summary,
         false,
         true,
-        10,
+        rows,
     );
     renderer.live_summary = false;
     renderer
@@ -1273,9 +1278,11 @@ fn a_subagent_command_step_opens_like_the_main_line() {
 ///（用户：实时输出调整为 6 行；完成后保留区域）。收成 `Worked for` 之后点开
 /// 那一块，这几行还在。
 #[test]
-fn a_finished_command_keeps_six_rows_of_output_under_its_head() {
+fn a_finished_commands_preview_rows_follow_the_configured_count() {
     with_blocks(|| {
-        let mut renderer = timeline_renderer();
+        // 全屏这几行原来写死 6,只有 shellhook 的静态时间线跟配置走;现在两边同
+        // 一个量,都归 display.command_output_lines 管。
+        let mut renderer = timeline_renderer_with_preview_rows(6);
         renderer.use_buffered_output();
         renderer
             .write_tool_call("run_command", r#"{"command":"seq 1 8"}"#)
@@ -1324,6 +1331,40 @@ fn a_finished_command_keeps_six_rows_of_output_under_its_head() {
             detail.contains("line-8") && detail.contains("⋮"),
             "收缩之后尾巴丢了: {detail:?}"
         );
+    });
+
+    // 0 = 一行预览都不露(用户明确要的那一档)。
+    with_blocks(|| {
+        let mut renderer = timeline_renderer_with_preview_rows(0);
+        renderer.use_buffered_output();
+        renderer
+            .write_tool_call("run_command", r#"{"command":"seq 1 8"}"#)
+            .unwrap();
+        for index in 1..=8 {
+            renderer
+                .write_command_output(
+                    "run_command",
+                    crate::tools::CommandOutputStream::Stdout,
+                    format!("line-{index}\n").as_bytes(),
+                )
+                .unwrap();
+        }
+        // 覆盖范围说清楚:这里断的是「跑完之后」那条路(tool_summary.rs 的
+        // detail_tail)。「跑着的时候」那条在 timeline_running_tool_lines 里,
+        // 要渲染器处在真有工具在飞的活动帧才走得到,本夹具够不着——那一行的
+        // 行数来源也改成了同一个配置,但没有测试守着,改它时当心。
+        renderer
+            .write_tool_result("run_command", true, r#"{"success":true,"exit_code":0}"#)
+            .unwrap();
+        renderer.finalize_tools_summary().unwrap();
+        let (_, live) = renderer.timeline_live(Vec::new());
+        let live = crate::render::strip_ansi_text(&live.unwrap_or_default());
+        for line in 1..=8 {
+            assert!(
+                !live.contains(&format!("line-{line}")),
+                "设 0 跑完之后还留着预览行: {live:?}"
+            );
+        }
     });
 }
 

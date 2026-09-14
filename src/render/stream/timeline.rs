@@ -812,10 +812,6 @@ pub(crate) fn tool_output_lines(output: &str) -> Vec<String> {
 /// 一步的详情最多留多少行。再多就不是「点开看看」而是把内存当日志用了。
 const MAX_DETAIL_LINES: usize = 400;
 
-/// 全屏下跑着的命令在抬头底下露几行输出；跑完之后这几行留着（用户拍板六行，
-/// 完成后保留区域）。
-pub(crate) const LIVE_PREVIEW_ROWS: usize = 6;
-
 /// 展开内容相对页边距再缩进多少。
 const DETAIL_INDENT: &str = "  ";
 
@@ -1618,7 +1614,6 @@ impl StreamRenderer {
                 tail: Vec::new(),
             }];
         }
-        let static_timeline = self.timeline_static();
         ordered
             .into_iter()
             .map(|(name, stats)| {
@@ -1675,11 +1670,9 @@ impl StreamRenderer {
                 // 给几行（和它跑完之后落下来的那几行同一个量）；全屏给四行，
                 // 超出的换成省略标记——想看全的点开，展开内容会把这几行一起换掉。
                 let tail = if crate::render::is_command_tool(name) {
-                    let rows = if static_timeline {
-                        self.command_output_lines
-                    } else {
-                        LIVE_PREVIEW_ROWS
-                    };
+                    // 全屏与静态时间线同一个量,都归「命令输出显示行数」管;
+                    // 设 0 就是不露预览行(live_tail 自己认这个 0)。
+                    let rows = self.command_output_lines;
                     self.command_display
                         .as_ref()
                         .map(|display| display.live_tail(detail_width(), rows))
