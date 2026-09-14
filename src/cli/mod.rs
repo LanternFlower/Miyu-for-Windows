@@ -122,9 +122,13 @@ mod keyboard_enhancement;
 use keyboard_enhancement::KeyboardEnhancementState;
 
 pub fn parse() -> Cli {
-    let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
-    // `miyupm …` 是 `miyu pm …` 的 shim:按 argv[0] 的文件名识别(打包时做个
-    // 符号链接即可,不用第二个二进制)。
+    let args = apply_pm_shim(std::env::args_os().collect());
+    parse_args(args).unwrap_or_else(|err| err.exit())
+}
+
+/// `miyupm …` 是 `miyu pm …` 的 shim:按 argv[0] 的文件名识别(打包时做个符号链接
+/// 即可,不用第二个二进制)。`pm` 在帮助里已隐藏,这条显式入口照旧。
+pub(in crate::cli) fn apply_pm_shim(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
     let invoked_as_pm = args
         .first()
         .map(std::path::PathBuf::from)
@@ -133,7 +137,7 @@ pub fn parse() -> Cli {
     if invoked_as_pm {
         args.insert(1, std::ffi::OsString::from("pm"));
     }
-    parse_args(args).unwrap_or_else(|err| err.exit())
+    args
 }
 
 pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {

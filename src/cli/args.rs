@@ -100,6 +100,9 @@ pub enum Command {
     /// 家目录布局:看计划 / --apply 立刻搬 / --rollback 搬回去
     Layout(LayoutArgs),
     /// 包管理器:install / remove / upgrade / search / list / tap(`miyupm` 同)
+    ///
+    /// 暂不公开:帮助与补全里藏起来,显式 `miyu pm …` / `miyupm …` 行为不变。
+    #[command(hide = true)]
     Pm(PmArgs),
     Config(ConfigArgs),
     Reload,

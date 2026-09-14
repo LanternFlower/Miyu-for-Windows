@@ -433,3 +433,35 @@ fn session_selection_defaults_to_the_current_entry() {
     ));
     assert_eq!(session_initial_selection(&[entry("only", false)], None), 0);
 }
+
+/// `pm` 暂不公开:帮助与补全里看不到它,但显式 `miyu pm …` 与 `miyupm …` 一字未改。
+/// 不能靠删解析分支来隐藏——根命令吃 trailing_var_arg,删了 `miyu pm list` 会被
+/// 当成一句聊天发出去。
+#[test]
+fn pm_is_hidden_from_help_but_still_dispatches() {
+    let visible: Vec<String> = Cli::command()
+        .get_subcommands()
+        .filter(|sub| !sub.is_hide_set())
+        .map(|sub| sub.get_name().to_string())
+        .collect();
+    assert!(
+        !visible.iter().any(|name| name == "pm"),
+        "公开命令表里还有 pm: {visible:?}"
+    );
+
+    let help = localized_command().render_long_help().to_string();
+    assert!(!help.contains("\n  pm "), "根帮助里还列着 pm:\n{help}");
+
+    let cli = parse_args(["miyu", "pm", "list"].map(OsString::from).to_vec()).unwrap();
+    assert!(
+        matches!(cli.command, Some(Command::Pm(_))),
+        "显式 miyu pm 应照旧进包管理"
+    );
+
+    let shimmed = apply_pm_shim(["/usr/bin/miyupm", "list"].map(OsString::from).to_vec());
+    let cli = parse_args(shimmed).unwrap();
+    assert!(
+        matches!(cli.command, Some(Command::Pm(_))),
+        "miyupm shim 应照旧进包管理"
+    );
+}
