@@ -96,6 +96,11 @@ pub(in crate::config_tui) fn edit_real_context_active_reply(
                 ),
                 settings.after_speaking_window_seconds
             ),
+            format!(
+                "{}: {}",
+                t("Post-reply threshold boost", "群聊发完消息后阈值提升"),
+                settings.after_speaking_threshold_boost
+            ),
             t("Continuation window", "续聊窗口").to_string(),
             t("Trigger methods", "触发方式").to_string(),
             t("Concurrency and weights", "并发与权重").to_string(),
@@ -205,10 +210,17 @@ pub(in crate::config_tui) fn edit_real_context_active_reply(
                     settings,
                     |candidate, value| candidate.after_speaking_window_seconds = value,
                 )?,
-                14 => edit_real_context_continuation(stdout, settings)?,
-                15 => edit_real_context_triggers(stdout, settings)?,
-                16 => edit_real_context_judge_advanced(stdout, settings)?,
-                17 => edit_real_context_number(
+                14 => edit_real_context_number(
+                    stdout,
+                    t("Post-reply threshold boost", "群聊发完消息后阈值提升"),
+                    settings.after_speaking_threshold_boost,
+                    settings,
+                    |candidate, value| candidate.after_speaking_threshold_boost = value,
+                )?,
+                15 => edit_real_context_continuation(stdout, settings)?,
+                16 => edit_real_context_triggers(stdout, settings)?,
+                17 => edit_real_context_judge_advanced(stdout, settings)?,
+                18 => edit_real_context_number(
                     stdout,
                     t("Judge context window", "判断上下文消息数"),
                     settings.judge_context_window,

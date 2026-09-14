@@ -27,10 +27,6 @@ pub(in crate::platforms::plugins::real_context) fn placeholder_only(text: &str) 
     saw_placeholder && rest.trim().is_empty()
 }
 
-/// 「她刚说过话」这一路触发的阈值提升。窗口内每条消息都判一次,门槛不抬就
-/// 会因为刚说过话变得话密。数字由用户指定(0.1 → 0.2 → 0.05:连发消息本来
-/// 就有冷静(克制)机制在压,不用抬这么高)。
-const AFTER_SPEAKING_THRESHOLD_BOOST: f64 = 0.05;
 
 impl RealContextPlugin {
     pub(in crate::platforms::plugins::real_context) async fn decide_group_trigger(
@@ -402,7 +398,7 @@ impl RealContextPlugin {
         // 消息都会来一次判断,那是在模拟「人发完言会看到后续」,门槛该更高
         // (用户 09-14)。
         let after_speaking_threshold_boost = if trigger == TriggerKind::AfterSpeaking {
-            AFTER_SPEAKING_THRESHOLD_BOOST
+            settings.after_speaking_threshold_boost
         } else {
             0.0
         };

@@ -2354,6 +2354,7 @@
               unit: "秒",
               default: 30,
             },
+            score01("after_speaking_threshold_boost", "群聊发完消息后阈值提升", 0.05, "她发完消息后那段时间,每条消息都判一次;这个值把门槛抬高一点,免得刚说过话就变话密"),
             {
               key: "continuation_window_seconds",
               label: "续聊窗口(秒)",
