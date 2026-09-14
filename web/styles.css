@@ -10995,6 +10995,12 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   color: var(--text-muted);
 }
 
+/* 头部那条分割线去掉(用户 09-14):浮窗本来就小,一条横线把它切成两截。 */
+.sel-pop-head { border-bottom: 0; }
+
+/* 收起之后底下要留一口气,不然总结行贴着浮窗底边。 */
+.sel-pop-body { padding-bottom: 14px; }
+
 /* 流式思考只给四行刷新空间,滚到底跟着新字走;想完自动收起,点标题行能展开。 */
 .sel-pop .reasoning-block.sel-think.is-streaming .reasoning-text {
   max-height: calc(4 * 1.55em);

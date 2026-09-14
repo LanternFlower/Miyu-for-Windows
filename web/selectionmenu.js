@@ -208,13 +208,9 @@ window.MiyuSelectionMenu = (() => {
     const pop = { node, head, body: null, foot: null, controller: null, pinned: false, streaming: false };
     // 动作区:解释/翻译往里插复制与重试,始终排在钉住与关闭左边。
     pop.actions = el("span", "sel-pop-actions");
-    const pin = iconButton("pin", "钉住", () => {
-      pop.pinned = !pop.pinned;
-      pin.classList.toggle("is-active", pop.pinned);
-      pin.title = pop.pinned ? "已钉住,点别处不会关" : "钉住后点别处不会关,可以再选别的词";
-    }, "钉住后点别处不会关,可以再选别的词");
-    pop.pinButton = pin;
-    pop.actions.append(pin, iconButton("x", "关闭", () => closePopover(pop), "关闭"));
+    // 钉住没有按钮(用户 09-14 要去掉图标):出结果之前自动不关,拖动过就留着。
+    pop.closeButton = iconButton("x", "关闭", () => closePopover(pop), "关闭");
+    pop.actions.append(pop.closeButton);
     head.append(el("strong", null, title), quoteNode, pop.actions);
     pop.body = el("div", "sel-pop-body");
     pop.foot = el("footer", "sel-pop-foot");
@@ -223,7 +219,7 @@ window.MiyuSelectionMenu = (() => {
     popovers.push(pop);
     placePopover(node, picked.rect);
     makeDraggable(pop, head, () => {
-      if (!pop.pinned) pin.click();
+      pop.pinned = true;
     });
     return pop;
   }
@@ -366,8 +362,8 @@ window.MiyuSelectionMenu = (() => {
       openAssist(kind, picked, lang);
     }, "重新生成");
     copy.disabled = true;
-    pop.actions.insertBefore(copy, pop.pinButton);
-    pop.actions.insertBefore(retry, pop.pinButton);
+    pop.actions.insertBefore(copy, pop.closeButton);
+    pop.actions.insertBefore(retry, pop.closeButton);
 
     let text = "";
     let frame = 0;
@@ -376,25 +372,28 @@ window.MiyuSelectionMenu = (() => {
       frame = 0;
       ctx.renderMarkdown(output, text);
     };
-    // 思考块直接用主页那一个(样式、展开收起、尾巴窥视都一样),流式期间只给
-    // 四行刷新空间,想完自动收起;点标题行仍能展开回看。
+    // 思考块挂进主页那条过程时间线(.proc-line):一根 1px 细线穿过图标列,
+    // 图标就是节点。直接用 createReasoningBlock + procLineAttach,不再自己
+    // 摆一个独立的标签块。正文一来就 procLineBreak 切断,「过程自动收起」
+    // 开着时收成一行总结,点它能展开回看。
+    const blocks = el("div", "sel-blocks");
     const thinking = () => {
       if (think) return think;
       think = ctx.createReasoningBlock?.("", "正在思考", true) || null;
-      if (think) {
-        think.element.classList.add("sel-think", "is-streaming");
-        think.element.open = true;
-        pop.body.insertBefore(think.element, output);
-      }
+      if (!think) return null;
+      think.element.classList.add("sel-think", "is-streaming");
+      think.element.open = true;
+      pop.body.insertBefore(blocks, output);
+      ctx.procLineAttach?.(blocks, think.element);
       return think;
     };
     const settleThinking = () => {
       if (!think) return;
-      think.element.classList.remove("is-streaming", "is-live");
-      think.element.open = false;
+      think.element.classList.remove("is-streaming");
       if (think.title) think.title.textContent = "已思考";
       think.liveStatus?.remove();
       think.progress?.remove();
+      ctx.procLineBreak?.(blocks);
     };
 
     pop.streaming = true;

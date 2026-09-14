@@ -12708,6 +12708,9 @@
       // 浮窗里的图标与流式思考块直接用主页这两件,别在划词那边另画一套。
       makeIconSlot,
       createReasoningBlock,
+      // 思考块要挂进时间线(.proc-line)才是现在的样子,不然还是旧的独立标签块。
+      procLineAttach,
+      procLineBreak,
       getSessionId: () => state.viewSessionId || state.currentSessionId,
       toast: showToast,
     });
