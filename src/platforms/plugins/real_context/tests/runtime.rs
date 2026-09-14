@@ -45,6 +45,7 @@ fn active_reply_decision_log_is_structured_for_humans() {
         heat_penalty: 0.06,
         heat_threshold_adjustment: 0.03,
         short_message_threshold_adjustment: 0.01,
+        continuation_threshold_adjustment: 0.0,
         moderation: &moderation,
         reason: "当前消息延续了上一轮问题。",
         endpoint: Some("opencodego / mimo-v2.5"),

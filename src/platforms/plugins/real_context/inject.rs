@@ -7,6 +7,9 @@
 
 use crate::platforms::plugins::real_context::*;
 
+/// 续聊触发的阈值提升。数字由用户 09-14 指定。
+const CONTINUATION_THRESHOLD_BOOST: f64 = 0.1;
+
 impl RealContextPlugin {
     pub(in crate::platforms::plugins::real_context) async fn decide_group_trigger(
         &self,
@@ -363,6 +366,14 @@ impl RealContextPlugin {
             &event.message_id,
             settings.judge_context_window,
         );
+        // 续聊触发比普通概率抽样多一道门槛:她刚发过言,接下来每条非纯多媒体
+        // 消息都会来一次判断,那是在模拟「人发完言会看到后续」,门槛该更高
+        // (用户 09-14)。
+        let continuation_threshold_boost = if trigger == TriggerKind::Continuation {
+            CONTINUATION_THRESHOLD_BOOST
+        } else {
+            0.0
+        };
         let (heat_penalty, heat_threshold_boost) = restraint_adjustments(
             settings.reply_restraint_enable,
             &settings.reply_restraint_strength,
@@ -432,6 +443,7 @@ impl RealContextPlugin {
                     heat_penalty,
                     heat_threshold_boost,
                     short_message_threshold_boost: short_boost,
+                    continuation_threshold_boost,
                     affection_level,
                     affection_prompt,
                     affection_bias,
@@ -502,6 +514,7 @@ impl RealContextPlugin {
                 heat_penalty,
                 heat_threshold_adjustment: heat_threshold_boost,
                 short_message_threshold_adjustment: short_boost,
+                continuation_threshold_adjustment: continuation_threshold_boost,
                 moderation: &judged.moderation,
                 reason: &judged.reasoning,
                 endpoint: judged.endpoint.as_deref(),

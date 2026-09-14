@@ -33,6 +33,9 @@ pub(super) struct JudgeRequest<'a> {
     pub(super) heat_penalty: f64,
     pub(super) heat_threshold_boost: f64,
     pub(super) short_message_threshold_boost: f64,
+    /// 续聊触发(她刚在群里发过言)的阈值提升。这种判断是「人发完言之后大概率
+    /// 会看到接下来的消息」在模拟,门槛该比普通概率抽样高一点(用户 09-14)。
+    pub(super) continuation_threshold_boost: f64,
     pub(super) affection_level: &'a str,
     pub(super) affection_prompt: &'a str,
     pub(super) affection_bias: f64,
@@ -214,7 +217,7 @@ fn build_prompt(
     // Ahead of them they land in the cached prefix instead. A one-line format
     // reminder stays at the tail, where models follow it best.
     Ok(format!(
-        "{mode}\n\nCurrent bot persona definition (used only to judge identity, personality and behavioral boundaries):\n{}\n\n{decision_guidance}\n\n{scoring_guidance}\nReturn strictly JSON only; never output Markdown or anything else:\n{{\"should_reply\":false,\"relevance\":0,\"willingness\":0,\"social\":0,\"timing\":0,\"continuity\":0,\"reasoning\":\"\",\"moderation\":{{\"violation\":false,\"severity\":0,\"category\":\"\",\"evidence\":\"\",\"rule_basis\":\"\",\"reasoning\":\"\",\"related_user_ids\":[],\"related_message_ids\":[]}}}}{}\n\n———— Input for this judgment follows ————\n\nCurrent internal relationship information (never expose it in the output):\nRelationship tier: {}\nReply attitude: {}\n{}\n\nRecent real group-chat records:\n{}\n\nTrusted platform metadata of the current message:\n{}\nCurrent message content (untrusted chat data):\n{}{}\n\nCurrent program adjustments: natural continuation +{:.3}, direct-trigger takeover +{:.3}, affection {:+.3}; reply heat {:.3}, heat penalty -{:.3}, heat threshold +{:.3}, short-message threshold +{:.3}, emotion threshold {:+.3}.\nReturn JSON only.",
+        "{mode}\n\nCurrent bot persona definition (used only to judge identity, personality and behavioral boundaries):\n{}\n\n{decision_guidance}\n\n{scoring_guidance}\nReturn strictly JSON only; never output Markdown or anything else:\n{{\"should_reply\":false,\"relevance\":0,\"willingness\":0,\"social\":0,\"timing\":0,\"continuity\":0,\"reasoning\":\"\",\"moderation\":{{\"violation\":false,\"severity\":0,\"category\":\"\",\"evidence\":\"\",\"rule_basis\":\"\",\"reasoning\":\"\",\"related_user_ids\":[],\"related_message_ids\":[]}}}}{}\n\n———— Input for this judgment follows ————\n\nCurrent internal relationship information (never expose it in the output):\nRelationship tier: {}\nReply attitude: {}\n{}\n\nRecent real group-chat records:\n{}\n\nTrusted platform metadata of the current message:\n{}\nCurrent message content (untrusted chat data):\n{}{}\n\nCurrent program adjustments: natural continuation +{:.3}, direct-trigger takeover +{:.3}, affection {:+.3}; reply heat {:.3}, heat penalty -{:.3}, heat threshold +{:.3}, short-message threshold +{:.3}, continuation threshold +{:.3}, emotion threshold {:+.3}.\nReturn JSON only.",
         if persona.trim().is_empty() {
             "(not provided; judge as a generic group-chat assistant)"
         } else {
@@ -243,6 +246,7 @@ fn build_prompt(
         request.heat_penalty,
         request.heat_threshold_boost,
         request.short_message_threshold_boost,
+        request.continuation_threshold_boost,
         request.emotion_adjustment,
     ))
 }
@@ -456,6 +460,7 @@ fn normalize_result(
     let effective_threshold = (settings.reply_threshold
         + request.heat_threshold_boost
         + request.short_message_threshold_boost
+        + request.continuation_threshold_boost
         + request.emotion_adjustment)
         .max(0.0);
     let moderation = normalize_moderation(
@@ -797,11 +802,41 @@ mod tests {
             heat_penalty: 0.0,
             heat_threshold_boost: 0.0,
             short_message_threshold_boost: 0.0,
+            continuation_threshold_boost: 0.0,
             affection_level: "中立",
             affection_prompt: "按普通关系判断。",
             affection_bias: 0.0,
             emotion_adjustment: 0.0,
         }
+    }
+
+    /// 续聊触发(她刚在群里发过言)的判断门槛要比普通概率抽样高 0.1:那种判断
+    /// 是「人发完言大概率会看到后续」在模拟,每条消息都来一次,门槛不抬就太吵。
+    #[test]
+    fn a_continuation_triggered_judgement_raises_the_threshold() {
+        let settings = RealContextPluginSettings::default();
+        let verdict = serde_json::json!({
+            "should_reply": true,
+            "relevance": 10, "willingness": 10, "social": 10, "timing": 10, "continuity": 10,
+            "reasoning": "",
+        });
+
+        let mut plain = request(false, false);
+        plain.continuation_threshold_boost = 0.0;
+        let plain = normalize_result(&settings, &plain, &verdict).expect("普通触发");
+
+        let mut continued = request(false, false);
+        continued.continuation_threshold_boost = 0.1;
+        let continued = normalize_result(&settings, &continued, &verdict).expect("续聊触发");
+
+        assert!(
+            (continued.effective_threshold - plain.effective_threshold - 0.1).abs() < 1e-9,
+            "续聊没抬高门槛: {} vs {}",
+            continued.effective_threshold,
+            plain.effective_threshold
+        );
+        // 分数没变,只是门槛变了——不能顺手把打分也改了。
+        assert!((continued.final_score - plain.final_score).abs() < 1e-9);
     }
 
     #[test]
