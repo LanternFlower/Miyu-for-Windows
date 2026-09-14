@@ -196,7 +196,7 @@ window.MiyuSelectionMenu = (() => {
   function createPopover(title, picked) {
     // 同一时间只留一个没钉住的浮窗,再开就替换它;钉住的留着。
     for (const pop of [...popovers]) {
-      if (!pop.pinned && !pop.streaming) closePopover(pop);
+      if (!pop.pinned) closePopover(pop);
     }
     const node = el("section", "sel-pop");
     node.setAttribute("role", "dialog");
@@ -420,6 +420,9 @@ window.MiyuSelectionMenu = (() => {
       },
       pop.controller.signal,
       {
+        settled() {
+          pop.streaming = false;
+        },
         reasoning(chunk) {
           const block = thinking();
           if (!block) return;
@@ -507,6 +510,9 @@ window.MiyuSelectionMenu = (() => {
       return;
     }
     if (!finished && !signal.aborted) handlers.error("连接提前结束,没有收到结果");
+    // 被 abort 的那条路两个 handler 都不触发,临时保持会一直挂着,看着就像
+    // 默认钉住了。任何收场都必须把它放掉。
+    handlers.settled?.();
   }
 
   // ---------------- 搜索 ----------------
