@@ -90,7 +90,10 @@ pub(in crate::config_tui) fn edit_real_context_active_reply(
             ),
             format!(
                 "{}: {}",
-                t("Post-reply observation window (seconds)", "群聊发完消息后观察窗口（秒）"),
+                t(
+                    "Post-reply observation window (seconds)",
+                    "群聊发完消息后观察窗口（秒）"
+                ),
                 settings.after_speaking_window_seconds
             ),
             t("Continuation window", "续聊窗口").to_string(),

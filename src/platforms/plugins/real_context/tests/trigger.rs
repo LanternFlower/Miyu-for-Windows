@@ -680,3 +680,23 @@ fn after_speaking_sits_between_continuation_and_probability() {
         Some(TriggerKind::Probability)
     );
 }
+
+/// 表情包/贴图到了这里是 `[思索]`、`[非文本消息]` 这样的方括号占位符:有字,
+/// 但不是正文。「刚说过话」那一路窗口内每条都判,不挡住的话一串表情包能把
+/// 额度烧光(用户 09-15)。
+#[test]
+fn bracket_placeholders_do_not_count_as_text() {
+    for text in ["[思索]", "  [非文本消息] ", "[图片][doge]", "[a] [b]\n"] {
+        assert!(inject::placeholder_only(text), "该判成没有正文: {text:?}");
+    }
+    for text in [
+        "[doge] 你好",
+        "你好 [doge]",
+        "今天天气不错",
+        "[未闭合",
+        "",
+        "  ",
+    ] {
+        assert!(!inject::placeholder_only(text), "不该判成占位符: {text:?}");
+    }
+}

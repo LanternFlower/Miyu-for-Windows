@@ -998,7 +998,6 @@ pub(crate) fn default_real_context_moderation_keywords() -> Vec<String> {
         .collect()
 }
 
-
 fn default_after_speaking_window_seconds() -> u64 {
     60
 }

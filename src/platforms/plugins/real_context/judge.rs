@@ -810,8 +810,9 @@ mod tests {
         }
     }
 
-    /// 「她刚说过话」这一路的判断门槛要比普通概率抽样高 0.2:窗口内每条消息
-    /// 都来一次判断,门槛不抬就会因为刚说过话变得话密。
+    /// 「她刚说过话」这一路的判断门槛要比普通概率抽样高:窗口内每条消息都来
+    /// 一次判断,门槛不抬就会因为刚说过话变得话密。具体抬多少见 inject 里的
+    /// AFTER_SPEAKING_THRESHOLD_BOOST,这里只验「传进来多少就抬多少」。
     #[test]
     fn an_after_speaking_judgement_raises_the_threshold() {
         let settings = RealContextPluginSettings::default();

@@ -7,9 +7,30 @@
 
 use crate::platforms::plugins::real_context::*;
 
+/// 只由方括号占位符和空白组成吗。
+///
+/// QQ 的表情、贴图、以及一些客户端不认识的消息到了这里是 `[思索]`、
+/// `[非文本消息]` 这样的占位符——它有字,但不是正文。
+pub(in crate::platforms::plugins::real_context) fn placeholder_only(text: &str) -> bool {
+    let mut rest = text.trim();
+    let mut saw_placeholder = false;
+    while let Some(open) = rest.find('[') {
+        if !rest[..open].trim().is_empty() {
+            return false;
+        }
+        let Some(close) = rest[open..].find(']') else {
+            return false;
+        };
+        saw_placeholder = true;
+        rest = rest[open + close + 1..].trim_start();
+    }
+    saw_placeholder && rest.trim().is_empty()
+}
+
 /// 「她刚说过话」这一路触发的阈值提升。窗口内每条消息都判一次,门槛不抬就
-/// 会因为刚说过话变得话密。数字由用户指定(09-14 先 0.1,同日改 0.2)。
-const AFTER_SPEAKING_THRESHOLD_BOOST: f64 = 0.2;
+/// 会因为刚说过话变得话密。数字由用户指定(0.1 → 0.2 → 0.05:连发消息本来
+/// 就有冷静(克制)机制在压,不用抬这么高)。
+const AFTER_SPEAKING_THRESHOLD_BOOST: f64 = 0.05;
 
 impl RealContextPlugin {
     pub(in crate::platforms::plugins::real_context) async fn decide_group_trigger(
@@ -202,7 +223,11 @@ impl RealContextPlugin {
             }
         }
 
-        let pure_image = event.text.trim().is_empty()
+        // 表情包/贴图到了这里常常带一段方括号占位符(`[思索]`、`[非文本消息]`),
+        // 于是 text 非空、逃过了「纯图片」那道闸(用户 09-15 实测)。只由占位符和
+        // 空白组成的消息按「没有文字」算。
+        let textless = event.text.trim().is_empty() || placeholder_only(&event.text);
+        let pure_image = textless
             && !event.media.is_empty()
             && event.media.iter().all(|media| {
                 matches!(
@@ -234,7 +259,9 @@ impl RealContextPlugin {
             moderation_candidate,
             inherited.then(|| inherited_trigger.unwrap_or(TriggerKind::Supersede)),
             continuation,
-            after_speaking,
+            // 表情包不值得为它判一次:这一路本来就是「窗口内每条都判」,
+            // 不挡住的话一串表情包能把额度烧光。
+            after_speaking && !textless,
             probabilistic,
         );
         decision.should_reply = false;
