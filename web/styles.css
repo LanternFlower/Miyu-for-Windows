@@ -10999,7 +10999,7 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 .sel-pop-head { border-bottom: 0; }
 
 /* 收起之后底下要留一口气,不然总结行贴着浮窗底边。 */
-.sel-pop-body { padding-bottom: 14px; }
+.sel-pop-body { padding-top: 4px; padding-bottom: 14px; }
 
 /* 时间线的节点靠 --app-bg 的底色+上下投影把那根细线遮断,而浮窗底色是
    --surface-1,于是图标底下露出一块深色方块。浮窗里一律换成浮窗自己的底色。 */

@@ -389,11 +389,20 @@ window.MiyuSelectionMenu = (() => {
     };
     const settleThinking = () => {
       if (!think) return;
-      think.element.classList.remove("is-streaming");
+      // is-live 是流光(图标呼吸 + 标题扫光)的开关,不摘掉的话想完了还在闪;
+      // 它同时压着图标底色那条 is-live 规则,所以底色也会跟着不对。
+      think.element.classList.remove("is-streaming", "is-live");
       if (think.title) think.title.textContent = "已思考";
       think.liveStatus?.remove();
       think.progress?.remove();
-      ctx.procLineBreak?.(blocks);
+      think.element.open = false;
+      // 不走 procLineBreak:它会再收成一行「Thought」总结。思考块自己已经收成
+      // 「已思考」了,再套一层是重复(用户 09-14)。这里只把时间线标成结束。
+      const line = blocks.lastElementChild;
+      if (line?.miyuProc) {
+        line.miyuProc.closed = true;
+        line.classList.remove("is-live");
+      }
     };
 
     pop.streaming = true;
