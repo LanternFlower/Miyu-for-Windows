@@ -1257,12 +1257,21 @@ body[data-theme="graphite"] .session-unread-dot {
 
 /* 切换会话时铺一层加载动画(09-12「先切后加载」):目标标签已高亮,大会话拉取
    期间这里转圈,而不是像卡在旧会话上。 */
+/* 切换会话的遮罩与圆环:**延迟 220ms 再淡入**。小会话几十毫秒就拉回来了,
+   立刻画一层遮罩再撤掉,看着就是闪一下(用户 09-14)。两者都从 opacity:0 起步,
+   动画带 220ms delay + forwards——没到 220ms 就加载完,类一摘,它压根没出现过。 */
 .conversation-stage.is-switching::after {
   content: "";
   position: absolute;
   inset: 0;
   z-index: 5;
   background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+  opacity: 0;
+  animation: conv-switch-fade 160ms ease 220ms forwards;
+}
+
+@keyframes conv-switch-fade {
+  to { opacity: 1; }
 }
 .conversation-stage.is-switching::before {
   content: "";
@@ -1276,13 +1285,18 @@ body[data-theme="graphite"] .session-unread-dot {
   border-radius: 50%;
   border: 3px solid color-mix(in srgb, var(--accent) 28%, transparent);
   border-top-color: var(--accent);
-  animation: conv-switch-spin 0.7s linear infinite;
+  opacity: 0;
+  animation:
+    conv-switch-spin 0.7s linear 220ms infinite,
+    conv-switch-fade 160ms ease 220ms forwards;
 }
 @keyframes conv-switch-spin {
   to { transform: rotate(360deg); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .conversation-stage.is-switching::before { animation: none; }
+  .conversation-stage.is-switching::before {
+    animation: conv-switch-fade 160ms ease 220ms forwards;
+  }
 }
 
 .inline-error {
