@@ -149,7 +149,6 @@ fn remove_file_if_exists(path: &Path) -> Result<bool> {
 mod tests {
     use super::*;
 
-    #[test]
     /// zsh 和 fish 一样是先展开再找命令:句子里带个没匹配上的通配符,它在展开
     /// 阶段就报 no matches found,command_not_found_handler 永远不触发。所以
     /// 回车时先看首词。判定矩阵在 testkit/zsh-accept-line/run.py(真 zsh 跑)。

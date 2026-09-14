@@ -185,6 +185,19 @@ fn sync_usage_ledger_after_save(
     }
 }
 
+/// 退出时比的必须是「保存下去会写成什么」,不是内存里长什么样。
+///
+/// `AppConfig::memory` 是记忆配置的旧位置,带 `skip_serializing`:`to_string`
+/// 里永远看不见它,而 `save()` 会把它折进 `plugins.memory` 再写盘。直接比
+/// 序列化结果的话,只动到旧位置的修改就是「看不见的脏」——退出不提示保存,
+/// 改动静默丢失。这里按 `save()` 的同一套折叠先归一再比。
+fn dirty_snapshot(config: &AppConfig) -> Option<String> {
+    let mut probe = config.clone();
+    probe.plugins.memory = probe.memory_config().clone();
+    probe.memory = crate::config::MemoryConfig::default();
+    serde_json::to_string(&probe).ok()
+}
+
 fn run_main_menu(
     stdout: &mut io::Stdout,
     paths: &MiyuPaths,
@@ -193,7 +206,7 @@ fn run_main_menu(
 ) -> Result<bool> {
     // Detects edits on quit; sub-menus mutate `config` in place without any
     // dirty flag of their own.
-    let pristine_config = serde_json::to_string(config).ok();
+    let pristine_config = dirty_snapshot(config);
     let mut selected = 0usize;
     loop {
         let active = active_label(config);
@@ -252,8 +265,10 @@ fn run_main_menu(
 
         match read_key()? {
             KeyCode::Char('q') | KeyCode::Esc => {
+                let snapshot = dirty_snapshot(config);
                 let dirty = thinking_variants.is_dirty()
-                    || serde_json::to_string(config).ok() != pristine_config;
+                    || snapshot.is_none()
+                    || snapshot != pristine_config;
                 if !dirty {
                     return Ok(false);
                 }
@@ -975,3 +990,24 @@ use crate::config::EMBEDDING_MODALITY;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod dirty_tests {
+    use super::*;
+
+    /// 只动到旧位置的记忆配置,退出时也必须算脏——它虽然不进序列化,`save()`
+    /// 却会把它折进 `plugins.memory` 写盘,不提示就等于静默丢改动。
+    #[test]
+    fn a_change_only_in_the_legacy_memory_slot_still_counts_as_dirty() {
+        let mut config = AppConfig::default();
+        let raw_before = serde_json::to_string(&config).unwrap();
+        let snapshot_before = dirty_snapshot(&config).unwrap();
+
+        config.memory.enabled = !config.memory.enabled;
+
+        // 裸序列化确实看不见这一改(skip_serializing):这就是原来漏判的原因。
+        assert_eq!(serde_json::to_string(&config).unwrap(), raw_before);
+        // 按「会写成什么」来比就看得见了。
+        assert_ne!(dirty_snapshot(&config).unwrap(), snapshot_before);
+    }
+}
