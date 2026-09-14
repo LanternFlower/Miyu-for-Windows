@@ -11950,6 +11950,27 @@
       elements.oobePlugins.appendChild(label);
     }
     if (!options.length) elements.oobePlugins.innerHTML = `<p class="u-hint">没有可选的功能。</p>`;
+    bindOobeSelectAll();
+  }
+
+  // Ctrl/Cmd + A:这一页全勾 / 全不勾来回切(用户 09-14)。挂在 document 上但只在
+  // 这一步可见时才接管,不然会把页面别处的「全选文字」也抢掉。只绑一次。
+  let oobeSelectAllBound = false;
+  function bindOobeSelectAll() {
+    if (oobeSelectAllBound) return;
+    oobeSelectAllBound = true;
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "a" && event.key !== "A") return;
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+      const container = elements.oobePlugins;
+      if (!container || !container.offsetParent) return;
+      const boxes = [...container.querySelectorAll('input[type="checkbox"]')];
+      if (!boxes.length) return;
+      event.preventDefault();
+      // 有没勾的就全勾上;已经全勾了才是全取消——半勾状态下按一下的意图是「都要」。
+      const target = boxes.some((box) => !box.checked);
+      for (const box of boxes) box.checked = target;
+    });
   }
 
   /// 脚本/技能这类「逐个勾」的块:没有条目就整块藏起来;enabled 为 null = 全勾。
