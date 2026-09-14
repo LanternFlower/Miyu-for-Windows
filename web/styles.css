@@ -10971,3 +10971,35 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   height: 20px;
   flex-basis: 20px;
 }
+
+/* ---------- 09-14 划词菜单打磨(用户逐条) ---------- */
+
+/* 菜单字号跟 AI 正文同一档:原来落在 UI 档,和它旁边被选中的正文两个字号。 */
+.sel-menu { font-size: var(--fs-chat); }
+
+/* 复制 / 重试 / 钉住 / 关闭 收成右上角一排图标(原来复制与重试在页脚)。 */
+.sel-pop-actions {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+  margin-left: auto;
+}
+.sel-pop-actions .icon-slot {
+  width: 15px;
+  height: 15px;
+}
+
+/* 等模型那几秒的转圈:和会话列表、REPL 等待动画同一组盲文帧。 */
+.sel-braille {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+/* 流式思考只给四行刷新空间,滚到底跟着新字走;想完自动收起,点标题行能展开。 */
+.sel-pop .reasoning-block.sel-think.is-streaming .reasoning-text {
+  max-height: calc(4 * 1.55em);
+  overflow: hidden;
+}
+
+/* 窄窗下「上下文」被折成「上下 / 文」两行(8388 实拍)。标签不折行。 */
+.composer-info .ctx-nums .k { white-space: nowrap; }

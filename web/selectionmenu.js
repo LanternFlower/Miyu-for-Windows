@@ -1,7 +1,7 @@
 "use strict";
 
 /*
- * 选中文字右键菜单:解释 · 翻译 · 引用追问 · 搜索 · 复制。
+ * 选中文字右键菜单:解释 · 翻译 · 引用 · 搜索 · 复制。
  * 设计取舍(2026-09-14):中性说明、知识库与网页两栏、
  * 不留历史、侧栏里的选区先不管)。
  *
@@ -19,7 +19,7 @@ window.MiyuSelectionMenu = (() => {
   const ACTIONS = [
     { key: "explain", label: "解释", needsModel: true },
     { key: "translate", label: "翻译", needsModel: true },
-    { key: "quote", label: "引用追问" },
+    { key: "quote", label: "引用" },
     { key: "search", label: "搜索" },
   ];
   const MAX_CHARS = 2000;
@@ -129,7 +129,9 @@ window.MiyuSelectionMenu = (() => {
     if (menu && !menu.contains(target)) closeMenu();
     if (toolbar && !toolbar.hidden && toolbar.contains(target)) return;
     for (const pop of [...popovers]) {
-      if (!pop.pinned && !pop.node.contains(target)) closePopover(pop);
+      // 流式期间视同临时钉住:第一个 token 要好几秒,这期间在外面点一下
+      // 就把在飞的请求 abort 掉了(09-14 真机复现)。
+      if (!pop.pinned && !pop.streaming && !pop.node.contains(target)) closePopover(pop);
     }
   }
 
@@ -194,7 +196,7 @@ window.MiyuSelectionMenu = (() => {
   function createPopover(title, picked) {
     // 同一时间只留一个没钉住的浮窗,再开就替换它;钉住的留着。
     for (const pop of [...popovers]) {
-      if (!pop.pinned) closePopover(pop);
+      if (!pop.pinned && !pop.streaming) closePopover(pop);
     }
     const node = el("section", "sel-pop");
     node.setAttribute("role", "dialog");
@@ -203,13 +205,17 @@ window.MiyuSelectionMenu = (() => {
     const excerpt = picked.text.replace(/\s+/g, " ");
     const quoteNode = el("span", "sel-pop-quote", excerpt.length > 60 ? `${excerpt.slice(0, 60)}…` : excerpt);
     quoteNode.title = picked.text;
-    const pop = { node, head, body: null, foot: null, controller: null, pinned: false };
-    const pin = button("sel-icon", "钉住", () => {
+    const pop = { node, head, body: null, foot: null, controller: null, pinned: false, streaming: false };
+    // 动作区:解释/翻译往里插复制与重试,始终排在钉住与关闭左边。
+    pop.actions = el("span", "sel-pop-actions");
+    const pin = iconButton("pin", "钉住", () => {
       pop.pinned = !pop.pinned;
       pin.classList.toggle("is-active", pop.pinned);
-      pin.textContent = pop.pinned ? "已钉住" : "钉住";
+      pin.title = pop.pinned ? "已钉住,点别处不会关" : "钉住后点别处不会关,可以再选别的词";
     }, "钉住后点别处不会关,可以再选别的词");
-    head.append(el("strong", null, title), quoteNode, pin, button("sel-icon", "✕", () => closePopover(pop), "关闭"));
+    pop.pinButton = pin;
+    pop.actions.append(pin, iconButton("x", "关闭", () => closePopover(pop), "关闭"));
+    head.append(el("strong", null, title), quoteNode, pop.actions);
     pop.body = el("div", "sel-pop-body");
     pop.foot = el("footer", "sel-pop-foot");
     node.append(head, pop.body, pop.foot);
@@ -278,6 +284,15 @@ window.MiyuSelectionMenu = (() => {
     }
   }
 
+  function iconButton(icon, label, onClick, title) {
+    const node = button("sel-icon", "", onClick, title || label);
+    node.setAttribute("aria-label", label);
+    const slot = ctx.makeIconSlot?.(icon);
+    if (slot) node.appendChild(slot);
+    else node.textContent = label;
+    return node;
+  }
+
   function closePopover(pop) {
     pop.controller?.abort();
     pop.node.remove();
@@ -285,9 +300,32 @@ window.MiyuSelectionMenu = (() => {
     if (index >= 0) popovers.splice(index, 1);
   }
 
+  // 和主页会话列表、REPL 的 wait_spinner 同一组帧。一个 ticker 刷所有在飞的
+  // 浮窗:每个浮窗各开一个计时器,重建时会各自从头转,看着不同步。
+  const BRAILLE = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  let brailleFrame = 0;
+  let brailleTimer = 0;
+
+  function tickBraille() {
+    const nodes = document.querySelectorAll(".sel-braille");
+    if (!nodes.length) {
+      window.clearInterval(brailleTimer);
+      brailleTimer = 0;
+      return;
+    }
+    brailleFrame = (brailleFrame + 1) % BRAILLE.length;
+    for (const node of nodes) node.textContent = BRAILLE[brailleFrame];
+  }
+
+  function spinner() {
+    const node = el("span", "sel-braille", BRAILLE[brailleFrame]);
+    if (!brailleTimer) brailleTimer = window.setInterval(tickBraille, 90);
+    return node;
+  }
+
   function statusLine(text) {
     const node = el("div", "sel-status");
-    node.append(el("span", "sel-spinner"), document.createTextNode(text));
+    node.append(spinner(), document.createTextNode(text));
     return node;
   }
 
@@ -315,33 +353,51 @@ window.MiyuSelectionMenu = (() => {
       );
     }
     if (!picked.turnId) pop.body.appendChild(el("div", "sel-note", "这条消息还没落库,这次不带对话上下文。"));
-    const status = statusLine(kind === "explain" ? "正在解释…" : "正在翻译…");
+    // 等模型的那几秒:主页同款盲文转圈,不再写「正在解释…」。
+    const status = el("div", "sel-status");
+    status.appendChild(spinner());
     const output = el("div", "sel-output markdown-body");
     pop.body.append(status, output);
 
+    // 复制 / 重试收进右上角,排在钉住左边;「转成追问」去掉(右键菜单里已有「引用」)。
+    const copy = iconButton("copy", "复制", () => copyText(text), "复制结果");
+    const retry = iconButton("refresh-cw", "重试", () => {
+      closePopover(pop);
+      openAssist(kind, picked, lang);
+    }, "重新生成");
+    copy.disabled = true;
+    pop.actions.insertBefore(copy, pop.pinButton);
+    pop.actions.insertBefore(retry, pop.pinButton);
+
     let text = "";
     let frame = 0;
+    let think = null;
     const paint = () => {
       frame = 0;
       ctx.renderMarkdown(output, text);
     };
-    const renderFoot = (done) => {
-      pop.foot.replaceChildren();
-      const copy = button("sel-btn", "复制", () => copyText(text));
-      const retry = button("sel-btn", "重试", () => {
-        closePopover(pop);
-        openAssist(kind, picked, lang);
-      });
-      const ask = button("sel-btn", "转成追问", () => {
-        quote(picked.text, `${title}:\n${text}`);
-        closePopover(pop);
-      }, "把选中文字和这段结果一起放进输入框");
-      copy.disabled = !done || !text;
-      ask.disabled = !done || !text;
-      pop.foot.append(copy, retry, ask);
+    // 思考块直接用主页那一个(样式、展开收起、尾巴窥视都一样),流式期间只给
+    // 四行刷新空间,想完自动收起;点标题行仍能展开回看。
+    const thinking = () => {
+      if (think) return think;
+      think = ctx.createReasoningBlock?.("", "正在思考", true) || null;
+      if (think) {
+        think.element.classList.add("sel-think", "is-streaming");
+        think.element.open = true;
+        pop.body.insertBefore(think.element, output);
+      }
+      return think;
     };
-    renderFoot(false);
+    const settleThinking = () => {
+      if (!think) return;
+      think.element.classList.remove("is-streaming", "is-live");
+      think.element.open = false;
+      if (think.title) think.title.textContent = "已思考";
+      think.liveStatus?.remove();
+      think.progress?.remove();
+    };
 
+    pop.streaming = true;
     pop.controller = new AbortController();
     streamAssist(
       {
@@ -350,26 +406,42 @@ window.MiyuSelectionMenu = (() => {
         action: kind,
         text: picked.text,
         target_lang: lang,
+        // 解释用读的人的语言,不是选区的语言:中文界面里选一段英文报错,
+        // 要的是中文解释。
+        locale: navigator.language || "",
       },
       pop.controller.signal,
       {
+        reasoning(chunk) {
+          const block = thinking();
+          if (!block) return;
+          status.remove();
+          block.raw = (block.raw || "") + chunk;
+          block.body.textContent = block.raw;
+          block.body.scrollTop = block.body.scrollHeight;
+        },
         delta(chunk) {
           text += chunk;
+          settleThinking();
           status.remove();
           if (!frame) frame = window.requestAnimationFrame(paint);
         },
         done(event) {
+          pop.streaming = false;
           if (!text && event?.text) text = String(event.text);
+          settleThinking();
           status.remove();
           if (frame) window.cancelAnimationFrame(frame);
           paint();
           if (!text) output.textContent = "模型没有返回内容";
-          renderFoot(true);
+          copy.disabled = !text;
         },
         error(message) {
+          pop.streaming = false;
+          settleThinking();
           status.remove();
           pop.body.appendChild(el("div", "sel-note is-error", message));
-          renderFoot(Boolean(text));
+          copy.disabled = !text;
         },
       }
     );
@@ -412,6 +484,7 @@ window.MiyuSelectionMenu = (() => {
             continue;
           }
           if (event.type === "delta") handlers.delta(String(event.text || ""));
+          else if (event.type === "reasoning") handlers.reasoning?.(String(event.text || ""));
           else if (event.type === "done") {
             finished = true;
             handlers.done(event);
@@ -451,7 +524,7 @@ window.MiyuSelectionMenu = (() => {
       });
     pop.foot.append(
       button("sel-btn", "复制关键词", () => copyText(query)),
-      button("sel-btn", "引用追问", () => {
+      button("sel-btn", "引用", () => {
         quote(picked.text);
         closePopover(pop);
       })
