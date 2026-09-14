@@ -2,8 +2,6 @@
 
 0.6.0 带来了五屏新手引导、默认开启的全屏 TUI，以及重新设计的 WebUI 时间线。这个版本也补齐了程序调用接口、会话沙盒、压缩后的文件回读、记账与赞助等能力，并修复了长会话、多用户、后台子代理与移动端的一批实际问题。
 
-**直接运行 `miyu` 就是全屏 TUI，无需设置 `MIYU_TUI=1`。** `miyu dev` 进入开发模式；需要旧 inline 前端时可使用 `MIYU_TUI=0 miyu`。本页安装包已更新为 **0.6.0-2**，安装过首批 0.6.0-1 的用户请升级至此修订。
-
 ## 第一次见面：五屏 OOBE 与星空大厅
 
 新安装会依次带你完成 **人格 → 功能 → 认识你 → 终端集成 → 接模型**。可以使用内置 Miyu，也可以起名字、写设定创建自己的角色；记忆、知识库、MCP、技能和每项内置脚本都能选择。终端页识别本机 shell，并标明已经集成的项目。
@@ -122,10 +120,6 @@ sudo dnf install ./miyu-0.6.0-2.fc44.x86_64.rpm
 ```
 
 [完整更新记录（根据 next-release-note 归档）](https://github.com/SHORiN-KiWATA/miyu-agent/blob/v0.6.0/docs/releases/0.6.0/changelog.md)
-
-五个干净容器的实际安装、资源与版本检查以及 `opencodego/deepseek-v4.1-flash` 回复验收全部通过（36 项检查）。
-
-本次包修订重新编译了默认全屏修复，`v0.6.0` 的源码指向同步更新为 [9142225c](https://github.com/SHORiN-KiWATA/miyu-agent/commit/9142225c0adeb4e3740586c440ab085d5f36feb2)。
 
 <details>
 <summary>SHA256 校验值（六个安装包）</summary>
