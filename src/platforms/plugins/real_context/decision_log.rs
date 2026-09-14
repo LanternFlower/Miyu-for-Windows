@@ -28,7 +28,7 @@ pub(in crate::platforms::plugins::real_context) struct ActiveReplyDecisionLog<'a
     pub(in crate::platforms::plugins::real_context) heat_penalty: f64,
     pub(in crate::platforms::plugins::real_context) heat_threshold_adjustment: f64,
     pub(in crate::platforms::plugins::real_context) short_message_threshold_adjustment: f64,
-    pub(in crate::platforms::plugins::real_context) continuation_threshold_adjustment: f64,
+    pub(in crate::platforms::plugins::real_context) after_speaking_threshold_adjustment: f64,
     pub(in crate::platforms::plugins::real_context) moderation: &'a judge::ModerationResult,
     pub(in crate::platforms::plugins::real_context) reason: &'a str,
     pub(in crate::platforms::plugins::real_context) endpoint: Option<&'a str>,
@@ -183,11 +183,15 @@ pub(in crate::platforms::plugins::real_context) fn format_active_reply_decision_
             &format_adjustment(log.short_message_threshold_adjustment),
         ));
     }
-    if log.continuation_threshold_adjustment.abs() >= 0.0005 {
+    if log.after_speaking_threshold_adjustment.abs() >= 0.0005 {
         lines.push(format_decision_log_field(
             locale,
-            text_for(locale, "Continuation threshold adjustment", "续聊阈值调整"),
-            &format_adjustment(log.continuation_threshold_adjustment),
+            text_for(
+                locale,
+                "After-speaking threshold adjustment",
+                "刚说过话阈值调整",
+            ),
+            &format_adjustment(log.after_speaking_threshold_adjustment),
         ));
     }
     if log.moderation.violation {

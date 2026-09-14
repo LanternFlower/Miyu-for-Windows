@@ -6,11 +6,11 @@ use crate::platforms::plugins::real_context::*;
 #[test]
 fn explicit_direct_trigger_precedes_moderation_only_candidates() {
     assert_eq!(
-        select_trigger(true, true, Some(TriggerKind::Supersede), true, true),
+        select_trigger(true, true, Some(TriggerKind::Supersede), true, false, true),
         Some(TriggerKind::Direct)
     );
     assert_eq!(
-        select_trigger(false, true, Some(TriggerKind::Supersede), true, true),
+        select_trigger(false, true, Some(TriggerKind::Supersede), true, false, true),
         Some(TriggerKind::Moderation)
     );
 }
@@ -27,20 +27,23 @@ fn a_takeover_inherits_the_original_trigger() {
         TriggerKind::Supersede,
     ] {
         assert_eq!(
-            select_trigger(false, false, Some(origin), true, true),
+            select_trigger(false, false, Some(origin), true, false, true),
             Some(origin)
         );
     }
     // 不继承时维持原有的续聊/概率次序。
     assert_eq!(
-        select_trigger(false, false, None, true, true),
+        select_trigger(false, false, None, true, false, true),
         Some(TriggerKind::Continuation)
     );
     assert_eq!(
-        select_trigger(false, false, None, false, true),
+        select_trigger(false, false, None, false, false, true),
         Some(TriggerKind::Probability)
     );
-    assert_eq!(select_trigger(false, false, None, false, false), None);
+    assert_eq!(
+        select_trigger(false, false, None, false, false, false),
+        None
+    );
 }
 
 #[test]
@@ -63,11 +66,27 @@ fn direct_trigger_judgement_respects_takeover_and_privileged_bypass() {
 #[test]
 fn skipped_social_judgement_preserves_moderation_only_trigger() {
     assert_eq!(
-        select_trigger_for_policy(false, true, true, Some(TriggerKind::Supersede), true, true),
+        select_trigger_for_policy(
+            false,
+            true,
+            true,
+            Some(TriggerKind::Supersede),
+            true,
+            false,
+            true
+        ),
         Some(TriggerKind::Moderation)
     );
     assert_eq!(
-        select_trigger_for_policy(true, true, true, Some(TriggerKind::Supersede), true, true),
+        select_trigger_for_policy(
+            true,
+            true,
+            true,
+            Some(TriggerKind::Supersede),
+            true,
+            false,
+            true
+        ),
         Some(TriggerKind::Direct)
     );
 }
@@ -619,5 +638,45 @@ fn the_join_in_notice_concedes_and_then_overrides() {
     assert!(
         notice.is_ascii(),
         "模型可见面恒英文,与其它 <qq-*> 块一致:{notice}"
+    );
+}
+
+/// 「她刚说过话」是独立的一路,排在自然续聊之后、概率抽样之前。
+///
+/// 它**不能**并进 Continuation:那一路会被算成 direct_interaction 喂好感度
+/// (mod.rs 的 direct_interaction),而这一路里说话的可能是任何路人,记成
+/// 「跟她直接互动」会污染好感库。
+#[test]
+fn after_speaking_sits_between_continuation_and_probability() {
+    // 同一个人接着说 = 自然续聊,优先。
+    assert_eq!(
+        select_trigger(false, false, None, true, true, true),
+        Some(TriggerKind::Continuation)
+    );
+    // 不是同一个人,但她刚说过话 = 这一路。
+    assert_eq!(
+        select_trigger(false, false, None, false, true, true),
+        Some(TriggerKind::AfterSpeaking)
+    );
+    // 她没说过话,只剩概率抽样。
+    assert_eq!(
+        select_trigger(false, false, None, false, false, true),
+        Some(TriggerKind::Probability)
+    );
+    // 直接触发与覆盖继承照旧压过它。
+    assert_eq!(
+        select_trigger(true, false, None, false, true, false),
+        Some(TriggerKind::Direct)
+    );
+    assert_eq!(
+        select_trigger(
+            false,
+            false,
+            Some(TriggerKind::Probability),
+            false,
+            true,
+            false
+        ),
+        Some(TriggerKind::Probability)
     );
 }

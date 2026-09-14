@@ -7,8 +7,9 @@
 
 use crate::platforms::plugins::real_context::*;
 
-/// 续聊触发的阈值提升。数字由用户 09-14 指定。
-const CONTINUATION_THRESHOLD_BOOST: f64 = 0.1;
+/// 「她刚说过话」这一路触发的阈值提升。窗口内每条消息都判一次,门槛不抬就
+/// 会因为刚说过话变得话密。数字由用户指定(09-14 先 0.1,同日改 0.2)。
+const AFTER_SPEAKING_THRESHOLD_BOOST: f64 = 0.2;
 
 impl RealContextPlugin {
     pub(in crate::platforms::plugins::real_context) async fn decide_group_trigger(
@@ -126,6 +127,7 @@ impl RealContextPlugin {
         let preempted_targets = active_targets_from_context(context);
         let (
             continuation,
+            after_speaking,
             inherited,
             inherited_committed,
             inherited_trigger,
@@ -139,6 +141,7 @@ impl RealContextPlugin {
             session.decay_heat(now, settings.reply_restraint_recover_minutes);
             let continuation =
                 session.continuation_match(&event.sender_id, now, settings.continuation_enable);
+            let after_speaking = session.spoke_recently(now, settings);
             let pending = session.pending.get(&event.sender_id).filter(|pending| {
                 now.duration_since(pending.started)
                     <= Duration::from_secs(settings.active_reply_supersede_window_seconds)
@@ -179,6 +182,7 @@ impl RealContextPlugin {
             };
             (
                 continuation,
+                after_speaking,
                 inherited,
                 inherited_committed,
                 inherited_trigger,
@@ -230,6 +234,7 @@ impl RealContextPlugin {
             moderation_candidate,
             inherited.then(|| inherited_trigger.unwrap_or(TriggerKind::Supersede)),
             continuation,
+            after_speaking,
             probabilistic,
         );
         decision.should_reply = false;
@@ -369,8 +374,8 @@ impl RealContextPlugin {
         // 续聊触发比普通概率抽样多一道门槛:她刚发过言,接下来每条非纯多媒体
         // 消息都会来一次判断,那是在模拟「人发完言会看到后续」,门槛该更高
         // (用户 09-14)。
-        let continuation_threshold_boost = if trigger == TriggerKind::Continuation {
-            CONTINUATION_THRESHOLD_BOOST
+        let after_speaking_threshold_boost = if trigger == TriggerKind::AfterSpeaking {
+            AFTER_SPEAKING_THRESHOLD_BOOST
         } else {
             0.0
         };
@@ -443,7 +448,7 @@ impl RealContextPlugin {
                     heat_penalty,
                     heat_threshold_boost,
                     short_message_threshold_boost: short_boost,
-                    continuation_threshold_boost,
+                    after_speaking_threshold_boost,
                     affection_level,
                     affection_prompt,
                     affection_bias,
@@ -514,7 +519,7 @@ impl RealContextPlugin {
                 heat_penalty,
                 heat_threshold_adjustment: heat_threshold_boost,
                 short_message_threshold_adjustment: short_boost,
-                continuation_threshold_adjustment: continuation_threshold_boost,
+                after_speaking_threshold_adjustment: after_speaking_threshold_boost,
                 moderation: &judged.moderation,
                 reason: &judged.reasoning,
                 endpoint: judged.endpoint.as_deref(),

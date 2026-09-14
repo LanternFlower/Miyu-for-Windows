@@ -39,6 +39,10 @@ pub(in crate::platforms::plugins::real_context) enum TriggerKind {
     Direct,
     Moderation,
     Supersede,
+    /// 她刚在这个群发过言:窗口内**任何人**的消息都来一次判断——人发完言大概率
+    /// 会看到接下来的消息。故意不并进 Continuation:那一路会被算成
+    /// direct_interaction 喂好感度(mod.rs),路人插一句不该记成跟她直接互动。
+    AfterSpeaking,
 }
 
 impl TriggerKind {
@@ -49,6 +53,7 @@ impl TriggerKind {
             Self::Direct => "direct",
             Self::Moderation => "moderation",
             Self::Supersede => "supersede",
+            Self::AfterSpeaking => "after_speaking",
         }
     }
 
@@ -59,6 +64,7 @@ impl TriggerKind {
             "direct" | "system" => Self::Direct,
             "moderation" => Self::Moderation,
             "supersede" => Self::Supersede,
+            "after_speaking" => Self::AfterSpeaking,
             _ => return None,
         })
     }
@@ -73,11 +79,13 @@ impl TriggerKind {
             (Locale::Zh, Self::Direct) => "直接触发 (direct)",
             (Locale::Zh, Self::Moderation) => "安全初判 (moderation)",
             (Locale::Zh, Self::Supersede) => "接管上一轮 (supersede)",
+            (Locale::Zh, Self::AfterSpeaking) => "刚说过话 (after_speaking)",
             (Locale::En, Self::Probability) => "probability sample (probability)",
             (Locale::En, Self::Continuation) => "natural continuation (continuation)",
             (Locale::En, Self::Direct) => "direct trigger (direct)",
             (Locale::En, Self::Moderation) => "moderation precheck (moderation)",
             (Locale::En, Self::Supersede) => "previous-turn takeover (supersede)",
+            (Locale::En, Self::AfterSpeaking) => "just spoke here (after_speaking)",
         }
     }
 
@@ -115,6 +123,7 @@ pub(in crate::platforms::plugins::real_context) fn select_trigger(
     moderation_candidate: bool,
     inherited: Option<TriggerKind>,
     continuation: bool,
+    after_speaking: bool,
     probabilistic: bool,
 ) -> Option<TriggerKind> {
     if system_triggered {
@@ -129,6 +138,8 @@ pub(in crate::platforms::plugins::real_context) fn select_trigger(
         Some(origin)
     } else if continuation {
         Some(TriggerKind::Continuation)
+    } else if after_speaking {
+        Some(TriggerKind::AfterSpeaking)
     } else if probabilistic {
         Some(TriggerKind::Probability)
     } else {
@@ -142,6 +153,7 @@ pub(in crate::platforms::plugins::real_context) fn select_trigger_for_policy(
     moderation_candidate: bool,
     inherited: Option<TriggerKind>,
     continuation: bool,
+    after_speaking: bool,
     probabilistic: bool,
 ) -> Option<TriggerKind> {
     if moderation_candidate && !active_judgement_allowed {
@@ -152,6 +164,7 @@ pub(in crate::platforms::plugins::real_context) fn select_trigger_for_policy(
             moderation_candidate,
             inherited,
             continuation,
+            after_speaking,
             probabilistic,
         )
     }

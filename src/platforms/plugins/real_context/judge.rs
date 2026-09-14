@@ -35,7 +35,7 @@ pub(super) struct JudgeRequest<'a> {
     pub(super) short_message_threshold_boost: f64,
     /// 续聊触发(她刚在群里发过言)的阈值提升。这种判断是「人发完言之后大概率
     /// 会看到接下来的消息」在模拟,门槛该比普通概率抽样高一点(用户 09-14)。
-    pub(super) continuation_threshold_boost: f64,
+    pub(super) after_speaking_threshold_boost: f64,
     pub(super) affection_level: &'a str,
     pub(super) affection_prompt: &'a str,
     pub(super) affection_bias: f64,
@@ -246,7 +246,7 @@ fn build_prompt(
         request.heat_penalty,
         request.heat_threshold_boost,
         request.short_message_threshold_boost,
-        request.continuation_threshold_boost,
+        request.after_speaking_threshold_boost,
         request.emotion_adjustment,
     ))
 }
@@ -460,7 +460,7 @@ fn normalize_result(
     let effective_threshold = (settings.reply_threshold
         + request.heat_threshold_boost
         + request.short_message_threshold_boost
-        + request.continuation_threshold_boost
+        + request.after_speaking_threshold_boost
         + request.emotion_adjustment)
         .max(0.0);
     let moderation = normalize_moderation(
@@ -802,7 +802,7 @@ mod tests {
             heat_penalty: 0.0,
             heat_threshold_boost: 0.0,
             short_message_threshold_boost: 0.0,
-            continuation_threshold_boost: 0.0,
+            after_speaking_threshold_boost: 0.0,
             affection_level: "中立",
             affection_prompt: "按普通关系判断。",
             affection_bias: 0.0,
@@ -810,10 +810,10 @@ mod tests {
         }
     }
 
-    /// 续聊触发(她刚在群里发过言)的判断门槛要比普通概率抽样高 0.1:那种判断
-    /// 是「人发完言大概率会看到后续」在模拟,每条消息都来一次,门槛不抬就太吵。
+    /// 「她刚说过话」这一路的判断门槛要比普通概率抽样高 0.2:窗口内每条消息
+    /// 都来一次判断,门槛不抬就会因为刚说过话变得话密。
     #[test]
-    fn a_continuation_triggered_judgement_raises_the_threshold() {
+    fn an_after_speaking_judgement_raises_the_threshold() {
         let settings = RealContextPluginSettings::default();
         let verdict = serde_json::json!({
             "should_reply": true,
@@ -822,16 +822,16 @@ mod tests {
         });
 
         let mut plain = request(false, false);
-        plain.continuation_threshold_boost = 0.0;
+        plain.after_speaking_threshold_boost = 0.0;
         let plain = normalize_result(&settings, &plain, &verdict).expect("普通触发");
 
         let mut continued = request(false, false);
-        continued.continuation_threshold_boost = 0.1;
-        let continued = normalize_result(&settings, &continued, &verdict).expect("续聊触发");
+        continued.after_speaking_threshold_boost = 0.2;
+        let continued = normalize_result(&settings, &continued, &verdict).expect("刚说过话");
 
         assert!(
-            (continued.effective_threshold - plain.effective_threshold - 0.1).abs() < 1e-9,
-            "续聊没抬高门槛: {} vs {}",
+            (continued.effective_threshold - plain.effective_threshold - 0.2).abs() < 1e-9,
+            "刚说过话没抬高门槛: {} vs {}",
             continued.effective_threshold,
             plain.effective_threshold
         );
