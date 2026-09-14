@@ -11001,6 +11001,18 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 /* 收起之后底下要留一口气,不然总结行贴着浮窗底边。 */
 .sel-pop-body { padding-bottom: 14px; }
 
+/* 时间线的节点靠 --app-bg 的底色+上下投影把那根细线遮断,而浮窗底色是
+   --surface-1,于是图标底下露出一块深色方块。浮窗里一律换成浮窗自己的底色。 */
+.sel-pop .proc-node,
+.sel-pop .proc-steps > .reasoning-block > summary > .reasoning-icon,
+.sel-pop .proc-steps > .tool-card > .tool-head > .tool-icon {
+  background: var(--surface-1);
+  box-shadow: 0 -2px 0 var(--surface-1), 0 2px 0 var(--surface-1);
+}
+.sel-pop .proc-steps > .reasoning-block.is-live > summary > .reasoning-icon {
+  background: color-mix(in srgb, var(--text) 5%, var(--surface-1));
+}
+
 /* 容器带 assistant-blocks 是为了吃到时间线那套样式;主对话里的外边距在浮窗
    里太空,这里收掉。 */
 .sel-blocks { margin: 0; }
