@@ -11012,6 +11012,13 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 .sel-pop .proc-steps > .reasoning-block.is-live > summary > .reasoning-icon {
   background: color-mix(in srgb, var(--text) 5%, var(--surface-1));
 }
+/* 想完之后那一格:不再自己刷底色。遮断细线是它原本的职责,可浮窗里这条时间线
+   只有一个节点、没有要遮的线段,而「卡片底色」跟浮窗底色又不是同一个值——
+   与其猜该填哪个,不如透明,永远和身后一致。 */
+.sel-pop .proc-steps > .reasoning-block:not(.is-live) > summary > .reasoning-icon {
+  background: transparent;
+  box-shadow: none;
+}
 
 /* 容器带 assistant-blocks 是为了吃到时间线那套样式;主对话里的外边距在浮窗
    里太空,这里收掉。 */
