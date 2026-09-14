@@ -323,6 +323,71 @@ fn structured_platform_context_can_suppress_ambiguous_session_replay() {
     assert!(format!("{:?}", messages.last().unwrap().content).contains("<runtime now="));
 }
 
+/// 换个目录再触发 shellhook 不掰缓存:cwd 只进**当前用户消息之后**的瞬时
+/// `<runtime …/>` 尾巴,系统提示词和全部历史一字不动(host-environment 带的是
+/// miyu_home,不是 cwd)。这条契约此前只有 history.rs 的注释守着。
+#[tokio::test]
+async fn changing_the_working_directory_only_moves_the_tail_after_the_user_message() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_paths(temp.path());
+    let config = AppConfig::default();
+    let state = StateStore::new(&paths).unwrap();
+    let client =
+        OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
+    let agent = Agent::new(
+        config,
+        &paths,
+        state,
+        client,
+        ToolRegistry::new(),
+        AgentMode::Normal,
+    )
+    .unwrap();
+
+    // 失败时只报第一处不同的头 120 字符:整份系统提示词打出来没法看。
+    let shape = |messages: &[ChatMessage]| {
+        messages
+            .iter()
+            .map(|message| format!("{:?} {:?}", message.role, message.content))
+            .collect::<Vec<_>>()
+    };
+    let first_divergence = |left: &[String], right: &[String]| {
+        if left.len() != right.len() {
+            return Some(format!("消息条数不同:{} vs {}", left.len(), right.len()));
+        }
+        left.iter().zip(right).position(|(a, b)| a != b).map(|at| {
+            let cut = |text: &String| text.chars().take(120).collect::<String>();
+            format!(
+                "第 {at} 条就分叉了\n  左: {}\n  右: {}",
+                cut(&left[at]),
+                cut(&right[at])
+            )
+        })
+    };
+    let render = |dir: &'static str| {
+        crate::tools::workspace::with_workspace(std::path::PathBuf::from(dir), async {
+            agent.chat_messages("current", "same question").unwrap()
+        })
+    };
+
+    let (first, first_user) = render("/tmp/miyu-prefix-dir-a").await;
+    let (second, second_user) = render("/tmp/miyu-prefix-dir-b").await;
+
+    // 供应商的前缀缓存就命中到这儿为止,两次必须逐字节相同。
+    assert_eq!(first_user, second_user);
+    let (left, right) = (shape(&first[..=first_user]), shape(&second[..=second_user]));
+    if let Some(where_) = first_divergence(&left, &right) {
+        panic!("换目录掰断了当前用户消息之前的前缀:{where_}");
+    }
+
+    // 差异只在尾巴,而且尾巴带的正是各自的目录。
+    let first_tail = format!("{:?}", first.last().unwrap().content);
+    let second_tail = format!("{:?}", second.last().unwrap().content);
+    assert!(first_tail.contains("miyu-prefix-dir-a"), "{first_tail}");
+    assert!(second_tail.contains("miyu-prefix-dir-b"), "{second_tail}");
+    assert_ne!(first_tail, second_tail);
+}
+
 #[test]
 fn fossilized_transient_tail_replays_between_user_and_assistant() {
     let temp = tempfile::tempdir().unwrap();
