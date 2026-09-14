@@ -11009,13 +11009,11 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   background: var(--surface-1);
   box-shadow: 0 -2px 0 var(--surface-1), 0 2px 0 var(--surface-1);
 }
+/* 那一格底色本来是用来遮断时间线细线的。浮窗里这条线只有一个节点、没有要遮的
+   线段,而「卡片底色」跟浮窗底色又不是同一个值——与其猜该填哪个,不如透明,
+   永远和身后一致。正在思考与已思考两态一样办。 */
+.sel-pop .proc-steps > .reasoning-block > summary > .reasoning-icon,
 .sel-pop .proc-steps > .reasoning-block.is-live > summary > .reasoning-icon {
-  background: color-mix(in srgb, var(--text) 5%, var(--surface-1));
-}
-/* 想完之后那一格:不再自己刷底色。遮断细线是它原本的职责,可浮窗里这条时间线
-   只有一个节点、没有要遮的线段,而「卡片底色」跟浮窗底色又不是同一个值——
-   与其猜该填哪个,不如透明,永远和身后一致。 */
-.sel-pop .proc-steps > .reasoning-block:not(.is-live) > summary > .reasoning-icon {
   background: transparent;
   box-shadow: none;
 }
