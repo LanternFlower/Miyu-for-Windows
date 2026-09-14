@@ -211,6 +211,14 @@ pub(in crate::oobe) fn on_key(app: &mut App, raw: KeyCode, mods: KeyModifiers) -
                 KeyCode::Home => app.feat_cur = 0,
                 KeyCode::End => app.feat_cur = last,
                 KeyCode::Char(' ') => toggle(app),
+                // Ctrl+A:全开 / 全关来回切。有没开的就全开上,已经全开了才是
+                // 全关——半开状态下按一次的意图是「都要」(用户 09-14)。
+                KeyCode::Char('a' | 'A') if ctrl => {
+                    let target = app.feats.iter().any(|item| !item.on);
+                    for item in app.feats.iter_mut() {
+                        item.on = target;
+                    }
+                }
                 KeyCode::Enter => {
                     if app.commit_features() {
                         app.goto(Screen::Identity);
