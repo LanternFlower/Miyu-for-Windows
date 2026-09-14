@@ -105,6 +105,7 @@ pub(in crate::config_tui) fn edit_platform_model_route(
             extra_prompt: String::new(),
             session_limits: None,
             probability_reply: None,
+            ignore_sleep_hours: None,
         });
     let mut selected = 0usize;
     loop {
@@ -159,6 +160,11 @@ pub(in crate::config_tui) fn edit_platform_model_route(
                 "{}: {}",
                 t("Random active replies", "概率主动回复"),
                 probability_reply_label(route.probability_reply)
+            ),
+            format!(
+                "{}: {}",
+                t("Ignore sleep hours", "忽略睡眠时间"),
+                ignore_sleep_label(route.ignore_sleep_hours)
             ),
         ];
         draw_menu(
@@ -269,6 +275,24 @@ pub(in crate::config_tui) fn edit_platform_model_route(
                         None
                     };
                 }
+                8 => {
+                    // None 与 Some(false) 是同一个意思(照常受睡眠时间管),所以
+                    // 这里是二选一,不是继承/开/关三档。
+                    let choices = [
+                        ignore_sleep_label(Some(false)).to_string(),
+                        ignore_sleep_label(Some(true)).to_string(),
+                    ];
+                    let current = ignore_sleep_label(route.ignore_sleep_hours);
+                    let picked = select_choice(
+                        stdout,
+                        t(" IGNORE SLEEP HOURS ", " 忽略睡眠时间 "),
+                        current,
+                        &choices,
+                        "",
+                        true,
+                    )?;
+                    route.ignore_sleep_hours = (picked == choices[1]).then_some(true);
+                }
                 _ => {}
             },
             _ => {}
@@ -281,6 +305,13 @@ fn probability_reply_label(value: Option<bool>) -> &'static str {
         None => t("inherit plugin setting", "继承插件设置"),
         Some(true) => t("on", "开"),
         Some(false) => t("off (no random sampling)", "关(不做概率抽样)"),
+    }
+}
+
+fn ignore_sleep_label(value: Option<bool>) -> &'static str {
+    match value {
+        None | Some(false) => t("no (sleep hours apply)", "否(受睡眠时间管)"),
+        Some(true) => t("yes (always awake here)", "是(这个会话不睡)"),
     }
 }
 

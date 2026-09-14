@@ -314,6 +314,7 @@ fn session_limits_resolve_from_conversation_then_kind_then_qq() {
             queued: 7,
         }),
         probability_reply: None,
+        ignore_sleep_hours: None,
     });
     assert_eq!(
         qq.session_limits(PlatformConversationKind::Group, "42"),
@@ -377,6 +378,7 @@ fn qq_text_model_pool_resolution_preserves_conversation_priority() {
         extra_prompt: String::new(),
         session_limits: None,
         probability_reply: None,
+        ignore_sleep_hours: None,
     });
 
     {
@@ -1154,6 +1156,7 @@ fn probability_reply_override_is_per_conversation_and_round_trips() {
         extra_prompt: String::new(),
         session_limits: None,
         probability_reply: Some(false),
+        ignore_sleep_hours: None,
     };
     config.platforms.upsert_model_route(route.clone());
     assert!(!config
@@ -1250,4 +1253,35 @@ fn sleep_hours_parse_and_window() {
     assert!(config.validate_platforms().is_ok());
     config.platforms.qq.sleep_hours = "night".into();
     assert!(config.validate_platforms().is_err());
+}
+
+/// 会话专属配置的「忽略睡眠时间」:未覆盖 = 照常受管;Some(true) 只让那一个
+/// 会话在睡眠时间照常进行,别的会话不受影响。
+#[test]
+fn ignoring_sleep_hours_is_scoped_to_the_one_conversation() {
+    let mut qq = OneBotConfig::default();
+    qq.sleep_hours = "23:00-06:30".to_string();
+    qq.conversations.push(PlatformModelRoute {
+        conversation: PlatformConversationConfig {
+            kind: PlatformConversationKind::Group,
+            id: "130515298".to_string(),
+        },
+        persona: PlatformPersonaOverride::Inherit,
+        text_models_inheritance: PlatformModelPoolInheritance::Platform,
+        text_models: None,
+        multimodal_models_inheritance: PlatformModelPoolInheritance::Platform,
+        multimodal_models: None,
+        extra_prompt: String::new(),
+        session_limits: None,
+        probability_reply: None,
+        ignore_sleep_hours: Some(true),
+    });
+
+    let night = chrono::NaiveTime::from_hms_opt(2, 0, 0).unwrap();
+    assert!(qq.is_sleeping_at(night), "凌晨两点该在睡眠窗口里");
+
+    // 勾了的那个会话豁免;没勾的、以及同号的私聊都不豁免。
+    assert!(qq.sleep_hours_ignored(PlatformConversationKind::Group, "130515298"));
+    assert!(!qq.sleep_hours_ignored(PlatformConversationKind::Group, "999"));
+    assert!(!qq.sleep_hours_ignored(PlatformConversationKind::Private, "130515298"));
 }

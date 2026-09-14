@@ -192,6 +192,20 @@ fn asleep() -> Admission {
 }
 
 /// `now` 是本机时区的墙钟时间,拆出来是为了让睡眠时间可测。
+fn sleep_exempt(config: &OneBotConfig, target: Target) -> bool {
+    let (kind, id) = match target {
+        Target::Group { group_id } => (
+            crate::config::PlatformConversationKind::Group,
+            group_id.to_string(),
+        ),
+        Target::Private { user_id } => (
+            crate::config::PlatformConversationKind::Private,
+            user_id.to_string(),
+        ),
+    };
+    config.sleep_hours_ignored(kind, &id)
+}
+
 pub(in crate::platforms::onebot) fn admission_for_access_at(
     config: &OneBotConfig,
     state: Option<&StateStore>,
@@ -200,7 +214,8 @@ pub(in crate::platforms::onebot) fn admission_for_access_at(
     user_id: i64,
     now: chrono::NaiveTime,
 ) -> Admission {
-    let sleeping = config.is_sleeping_at(now);
+    // 睡眠时间可以按会话豁免:专属配置里勾了「无视睡眠时间」的那一个照常进行。
+    let sleeping = config.is_sleeping_at(now) && !sleep_exempt(config, target);
     let account_id = self_id.to_string();
     let user_id_text = user_id.to_string();
     let is_admin = state.map_or_else(

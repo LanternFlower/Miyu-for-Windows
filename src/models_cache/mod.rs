@@ -486,6 +486,7 @@ mod tests {
                 extra_prompt: String::new(),
                 session_limits: None,
                 probability_reply: None,
+                ignore_sleep_hours: None,
             });
         let mut data = HashMap::from([(
             provider_id.clone(),

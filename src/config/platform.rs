@@ -521,6 +521,10 @@ pub struct PlatformModelRoute {
     /// 不做概率抽样(@、关键词、引用、接话、覆盖顶替、群管审核照旧)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probability_reply: Option<bool>,
+    /// 无视睡眠时间:None/Some(false) = 照常受 sleep_hours 管,Some(true) = 就算
+    /// 在睡眠时间,这个会话照样正常进行。管理员本来就叫得醒,这条是给普通会话的。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignore_sleep_hours: Option<bool>,
 }
 
 impl PlatformModelRoute {
@@ -946,6 +950,19 @@ impl OneBotConfig {
     }
 
     /// 此刻(本机时区)是否在睡眠时间内。
+    /// 这个会话要不要无视睡眠时间(专属配置未覆盖时为 false)。
+    pub fn sleep_hours_ignored(
+        &self,
+        kind: PlatformConversationKind,
+        conversation_id: &str,
+    ) -> bool {
+        self.conversations
+            .iter()
+            .find(|route| route.matches(kind, conversation_id))
+            .and_then(|route| route.ignore_sleep_hours)
+            .unwrap_or(false)
+    }
+
     pub fn is_sleeping_at(&self, now: chrono::NaiveTime) -> bool {
         self.sleep_window()
             .is_some_and(|window| window.contains(now))
