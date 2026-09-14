@@ -67,6 +67,11 @@ pub struct RealContextPluginSettings {
 
     pub continuation_enable: bool,
     pub continuation_window_seconds: u64,
+    /// 她在群里发完消息之后,多少秒内把**任何人**的消息都送去判一次
+    /// (TriggerKind::AfterSpeaking)。续聊窗口只认「她刚回的那个人」,这个不挑人,
+    /// 所以单独一个值——默认 60s,比续聊的 15s 宽。
+    #[serde(default = "default_after_speaking_window_seconds")]
+    pub after_speaking_window_seconds: u64,
     pub continuation_boost_score: f64,
     pub takeover_direct_trigger_enable: bool,
     pub takeover_direct_trigger_boost_score: f64,
@@ -175,6 +180,7 @@ impl Default for RealContextPluginSettings {
             judge_should_reply_penalty_score: 0.2,
             continuation_enable: true,
             continuation_window_seconds: 15,
+            after_speaking_window_seconds: default_after_speaking_window_seconds(),
             continuation_boost_score: 0.1,
             takeover_direct_trigger_enable: true,
             takeover_direct_trigger_boost_score: 0.3,
@@ -409,6 +415,12 @@ impl RealContextPluginSettings {
         if !weight_sum.is_finite() || weight_sum <= f64::EPSILON {
             bail!("platform plugin real_context judge weights must have a positive sum");
         }
+        validate_real_context_count(
+            "after_speaking_window_seconds",
+            self.after_speaking_window_seconds as usize,
+            1,
+            86_400,
+        )?;
         validate_real_context_count(
             "continuation_window_seconds",
             self.continuation_window_seconds as usize,
@@ -984,4 +996,9 @@ pub(crate) fn default_real_context_moderation_keywords() -> Vec<String> {
         .iter()
         .map(|keyword| (*keyword).to_string())
         .collect()
+}
+
+
+fn default_after_speaking_window_seconds() -> u64 {
+    60
 }

@@ -2344,6 +2344,17 @@
               default: true,
             },
             {
+              key: "after_speaking_window_seconds",
+              label: "群聊发完消息后观察窗口(秒)",
+              hint: "她发完消息后这么久内,任何人的消息都会来一次主动回复判断(门槛比平时高 0.2);续聊窗口只认她刚回的那个人",
+              kind: "number",
+              integer: true,
+              min: 1,
+              max: 86400,
+              unit: "秒",
+              default: 60,
+            },
+            {
               key: "continuation_window_seconds",
               label: "续聊窗口(秒)",
               kind: "number",

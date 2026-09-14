@@ -88,6 +88,11 @@ pub(in crate::config_tui) fn edit_real_context_active_reply(
                 t("Restraint multiplier", "克制倍率"),
                 settings.reply_restraint_multiplier
             ),
+            format!(
+                "{}: {}",
+                t("Post-reply observation window (seconds)", "群聊发完消息后观察窗口（秒）"),
+                settings.after_speaking_window_seconds
+            ),
             t("Continuation window", "续聊窗口").to_string(),
             t("Trigger methods", "触发方式").to_string(),
             t("Concurrency and weights", "并发与权重").to_string(),
@@ -187,10 +192,20 @@ pub(in crate::config_tui) fn edit_real_context_active_reply(
                     settings,
                     |candidate, value| candidate.reply_restraint_multiplier = value,
                 )?,
-                13 => edit_real_context_continuation(stdout, settings)?,
-                14 => edit_real_context_triggers(stdout, settings)?,
-                15 => edit_real_context_judge_advanced(stdout, settings)?,
-                16 => edit_real_context_number(
+                13 => edit_real_context_number(
+                    stdout,
+                    t(
+                        "Post-reply observation window (seconds)",
+                        "群聊发完消息后观察窗口（秒）",
+                    ),
+                    settings.after_speaking_window_seconds,
+                    settings,
+                    |candidate, value| candidate.after_speaking_window_seconds = value,
+                )?,
+                14 => edit_real_context_continuation(stdout, settings)?,
+                15 => edit_real_context_triggers(stdout, settings)?,
+                16 => edit_real_context_judge_advanced(stdout, settings)?,
+                17 => edit_real_context_number(
                     stdout,
                     t("Judge context window", "判断上下文消息数"),
                     settings.judge_context_window,
