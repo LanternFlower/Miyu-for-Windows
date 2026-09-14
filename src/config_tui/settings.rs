@@ -90,11 +90,6 @@ pub(in crate::config_tui) fn edit_settings(
             parse_mixed_endpoint_display(&config.display.mixed_model_endpoint_display),
         )
         .choices(&["off", "interactive", "all"]),
-        Field::new(
-            t("When context reaches its limit", "上下文到达上限后"),
-            config.context.on_overflow.clone(),
-        )
-        .choices(&["compact", "pop"]),
         // Appended rather than inserted: the read-back below is positional.
         Field::new(
             t(
@@ -109,7 +104,7 @@ pub(in crate::config_tui) fn edit_settings(
     // debug builds; new fields go on the end.
     debug_assert_eq!(
         fields.len(),
-        15,
+        14,
         "global settings fields changed: update the positional read-back below"
     );
     run_form_without_buttons(stdout, t(" GLOBAL SETTINGS ", " 全局设置 "), &mut fields)?;
@@ -132,8 +127,7 @@ pub(in crate::config_tui) fn edit_settings(
     config.display.readable_tool_names = parse_bool_field(&fields[10].value)?;
     config.display.show_token_usage = parse_bool_field(&fields[11].value)?;
     config.display.mixed_model_endpoint_display = parse_mixed_endpoint_display(&fields[12].value);
-    config.context.on_overflow = fields[13].value.trim().to_string();
-    config.display.repl_replay_turns = fields[14]
+    config.display.repl_replay_turns = fields[13]
         .value
         .trim()
         .parse::<usize>()?

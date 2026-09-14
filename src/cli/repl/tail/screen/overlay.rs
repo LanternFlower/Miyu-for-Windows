@@ -84,6 +84,9 @@ fn frame_line(width: usize, label: &str, trailing: Option<&str>) -> String {
 
 pub(in crate::cli) struct Overlay {
     source: Source,
+    /// 跑的是哪条命令。标题栏那个 title 是短标签(模型给的话只有 16 字符),
+    /// 看不出真正在跑什么,所以日志上面原样铺一行(用户 09-14)。
+    command: String,
     /// 这个面板讲的是哪个后台任务。有值才允许按 x 停。
     job_id: Option<String>,
     /// 画面宽度，重新解析内容时要用。
@@ -119,6 +122,7 @@ impl Overlay {
             job_id: None,
             cols,
             title: blocks::title(id).unwrap_or_else(|| t("detail", "详情").to_string()),
+            command: String::new(),
             body: parse_body(&lines, cols),
             expanded: Expanded::new(),
             scroll: 0,
@@ -133,6 +137,7 @@ impl Overlay {
         path: std::path::PathBuf,
         title: String,
         job_id: Option<String>,
+        command: String,
         cols: usize,
     ) -> Self {
         let mut panel = Self {
@@ -143,6 +148,7 @@ impl Overlay {
             },
             job_id,
             title,
+            command,
             body: parse_body(&[], cols),
             cols,
             expanded: Expanded::new(),
@@ -243,9 +249,20 @@ impl Overlay {
         }) {
             self.step_blocks.clear();
             let width = self.cols.saturating_sub(6).max(20);
-            return text
-                .lines()
-                .flat_map(|line| {
+            // 标题栏那个 title 是短标签,看不出在跑什么;日志上面原样铺一行。
+            let mut head = Vec::new();
+            let command = self.command.trim().to_string();
+            if !command.is_empty() {
+                head.extend(
+                    crate::render::wrap_display_text(&format!("$ {command}"), width)
+                        .into_iter()
+                        .map(|piece| format!("{indent}{piece}")),
+                );
+                head.push(String::new());
+            }
+            return head
+                .into_iter()
+                .chain(text.lines().flat_map(|line| {
                     if line.trim().is_empty() {
                         return vec![String::new()];
                     }
@@ -253,7 +270,7 @@ impl Overlay {
                         .into_iter()
                         .map(|piece| format!("{indent}{piece}"))
                         .collect::<Vec<_>>()
-                })
+                }))
                 .collect();
         }
         let steps = log_steps(text);
@@ -1002,6 +1019,7 @@ impl Screen {
         path: std::path::PathBuf,
         title: String,
         job_id: Option<String>,
+        command: String,
     ) -> bool {
         if self
             .overlay
@@ -1014,6 +1032,7 @@ impl Screen {
             path,
             title,
             job_id,
+            command,
             panel_inner_width(self.cols),
         ));
         self.invalidate();

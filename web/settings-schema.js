@@ -242,14 +242,7 @@
       id: "context",
       title: "上下文",
       fields: [
-        {
-          path: "context.on_overflow",
-          label: "上下文到达上限后",
-          kind: "select",
-          choices: OVERFLOW_CHOICES,
-          default: "compact",
-        },
-        {
+{
           path: "context.default_context_window",
           label: "默认上下文窗口",
           hint: "模型没报窗口大小时用的通用常数",

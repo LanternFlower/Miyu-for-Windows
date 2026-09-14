@@ -158,6 +158,10 @@ pub type ProgressHook = Arc<dyn Fn(&str, &str) + Send + Sync>;
 pub struct JobOverview {
     pub job_id: String,
     pub title: String,
+    /// 跑的是哪条命令。title 是给任务条用的短标签(模型给的话截到 16 字符,
+    /// 没给才拿命令前 20 字符兜底),看不出真正在跑什么;浮层要的是这一份原文。
+    #[serde(default)]
+    pub command: String,
     /// "command" or "subagent" — UIs word their labels by this.
     #[serde(default)]
     pub kind: String,
@@ -275,6 +279,7 @@ fn overview_of(job: &JobEntry) -> JobOverview {
     JobOverview {
         job_id: job.job_id.clone(),
         title: job.title.clone(),
+        command: job.command.clone(),
         kind: job.kind_label().to_string(),
         dev: matches!(job.kind, JobKind::Subagent { dev: true, .. }),
         log_path: Some(job.log_path.display().to_string()),

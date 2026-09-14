@@ -742,6 +742,7 @@ fn the_job_strip_reports_tokens_left_of_the_timer() {
     let job = |metric: Option<&str>| crate::tools::jobs::JobOverview {
         job_id: "82bea3".into(),
         title: "查目录".into(),
+        command: "seq 1 5".to_string(),
         kind: "subagent".into(),
         dev: false,
         session_id: None,
@@ -782,6 +783,7 @@ fn the_job_panel_title_carries_the_token_figure() {
     let mut job = crate::tools::jobs::JobOverview {
         job_id: "82bea3".into(),
         title: "走查后台子代理".into(),
+        command: "seq 1 5".to_string(),
         kind: "subagent".into(),
         dev: false,
         session_id: None,

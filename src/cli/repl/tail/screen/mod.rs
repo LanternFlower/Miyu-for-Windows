@@ -1293,8 +1293,9 @@ impl super::LiveReplTail {
         };
         let title = job_panel_title(job);
         let job_id = job.job_id.clone();
+        let command = job.command.clone();
         if let Some(screen) = &mut self.screen {
-            screen.open_log_overlay(std::path::PathBuf::from(path), title, Some(job_id));
+            screen.open_log_overlay(std::path::PathBuf::from(path), title, Some(job_id), command);
         }
         self.repaint_screen()?;
         Ok(true)

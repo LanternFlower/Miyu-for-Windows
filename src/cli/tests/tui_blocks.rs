@@ -437,7 +437,7 @@ fn job_panel_merges_a_call_with_its_result() {
         )
         .expect("写日志");
         let mut screen = Screen::detached(80, 24);
-        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None));
+        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
         let rows = screen.overlay_rows();
         let calls = rows.iter().filter(|row| row.contains("运行命令")).count();
         assert_eq!(calls, 1, "调用和结果没合成一步: {rows:?}");
@@ -481,7 +481,7 @@ fn job_panel_tool_step_expands_to_its_output() {
         )
         .expect("写日志");
         let mut screen = Screen::detached(80, 24);
-        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None));
+        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
         let before = screen.overlay_rows();
         let row = before
             .iter()
@@ -517,7 +517,7 @@ fn job_panel_starts_with_the_prompt_it_was_given() {
         )
         .expect("写日志");
         let mut screen = Screen::detached(80, 24);
-        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None));
+        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
         let before = screen.overlay_rows();
         assert!(
             !before[0].contains("运行命令"),
@@ -557,7 +557,7 @@ fn job_panel_paints_thinking_body_green_not_its_handle() {
         )
         .expect("写日志");
         let mut screen = Screen::detached(80, 24);
-        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None));
+        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
         let rows = screen.overlay_rows();
         let row = rows
             .iter()
@@ -603,7 +603,7 @@ fn job_panel_rows_stay_inside_the_frame() {
         .expect("写日志");
         let cols = 100u16;
         let mut screen = Screen::detached(cols, 30);
-        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None));
+        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
         // 面板里能写多宽：屏宽 − 左右各 2 列留白（没有竖线）。
         let inner = usize::from(cols) - 4;
         let over = |rows: &[String]| {
@@ -705,7 +705,7 @@ fn job_panel_folds_its_steps_once_the_subagent_talks() {
         )
         .expect("写日志");
         let mut screen = Screen::detached(100, 30);
-        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None));
+        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
         let rows = screen.overlay_rows();
         assert!(
             rows.iter().any(|row| row.contains("2 tools")),
@@ -796,7 +796,7 @@ fn job_panel_does_not_hang_tool_output_on_speech_or_the_fold() {
         )
         .expect("写日志");
         let mut screen = Screen::detached(100, 30);
-        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None));
+        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
         let rows = screen.overlay_rows();
         let fold = rows
             .iter()
@@ -844,7 +844,7 @@ fn a_log_fold_opens_into_a_timeline_and_the_running_step_spins() {
         )
         .expect("写日志");
         let mut screen = Screen::detached(100, 30);
-        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None));
+        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
         let rows = screen.overlay_rows();
         assert!(
             !rows.iter().any(|row| row.contains("0.0s")),
@@ -928,7 +928,7 @@ fn a_trailing_stats_line_is_not_a_running_step() {
         )
         .expect("写日志");
         let mut screen = Screen::detached(100, 30);
-        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None));
+        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
         let rows = screen.overlay_rows_ansi();
         let stats = rows
             .iter()
@@ -958,7 +958,7 @@ fn a_multi_line_speech_paragraph_keeps_its_continuation_lines() {
         )
         .expect("写日志");
         let mut screen = Screen::detached(100, 40);
-        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None));
+        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
         let rows = screen.overlay_rows();
         for needle in ["Tool calls made", "three reads", "calls"] {
             assert!(
@@ -995,7 +995,7 @@ fn a_log_preparing_row_wears_the_tools_own_glyph() {
         )
         .expect("写日志");
         let mut screen = Screen::detached(100, 30);
-        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None));
+        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
         let rows = screen.overlay_rows();
         let row = rows
             .iter()
@@ -1004,6 +1004,36 @@ fn a_log_preparing_row_wears_the_tools_own_glyph() {
         assert!(
             row.contains(crate::render::tool_glyph_for("edit")),
             "准备编辑没挂铅笔: {row:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+}
+
+/// 后台**命令**的浮层要在日志上面原样铺一行在跑的命令:标题栏那个 title 是短
+/// 标签(模型给了就只有 16 字符),看不出真正在跑什么(用户 09-14)。
+#[test]
+fn job_panel_shows_the_command_it_is_running() {
+    with_blocks(|| {
+        let dir = std::env::temp_dir().join(format!("miyu-log-cmd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建目录");
+        let path = dir.join("job.log");
+        // 纯输出,没有 [思考]/[工具] 这些标记——后台命令的日志就长这样。
+        std::fs::write(&path, "total 12\ndrwxr-xr-x 2 shorin\n").expect("写日志");
+        let mut screen = Screen::detached(80, 24);
+        assert!(screen.open_log_overlay(
+            path.clone(),
+            "走查".into(),
+            None,
+            "seq 1 5 | sort -r".to_string(),
+        ));
+        let rows = screen.overlay_rows();
+        assert!(
+            rows.iter().any(|row| row.contains("$ seq 1 5 | sort -r")),
+            "浮层没显示在跑的命令: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("drwxr-xr-x")),
+            "日志正文没了: {rows:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     });
