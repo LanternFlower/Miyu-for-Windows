@@ -39,6 +39,7 @@ mod providers_api;
 mod qq_history;
 mod sandbox_scope;
 mod security;
+mod selection_menu;
 mod server;
 mod session_cmds;
 mod sessions;
@@ -83,6 +84,7 @@ use providers_api::*;
 use qq_history::*;
 use sandbox_scope::*;
 use security::*;
+use selection_menu::*;
 pub(crate) use server::run;
 use server::*;
 use session_cmds::*;
@@ -159,6 +161,8 @@ const LIGHTBOX_JS: &str = include_str!("../../web/lightbox.js");
 const PREVIEW_JS: &str = include_str!("../../web/preview.js");
 const LINKCARDS_JS: &str = include_str!("../../web/linkcards.js");
 const TODOS_JS: &str = include_str!("../../web/todos.js");
+// 聊天正文选中文字的右键菜单(2026-09-14)。
+const SELECTION_MENU_JS: &str = include_str!("../../web/selectionmenu.js");
 // 代码块语法高亮:只用 Prism 的分词器,上色的 DOM 由这个文件亲手搭。
 const HIGHLIGHT_JS: &str = include_str!("../../web/highlight.js");
 // 文件分享面板:独立文件,与 artifact 演示区无关。

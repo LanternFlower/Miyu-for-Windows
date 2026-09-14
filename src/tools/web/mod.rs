@@ -37,6 +37,17 @@ pub fn register(registry: &mut ToolRegistry, config: WebPluginConfig) {
     register_search_tool(registry, "web_search", config.clone());
 }
 
+/// WebUI 选中文字右键「搜索」用(`web/selection_menu.rs`):同一套搜索实现、
+/// 同一份提供方回退顺序,返回与 `web_search` 工具相同的文本。
+pub(crate) async fn search_for_webui(query: &str, config: WebPluginConfig) -> Result<String> {
+    let max_results = config.max_results.min(8);
+    web_search(
+        json!({ "query": query, "max_results": max_results }),
+        config,
+    )
+    .await
+}
+
 pub fn register_fetch(registry: &mut ToolRegistry) {
     registry.register(ToolSpec::new(
         "web_fetch",

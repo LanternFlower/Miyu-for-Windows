@@ -315,6 +315,7 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
         .route("/preview.js", get(preview_js_asset))
         .route("/linkcards.js", get(linkcards_js_asset))
         .route("/todos.js", get(todos_js_asset))
+        .route("/selectionmenu.js", get(selectionmenu_js_asset))
         .route("/highlight.js", get(highlight_js_asset))
         // artifact 的沙箱 iframe 也来这里取库,而它是不透明源——浏览器会为此强制
         // 发 OPTIONS 预检,所以每条都得配一个 options 分支,漏一条那个库就加载不上。
@@ -603,6 +604,8 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
             "/api/sessions/{session_id}/context",
             get(session_context_http),
         )
+        .route("/api/selection/assist", post(selection_assist_http))
+        .route("/api/selection/web-search", get(selection_web_search_http))
         .route(
             "/api/sessions/{session_id}/poppable",
             get(poppable_turns_http),

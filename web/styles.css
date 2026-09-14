@@ -5598,6 +5598,162 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   gap: 6px;
   flex: none;
 }
+/* ---------- 选中文字右键菜单(web/selectionmenu.js) ---------- */
+.sel-menu {
+  position: fixed;
+  z-index: 70;
+  display: grid;
+  min-width: 168px;
+  padding: 5px;
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  box-shadow: var(--float-shadow);
+  font-size: var(--fs-meta);
+}
+.sel-menu-item {
+  display: flex;
+  align-items: center;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.sel-menu-item:hover:not(:disabled),
+.sel-menu-item:focus-visible { background: var(--surface-2); outline: 0; }
+.sel-menu-item:disabled { color: var(--text-faint); cursor: not-allowed; }
+.sel-menu-sep { height: 1px; margin: 4px 6px; background: var(--line); }
+.sel-menu-hint { padding: 4px 10px 3px; color: var(--text-faint); font-size: 10.5px; }
+
+.sel-pop {
+  position: fixed;
+  z-index: 65;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  box-shadow: var(--float-shadow);
+  color: var(--text);
+  font-size: var(--fs-meta);
+  animation: ctx-pop-in 0.14s cubic-bezier(0.2, 0, 0, 1);
+}
+.sel-pop-head { display: flex; align-items: center; gap: 6px; padding: 9px 10px 8px 12px; border-bottom: 1px solid var(--line); }
+/* 标题栏是拖动把手(selectionmenu.js makeDraggable);手机宽度是底部面板,不拖。 */
+.sel-pop-head { cursor: grab; touch-action: none; user-select: none; }
+.sel-pop.is-dragging { animation: none; box-shadow: var(--float-shadow), 0 0 0 1px var(--line-strong); }
+.sel-pop.is-dragging .sel-pop-head { cursor: grabbing; }
+@media (max-width: 640px) {
+  .sel-pop-head { cursor: default; touch-action: auto; }
+}
+.sel-pop-head strong { flex: none; font-size: var(--fs-ui); font-weight: 600; }
+.sel-pop-quote { flex: 1; min-width: 0; overflow: hidden; color: var(--text-soft); text-overflow: ellipsis; white-space: nowrap; }
+.sel-icon,
+.sel-chip {
+  flex: none;
+  padding: 3px 7px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-soft);
+  font-size: var(--fs-micro);
+  cursor: pointer;
+}
+.sel-chip { background: var(--surface-2); }
+.sel-icon:hover,
+.sel-chip:hover { background: var(--surface-2); color: var(--text); }
+.sel-icon.is-active { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.sel-pop-body {
+  min-height: 0;
+  padding: 10px 12px;
+  overflow-y: auto;
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
+}
+.sel-output { font-size: 13.5px; line-height: 1.65; }
+/* 溢出(2026-09-14 用户报):浮窗是 grid,隐式列宽是 auto,一段不可断的长串(URL、路径、
+   长英文词、报错原文)会把列撑得比浮窗还宽,文字就画到外面去了。列钉成 minmax(0, 1fr),
+   子项 min-width 归零,长串允许在任意处折行;代码块保留原样,改成块内横向滚动。 */
+.sel-pop { grid-template-columns: minmax(0, 1fr); }
+.sel-pop > *,
+.sel-pop-body > *,
+.sel-section,
+.sel-section-body { min-width: 0; }
+.sel-output,
+.sel-note,
+.sel-result-snippet,
+.sel-empty { overflow-wrap: anywhere; word-break: break-word; }
+.sel-output pre,
+.sel-output .code-block,
+.sel-output .markdown-table-scroll { max-width: 100%; overflow-x: auto; }
+.sel-output pre { white-space: pre; }
+.sel-output img,
+.sel-output table { max-width: 100%; }
+.sel-result { grid-template-columns: minmax(0, 1fr); }
+.sel-status { display: flex; align-items: center; gap: 8px; color: var(--text-soft); }
+.sel-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: ctx-spin 0.8s linear infinite;
+}
+.sel-note { margin-bottom: 8px; padding: 6px 8px; border-radius: var(--radius); background: var(--surface-2); color: var(--text-soft); font-size: var(--fs-micro); line-height: 1.5; }
+.sel-note.is-error { color: var(--danger); }
+.sel-pop-foot { display: flex; justify-content: flex-end; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); }
+.sel-pop-foot:empty { display: none; }
+.sel-btn { padding: 5px 10px; border: 0; border-radius: var(--radius); background: var(--surface-2); color: var(--text); font-size: var(--fs-meta); cursor: pointer; }
+.sel-btn:hover:not(:disabled) { background: var(--surface-3); }
+.sel-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.sel-section + .sel-section { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.sel-section-head { margin-bottom: 6px; color: var(--text-faint); font-size: var(--fs-micro); }
+.sel-result {
+  display: grid;
+  width: 100%;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.sel-result:hover { background: var(--surface-2); }
+.sel-result-title { overflow: hidden; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.sel-result-snippet { color: var(--text-soft); font-size: var(--fs-micro); line-height: 1.5; }
+.sel-result-url { overflow: hidden; color: var(--link); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.sel-empty { color: var(--text-faint); font-size: var(--fs-micro); }
+
+/* 手机:选区下方的工具条;浮窗改成底部面板(覆盖 JS 写的内联位置)。 */
+.sel-toolbar {
+  position: fixed;
+  z-index: 70;
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  border-radius: var(--radius);
+  background: var(--surface-3);
+  box-shadow: var(--float-shadow);
+}
+.sel-toolbar[hidden] { display: none; }
+.sel-toolbar-item { padding: 8px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font-size: var(--fs-meta); }
+@media (max-width: 640px) {
+  .sel-pop {
+    top: auto !important;
+    right: 0;
+    bottom: 0 !important;
+    left: 0 !important;
+    width: auto !important;
+    max-height: 70vh !important;
+    border-radius: calc(var(--radius) * 2) calc(var(--radius) * 2) 0 0;
+  }
+}
+
 .composer-info .ctx-ring {
   width: 16px;
   height: 16px;
