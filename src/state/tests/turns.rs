@@ -944,3 +944,36 @@ fn replay_entries_carry_how_long_each_step_took() {
     assert!(reasoning_ms >= 50, "思考耗时没记上: {reasoning_ms}ms");
     assert!(tool_ms >= 50, "工具耗时没记上: {tool_ms}ms");
 }
+
+/// 单取一条回合要和「全量载入再 find」给出同一条。划词解释每点一次就查一次,
+/// 走 load_turns() 是把整个会话连 tool_flow/context_messages 一起拉进内存。
+#[test]
+fn loading_one_turn_by_id_matches_the_full_scan() {
+    let (_temp, store) = test_store();
+    store.init_files().unwrap();
+    for (id, question, answer) in [
+        ("turn_a", "第一问", "第一答"),
+        ("turn_b", "第二问", "第二答"),
+        ("turn_c", "第三问", "第三答"),
+    ] {
+        store.start_turn(id, question, 999_999).unwrap();
+        store.complete_turn(id, answer, None).unwrap();
+    }
+
+    let all = store.load_turns().unwrap();
+    assert_eq!(all.len(), 3);
+    for want in &all {
+        let got = store
+            .load_turn(&want.turn_id)
+            .unwrap()
+            .unwrap_or_else(|| panic!("{} 单取不到", want.turn_id));
+        assert_eq!(got.turn_id, want.turn_id);
+        assert_eq!(got.seq, want.seq);
+        assert_eq!(got.user_content, want.user_content);
+        assert_eq!(got.assistant_content, want.assistant_content);
+        assert_eq!(got.status, want.status);
+    }
+
+    // 不存在的 id 是 None,不是空回合。
+    assert!(store.load_turn("turn_zzz").unwrap().is_none());
+}

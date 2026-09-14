@@ -120,6 +120,10 @@ impl StateStore {
         self.conv_db.load_turns(&self.session())
     }
 
+    pub fn load_turn(&self, turn_id: &str) -> Result<Option<Turn>> {
+        self.conv_db.load_turn(&self.session(), turn_id)
+    }
+
     #[allow(dead_code)]
     pub fn load_turns_excluding(&self, exclude_turn_id: &str) -> Result<Vec<Turn>> {
         self.conv_db

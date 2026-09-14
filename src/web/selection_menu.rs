@@ -80,11 +80,7 @@ pub(in crate::web) async fn selection_assist_http(
         .map(str::trim)
         .filter(|id| !id.is_empty())
     {
-        Some(turn_id) => store
-            .load_turns()
-            .map_err(ApiError::internal)?
-            .into_iter()
-            .find(|turn| turn.turn_id == turn_id),
+        Some(turn_id) => store.load_turn(turn_id).map_err(ApiError::internal)?,
         None => None,
     };
     let prompt = selection_prompt(
