@@ -326,6 +326,37 @@ impl Screen {
         self.float_anchor = anchor;
     }
 
+    /// 上一帧活动区盖过、这一帧盖不到的那几行：强制重画。
+    ///
+    /// 正文按行 diff，而活动区是 `paint` 之后才打上去的，`painted` 里记的
+    /// 仍是「正文以为自己画了什么」。缩行时旧 footer 留在上面那一行，正文
+    /// 那一行又恰好没变，diff 判「没变」直接跳过，旧 footer 就擦不掉。
+    /// inline 那边靠 `suspend()` 先擦旧活动区，这是它的全屏版。
+    pub(in crate::cli) fn invalidate_activity_rows(
+        &mut self,
+        previous: Option<(u16, u16)>,
+        current: Option<(u16, u16)>,
+    ) {
+        for row in crate::cli::repl::input_layout::stale_activity_rows(previous, current) {
+            let slot = usize::from(row);
+            if self.painted.len() <= slot {
+                self.painted.resize(slot + 1, String::new());
+            }
+            // 哨兵：任何真实行都不等于它，于是这一行必被重画。空串不行——
+            // 空行画出来就是空串，diff 会认为「没变」（见 `force` 的注释）。
+            self.painted[slot] = "\u{0}".into();
+            if let Some(key) = self.row_keys.get_mut(slot) {
+                *key = None;
+            }
+        }
+    }
+
+    /// `paint(tail_height)` 会把正文画到第几行为止。要在 `paint` **之前**
+    /// 知道活动区落点的调用方用它（擦旧活动区要先知道新活动区在哪）。
+    pub(in crate::cli) fn body_for(&self, tail_height: u16) -> u16 {
+        self.body_height(tail_height)
+    }
+
     pub(in crate::cli) fn set_banner(&mut self, rows: Option<Vec<String>>) {
         if rows.is_some() != self.banner.is_some() {
             self.invalidate();

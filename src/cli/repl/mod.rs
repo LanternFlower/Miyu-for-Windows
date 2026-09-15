@@ -4,6 +4,7 @@
 pub(in crate::cli) mod banner;
 pub(in crate::cli) mod commands;
 pub(in crate::cli) mod dictation;
+pub(in crate::cli) mod input_layout;
 pub(in crate::cli) mod jobs;
 pub(in crate::cli) mod layout;
 pub(in crate::cli) mod placeholder;

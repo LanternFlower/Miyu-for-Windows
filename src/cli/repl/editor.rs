@@ -96,6 +96,10 @@ pub(in crate::cli) struct LiveReplEditor {
     /// leaves this pinned, and notifications stay quiet rather than firing on
     /// every turn.
     pub(in crate::cli) focused: bool,
+    /// 输入框的可用宽度(含提示前缀那两列)。大厅里输入框是居中的窄框,不是
+    /// 整个终端宽——上下方向键按「第几个物理行」找落点,拿终端宽去找会跳错行。
+    /// 每帧由活动区渲染写进来;`None` = 还没画过,退回问终端。
+    pub(in crate::cli) box_cols: Option<usize>,
 }
 
 pub(in crate::cli) enum LiveEditorAction {
@@ -126,7 +130,13 @@ impl LiveReplEditor {
             pasted_texts: Vec::new(),
             escape_armed_until: None,
             focused: true,
+            box_cols: None,
         }
+    }
+
+    /// 折行按哪个宽度算。活动区每帧把窄框宽度写进 `box_cols`;还没画过就问终端。
+    fn content_cols(&self) -> usize {
+        self.box_cols.unwrap_or_else(terminal_cols)
     }
 
     pub(in crate::cli) fn clear(&mut self) {
@@ -292,7 +302,13 @@ impl LiveReplEditor {
                         self.history_index = self.history_index.saturating_sub(1);
                         self.recall_history_entry(self.history_index);
                     } else {
-                        self.cursor = repl_move_cursor_vertical("  ", &self.input, self.cursor, -1);
+                        self.cursor = repl_move_cursor_vertical_for_cols(
+                            "  ",
+                            &self.input,
+                            self.cursor,
+                            -1,
+                            self.content_cols(),
+                        );
                     }
                 }
                 KeyCode::Down => {
@@ -310,7 +326,13 @@ impl LiveReplEditor {
                             self.pasted_texts.clear();
                         }
                     } else {
-                        self.cursor = repl_move_cursor_vertical("  ", &self.input, self.cursor, 1);
+                        self.cursor = repl_move_cursor_vertical_for_cols(
+                            "  ",
+                            &self.input,
+                            self.cursor,
+                            1,
+                            self.content_cols(),
+                        );
                     }
                 }
                 KeyCode::Enter if modifiers.contains(KeyModifiers::SHIFT) => {
