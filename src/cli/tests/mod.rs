@@ -5,6 +5,7 @@
 mod cli_args;
 mod daemon_log;
 mod footer_tail;
+mod footer_width;
 mod hangup;
 mod input_editing;
 mod ipc_event;

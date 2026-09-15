@@ -129,7 +129,16 @@ impl LiveReplTail {
         self.resume_at_inner(cursor, true)
     }
 
-    fn resume_at_inner(&mut self, (output_col, output_row): (u16, u16), own: bool) -> Result<()> {
+    fn resume_at_inner(&mut self, cursor: (u16, u16), own: bool) -> Result<()> {
+        if self.screen.is_some() {
+            return synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
+                self.paint_tail(cursor, own)
+            });
+        }
+        self.paint_tail(cursor, own)
+    }
+
+    fn paint_tail(&mut self, (output_col, output_row): (u16, u16), own: bool) -> Result<()> {
         let (cols, terminal_rows) = terminal::size().unwrap_or((80, 24));
         let terminal_rows = terminal_rows.max(1);
         // 输入框的横向几何**先定**：大厅里它是窄框，测行数、画字、算光标、

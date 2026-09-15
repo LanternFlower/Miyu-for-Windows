@@ -1393,7 +1393,7 @@ impl Screen {
     }
 
     /// 面板上方那截正文。
-    fn paint_body_above(
+    pub(super) fn paint_body_above(
         &mut self,
         stdout: &mut std::io::Stdout,
         top: u16,

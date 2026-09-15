@@ -4,8 +4,11 @@
 //! 占用与窗口、会话累计与缓存命中率。窄终端下要按优先级丢弃——模型名比累计
 //! 数字重要，模式标签又比模型名重要。
 
-use crate::cli::repl::width::*;
 use crate::cli::*;
+
+fn footer_display_width(text: &str) -> usize {
+    UnicodeWidthStr::width(render::strip_ansi_text(text).as_str())
+}
 
 #[derive(Clone, Debug)]
 pub(in crate::cli) struct ReplFooterStatus {
@@ -213,7 +216,7 @@ pub(in crate::cli) fn repl_footer_line(
 ) -> String {
     let cols = cols.max(1);
     let bar = input_prompt_bar(mode);
-    let bar_width = visible_width(&bar);
+    let bar_width = footer_display_width(&bar);
     // The footer carries only the two standing gauges — how much context is
     // left, and what the session has cost. The per-turn figure is transient and
     // already has its own home in the `Token:` line printed after each reply;
@@ -239,23 +242,28 @@ pub(in crate::cli) fn repl_footer_line(
         right_plain = render::format_token_usage_inline_opts(&meter, with_percent, with_speed);
         let left_room = cols
             .saturating_sub(bar_width)
-            .saturating_sub(visible_width(&right_plain));
+            .saturating_sub(footer_display_width(&right_plain));
         if left_room >= 24 {
             break;
         }
     }
     let right = format!("\x1b[2m{right_plain}\x1b[0m");
-    let right_width = visible_width(&right);
+    let right_width = footer_display_width(&right);
     let left_budget = cols.saturating_sub(bar_width.saturating_add(right_width).saturating_add(1));
     let left = repl_footer_left(mode, footer, left_budget);
     let gap = cols
         .saturating_sub(
             bar_width
-                .saturating_add(visible_width(&left))
+                .saturating_add(footer_display_width(&left))
                 .saturating_add(right_width),
         )
         .max(1);
-    format!("{bar}{left}{}{right}", " ".repeat(gap))
+    let line = format!("{bar}{left}{}{right}", " ".repeat(gap));
+    // Even the fixed fields can exceed a tiny terminal. Keep the footer on
+    // one row and pad it fully because spinner ticks overwrite without clearing.
+    let line = render::clip_to_display_width(&line, cols);
+    let padding = cols.saturating_sub(footer_display_width(&line));
+    format!("{line}{}", " ".repeat(padding))
 }
 
 pub(in crate::cli) fn repl_footer_left(
@@ -284,7 +292,7 @@ pub(in crate::cli) fn repl_footer_left(
         Some(&provider),
         colored_thinking,
     ));
-    if visible_width(&full) <= width {
+    if footer_display_width(&full) <= width {
         return full;
     }
 
@@ -294,26 +302,30 @@ pub(in crate::cli) fn repl_footer_left(
         None,
         colored_thinking,
     ));
-    if visible_width(&compact) <= width {
+    if footer_display_width(&compact) <= width {
         return compact;
     }
 
-    let fixed_width =
-        visible_width(&mode)
-            .saturating_add(3)
-            .saturating_add(if thinking.is_empty() {
-                0
-            } else {
-                3 + visible_width(colored_thinking)
-            });
-    let model_budget = width.saturating_sub(fixed_width).max(1);
-    let model = truncate_display(&footer.model, model_budget);
-    with_wave(repl_footer_left_parts(
+    let wave_width = wave
+        .as_deref()
+        .map_or(0, |wave| 3 + footer_display_width(wave));
+    let fixed_width = footer_display_width(&mode)
+        .saturating_add(3)
+        .saturating_add(wave_width)
+        .saturating_add(if thinking.is_empty() {
+            0
+        } else {
+            3 + footer_display_width(colored_thinking)
+        });
+    let model_budget = width.saturating_sub(fixed_width);
+    let model = render::clip_to_display_width(&footer.model, model_budget);
+    let left = with_wave(repl_footer_left_parts(
         &mode,
         &model,
         None,
         colored_thinking,
-    ))
+    ));
+    render::clip_to_display_width(&left, width)
 }
 
 pub(in crate::cli) fn repl_footer_left_parts(

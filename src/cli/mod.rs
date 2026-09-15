@@ -19,6 +19,7 @@ mod localize;
 mod mcp_schema;
 mod mcp_serve;
 mod output;
+mod question_panel;
 mod session_cmds;
 mod setup;
 mod stdin_input;
@@ -106,7 +107,7 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 };
 use crossterm::style::{Color, Print, Stylize};
-use crossterm::terminal::{self, BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate};
+use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{execute, queue};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
@@ -1409,21 +1410,7 @@ pub(crate) fn handle_agent_event(
             request, responder, ..
         } => {
             renderer.prepare_for_external_output()?;
-            let leave_summary = !renderer.timeline_static();
-            let response = crate::question_tui::ask_with(&request, None, leave_summary)
-                .unwrap_or_else(|err| {
-                    crate::question::QuestionResponse::Unavailable(err.to_string())
-                });
-            // 全屏下面板是**盖在**画面上的，它退场之后下一帧就按缓冲重画，
-            // 问了什么、答了什么会一起消失（用户原话「回答完问题也没输出」）。
-            // 把这一问一答写进缓冲，它才算进了历史、回翻找得到。
-            renderer.timeline_push_question(&request, &response)?;
-            renderer.write_question_exchange(&request, &response)?;
-            if !matches!(&response, crate::question::QuestionResponse::Cancelled) {
-                renderer.start_waiting()?;
-            }
-            let _ = responder.send(response);
-            Ok(())
+            question_panel::answer(renderer, request, responder, None)
         }
         AgentEvent::QueuedPromptsConsumed { .. } => Ok(()),
         AgentEvent::GenerationSuperseded { .. } => Ok(()),
