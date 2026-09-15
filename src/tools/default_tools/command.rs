@@ -10,6 +10,62 @@ use crate::tools::default_tools::*;
 
 pub(in crate::tools) const MAX_COMMAND_OUTPUT_CHARS: usize = 20_000;
 
+/// 前台不传 `timeout_seconds` 时的预算。对齐 Claude Code / opencode 的 2 分钟：
+/// 30 秒会把 `cargo build`、`npm test` 这类常见活儿一律打断。
+pub(in crate::tools) const FOREGROUND_DEFAULT_TIMEOUT_SECS: u64 = 120;
+
+/// 前台能请求的上限。对齐 Claude Code 的 10 分钟——再长的活儿本该走
+/// `background=true`：前台只有一个回合的位置，不该被单个命令占满。
+pub(in crate::tools) const FOREGROUND_MAX_TIMEOUT_SECS: u64 = 600;
+
+/// 前台命令的超时预算。
+///
+/// `requested` 只用来报错。上一版是**静默** clamp：写 300 秒实际生效 120 秒，
+/// 报错却是 tokio 原生的 `deadline has elapsed`——不说工具、不说生效秒数、
+/// 不说长活走哪条路。拿到那种错误只能换着数字乱试（用户实测就是这么撞的）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::tools) struct CommandTimeout {
+    pub(in crate::tools) requested: u64,
+    pub(in crate::tools) effective: u64,
+}
+
+impl CommandTimeout {
+    /// 缺省吃默认，越界收敛到 `[1, FOREGROUND_MAX_TIMEOUT_SECS]`。下限取 1：
+    /// `timeout_seconds=0` 会让命令连启动的机会都没有。
+    pub(in crate::tools) fn from_args(args: &Value) -> Self {
+        let requested = args
+            .get("timeout_seconds")
+            .and_then(Value::as_u64)
+            .unwrap_or(FOREGROUND_DEFAULT_TIMEOUT_SECS);
+        Self {
+            requested,
+            effective: requested.clamp(1, FOREGROUND_MAX_TIMEOUT_SECS),
+        }
+    }
+
+    /// 超时错误要自带出路：生效多少秒、请求值有没有被压掉、长活该怎么跑。
+    pub(in crate::tools) fn error(&self) -> anyhow::Error {
+        let mut message = format!("command timed out after {}s", self.effective);
+        if self.requested > self.effective {
+            message.push_str(&format!(
+                " (requested {}s, foreground cap {}s)",
+                self.requested, FOREGROUND_MAX_TIMEOUT_SECS
+            ));
+        }
+        message.push_str(". Use background=true for longer work.");
+        anyhow::anyhow!(message)
+    }
+
+    /// 测试用：请求多少就生效多少，不经过上限——把预算表与命令执行解耦。
+    #[cfg(test)]
+    pub(in crate::tools) fn fixed(seconds: u64) -> Self {
+        Self {
+            requested: seconds,
+            effective: seconds,
+        }
+    }
+}
+
 pub(in crate::tools) async fn run_command(
     args: Value,
     allowed: bool,
@@ -27,18 +83,12 @@ pub(in crate::tools) async fn run_command(
         let title = args.get("title").and_then(Value::as_str);
         return crate::tools::jobs::spawn_background(&command, title, &progress).await;
     }
-    // 下限 1:timeout_seconds=0 会立即超时,命令根本没机会执行。
-    let timeout = args
-        .get("timeout_seconds")
-        .and_then(Value::as_u64)
-        .unwrap_or(30)
-        .clamp(1, 120);
-    execute_command(&command, timeout, progress).await
+    execute_command(&command, CommandTimeout::from_args(&args), progress).await
 }
 
 pub(in crate::tools) async fn execute_command(
     command: &str,
-    timeout: u64,
+    timeout: CommandTimeout,
     progress: ToolProgress,
 ) -> Result<String> {
     let mut command_process = Command::new("sh");
@@ -80,30 +130,31 @@ pub(in crate::tools) async fn execute_command(
         .take()
         .ok_or_else(|| anyhow::anyhow!("failed to capture command stderr"))?;
 
-    let execution = tokio::time::timeout(std::time::Duration::from_secs(timeout), async {
-        tokio::join!(
-            child.wait(),
-            read_command_output(stdout, progress.clone(), |progress, chunk| {
-                progress.report_command_output(CommandOutputStream::Stdout, chunk);
-            }),
-            read_command_output(stderr, progress, |progress, chunk| {
-                progress.report_command_output(CommandOutputStream::Stderr, chunk);
-            }),
-        )
-    })
-    .await;
+    let execution =
+        tokio::time::timeout(std::time::Duration::from_secs(timeout.effective), async {
+            tokio::join!(
+                child.wait(),
+                read_command_output(stdout, progress.clone(), |progress, chunk| {
+                    progress.report_command_output(CommandOutputStream::Stdout, chunk);
+                }),
+                read_command_output(stderr, progress, |progress, chunk| {
+                    progress.report_command_output(CommandOutputStream::Stderr, chunk);
+                }),
+            )
+        })
+        .await;
 
     let (status, stdout, stderr) = match execution {
         Ok((status, stdout, stderr)) => {
             process_group.disarm();
             (status?, stdout?, stderr?)
         }
-        Err(elapsed) => {
+        Err(_) => {
             process_group.terminate();
             let _ = child.start_kill();
             let _ = child.wait().await;
             process_group.disarm();
-            return Err(elapsed.into());
+            return Err(timeout.error());
         }
     };
     command_output(status, stdout, stderr)

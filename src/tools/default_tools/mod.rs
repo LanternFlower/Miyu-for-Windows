@@ -44,7 +44,7 @@ pub fn register_run_command(registry: &mut ToolRegistry, allow_command_execution
     registry.register(ToolSpec::new_with_progress(
         "run_command",
         "Run a shell command in the workspace when skills.allow_command_execution is enabled. Set background=true for long-running commands (builds, dev servers): it returns a job_id immediately; poll with job(action=status) and stop with job(action=stop).",
-        json!({"type":"object","properties":{"command":{"type":"string","description": "Command to run."},"timeout_seconds":{"type":"integer","description": "Optional timeout in seconds (1-120, default 30). Ignored when background=true."},"background":{"type":"boolean","description": "Run detached as a background command and return a short job_id immediately."},"title":{"type":"string","description": "Short display title (<=16 chars) for the background command."}},"required":["command"],"additionalProperties":false}),
+        json!({"type":"object","properties":{"command":{"type":"string","description": "Command to run."},"timeout_seconds":{"type":"integer","description": "Optional timeout in seconds (1-600, default 120). Ignored when background=true."},"background":{"type":"boolean","description": "Run detached as a background command and return a short job_id immediately."},"title":{"type":"string","description": "Short display title (<=16 chars) for the background command."}},"required":["command"],"additionalProperties":false}),
         move |args, progress| async move {
             run_command(args, allow_command_execution, progress).await
         },
@@ -387,9 +387,13 @@ mod tests {
     #[tokio::test]
     async fn command_execution_streams_stdout_and_stderr() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let output = execute_command("printf 'out'; printf 'err' >&2", 5, ToolProgress::new(tx))
-            .await
-            .unwrap();
+        let output = execute_command(
+            "printf 'out'; printf 'err' >&2",
+            CommandTimeout::fixed(5),
+            ToolProgress::new(tx),
+        )
+        .await
+        .unwrap();
         // dsh 式纯文本:正文是 stdout,有 stderr 才追加 [stderr] 段,
         // 退出码为 0 时一个标记都不打。
         assert_eq!(output, "out\n[stderr]\nerr");
@@ -412,7 +416,12 @@ mod tests {
     #[tokio::test]
     async fn command_timeout_kills_descendant_processes() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let result = execute_command("sleep 30 & echo $!; wait", 1, ToolProgress::new(tx)).await;
+        let result = execute_command(
+            "sleep 30 & echo $!; wait",
+            CommandTimeout::fixed(1),
+            ToolProgress::new(tx),
+        )
+        .await;
         assert!(result.is_err());
 
         let mut stdout = Vec::new();
@@ -620,5 +629,97 @@ mod tests {
         assert!(fake_trash(json!({"paths": []})).is_err());
         assert!(fake_trash(json!({"paths": ["", "   "]})).is_err());
         assert!(fake_trash(json!({"path": "/tmp/x"})).is_err());
+    }
+
+    /// 前台超时不能让模型只看到 tokio 原生的 `deadline has elapsed`：它不说
+    /// 工具、不说生效多少秒、更不说长活该走哪条路。实测把模型卡死在这上面。
+    #[tokio::test]
+    async fn command_timeout_error_names_the_limit_and_the_way_out() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let error = run_command(
+            json!({"command": "sleep 5", "timeout_seconds": 1}),
+            true,
+            ToolProgress::new(tx),
+        )
+        .await
+        .expect_err("1 秒预算跑 sleep 5 必然超时")
+        .to_string();
+
+        assert!(error.contains("after 1s"), "要报出生效秒数：{error}");
+        assert!(error.contains("background=true"), "要指路后台：{error}");
+        assert!(
+            !error.contains("deadline has elapsed"),
+            "tokio 原生错误不是给模型的：{error}"
+        );
+    }
+
+    /// `timeout_seconds` 的契约必须写在模型读得到的描述里：范围与默认值。
+    /// Rust 占位里写过 `(1-120, default 30)`，但 JSON 真相源整体覆盖时那句
+    /// 被丢了，于是模型只能靠撞墙才知道上限——这次就是这么撞的。
+    #[test]
+    fn run_command_description_states_the_timeout_contract() {
+        let description = crate::tools::tool_descriptions::get("run_command")
+            .expect("run_command 必须有 JSON 描述");
+        let text = description.parameters["properties"]["timeout_seconds"]["description"]
+            .as_str()
+            .unwrap_or_default();
+
+        assert!(text.contains("120"), "默认值 120 要写在描述里：{text}");
+        assert!(text.contains("600"), "上限 600 要写在描述里：{text}");
+    }
+
+    /// 前台预算的表：默认 2 分钟、上限 10 分钟、下限 1 秒（0 会让命令没机会跑）。
+    /// 请求值被压掉时仍要留着——报错得说清"你写的和生效的不是一回事"。
+    #[test]
+    fn foreground_timeout_defaults_to_two_minutes_and_caps_at_ten() {
+        assert_eq!(CommandTimeout::from_args(&json!({})).effective, 120);
+        assert_eq!(
+            CommandTimeout::from_args(&json!({"timeout_seconds": 5})).effective,
+            5
+        );
+        assert_eq!(
+            CommandTimeout::from_args(&json!({"timeout_seconds": 0})).effective,
+            1
+        );
+        assert_eq!(
+            CommandTimeout::from_args(&json!({"timeout_seconds": 600})).effective,
+            600
+        );
+
+        let clamped = CommandTimeout::from_args(&json!({"timeout_seconds": 9000}));
+        assert_eq!(clamped.effective, 600);
+        assert_eq!(clamped.requested, 9000, "被压掉的请求值要留着报错用");
+    }
+
+    /// 被上限压掉时必须自报家门：只说 "timed out after 600s"，模型会以为自己
+    /// 写的 9000 秒已经生效，于是换个数字接着撞。
+    #[test]
+    fn a_clamped_request_is_named_in_the_timeout_error() {
+        let clamped = CommandTimeout {
+            requested: 9000,
+            effective: 600,
+        }
+        .error()
+        .to_string();
+        assert!(clamped.contains("after 600s"), "{clamped}");
+        assert!(clamped.contains("requested 9000s"), "要报请求值：{clamped}");
+        assert!(
+            clamped.contains("foreground cap 600s"),
+            "要说清上限：{clamped}"
+        );
+        assert!(clamped.contains("background=true"), "要给出路：{clamped}");
+
+        let plain = CommandTimeout {
+            requested: 120,
+            effective: 120,
+        }
+        .error()
+        .to_string();
+        assert!(plain.contains("after 120s"), "{plain}");
+        assert!(
+            !plain.contains("requested"),
+            "没被压就别提请求值，省得模型以为它另有含义：{plain}"
+        );
+        assert!(plain.contains("background=true"), "{plain}");
     }
 }
