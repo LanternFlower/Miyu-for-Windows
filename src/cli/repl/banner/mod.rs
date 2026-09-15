@@ -111,6 +111,11 @@ impl BannerScene {
         (self.born as f32 / 24.0).min(1.0)
     }
 
+    /// 艺术字有多宽。输入框窄框的宽度按它兜底（框不能比字还窄）。
+    pub(in crate::cli) fn art_cols(&self) -> usize {
+        self.art.cols()
+    }
+
     /// 紧凑块的高度（不含星空外圈）：艺术字 + 副标题 + 版本 + 空行 + 模式行 + 提示。
     pub(in crate::cli) fn block_rows(&self) -> usize {
         self.art.rows() + 4
@@ -264,13 +269,10 @@ impl BannerScene {
         let theme = self.theme;
         let art_cols = self.art.cols();
         let art_rows = self.art.rows();
-        // 输入框宽度：终端的三分之二上下，至少比艺术字宽一圈，最多 84 列。
-        let width = (cols * 2 / 3)
-            .max(art_cols + 8)
-            .min(84)
-            .min(cols.saturating_sub(2))
-            .max(20);
-        let left = cols.saturating_sub(width) / 2;
+        // 输入框的宽度/左边距是 `input_layout` 说了算：活动区那边要先按这个
+        // 宽度测行数，再回头调这里排纵向位置，两处必须是同一个数。
+        let width = crate::cli::repl::input_layout::lobby_box_width(cols, art_cols);
+        let left = crate::cli::repl::input_layout::lobby_box_left(cols, width);
         let art_left = cols.saturating_sub(art_cols) / 2;
         // 艺术字 + 副标题 + 版本 + 空行 + 输入框 + 空行 + 模式行 + 提示。
         let block_rows = art_rows + 2 + activity_rows + 3;

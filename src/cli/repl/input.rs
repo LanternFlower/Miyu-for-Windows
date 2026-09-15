@@ -826,16 +826,19 @@ pub(in crate::cli) fn render_repl_input_with_footer(
     footer: &ReplFooterStatus,
     show_shortcut_hint: bool,
     // 全屏空会话的大厅:输入框不在屏底、也不全宽,而是嵌在 banner 下面的一个
-    // 窄框里——(左边距, 宽度)。None = 老样子,从第 0 列画到终端右边。
-    layout: Option<(u16, usize)>,
+    // 窄框里。None = 老样子,从第 0 列画到终端右边。
+    layout: Option<EditorBox>,
 ) -> Result<Option<u16>> {
     let suggestions = repl_command_suggestions(input);
     let lines = repl_input_lines(input);
     let prompt_prefix = input_prompt_bar(mode);
     let plain_prefix = "  ";
-    let cols = layout.map(|(_, width)| width).unwrap_or_else(terminal_cols);
-    let x0 = layout.map(|(left, _)| left).unwrap_or(0);
-    let blank = layout.map(|(_, width)| " ".repeat(width));
+    // 这一处的 `cols` 是**框的宽度**,不是终端宽度:折行、光标、footer 截断
+    // 全都按它算。大厅窄框里两者差着几十列,混用就是「字折了行、光标还留在
+    // 屏幕右边」。
+    let cols = box_cols(layout, terminal_cols());
+    let x0 = box_left(layout);
+    let blank = layout.map(|area| " ".repeat(area.width));
     let display_lines = repl_visible_input_lines(
         &plain_prefix,
         &lines,
@@ -909,7 +912,7 @@ pub(in crate::cli) fn render_repl_input_with_footer(
         }
     }
     let (cursor_col, cursor_row_offset) = if display_lines.len() == lines.len() {
-        repl_cursor_position(&plain_prefix, input, cursor)
+        repl_cursor_position_for_cols(&plain_prefix, input, cursor, cols)
     } else {
         let last_line = display_lines.last().map(String::as_str).unwrap_or_default();
         let (col, _) = repl_cursor_position_for_line_for_cols(
@@ -920,7 +923,7 @@ pub(in crate::cli) fn render_repl_input_with_footer(
         );
         (
             col,
-            repl_prompt_rows(&plain_prefix, &display_lines).saturating_sub(1),
+            repl_prompt_rows_for_cols(&plain_prefix, &display_lines, cols).saturating_sub(1),
         )
     };
     queue!(

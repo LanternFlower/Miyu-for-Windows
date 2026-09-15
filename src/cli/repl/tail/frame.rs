@@ -132,14 +132,25 @@ impl LiveReplTail {
     fn resume_at_inner(&mut self, (output_col, output_row): (u16, u16), own: bool) -> Result<()> {
         let (cols, terminal_rows) = terminal::size().unwrap_or((80, 24));
         let terminal_rows = terminal_rows.max(1);
+        // 输入框的横向几何**先定**：大厅里它是窄框，测行数、画字、算光标、
+        // 擦旧行全都要按这个宽度来。窄框宽度只由终端宽决定（与活动区高度
+        // 无关），所以可以先定宽再测高，不存在循环依赖。
+        let editor_area = match (&self.banner, self.screen.is_some()) {
+            (Some(banner), true) => Some(EditorBox::lobby(usize::from(cols), banner.art_cols())),
+            _ => None,
+        };
+        let editor_cols = box_cols(editor_area, usize::from(cols));
+        // 编辑器自己也要知道这个宽度：上下方向键是按「第几个物理行」找落点的，
+        // 拿整终端宽去找，窄框里就会跳错行。
+        self.editor.box_cols = Some(editor_cols);
         let editor_rows = repl_input_rendered_rows(
             &self.editor.input,
             self.editor.raw_pasted_lines,
             false,
-            usize::from(cols),
+            editor_cols,
         );
-        let mut queue_lines =
-            queued_prompt_lines(&self.queued, self.editor.mode, usize::from(cols));
+        // 排队行也画在窄框里（`box_left` 起笔），宽度得跟着窄框走。
+        let mut queue_lines = queued_prompt_lines(&self.queued, self.editor.mode, editor_cols);
         let queue_gap = u16::from(!queue_lines.is_empty());
         let max_queue_rows = terminal_rows.saturating_sub(editor_rows).saturating_sub(3) as usize;
         if queue_lines.len() > max_queue_rows {
@@ -199,8 +210,8 @@ impl LiveReplTail {
         } else {
             Vec::new()
         };
-        // 大厅里输入框的窄框:(左边距, 宽度)。None = 全宽贴左。
-        let mut layout_box: Option<(u16, usize)> = None;
+        // 大厅里输入框的窄框。None = 全宽贴左。
+        let mut layout_box: Option<EditorBox> = None;
         let placement = if let Some(screen) = &mut self.screen {
             // 全屏：正文归 Screen，活动区固定钉在视口底部。不用「腾地方」
             // 也不用算锚定——屏幕是自己的，底下永远有位置。
@@ -250,10 +261,28 @@ impl LiveReplTail {
                     .as_ref()
                     .map(|lobby| (lobby.below.saturating_add(1), lobby.left)),
             );
+            // 上一帧活动区的矩形。缩行/整块挪位时新活动区盖不住旧的，差出来
+            // 的那几行要交给正文层强制重画，否则旧 footer 留在屏幕上（正文
+            // 那一行没变，按行 diff 会跳过它）。
+            let previous = self
+                .rendered
+                .then_some((self.tail_start, self.tail_rows))
+                .filter(|(_, rows)| *rows > 0);
             match lobby {
                 Some(lobby) => {
+                    screen.invalidate_activity_rows(previous, Some((lobby.tail_start, total_rows)));
                     screen.paint(0)?;
-                    layout_box = Some((lobby.left, usize::from(lobby.width)));
+                    // 画字用的框就是上面测行数用的那个 `editor_area`,不另取一份:
+                    // 两处分头算是这个 bug 的来源,只留一个来源才修得干净。banner
+                    // 给星空让出的那一列是按同一个函数算的,这里对一次以防漂移。
+                    debug_assert_eq!(
+                        editor_area,
+                        Some(EditorBox {
+                            left: lobby.left,
+                            width: usize::from(lobby.width),
+                        })
+                    );
+                    layout_box = editor_area;
                     LiveTailPlacement {
                         output_row: lobby.tail_start.saturating_sub(1),
                         tail_start: lobby.tail_start,
@@ -262,7 +291,10 @@ impl LiveReplTail {
                     }
                 }
                 None => {
-                    let body = screen.paint(total_rows.saturating_add(1))?;
+                    let tail_height = total_rows.saturating_add(1);
+                    let next_body = screen.body_for(tail_height);
+                    screen.invalidate_activity_rows(previous, Some((next_body, total_rows)));
+                    let body = screen.paint(tail_height)?;
                     LiveTailPlacement {
                         output_row: body.saturating_sub(1),
                         tail_start: body,
@@ -292,12 +324,14 @@ impl LiveReplTail {
         let tail_start = placement.tail_start;
 
         let mut stdout = io::stdout();
-        let box_left = layout_box.map(|(left, _)| left).unwrap_or(0);
+        let box_left = box_left(layout_box);
         match layout_box {
             // 窄框只擦自己那一段,两侧的星空归 banner。
-            Some((left, width)) => {
-                queue!(stdout, MoveTo(left, tail_start), Print(" ".repeat(width)))?
-            }
+            Some(area) => queue!(
+                stdout,
+                MoveTo(area.left, tail_start),
+                Print(" ".repeat(area.width))
+            )?,
             None => queue!(stdout, MoveTo(0, tail_start), Clear(ClearType::CurrentLine))?,
         }
         let mut row = tail_start.saturating_add(1);
@@ -357,14 +391,11 @@ impl LiveReplTail {
             // 全屏下不问终端（那会吞掉正在打的字），按布局算——反正输入区
             // 是我们自己摆的，算得出来。
             let prefix = input_prompt_bar(self.editor.mode);
-            let width = layout_box
-                .map(|(_, width)| width)
-                .unwrap_or(usize::from(cols));
             let (col, row_offset) = repl_cursor_position_for_cols(
                 &prefix,
                 &self.editor.input,
                 self.editor.cursor,
-                width,
+                editor_cols,
             );
             // `input_row` 是输入区**顶上那根空竖条**的行，正文从它下一行才开始，
             // 所以要 +1。少这一行的表现是输入法的预编辑框浮在文字上一行。
@@ -378,8 +409,8 @@ impl LiveReplTail {
         // 状态行在屏幕上的位置：点它要能对上是哪一个后台任务。
         self.job_strip_start = input_row.saturating_add(rendered_rows);
         self.job_strip_rows = job_rows;
+        let mut stdout = io::stdout();
         if !job_lines.is_empty() {
-            let mut stdout = io::stdout();
             let mut job_row = input_row.saturating_add(rendered_rows);
             for line in &job_lines {
                 queue!(
@@ -390,9 +421,13 @@ impl LiveReplTail {
                 )?;
                 job_row = job_row.saturating_add(1);
             }
-            queue!(stdout, MoveTo(self.input_cursor.0, self.input_cursor.1))?;
-            stdout.flush()?;
         }
+        // 一帧的收尾**永远**是把光标放回输入位置：在这之前画的东西（状态行、
+        // 反显）都会把光标带走。原来只有「有后台任务」那条分支才收尾，于是
+        // 没有任务时光标停在最后一次绘制落笔的地方——输入法的预编辑框就浮在
+        // 那儿。这一句不能挪进任何 if 里。
+        queue!(stdout, MoveTo(self.input_cursor.0, self.input_cursor.1))?;
+        stdout.flush()?;
         execute!(io::stdout(), crossterm::cursor::Show)?;
         self.output_cursor = (output_col, output_row);
         self.tail_start = tail_start;

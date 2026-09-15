@@ -69,7 +69,9 @@ mod tests;
 
 // 宽度计算与输入编辑已拆到 repl 子模块，这里引回来。
 // repl 下几个新拆的子模块整组导入（原本就在 cli/mod.rs 里，平铺可见）
-pub(in crate::cli) use repl::{commands::*, jobs::*, layout::*, placeholder::*, session::*};
+pub(in crate::cli) use repl::{
+    commands::*, input_layout::*, jobs::*, layout::*, placeholder::*, session::*,
+};
 // 命令表已上提到 crate 级与 WebUI 共用；这里再导出一次，cli 内的调用点不变。
 pub(in crate::cli) use crate::slash_commands::*;
 use repl::direct::{run_chat_with_images, run_chat_with_options, run_direct_repl};
