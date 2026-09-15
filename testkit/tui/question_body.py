@@ -70,6 +70,12 @@ def main():
             actual = screen if screen is not None else h.render(bytes(sink))
             (h.OUT / f"{name}.txt").write_text("\n".join(actual))
             assert screen is not None, f"{name}: missing {required}. See {h.OUT}"
+            if name != "answered":
+                panel_top = next(i for i, line in enumerate(actual)
+                                 if "First" in line and "Second" in line and "Review" in line)
+                assert panel_top > 0 and not actual[panel_top - 1].strip(), (
+                    f"{name}: no blank line between reply and question panel. See {h.OUT}"
+                )
 
         check("initial", ["FIRST-QUESTION", "BODY-ROW-23"])
         os.write(master, b"\x1b[5~" * 3)

@@ -1,6 +1,7 @@
 # TUI 1、2、5 项修复验收
 
-本次按用户要求先做独立提交，等待人工验收；未合并 main，也未发布。
+用户已验收光标与 footer 修复，并确认提问功能有效，要求补齐正文与面板之间
+的空行后合并 main。本轮补充该间距并重新验证；独立提交保留，发布另行执行。
 问题 3（todo 截断）与问题 4（QQ debug 延迟）不在这批实现内。
 
 ## 构建
@@ -9,7 +10,7 @@
 - 分支：`fix/tui-125-2026-09-15`
 - 二进制：`target/debug/miyu`，dev profile，未优化，保留调试信息。
 - 自报版本：`miyu 0.6.0`。
-- SHA-256：`450773ecb98c2d6e9afc788868224c4f5c0c5e24d1292a6646e0bdf087b0f42e`。
+- SHA-256：`d4851122183f2d65ab1904e17de7a710530d54cb0a525347e28011037a15393d`。
 
 ## 启动
 
@@ -38,7 +39,7 @@ MIYU_HOME=/home/shorin/Documents/github/Miyu-tui-fixes-125-2026-09-15/target/man
 1. **herdr 光标**：要求连续输出超过一屏的正文，期间输入、滚动、展开时间线。
    光标和输入法预编辑位置应留在输入框，不应间歇跳向其他区域。
 2. **提问正文**：要求先输出 23 行带编号的文字，再调用 ask_question 提问。
-   面板出现后最新末段仍可见，PgUp/PgDn 能回翻全部正文；切题、缩放、提交或
+   面板与正文之间保留一行空白，最新末段仍可见，PgUp/PgDn 能回翻全部正文；切题、缩放、提交或
    取消后布局正常。可重复使用一短一长两个问题。
 3. **footer**：SSH 下把窗口缩到 48–80 列，要求启动 `sleep 30` 后台任务，
    同时让前台继续输出正文。footer 应始终一行，后台区不应出现闪烁的 token
@@ -50,6 +51,8 @@ MIYU_HOME=/home/shorin/Documents/github/Miyu-tui-fixes-125-2026-09-15/target/man
 - question_tui 测试 20 项通过。
 - 光标 PTY：daemon/direct 均为 0 次事务外正文写入，同步序列无不配对。
 - 问答 PTY：daemon/direct 均通过初显、翻页、长短切题、24/40 行缩放和回答退出。
+- 用户验收补充：面板顶部增加空行检查，修前报红；布局与滚动共同为分隔行留空间。
+  补充改动的 3 项布局测试及 daemon/direct PTY 检查均通过，包含切题与缩放后的空行。
 - footer PTY：48 列中原来的 56 列输出消失，99 次全宽 footer 输出均为 48 列；
   后台任务仍正常刷新，溢出的 token 尾巴消失。
 - 三项均已证明基线二进制会失败，修复后二进制通过。
@@ -67,5 +70,5 @@ python3 testkit/tui/question_body.py --binary "$PWD/target/debug/miyu"
 python3 testkit/tui/question_body.py --binary "$PWD/target/debug/miyu" --direct
 ```
 
-每个探针自行建立独立 MIYU_HOME 与本地桩模型。真实 herdr/SSH 画面仍由用户
-按上述人工流程做最后验收；通过后再合并和准备发布。
+每个探针自行建立独立 MIYU_HOME 与本地桩模型。用户已授权在空行调整验证通过
+后合并 main；不自动发布或替换生产 daemon。

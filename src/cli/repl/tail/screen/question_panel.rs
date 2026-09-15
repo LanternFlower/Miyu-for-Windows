@@ -1,6 +1,9 @@
 //! Questions reserve a viewport. Inspectable tool overlays keep their cover semantics.
 
 use super::Screen;
+use crossterm::cursor::MoveTo;
+use crossterm::queue;
+use crossterm::terminal::{Clear, ClearType};
 use std::io::Write;
 
 impl Screen {
@@ -16,12 +19,17 @@ impl Screen {
         let top = self.layout_question_body(delta, panel_rows);
         let mut stdout = std::io::stdout();
         self.paint_body_above(&mut stdout, top, self.rows)?;
+        // The separator belongs to neither the transcript nor the panel. Clear
+        // its old contents after scrolling, changing questions, or resizing.
+        if top < self.rows.saturating_sub(panel_rows) {
+            queue!(stdout, MoveTo(0, top), Clear(ClearType::CurrentLine))?;
+        }
         stdout.flush()?;
         Ok(())
     }
 
     fn layout_question_body(&mut self, delta: isize, panel_rows: u16) -> u16 {
-        let top = self.rows.saturating_sub(panel_rows);
+        let top = self.rows.saturating_sub(panel_rows).saturating_sub(1);
         self.body = Some(top);
         if self.follow {
             self.scroll = self.follow_target();
@@ -47,7 +55,7 @@ mod tests {
     fn question_body_keeps_last_reply_reachable_while_panel_is_open() {
         let mut screen = conversation();
         let top = screen.layout_question_body(0, 12);
-        assert_eq!(top, 20);
+        assert_eq!(top, 19);
         assert_eq!(screen.body(), top);
         assert_eq!(screen.scroll_of() + usize::from(top), screen.content_rows());
         screen.layout_question_body(-10, 12);
@@ -63,7 +71,7 @@ mod tests {
         for (rows, panel_rows) in [(32, 12), (32, 7), (20, 17), (40, 10)] {
             screen.resize(80, rows);
             let top = screen.layout_question_body(0, panel_rows);
-            assert_eq!(top, rows - panel_rows);
+            assert_eq!(top, rows - panel_rows - 1);
             assert_eq!(screen.scroll_of() + usize::from(top), screen.content_rows());
             assert!(screen.follow);
         }
