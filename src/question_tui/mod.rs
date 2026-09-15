@@ -49,7 +49,8 @@ pub fn ask(request: &QuestionRequest) -> Result<QuestionResponse> {
 ///
 /// 面板开着的时候输入泵停了，滚轮和 PgUp 都没人接——可这正是最想往回看的时候
 /// （要答的问题往往就指着上面那几行）。`scroll` 收到的是 `(方向, 面板占了几行)`，
-/// 由调用方去滚视口、重画面板**上面**那一截；面板自己那几行它不碰。
+/// 高度包含底部空行。首次绘制及布局变化也会调用它（方向为 0），让正文
+/// 先为面板留出空间；滚动与绘制使用同一个正文视口。
 /// `leave_summary`：答完之后要不要把「已回答 N 个问题」那几行留在面板原来的
 /// 位置上。inline 的老样子是留；静态时间线自己把一问一答写成那一步的正文，
 /// 面板得整个擦干净、光标放回面板顶上，那一步才落在原位。
@@ -77,7 +78,7 @@ pub fn ask_with(
         {
             state.cancel_armed_until = None;
         }
-        draw(&mut session, request, &mut state)?;
+        draw(&mut session, request, &mut state, &mut scroll)?;
 
         if !event::poll(Duration::from_millis(100))? {
             continue;
@@ -101,7 +102,7 @@ pub fn ask_with(
                 _ => None,
             };
             if let Some(delta) = delta {
-                scroll(delta, session.panel_lines);
+                scroll(delta, session.occupied_rows());
                 continue;
             }
         }
@@ -329,6 +330,8 @@ struct QuestionSession {
     stdout: io::Stdout,
     anchor_y: u16,
     panel_lines: u16,
+    painted_rows: u16,
+    geometry: Option<(u16, u16, u16)>,
     keyboard_enhancement_active: bool,
     /// 面板是不是终端模式的所有者。
     ///
@@ -403,6 +406,8 @@ impl QuestionSession {
             stdout,
             anchor_y,
             panel_lines,
+            painted_rows: 0,
+            geometry: None,
             keyboard_enhancement_active,
             owns_terminal,
         })
@@ -423,9 +428,9 @@ impl QuestionSession {
         }
         let width = terminal::size().map(|(cols, _)| cols).unwrap_or(80) as usize;
         let content_width = width.saturating_sub(3).max(1);
-        let keeps_blank_line = self.panel_lines > 1;
-        let content_rows = self
-            .panel_lines
+        let available_rows = self.occupied_rows();
+        let keeps_blank_line = available_rows > 1;
+        let content_rows = available_rows
             .saturating_sub(u16::from(keeps_blank_line))
             .max(1);
         let answer_capacity = content_rows.saturating_sub(1) as usize;
@@ -511,8 +516,21 @@ impl QuestionSession {
         Ok(())
     }
 
+    fn occupied_rows(&self) -> u16 {
+        if crate::cli::in_fullscreen() {
+            self.painted_rows.saturating_add(1)
+        } else {
+            self.panel_lines
+        }
+    }
+
     fn clear(&mut self) -> Result<()> {
-        for row in 0..self.panel_lines {
+        let rows = if crate::cli::in_fullscreen() {
+            self.painted_rows
+        } else {
+            self.panel_lines
+        };
+        for row in 0..rows {
             queue!(
                 self.stdout,
                 MoveTo(0, self.anchor_y.saturating_add(row)),
@@ -713,6 +731,8 @@ mod tests {
             stdout: io::stdout(),
             anchor_y: 8,
             panel_lines: 12,
+            painted_rows: 0,
+            geometry: None,
             keyboard_enhancement_active: false,
             owns_terminal: false,
         });

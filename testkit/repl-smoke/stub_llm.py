@@ -133,6 +133,11 @@ class Handler(BaseHTTPRequestHandler):
                                             "finish_reason": None}]})
                     time.sleep(CHUNK_SLEEP)
             if stage == "ask":
+                for line in os.environ.get("STUB_ASK_PREFACE", "").splitlines(keepends=True):
+                    self._sse({"choices": [{"index": 0,
+                                            "delta": {"content": line},
+                                            "finish_reason": None}]})
+                    time.sleep(CHUNK_SLEEP)
                 name = "ask_question"
                 arguments = json.dumps({"questions": [{
                     "header": "走查",
@@ -142,6 +147,9 @@ class Handler(BaseHTTPRequestHandler):
                         {"label": "乙选项", "description": "第二个"},
                     ],
                 }]}, ensure_ascii=False)
+                if os.environ.get("STUB_ASK_QUESTIONS"):
+                    arguments = json.dumps({"questions": json.loads(os.environ["STUB_ASK_QUESTIONS"])},
+                                           ensure_ascii=False)
             elif stage == "subagent":
                 name = "subagent"
                 arguments = json.dumps({

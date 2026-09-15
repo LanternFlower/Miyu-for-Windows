@@ -110,13 +110,20 @@ pub(in crate::cli) fn handle_live_agent_event(
                 handle_agent_event(renderer, event)?;
                 return live.apply_renderer_frame(renderer);
             }
-            let question = matches!(&event, AgentEvent::AskQuestion { .. });
-            if question {
+            if let AgentEvent::AskQuestion {
+                request, responder, ..
+            } = event
+            {
                 live.flush_pending_chunks(renderer)?;
                 renderer.prepare_for_external_output()?;
                 live.apply_renderer_frame(renderer)?;
                 synchronized_terminal_update(CursorAfterUpdate::Hidden, || live.suspend())?;
-                handle_agent_event(renderer, event)?;
+                let mut scroll = |delta: isize, panel_rows: u16| {
+                    if let Some(screen) = live.screen.as_mut() {
+                        let _ = screen.scroll_question_body(delta, panel_rows);
+                    }
+                };
+                question_panel::answer(renderer, request, responder, Some(&mut scroll))?;
                 // 问题面板只关闭 raw mode 与括号粘贴，键盘增强仍由外层 LiveRawMode 持有
                 enable_live_raw_mode()?;
                 execute!(io::stdout(), EnableBracketedPaste)?;

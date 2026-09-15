@@ -61,7 +61,7 @@ def wait_screen(master, sink, predicate, timeout):
     return None
 
 
-def start(stub_env, config_extra=None):
+def start(stub_env, config_extra=None, *, direct=False):
     if h.HOME.exists():
         shutil.rmtree(h.HOME)
     h.EDIT_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -85,13 +85,15 @@ def start(stub_env, config_extra=None):
     )
     if not h.wait_http(f"http://127.0.0.1:{h.STUB_PORT}/v1/models"):
         raise RuntimeError("桩模型没起来")
-    daemon = subprocess.Popen(
-        [str(h.BIN), "__daemon", "--port", str(h.PORT)],
-        env=h.ENV, cwd=str(h.HOME),
-        stdout=(h.OUT / "round26-daemon.log").open("a"), stderr=subprocess.STDOUT,
-    )
-    if not h.wait_http(f"{h.BASE}/api/config", timeout=30):
-        raise RuntimeError("daemon 没起来")
+    daemon = None
+    if not direct:
+        daemon = subprocess.Popen(
+            [str(h.BIN), "__daemon", "--port", str(h.PORT)],
+            env=h.ENV, cwd=str(h.HOME),
+            stdout=(h.OUT / "round26-daemon.log").open("a"), stderr=subprocess.STDOUT,
+        )
+        if not h.wait_http(f"{h.BASE}/api/config", timeout=30):
+            raise RuntimeError("daemon 没起来")
     tui, master = h.spawn_tui()
     sink = bytearray()
     h.drain(master, 3.0, sink)

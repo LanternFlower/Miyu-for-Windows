@@ -620,7 +620,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                     let mut scroll = |delta: isize, panel_rows: u16| {
                         if let Some(live) = live.as_deref_mut() {
                             if let Some(screen) = live.screen.as_mut() {
-                                let _ = screen.scroll_above_panel(delta, panel_rows);
+                                let _ = screen.scroll_question_body(delta, panel_rows);
                             }
                         }
                     };
@@ -631,7 +631,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                             crate::question::QuestionResponse::Unavailable(err.to_string())
                         })
                 };
-                // 全屏下面板是**盖在**画面上的，退场之后下一帧就按缓冲重画，
+                // 全屏下面板退场之后，下一帧就按缓冲恢复正文和输入区，
                 // 问了什么、答了什么会一起消失（用户原话「回答完问题也没输出」）。
                 // 写进缓冲它才算进了历史、回翻找得到。
                 renderer.timeline_push_question(&request, &asked)?;

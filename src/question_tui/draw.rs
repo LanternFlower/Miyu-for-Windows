@@ -16,9 +16,9 @@ pub(in crate::question_tui) fn draw(
     session: &mut QuestionSession,
     request: &QuestionRequest,
     state: &mut QuestionState,
+    scroll: &mut Option<&mut dyn FnMut(isize, u16)>,
 ) -> Result<()> {
-    session.clear()?;
-    let (cols, _) = terminal::size().unwrap_or((80, 24));
+    let (cols, rows) = terminal::size().unwrap_or((80, 24));
     let content_width = (cols as usize).saturating_sub(3).max(1);
     let mut top_lines = Vec::new();
     let mut body_lines = Vec::new();
@@ -189,28 +189,24 @@ pub(in crate::question_tui) fn draw(
         .take_while(|line| line.trim().is_empty())
         .count();
     let visible_lines: Vec<&String> = visible_lines.into_iter().skip(lead).collect();
-    // 面板**贴着屏幕底边**，按这一帧真画出来的行数往上顶。
-    //
-    // 原来是从 `anchor_y` 往下画，而 anchor 是按"最多可能占多少行"算的
-    // （`MAX_PANEL_LINES`）——内容没那么多的时候，底下就空出一大截，面板浮在
-    // 半空中（用户原话「为什么离底边框那么远」）。
+    // 先清旧面板，再让正文按实际高度重排，最后画新面板。
+    // 清屏范围不能用高度上限，否则短问题仍会抹掉上方正文。
+    session.clear()?;
+    let height = u16::try_from(visible_lines.len()).unwrap_or(MAX_PANEL_LINES);
     let base = if crate::cli::in_fullscreen() {
-        let rows = crossterm::terminal::size()
-            .map(|(_, rows)| rows)
-            .unwrap_or(24);
-        // 底下留一行空：贴死屏幕边看着像被切掉了，活动区那边也是这么留的。
-        rows.saturating_sub(u16::try_from(visible_lines.len()).unwrap_or(0) + 1)
+        let geometry = (cols, rows, height);
+        if session.geometry != Some(geometry) {
+            if let Some(scroll) = scroll.as_deref_mut() {
+                scroll(0, height.saturating_add(1));
+            }
+            session.geometry = Some(geometry);
+        }
+        rows.saturating_sub(height.saturating_add(1))
     } else {
         session.anchor_y
     };
-    // 上一帧可能更高：把它留在上面的那几行擦掉，免得成了残影。
-    for row in session.anchor_y..base {
-        queue!(
-            session.stdout,
-            MoveTo(0, row),
-            Clear(ClearType::CurrentLine)
-        )?;
-    }
+    session.anchor_y = base;
+    session.painted_rows = height;
     for (row, line) in visible_lines.iter().enumerate() {
         queue!(
             session.stdout,
@@ -221,12 +217,19 @@ pub(in crate::question_tui) fn draw(
             crossterm::style::Print(truncate_width(line, content_width))
         )?;
     }
+    if crate::cli::in_fullscreen() {
+        queue!(
+            session.stdout,
+            MoveTo(0, rows.saturating_sub(1)),
+            Clear(ClearType::CurrentLine)
+        )?;
+    }
     if state.editing {
         if let Some(index) = edit_body_index.filter(|index| {
             *index >= layout.body_start
                 && *index < layout.body_start.saturating_add(layout.body_capacity)
         }) {
-            let row = layout.top_budget + index - layout.body_start;
+            let row = (layout.top_budget + index - layout.body_start).saturating_sub(lead);
             let cursor_x = edit_cursor_column.saturating_add(edit_cursor_offset);
             queue!(
                 session.stdout,
@@ -428,8 +431,8 @@ pub(in crate::question_tui) fn wrap_display_text(value: &str, width: usize) -> V
 ///
 /// inline 下靠打换行把画面顶上去——顶出去的进 scrollback，回翻还找得到。
 /// **全屏下不能这么干**：备用屏没有 scrollback，顶出去就是没了，用户看到的是
-/// 「一提问，正文全被清空」。全屏下只要把光标放到底部，面板自己会从那儿往上
-/// 画，正文原封不动待在上面，面板退场后一帧就重画回来。
+/// 「一提问，正文全被清空」。全屏下只把光标放到底部；实际高度算出后，
+/// 调用方从正文缓冲重排上方视口，面板退场再恢复输入区布局。
 pub(in crate::question_tui) fn reserve_space(lines: u16) -> Result<()> {
     if crate::cli::in_fullscreen() {
         let rows = crossterm::terminal::size()

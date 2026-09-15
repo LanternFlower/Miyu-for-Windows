@@ -20,6 +20,7 @@
 pub(in crate::cli) mod ansi;
 pub(in crate::cli) mod expand;
 pub(in crate::cli) mod overlay;
+mod question_panel;
 pub(in crate::cli) mod select;
 pub(in crate::cli) mod term;
 pub(in crate::cli) mod toast;
@@ -439,10 +440,11 @@ impl Screen {
 
     /// 跟随时正文该滚到哪。
     ///
-    /// **和面板没关系**：面板是盖上去的，盖住谁谁就先看不见，不该把底下的东西
+    /// 工具浮层是盖上去的，盖住谁谁就先看不见，不该把底下的东西
     /// 挤走（用户实测：点开浮层会把内容往上推）。按面板上方剩下的高度算的话，
     /// 等于开一次面板就把正文整体往上顶半屏。`paint`、`paint_overlay`、
     /// `overlay_click`、`scroll_above_panel` 四处共用它，口径不一致会互相拉扯。
+    /// 提问面板则先缩小 `body`，正文与滚动上限一起让出空间。
     pub(in crate::cli) fn follow_target(&self) -> usize {
         self.content_rows().saturating_sub(usize::from(self.body()))
     }
