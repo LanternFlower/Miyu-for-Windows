@@ -12,6 +12,9 @@
 mod frame;
 mod queue;
 pub(in crate::cli) mod screen;
+mod update;
+
+pub(in crate::cli) use update::synchronized_terminal_update;
 
 #[cfg(test)]
 pub(in crate::cli) use frame::queue_lifted_frame;
@@ -500,36 +503,6 @@ pub(in crate::cli) fn live_frame_output_bottom(
         Some(frame_margin)
     } else {
         frame_margin.checked_sub(1)
-    }
-}
-
-pub(in crate::cli) fn synchronized_terminal_update<T>(
-    cursor_after: CursorAfterUpdate,
-    update: impl FnOnce() -> Result<T>,
-) -> Result<T> {
-    let mut stdout = io::stdout();
-    match cursor_after {
-        CursorAfterUpdate::Preserve => execute!(stdout, BeginSynchronizedUpdate)?,
-        CursorAfterUpdate::Shown | CursorAfterUpdate::Hidden => {
-            execute!(stdout, Hide, BeginSynchronizedUpdate)?
-        }
-    }
-    let result = update();
-    let end = match cursor_after {
-        CursorAfterUpdate::Shown => execute!(stdout, EndSynchronizedUpdate, Show),
-        CursorAfterUpdate::Preserve | CursorAfterUpdate::Hidden => {
-            execute!(stdout, EndSynchronizedUpdate)
-        }
-    };
-    match result {
-        Ok(value) => {
-            end?;
-            Ok(value)
-        }
-        Err(error) => {
-            let _ = end;
-            Err(error)
-        }
     }
 }
 

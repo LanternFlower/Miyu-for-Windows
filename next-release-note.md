@@ -1,5 +1,9 @@
 >更新内容记录在此处，每次更新release时作为releasenote发布，发布后清理已发布内容。
 
+## 待验收修复
+
+- 全屏 TUI 的流式正文、输入框、状态行和光标归位纳入同一同步绘制事务，避免 herdr 等终端复用器看到中间光标位置。同步事务支持嵌套及异常收尾。
+
 ## 重要更新
 
 - **macOS 兼容修复**：语音输入、embedding / 渲染 worker、家目录迁移，以及 `hotel-deals`、`procusage`、`query_moegirl`、`read_clipboard` 四个内置脚本在 macOS 上的问题。一批只在 Linux 上成立的限制（内存上限、Landlock 沙盒）不再误伤 macOS。感谢 @yxxbc。
