@@ -63,6 +63,8 @@ fn real_context_defaults_match_the_deployed_contract() {
     assert_eq!(settings.judge_max_retries, 1);
     assert_eq!(settings.active_reply_supersede_window_seconds, 5);
     assert_eq!(settings.continuation_window_seconds, 15);
+    assert_eq!(settings.after_speaking_window_seconds, 30);
+    assert_eq!(settings.after_speaking_score_boost, 0.15);
     assert!(settings.takeover_direct_trigger_enable);
     assert_eq!(settings.takeover_direct_trigger_boost_score, 0.3);
     assert!(settings.privileged_direct_trigger_skip_active_judgement);

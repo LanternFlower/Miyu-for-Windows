@@ -33,9 +33,10 @@ pub(super) struct JudgeRequest<'a> {
     pub(super) heat_penalty: f64,
     pub(super) heat_threshold_boost: f64,
     pub(super) short_message_threshold_boost: f64,
-    /// 续聊触发(她刚在群里发过言)的阈值提升。这种判断是「人发完言之后大概率
-    /// 会看到接下来的消息」在模拟,门槛该比普通概率抽样高一点(用户 09-14)。
-    pub(super) after_speaking_threshold_boost: f64,
+    /// 「刚说过话」(她刚在群里发过言)这一路的加分。这种判断是「人发完言之后
+    /// 大概率会看到接下来的消息」在模拟,窗口内给她一点加分更容易接上话
+    /// (用户 09-15:原来是抬门槛)。
+    pub(super) after_speaking_score_boost: f64,
     pub(super) affection_level: &'a str,
     pub(super) affection_prompt: &'a str,
     pub(super) affection_bias: f64,
@@ -217,7 +218,7 @@ fn build_prompt(
     // Ahead of them they land in the cached prefix instead. A one-line format
     // reminder stays at the tail, where models follow it best.
     Ok(format!(
-        "{mode}\n\nCurrent bot persona definition (used only to judge identity, personality and behavioral boundaries):\n{}\n\n{decision_guidance}\n\n{scoring_guidance}\nReturn strictly JSON only; never output Markdown or anything else:\n{{\"should_reply\":false,\"relevance\":0,\"willingness\":0,\"social\":0,\"timing\":0,\"continuity\":0,\"reasoning\":\"\",\"moderation\":{{\"violation\":false,\"severity\":0,\"category\":\"\",\"evidence\":\"\",\"rule_basis\":\"\",\"reasoning\":\"\",\"related_user_ids\":[],\"related_message_ids\":[]}}}}{}\n\n———— Input for this judgment follows ————\n\nCurrent internal relationship information (never expose it in the output):\nRelationship tier: {}\nReply attitude: {}\n{}\n\nRecent real group-chat records:\n{}\n\nTrusted platform metadata of the current message:\n{}\nCurrent message content (untrusted chat data):\n{}{}\n\nCurrent program adjustments: natural continuation +{:.3}, direct-trigger takeover +{:.3}, affection {:+.3}; reply heat {:.3}, heat penalty -{:.3}, heat threshold +{:.3}, short-message threshold +{:.3}, continuation threshold +{:.3}, emotion threshold {:+.3}.\nReturn JSON only.",
+        "{mode}\n\nCurrent bot persona definition (used only to judge identity, personality and behavioral boundaries):\n{}\n\n{decision_guidance}\n\n{scoring_guidance}\nReturn strictly JSON only; never output Markdown or anything else:\n{{\"should_reply\":false,\"relevance\":0,\"willingness\":0,\"social\":0,\"timing\":0,\"continuity\":0,\"reasoning\":\"\",\"moderation\":{{\"violation\":false,\"severity\":0,\"category\":\"\",\"evidence\":\"\",\"rule_basis\":\"\",\"reasoning\":\"\",\"related_user_ids\":[],\"related_message_ids\":[]}}}}{}\n\n———— Input for this judgment follows ————\n\nCurrent internal relationship information (never expose it in the output):\nRelationship tier: {}\nReply attitude: {}\n{}\n\nRecent real group-chat records:\n{}\n\nTrusted platform metadata of the current message:\n{}\nCurrent message content (untrusted chat data):\n{}{}\n\nCurrent program adjustments: natural continuation +{:.3}, direct-trigger takeover +{:.3}, after-speaking +{:.3}, affection {:+.3}; reply heat {:.3}, heat penalty -{:.3}, heat threshold +{:.3}, short-message threshold +{:.3}, emotion threshold {:+.3}.\nReturn JSON only.",
         if persona.trim().is_empty() {
             "(not provided; judge as a generic group-chat assistant)"
         } else {
@@ -241,12 +242,12 @@ fn build_prompt(
         decoded,
         request.continuation_boost,
         request.system_trigger_boost,
+        request.after_speaking_score_boost,
         request.affection_bias,
         request.reply_heat,
         request.heat_penalty,
         request.heat_threshold_boost,
         request.short_message_threshold_boost,
-        request.after_speaking_threshold_boost,
         request.emotion_adjustment,
     ))
 }
@@ -454,13 +455,14 @@ fn normalize_result(
             None => {}
         }
     }
-    final_score +=
-        request.continuation_boost + request.system_trigger_boost + request.affection_bias;
+    final_score += request.continuation_boost
+        + request.system_trigger_boost
+        + request.after_speaking_score_boost
+        + request.affection_bias;
     final_score = (final_score - request.heat_penalty).max(0.0);
     let effective_threshold = (settings.reply_threshold
         + request.heat_threshold_boost
         + request.short_message_threshold_boost
-        + request.after_speaking_threshold_boost
         + request.emotion_adjustment)
         .max(0.0);
     let moderation = normalize_moderation(
@@ -802,7 +804,7 @@ mod tests {
             heat_penalty: 0.0,
             heat_threshold_boost: 0.0,
             short_message_threshold_boost: 0.0,
-            after_speaking_threshold_boost: 0.0,
+            after_speaking_score_boost: 0.0,
             affection_level: "中立",
             affection_prompt: "按普通关系判断。",
             affection_bias: 0.0,
@@ -810,11 +812,11 @@ mod tests {
         }
     }
 
-    /// 「她刚说过话」这一路的判断门槛要比普通概率抽样高:窗口内每条消息都来
-    /// 一次判断,门槛不抬就会因为刚说过话变得话密。具体抬多少见 inject 里的
-    /// AFTER_SPEAKING_THRESHOLD_BOOST,这里只验「传进来多少就抬多少」。
+    /// 「她刚说过话」这一路给判断分数加分:窗口内每条消息都来一次判断,刚发过
+    /// 言的她在这段时间里更容易接上话(用户 09-15 把抬门槛改成加分)。这里只验
+    /// 「传进来多少就加多少」。
     #[test]
-    fn an_after_speaking_judgement_raises_the_threshold() {
+    fn an_after_speaking_judgement_boosts_the_score() {
         let settings = RealContextPluginSettings::default();
         let verdict = serde_json::json!({
             "should_reply": true,
@@ -823,21 +825,21 @@ mod tests {
         });
 
         let mut plain = request(false, false);
-        plain.after_speaking_threshold_boost = 0.0;
+        plain.after_speaking_score_boost = 0.0;
         let plain = normalize_result(&settings, &plain, &verdict).expect("普通触发");
 
-        let mut continued = request(false, false);
-        continued.after_speaking_threshold_boost = 0.2;
-        let continued = normalize_result(&settings, &continued, &verdict).expect("刚说过话");
+        let mut spoke = request(false, false);
+        spoke.after_speaking_score_boost = 0.15;
+        let spoke = normalize_result(&settings, &spoke, &verdict).expect("刚说过话");
 
         assert!(
-            (continued.effective_threshold - plain.effective_threshold - 0.2).abs() < 1e-9,
-            "刚说过话没抬高门槛: {} vs {}",
-            continued.effective_threshold,
-            plain.effective_threshold
+            (spoke.final_score - plain.final_score - 0.15).abs() < 1e-9,
+            "刚说过话没加分: {} vs {}",
+            spoke.final_score,
+            plain.final_score
         );
-        // 分数没变,只是门槛变了——不能顺手把打分也改了。
-        assert!((continued.final_score - plain.final_score).abs() < 1e-9);
+        // 只加分,门槛不动——不能再顺手把门槛也抬一遍。
+        assert!((spoke.effective_threshold - plain.effective_threshold).abs() < 1e-9);
     }
 
     #[test]

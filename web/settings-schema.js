@@ -2346,7 +2346,7 @@
             {
               key: "after_speaking_window_seconds",
               label: "群聊发完消息后观察窗口(秒)",
-              hint: "她发完消息后这么久内,任何人的消息都会来一次主动回复判断(门槛比平时高 0.2);续聊窗口只认她刚回的那个人",
+              hint: "她发完消息后这么久内,任何人的消息都会来一次主动回复判断(判断时给她加分);续聊窗口只认她刚回的那个人",
               kind: "number",
               integer: true,
               min: 1,
@@ -2354,7 +2354,7 @@
               unit: "秒",
               default: 30,
             },
-            score01("after_speaking_threshold_boost", "群聊发完消息后阈值提升", 0.05, "她发完消息后那段时间,每条消息都判一次;这个值把门槛抬高一点,免得刚说过话就变话密"),
+            score01("after_speaking_score_boost", "群聊发完消息后观察窗口加分", 0.15, "她发完消息后那段时间,每条消息都判一次;这个值给判断分数加一点,让她更容易接上话"),
             {
               key: "continuation_window_seconds",
               label: "续聊窗口(秒)",

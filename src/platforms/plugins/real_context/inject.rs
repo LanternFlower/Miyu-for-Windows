@@ -27,7 +27,6 @@ pub(in crate::platforms::plugins::real_context) fn placeholder_only(text: &str) 
     saw_placeholder && rest.trim().is_empty()
 }
 
-
 impl RealContextPlugin {
     pub(in crate::platforms::plugins::real_context) async fn decide_group_trigger(
         &self,
@@ -394,11 +393,11 @@ impl RealContextPlugin {
             &event.message_id,
             settings.judge_context_window,
         );
-        // 续聊触发比普通概率抽样多一道门槛:她刚发过言,接下来每条非纯多媒体
-        // 消息都会来一次判断,那是在模拟「人发完言会看到后续」,门槛该更高
-        // (用户 09-14)。
-        let after_speaking_threshold_boost = if trigger == TriggerKind::AfterSpeaking {
-            settings.after_speaking_threshold_boost
+        // 她刚发过言,接下来每条非纯多媒体消息都会来一次判断,那是在模拟
+        // 「人发完言会看到后续」,所以这一路给判断分数加分,让她更容易接上话
+        // (用户 09-15:原来是抬门槛)。
+        let after_speaking_score_boost = if trigger == TriggerKind::AfterSpeaking {
+            settings.after_speaking_score_boost
         } else {
             0.0
         };
@@ -471,7 +470,7 @@ impl RealContextPlugin {
                     heat_penalty,
                     heat_threshold_boost,
                     short_message_threshold_boost: short_boost,
-                    after_speaking_threshold_boost,
+                    after_speaking_score_boost,
                     affection_level,
                     affection_prompt,
                     affection_bias,
@@ -542,7 +541,7 @@ impl RealContextPlugin {
                 heat_penalty,
                 heat_threshold_adjustment: heat_threshold_boost,
                 short_message_threshold_adjustment: short_boost,
-                after_speaking_threshold_adjustment: after_speaking_threshold_boost,
+                after_speaking_score_adjustment: after_speaking_score_boost,
                 moderation: &judged.moderation,
                 reason: &judged.reasoning,
                 endpoint: judged.endpoint.as_deref(),

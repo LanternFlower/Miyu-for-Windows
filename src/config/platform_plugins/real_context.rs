@@ -73,10 +73,10 @@ pub struct RealContextPluginSettings {
     #[serde(default = "default_after_speaking_window_seconds")]
     pub after_speaking_window_seconds: u64,
     pub continuation_boost_score: f64,
-    /// 「刚说过话」这一路给判断门槛加多少。窗口内每条消息都判一次,门槛不抬就
-    /// 会因为刚说过话变得话密;但连发消息本来就有克制(冷静)机制在压,别抬太高。
-    #[serde(default = "default_after_speaking_threshold_boost")]
-    pub after_speaking_threshold_boost: f64,
+    /// 「刚说过话」这一路给判断分数加多少。窗口内每条消息都判一次,加点分让她
+    /// 刚发完言这段时间更容易接上话(用户 09-15:原来是抬门槛,现改成加分)。
+    #[serde(default = "default_after_speaking_score_boost")]
+    pub after_speaking_score_boost: f64,
     pub takeover_direct_trigger_enable: bool,
     pub takeover_direct_trigger_boost_score: f64,
     pub privileged_direct_trigger_skip_active_judgement: bool,
@@ -186,7 +186,7 @@ impl Default for RealContextPluginSettings {
             continuation_window_seconds: 15,
             after_speaking_window_seconds: default_after_speaking_window_seconds(),
             continuation_boost_score: 0.1,
-            after_speaking_threshold_boost: default_after_speaking_threshold_boost(),
+            after_speaking_score_boost: default_after_speaking_score_boost(),
             takeover_direct_trigger_enable: true,
             takeover_direct_trigger_boost_score: 0.3,
             privileged_direct_trigger_skip_active_judgement: true,
@@ -406,8 +406,8 @@ impl RealContextPluginSettings {
             ),
             ("continuation_boost_score", self.continuation_boost_score),
             (
-                "after_speaking_threshold_boost",
-                self.after_speaking_threshold_boost,
+                "after_speaking_score_boost",
+                self.after_speaking_score_boost,
             ),
             (
                 "takeover_direct_trigger_boost_score",
@@ -1011,6 +1011,6 @@ fn default_after_speaking_window_seconds() -> u64 {
     30
 }
 
-fn default_after_speaking_threshold_boost() -> f64 {
-    0.05
+fn default_after_speaking_score_boost() -> f64 {
+    0.15
 }

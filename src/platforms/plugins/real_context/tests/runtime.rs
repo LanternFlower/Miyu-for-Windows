@@ -45,7 +45,7 @@ fn active_reply_decision_log_is_structured_for_humans() {
         heat_penalty: 0.06,
         heat_threshold_adjustment: 0.03,
         short_message_threshold_adjustment: 0.01,
-        after_speaking_threshold_adjustment: 0.0,
+        after_speaking_score_adjustment: 0.15,
         moderation: &moderation,
         reason: "当前消息延续了上一轮问题。",
         endpoint: Some("opencodego / mimo-v2.5"),
@@ -67,6 +67,7 @@ fn active_reply_decision_log_is_structured_for_humans() {
     assert!(!rendered.contains("直接触发调整"));
     assert!(rendered.contains("冷静机制调整：扣分 -0.060，阈值 +0.030（冷静度 1.250）"));
     assert!(rendered.contains("短句阈值调整：+0.010"));
+    assert!(rendered.contains("刚说过话加分：+0.150"));
     assert!(!rendered.contains("安全初判"));
     assert!(rendered.ends_with("判断理由：当前消息延续了上一轮问题。"));
     assert_eq!(
