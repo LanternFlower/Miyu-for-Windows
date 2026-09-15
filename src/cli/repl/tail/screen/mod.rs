@@ -782,6 +782,9 @@ impl Screen {
     /// 活动区自己不画——`render_repl_input_with_footer` 会 `MoveTo` 到这个
     /// 行号再打，和 inline 下一模一样。
     pub(in crate::cli) fn paint(&mut self, tail_height: u16) -> Result<u16> {
+        // Streaming and overlay frames also own toast expiry. The idle input
+        // loop may not run again until a long reply has finished.
+        self.expire_toast();
         // 展开着的块内容可能还在长（正在想的那一步）——画之前先对一次版本。
         self.refresh_expanded();
         let body = self.body_height(tail_height);
