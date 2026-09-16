@@ -330,36 +330,18 @@ pub(in crate::config_tui) fn take_chars(value: &str, count: usize) -> String {
 }
 
 pub(in crate::config_tui) fn message(stdout: &mut io::Stdout, text: &str) -> Result<()> {
-    queue!(
-        stdout,
-        Clear(ClearType::All),
-        MoveTo(0, 0),
-        Print(text),
-        MoveTo(0, 2),
-        Print(t("Press any key to continue", "按任意键继续"))
-    )?;
-    stdout.flush()?;
-    let _ = read_key()?;
-    Ok(())
-}
-
-pub(in crate::config_tui) fn read_key() -> Result<KeyCode> {
-    read_key_with_timeout(None).map(|key| key.expect("blocking read should return a key"))
-}
-
-pub(in crate::config_tui) fn read_key_with_timeout(
-    timeout: Option<Duration>,
-) -> Result<Option<KeyCode>> {
-    loop {
-        if let Some(timeout) = timeout {
-            if !event::poll(timeout)? {
-                return Ok(None);
-            }
-        }
-        if let Event::Key(KeyEvent { code, .. }) = event::read()? {
-            return Ok(Some(code));
-        }
-    }
+    wait_for_key(|| {
+        queue!(
+            stdout,
+            Clear(ClearType::All),
+            MoveTo(0, 0),
+            Print(text),
+            MoveTo(0, 2),
+            Print(t("Press any key to continue", "按任意键继续"))
+        )?;
+        stdout.flush()?;
+        Ok(())
+    })
 }
 
 pub(in crate::config_tui) fn active_label(config: &AppConfig) -> String {
