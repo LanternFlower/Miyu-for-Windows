@@ -112,6 +112,13 @@
           default: 180,
         },
         {
+          path: "tools.block_dangerous_commands",
+          label: "高危命令拦截",
+          hint: "按命令位拦下 rm 这类不可恢复的删除;git rm、rmdir 不误伤",
+          kind: "toggle",
+          default: true,
+        },
+        {
           path: "tools.command_deny",
           label: "命令拒绝子串",
           hint: "run_command 命中即拒,防提示注入与手滑",

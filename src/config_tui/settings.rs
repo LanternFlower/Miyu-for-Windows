@@ -98,13 +98,17 @@ pub(in crate::config_tui) fn edit_settings(
             ),
             config.display.repl_replay_turns.to_string(),
         ),
+        Field::boolean(
+            t("Block dangerous commands", "高危命令拦截"),
+            config.tools.block_dangerous_commands,
+        ),
     ];
     // The read-back below is by index, so an insert in the middle silently
     // writes every later value into the wrong setting. This catches that in
     // debug builds; new fields go on the end.
     debug_assert_eq!(
         fields.len(),
-        14,
+        15,
         "global settings fields changed: update the positional read-back below"
     );
     run_form_without_buttons(stdout, t(" GLOBAL SETTINGS ", " 全局设置 "), &mut fields)?;
@@ -132,6 +136,7 @@ pub(in crate::config_tui) fn edit_settings(
         .trim()
         .parse::<usize>()?
         .min(MAX_REPL_REPLAY_TURNS);
+    config.tools.block_dangerous_commands = parse_bool_field(&fields[14].value)?;
     Ok(())
 }
 

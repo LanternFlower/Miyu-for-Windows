@@ -6,6 +6,7 @@ mod artifact;
 mod share_file;
 pub use share_file::set_share_url_bases;
 mod ask_question;
+mod command_guard;
 mod cross_hints;
 mod default_tools;
 pub(crate) use default_tools::TOOL_SUMMARY_PREFIX;
@@ -398,6 +399,11 @@ pub(crate) fn requires_prior_guard() -> ToolGuard {
 
 fn install_builtin_guards(registry: &mut ToolRegistry, config: &AppConfig) {
     registry.add_guard(aur_review_install_guard());
+    // 高危命令拦截排在子串名单前面:两个闸都命中时,先答的那个决定模型看到
+    // 什么。判定、取舍与开关语义见 command_guard 模块头。
+    registry.add_guard(command_guard::rm_guard(
+        config.tools.block_dangerous_commands,
+    ));
     registry.add_guard(command_deny_guard(config.tools.command_deny.clone()));
     registry.add_guard(requires_prior_guard());
 }

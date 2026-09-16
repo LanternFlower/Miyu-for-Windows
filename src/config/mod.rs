@@ -792,6 +792,11 @@ pub struct ToolsConfig {
     /// 防提示注入与模型手滑；默认只收录几乎不可能误伤的毁灭性模式。
     #[serde(default = "default_command_deny")]
     pub command_deny: Vec<String>,
+    /// 高危命令拦截：按命令位（argv[0]）拦下 `rm` 这类不可恢复的删除命令。
+    /// 与上面的子串名单是两层：这一层认命令结构，`git rm`、`rmdir` 不误伤。
+    /// 关掉之后 run_command 只剩子串名单把关。
+    #[serde(default = "default_true")]
+    pub block_dangerous_commands: bool,
     /// `/sandbox` 会话沙盒的放行清单(管理员绑定时生效;成员沙盒不看)。
     #[serde(default)]
     pub sandbox: SandboxConfig,
@@ -1046,6 +1051,7 @@ impl Default for ToolsConfig {
             subagent_concurrency: default_subagent_concurrency(),
             default_timeout_secs: default_tools_timeout_secs(),
             command_deny: default_command_deny(),
+            block_dangerous_commands: default_true(),
             sandbox: SandboxConfig::default(),
         }
     }
