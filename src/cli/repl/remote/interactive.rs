@@ -239,14 +239,14 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
         if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {
             break;
         }
-        // 第一条消息发出去,会话就不空了:banner 撤、模式钉死。斜杠命令不算。
-        if !input.is_empty() && !input.starts_with('/') {
-            live_repl.set_session_empty(&config, paths, false);
-        }
         let (slash_command, command_args) = match parse_repl_input(input) {
             ReplInput::Chat => (None, ""),
             ReplInput::Slash(command, args) => (Some(command), args),
         };
+        // 第一条消息发出去,会话就不空了:banner 撤、模式钉死。
+        if submission_leaves_lobby(input) {
+            live_repl.set_session_empty(&config, paths, false);
+        }
         if let Some(command) = slash_command {
             // 命令也进上方向键历史：`/goal 长长的目标` 打错一个字重敲一遍，
             // 和重敲一条消息一样冤。落盘历史仍只收消息（命令是操作不是对话）。

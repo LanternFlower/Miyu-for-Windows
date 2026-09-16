@@ -552,3 +552,14 @@ pub(in crate::cli) fn parse_repl_input(input: &str) -> ReplInput<'_> {
         None => ReplInput::Chat,
     }
 }
+
+/// 这一句会不会送进模型——空会话据此撤大厅(banner 退场、模式钉死)。
+///
+/// 真斜杠命令(`/config`、`/session`)不算,它们不是消息。但首字符是 `/` 却命不中
+/// 命令表的算:`/home/x.md 删掉` 会回落成普通聊天照常发出去。两条 REPL 通路
+/// (daemon / 直连)共用这一个判据——此前各写一遍 `starts_with('/')`,于是以路径
+/// 开头的第一句话把大厅留在了画面上,流式正文画上去就是重影。
+pub(in crate::cli) fn submission_leaves_lobby(input: &str) -> bool {
+    let input = input.trim();
+    !input.is_empty() && matches!(parse_repl_input(input), ReplInput::Chat)
+}

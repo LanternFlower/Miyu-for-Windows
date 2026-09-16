@@ -131,6 +131,34 @@ fn tab_completion_still_expands_unique_prefixes() {
     assert_eq!(complete_repl_command("hello"), None);
 }
 
+/// 空会话撤大厅的判据:以路径开头的第一句话是**消息**,不是命令。
+///
+/// 退回修复前(两处各写一遍 `starts_with('/')`),`/home/x.md 删掉` 被当成命令
+/// 跳过撤场,可它回落成聊天照常发给了模型——大厅留在画面上,流式正文画上去
+/// 就是重影,整轮结束视图还停在大厅。
+#[test]
+fn a_path_like_first_message_still_leaves_the_lobby() {
+    for message in [
+        "/home/shorin/Downloads/群聊消息线程-实现方案.md 删除这个文件",
+        "/home/x.md 删掉",
+        "/usr/bin/env 是什么",
+        "/rest",
+        "你好",
+    ] {
+        assert!(
+            submission_leaves_lobby(message),
+            "should leave the lobby: {message:?}"
+        );
+    }
+    // 真命令与空输入不撤大厅。
+    for command in ["/config", "  /session  ", "/POP 3", "", "   "] {
+        assert!(
+            !submission_leaves_lobby(command),
+            "should keep the lobby: {command:?}"
+        );
+    }
+}
+
 #[test]
 fn parse_repl_input_dispatches_by_table() {
     assert!(matches!(parse_repl_input("hello"), ReplInput::Chat));

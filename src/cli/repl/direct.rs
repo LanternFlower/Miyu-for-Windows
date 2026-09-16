@@ -456,7 +456,7 @@ pub(in crate::cli) async fn run_direct_repl(
         let (input, pasted_images, history_entry) = match next_input {
             Some((new_mode, input, pasted_images, entry)) => {
                 mode = new_mode;
-                if !input.trim().is_empty() && !input.trim_start().starts_with('/') {
+                if submission_leaves_lobby(&input) {
                     if let Some(live) = live_repl.as_mut() {
                         live.set_session_empty(&config, paths, false);
                     }
