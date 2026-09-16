@@ -279,13 +279,7 @@ impl RealContextPlugin {
             decision.should_reply = true;
             decision.response_target = adaptive_response_target(context, event, settings);
             let reactions = self.add_reactions(context, event, settings).await;
-            self.register_committed_pending(
-                &session_key,
-                &event.sender_id,
-                trigger,
-                reactions,
-                inherited_targets,
-            );
+            self.register_committed_pending(context, trigger, reactions, inherited_targets, true);
             self.log_bypass(context, trigger, "覆盖窗口内沿用上一轮已承诺的回复");
             return Ok(());
         }
@@ -294,9 +288,10 @@ impl RealContextPlugin {
             let mut runtime = self.runtime.lock().unwrap();
             runtime.next_generation = runtime.next_generation.wrapping_add(1).max(1);
             let generation = runtime.next_generation;
-            runtime.session_mut(&session_key, now).pending.insert(
+            let previous = runtime.session_mut(&session_key, now).pending.insert(
                 event.sender_id.clone(),
                 PendingReply {
+                    owner: context.ownership.clone(),
                     generation,
                     started: now,
                     trigger,
@@ -306,6 +301,11 @@ impl RealContextPlugin {
                     cancel: cancel_tx,
                 },
             );
+            if inherited {
+                if let Some(previous) = previous {
+                    previous.supersede_for(&context.ownership);
+                }
+            }
             generation
         };
 
@@ -967,9 +967,15 @@ impl RealContextPlugin {
         let session_key = runtime_session_key(context);
         let mut runtime = self.runtime.lock().unwrap();
         let session = runtime.session_mut(&session_key, now);
-        // Consume any pending entry for this sender; the reply it was tracking
-        // has now landed.
-        session.pending.remove(&sender_id);
+        // A previous turn may finish after a new commitment was registered.
+        // Only consume the pending entry owned by the delivered turn.
+        if session
+            .pending
+            .get(&sender_id)
+            .is_some_and(|pending| pending.owner.same_turn(&context.ownership))
+        {
+            session.pending.remove(&sender_id);
+        }
         session.last_reply = Some(now);
         session.increase_heat(now, settings);
         session.mark_continuation(&sender_id, now, settings);

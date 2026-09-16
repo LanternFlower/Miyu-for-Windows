@@ -27,7 +27,7 @@ use crate::platforms::{
     AdaptiveResponseTargetPolicy, BotSendAvailability, ConversationKind, OutboundBody,
     OutboundMessage, OutboundOrigin, OutboundSegment, PlatformContextFileRef, PlatformInboundEvent,
     PlatformInboundEventKind, PlatformMediaKind, PlatformMention, PlatformTurnContext,
-    ResponseTarget, SendReceipt, TriggerDecision,
+    ResponseTarget, SendReceipt, TriggerDecision, TurnOwnership,
 };
 use crate::tools::ToolRegistry;
 use anyhow::Result;
@@ -180,13 +180,16 @@ impl PlatformPlugin for RealContextPlugin {
     }
 
     fn turn_is_superseded(&self, context: &PlatformTurnContext) -> bool {
-        self.runtime
-            .lock()
-            .unwrap()
-            .sessions
-            .get(&runtime_session_key(context))
-            .and_then(|session| session.pending.get(&context.sender_id))
-            .is_some_and(|pending| *pending.cancel.borrow())
+        context.ownership.is_superseded()
+            || self
+                .runtime
+                .lock()
+                .unwrap()
+                .sessions
+                .get(&runtime_session_key(context))
+                .and_then(|session| session.pending.get(&context.sender_id))
+                .filter(|pending| pending.owner.same_turn(&context.ownership))
+                .is_some_and(|pending| *pending.cancel.borrow())
     }
 
     fn confirm_supersede<'a>(
@@ -251,15 +254,21 @@ impl PlatformPlugin for RealContextPlugin {
                     .sessions
                     .get_mut(&session_key)
                     .and_then(|session| session.pending.get(&context.sender_id));
-                if pending.is_some_and(|pending| *pending.cancel.borrow()) {
+                let owned =
+                    pending.is_some_and(|pending| pending.owner.same_turn(&context.ownership));
+                if owned && pending.is_some_and(|pending| *pending.cancel.borrow()) {
                     return Ok(());
                 }
-                runtime
-                    .sessions
-                    .get_mut(&session_key)
-                    .and_then(|session| session.pending.remove(&context.sender_id))
-                    .map(|pending| pending.reactions)
-                    .unwrap_or_default()
+                if owned {
+                    runtime
+                        .sessions
+                        .get_mut(&session_key)
+                        .and_then(|session| session.pending.remove(&context.sender_id))
+                        .map(|pending| pending.reactions)
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                }
             };
             if reactions.is_empty() && settings.active_reply_reaction_enable {
                 if let Some(event) = context

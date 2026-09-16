@@ -183,11 +183,11 @@ async fn correction_within_window_supersedes_committed_reply_and_moves_reactions
     let first = inbound_event();
     // 已承诺的回复(直触发或判断已通过),表情挂在旧消息上
     plugin.register_committed_pending(
-        &runtime_session_key(&context),
-        &first.sender_id,
+        &context,
         TriggerKind::Direct,
         vec![("message-1".to_string(), "289".to_string())],
         vec![active_reply_target(&first)],
+        false,
     );
     // 补救窗口内同发送者的新消息:不再判断,直接顶替
     let mut correction = inbound_event();
@@ -249,11 +249,11 @@ async fn takeover_of_a_probability_commitment_keeps_the_join_in_notice() {
     let settings = RealContextPluginSettings::default();
     let first = inbound_event();
     plugin.register_committed_pending(
-        &runtime_session_key(&context),
-        &first.sender_id,
+        &context,
         TriggerKind::Probability,
         Vec::new(),
         vec![active_reply_target(&first)],
+        false,
     );
     let mut correction = inbound_event();
     correction.message_id = "message-2".to_string();
@@ -328,6 +328,7 @@ async fn an_uncommitted_takeover_goes_back_to_the_judge_not_the_bypass() {
         .insert(
             first.sender_id.clone(),
             PendingReply {
+                owner: context.ownership.clone(),
                 generation: 7,
                 started: Instant::now(),
                 trigger: TriggerKind::Probability,
@@ -391,6 +392,7 @@ async fn confirm_supersede_moves_reactions_and_restarts_the_window() {
         .insert(
             first.sender_id.clone(),
             PendingReply {
+                owner: context.ownership.clone(),
                 generation: 7,
                 started: old_started,
                 trigger: TriggerKind::Direct,

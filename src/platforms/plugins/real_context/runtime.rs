@@ -196,6 +196,7 @@ pub(in crate::platforms::plugins::real_context) struct ActiveReplyTarget {
 }
 
 pub(in crate::platforms::plugins::real_context) struct PendingReply {
+    pub(in crate::platforms::plugins::real_context) owner: TurnOwnership,
     pub(in crate::platforms::plugins::real_context) generation: u64,
     pub(in crate::platforms::plugins::real_context) started: Instant,
     pub(in crate::platforms::plugins::real_context) trigger: TriggerKind,
@@ -206,6 +207,16 @@ pub(in crate::platforms::plugins::real_context) struct PendingReply {
     pub(in crate::platforms::plugins::real_context) reactions: Vec<(String, String)>,
     pub(in crate::platforms::plugins::real_context) targets: Vec<ActiveReplyTarget>,
     pub(in crate::platforms::plugins::real_context) cancel: tokio::sync::watch::Sender<bool>,
+}
+
+impl PendingReply {
+    pub(in crate::platforms::plugins::real_context) fn supersede_for(&self, owner: &TurnOwnership) {
+        // 活跃回合接管仍由同一个 context 消费后续消息，不能取消宿主回合。
+        if !self.owner.same_turn(owner) {
+            self.owner.supersede();
+            self.cancel.send_replace(true);
+        }
+    }
 }
 
 pub(in crate::platforms::plugins::real_context) async fn wait_for_supersede(

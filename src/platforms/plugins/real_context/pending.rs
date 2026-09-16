@@ -76,6 +76,7 @@ impl RealContextPlugin {
                     if settings.active_reply_supersede_enable
                         && now.duration_since(pending.started) <= window =>
                 {
+                    pending.supersede_for(&context.ownership);
                     (pending.reactions, pending.targets)
                 }
                 _ => (Vec::new(), Vec::new()),
@@ -94,40 +95,43 @@ impl RealContextPlugin {
         normalize_active_targets(&mut targets, &event.sender_id);
         set_active_targets(context, &targets);
         let reactions = self.add_reactions(context, event, settings).await;
-        self.register_committed_pending(
-            &session_key,
-            &event.sender_id,
-            TriggerKind::Direct,
-            reactions,
-            targets,
-        );
+        self.register_committed_pending(context, TriggerKind::Direct, reactions, targets, false);
     }
 
     pub(in crate::platforms::plugins::real_context) fn register_committed_pending(
         &self,
-        session_key: &str,
-        sender_id: &str,
+        context: &PlatformTurnContext,
         trigger: TriggerKind,
         reactions: Vec<(String, String)>,
         targets: Vec<ActiveReplyTarget>,
+        supersede_previous: bool,
     ) {
         let now = Instant::now();
         let (cancel, _receiver) = tokio::sync::watch::channel(false);
         let mut runtime = self.runtime.lock().unwrap();
         runtime.next_generation = runtime.next_generation.wrapping_add(1).max(1);
         let generation = runtime.next_generation;
-        runtime.session_mut(session_key, now).pending.insert(
-            sender_id.to_string(),
-            PendingReply {
-                generation,
-                started: now,
-                trigger,
-                committed: true,
-                reactions,
-                targets,
-                cancel,
-            },
-        );
+        let previous = runtime
+            .session_mut(&runtime_session_key(context), now)
+            .pending
+            .insert(
+                context.sender_id.clone(),
+                PendingReply {
+                    owner: context.ownership.clone(),
+                    generation,
+                    started: now,
+                    trigger,
+                    committed: true,
+                    reactions,
+                    targets,
+                    cancel,
+                },
+            );
+        if supersede_previous {
+            if let Some(previous) = previous {
+                previous.supersede_for(&context.ownership);
+            }
+        }
     }
 
     pub(in crate::platforms::plugins::real_context) async fn add_reactions(
