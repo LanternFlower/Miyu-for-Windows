@@ -387,7 +387,14 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                                 Some(target) => target,
                                 None => continue,
                             };
-                        match repl_get_session_state(paths, &mut live_repl, target).await? {
+                        match repl_get_session_switch(
+                            paths,
+                            &mut live_repl,
+                            target,
+                            &active_session_id,
+                        )
+                        .await?
+                        {
                             Some(state) => state,
                             None => continue,
                         }

@@ -266,6 +266,18 @@ impl BannerScene {
     /// 收窄居中；星空铺满全屏，只避开正文那一列。回车发第一句话后整块撤掉，
     /// 输入框回到屏底、恢复全宽。
     pub(in crate::cli) fn lobby(&self, cols: usize, rows: usize, activity_rows: usize) -> Lobby {
+        self.lobby_with_bottom_space(cols, rows, activity_rows, 0)
+    }
+
+    /// Keep a temporary selector below the complete lobby, shifting the block
+    /// upward only when the normal centered layout leaves insufficient room.
+    pub(in crate::cli) fn lobby_with_bottom_space(
+        &self,
+        cols: usize,
+        rows: usize,
+        activity_rows: usize,
+        bottom_rows: usize,
+    ) -> Lobby {
         let theme = self.theme;
         let art_cols = self.art.cols();
         let art_rows = self.art.rows();
@@ -276,7 +288,8 @@ impl BannerScene {
         let art_left = cols.saturating_sub(art_cols) / 2;
         // 艺术字 + 副标题 + 版本 + 空行 + 输入框 + 空行 + 模式行 + 提示。
         let block_rows = art_rows + 2 + activity_rows + 3;
-        let top = rows.saturating_sub(block_rows) / 2;
+        let top = (rows.saturating_sub(block_rows) / 2)
+            .min(rows.saturating_sub(block_rows.saturating_add(bottom_rows)));
         let tail_start = top + art_rows + 2;
         // 星只铺在艺术字周围这一圈,不铺满屏——进正文前的画面不能太花。
         let star_rows = top.saturating_sub(LOBBY_STAR_PAD_Y)..(top + block_rows + LOBBY_STAR_PAD_Y);
@@ -551,6 +564,21 @@ mod tests {
         assert!(inside.trim().is_empty(), "band not blank: {inside:?}");
         let tiny = scene.lobby(30, 10, 4);
         assert_eq!(tiny.rows.len(), 10);
+    }
+
+    #[test]
+    fn lobby_selector_reserves_space_below_all_captions() {
+        let scene = scene();
+        for rows in [24, 32, 40] {
+            let original = scene.lobby(100, rows, 5);
+            let panel = scene.lobby_with_bottom_space(100, rows, 5, 5);
+            assert_eq!(panel.rows.len(), rows);
+            assert_eq!((panel.left, panel.width), (original.left, original.width));
+            assert!(usize::from(panel.below) + 5 <= rows);
+            if usize::from(original.below) + 5 <= rows {
+                assert_eq!(panel.tail_start, original.tail_start);
+            }
+        }
     }
 
     #[test]

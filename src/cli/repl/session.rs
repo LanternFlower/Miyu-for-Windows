@@ -680,6 +680,22 @@ pub(in crate::cli) async fn repl_get_session_state(
     )
 }
 
+/// Resolve a user-requested switch without replaying the session already on
+/// screen. Other state refreshes still use `repl_get_session_state` directly.
+pub(in crate::cli) async fn repl_get_session_switch(
+    paths: &MiyuPaths,
+    live: &mut LiveReplTail,
+    target: crate::ipc::SessionRef,
+    active_session_id: &str,
+) -> Result<Option<ipc::SessionState>> {
+    if matches!(&target, crate::ipc::SessionRef::Id { id } if id == active_session_id) {
+        return Ok(None);
+    }
+    Ok(repl_get_session_state(paths, live, target)
+        .await?
+        .filter(|state| state.session_id != active_session_id))
+}
+
 pub(in crate::cli) async fn repl_fallback_session_state(
     paths: &MiyuPaths,
     live: &mut LiveReplTail,
@@ -758,7 +774,15 @@ pub(in crate::cli) async fn repl_pick_session(
                 Ok(None)
             };
         }
-        match select_session_target(&entries, Some(active_session_id), cursor)? {
+        let picked = if live.screen.is_some() {
+            super::session_picker::pick(live, &entries, active_session_id, cursor)
+        } else {
+            synchronized_terminal_update(CursorAfterUpdate::Hidden, || live.suspend())?;
+            let picked = select_session_target(&entries, Some(active_session_id), cursor);
+            synchronized_terminal_update(CursorAfterUpdate::Shown, || live.resume())?;
+            picked
+        };
+        match picked? {
             SessionPick::Cancelled => {
                 return if lost_active {
                     repl_fallback_session_state(paths, live, mode).await
@@ -767,7 +791,11 @@ pub(in crate::cli) async fn repl_pick_session(
                 };
             }
             SessionPick::Switch(target) => {
-                return repl_get_session_state(paths, live, target).await;
+                return if lost_active {
+                    repl_get_session_state(paths, live, target).await
+                } else {
+                    repl_get_session_switch(paths, live, target, active_session_id).await
+                };
             }
             SessionPick::Delete { session_id, index } => {
                 let was_active = session_id == active_session_id;

@@ -9,6 +9,7 @@ pub(in crate::cli) mod jobs;
 pub(in crate::cli) mod layout;
 pub(in crate::cli) mod placeholder;
 pub(in crate::cli) mod session;
+mod session_picker;
 
 pub(super) mod direct;
 pub(super) mod editor;
