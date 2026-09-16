@@ -11,6 +11,10 @@ use std::time::{Duration, Instant};
 
 const JSONRPC_VERSION: &str = "2.0";
 
+#[cfg(test)]
+#[path = "mcp/result_tests.rs"]
+mod result_tests;
+
 #[derive(Debug, Clone)]
 struct McpToolBinding {
     server: McpServerConfig,
@@ -494,6 +498,17 @@ fn normalize_schema(schema: Value) -> Value {
 }
 
 fn format_mcp_result(result: &Value) -> String {
+    let output = format_mcp_content(result);
+    if result.get("isError").and_then(Value::as_bool) == Some(true) {
+        // A successful JSON-RPC exchange can contain a failed tool call.
+        // Keep its diagnostic content inside the existing tool failure format.
+        json!({"ok": false, "error": output}).to_string()
+    } else {
+        output
+    }
+}
+
+fn format_mcp_content(result: &Value) -> String {
     if let Some(content) = result.get("content").and_then(Value::as_array) {
         let parts = content
             .iter()
