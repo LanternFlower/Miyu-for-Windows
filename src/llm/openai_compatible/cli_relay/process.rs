@@ -8,10 +8,18 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdout};
 
 pub(in crate::llm::openai_compatible) fn kill_process_group(pid: u32) {
+    signal_process_group(pid, libc::SIGKILL);
+}
+
+fn signal_process_group(pid: u32, signal: libc::c_int) {
     unsafe {
-        libc::kill(-(pid as i32), libc::SIGKILL);
+        libc::kill(-(pid as i32), signal);
     }
 }
+
+/// SIGTERM 之后留给 CLI 收尾的宽限期。agy 正常收尾(落最后一步、关语言服务器)
+/// 实测在 5 秒内;超时的走 SIGKILL 兜底。
+const TERMINATE_GRACE: Duration = Duration::from_secs(5);
 
 pub(in crate::llm::openai_compatible) struct RelayProcess {
     child: Child,
@@ -149,12 +157,12 @@ impl RelayProcess {
         })
     }
 
-    /// 下一行 stdout;空闲超过看门狗就杀进程组并报 Timeout 类传输失败。
+    /// 下一行 stdout;空闲超过看门狗就收掉进程组并报 Timeout 类传输失败。
     /// `Ok(None)` = stdout 关闭(进程退出)。
     pub(in crate::llm::openai_compatible) async fn next_line(&mut self) -> Result<Option<String>> {
         match tokio::time::timeout(self.idle_timeout, self.lines.next_line()).await {
             Err(_) => {
-                self.kill();
+                self.terminate().await;
                 Err(anyhow::anyhow!(
                     "{} produced no output for {}s; the process was killed",
                     self.label,
@@ -173,6 +181,30 @@ impl RelayProcess {
         kill_process_group(self.pid);
     }
 
+    /// 先 SIGTERM 再兜底 SIGKILL:硬杀会让 CLI 正在跑的那一步停在取消态留在
+    /// 会话转录里,agy 的日志里能看到序列化器后来一直撞它
+    /// (`serializer encountered non-tool step N ... CORTEX_STEP_STATUS_CANCELED`)。
+    ///
+    /// 老实说:09-16 的对照实验里,单次硬杀(生成中途 SIGKILL)**没能**复现出
+    /// 一条坏掉的会话——两组 resume 回来都是 SUCCESS,所以「硬杀必然毒化会话」
+    /// 并没有被证实,这里是防御性的,不是已证实的修复。留着的理由很朴素:
+    /// SIGTERM 实测让 agy 在 1 秒内自己收尾退出(退出码 1),代价几乎为零,
+    /// 而硬杀留下的取消态步确实会出现在序列化报错里。
+    pub(in crate::llm::openai_compatible) async fn terminate(&mut self) {
+        signal_process_group(self.pid, libc::SIGTERM);
+        if tokio::time::timeout(TERMINATE_GRACE, self.child.wait())
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                label = self.label,
+                grace_seconds = TERMINATE_GRACE.as_secs(),
+                "relay process ignored SIGTERM; killing the process group"
+            );
+            self.kill();
+        }
+    }
+
     pub(in crate::llm::openai_compatible) fn stderr_tail(&self) -> String {
         self.stderr_tail
             .lock()
@@ -185,7 +217,9 @@ impl RelayProcess {
         let exit = match tokio::time::timeout(Duration::from_secs(10), self.child.wait()).await {
             Ok(status) => status.ok(),
             Err(_) => {
-                self.kill();
+                // 终态帧已到手,但进程还赖着:同样走 SIGTERM→SIGKILL,别在
+                // 收尾这一步把转录打成取消态(理由见 `terminate`)。
+                self.terminate().await;
                 None
             }
         };

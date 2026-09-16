@@ -130,10 +130,34 @@ pub(in crate::llm::openai_compatible) fn bridge_env_passthrough() -> Vec<(String
         .collect()
 }
 
+/// CLI 侧这条会话已经坏到再续传也只会重复失败:上层作废续传条目、开一条
+/// 干净会话重试一次。与 [`ResumeTargetLost`](super::antigravity::ResumeTargetLost)
+/// 的区别只在于会话还在、但状态已经废了。
+#[derive(Debug)]
+pub(in crate::llm::openai_compatible) struct SessionPoisoned;
+
+impl std::fmt::Display for SessionPoisoned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the CLI-side conversation is no longer usable")
+    }
+}
+
+impl std::error::Error for SessionPoisoned {}
+
+/// 标记是用 `.context(SessionPoisoned)` 挂上去的,`chain()` 迭代出来的是
+/// anyhow 的包装类型、对它 downcast 认不出来;得走 anyhow 自己的 downcast。
+pub(in crate::llm::openai_compatible) fn session_poisoned(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<SessionPoisoned>().is_some()
+}
+
 /// 一轮中转的结果:正文结果 + CLI 侧会话 id(续传映射用)。
 pub(in crate::llm::openai_compatible) struct RelayOutcome {
     pub(in crate::llm::openai_compatible) result: ChatResult,
     pub(in crate::llm::openai_compatible) session_id: Option<String>,
+    /// 本轮跑成了,但 CLI 侧这条会话已经带着上一次失败的粘性状态(见
+    /// `antigravity::stream` 对 `result.status` 的注释)。结果照常交付,但这条
+    /// 会话不再留作续传目标:下一轮重开一条干净的。
+    pub(in crate::llm::openai_compatible) session_poisoned: bool,
 }
 
 /// 一轮中转的续传计划:哈希链、命中的 CLI 会话、要发的增量。
@@ -236,6 +260,18 @@ impl ResumePlan {
         );
         if let Some((id, _)) = self.resumable.take() {
             session::forget_session(&id);
+        }
+    }
+
+    /// 本轮交付了结果,但 CLI 侧这条会话已经废了([`RelayOutcome::session_poisoned`]):
+    /// **不**把它记成下一轮的续传目标,并把可能已存在的旧映射一并抹掉。下一轮
+    /// 匹配不到条目,自然走全量重放开一条干净会话。
+    pub(in crate::llm::openai_compatible) fn retire_session(&self, outcome: &RelayOutcome) {
+        if self.ephemeral {
+            return;
+        }
+        if let Some(session_id) = &outcome.session_id {
+            session::forget_session(session_id);
         }
     }
 

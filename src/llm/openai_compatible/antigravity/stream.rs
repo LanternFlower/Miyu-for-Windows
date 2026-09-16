@@ -14,6 +14,7 @@
 use super::{AntigravityRuntime, ResumeTargetLost, MCP_SERVER_NAME};
 use crate::llm::openai_compatible::cli_relay::{
     compact_line, hidden_remote_tool, process::RelayProcess, shape_remote_output, RelayOutcome,
+    SessionPoisoned,
 };
 use crate::llm::openai_compatible::*;
 
@@ -79,6 +80,11 @@ struct StreamState {
     response_step: Option<u64>,
     /// 最后一次模型调用的用量(上下文表读它)。
     per_call_usage: Option<Usage>,
+    /// 本轮所有模型调用的用量累计(记账读它)。agy 的工具循环在一个进程里
+    /// 可能调好几次模型,每次都真的计费,所以本轮花费是逐次相加——而
+    /// `result.usage` 是**整条会话**的累计,拿它记账会把历史重复计进本轮
+    /// (09-16 实测:本轮 16,399,result 报 2,800,349)。
+    turn_usage: Option<Usage>,
     /// 已发过 started 的工具步。
     started_tools: HashSet<u64>,
     /// `error_message` 步的正文,静默失败时并进报错。
@@ -232,7 +238,19 @@ where
             kind: HttpFailureKind::ContentPolicy,
         }));
     }
-    if status != "SUCCESS" {
+    // `result.status` 是**会话级**粘性状态,不是本轮的成败:会话转录里但凡留下
+    // 过一次失败(被硬杀的取消态步、上下文压缩序列化炸掉),之后每次续传这条
+    // 会话,agy 都原样回吐当时那份 status/error,哪怕本轮从头到尾跑得好好的。
+    // 09-16 实测钉死:同一条坏会话发 `ping` 照样回 `pong`、本轮用量 16,399,
+    // status 仍是 ERROR、error 还是两小时前那句;对照的好会话同样一句 `ping`
+    // 回 SUCCESS。按 status 一刀切会把已经生成好的正文整个丢掉——群聊里
+    // 非管理员那一档连挂两小时正是这么来的。
+    // 所以:本轮真跑出东西了就按成功交付,只把会话标记成不可再续传;本轮确实
+    // 什么都没产出才是真失败。
+    let turn_produced_output = state.turn_usage.is_some()
+        && !(state.content.trim().is_empty() && response.trim().is_empty());
+    let session_poisoned = status != "SUCCESS";
+    if session_poisoned && !turn_produced_output {
         let detail = [
             error_field.as_str(),
             state.error_text.trim(),
@@ -242,11 +260,29 @@ where
         .find(|text| !text.is_empty())
         .unwrap_or(stderr_text.as_str())
         .to_string();
+        let classified = classify_agy_failure(&format!("{error_field}\n{detail}"));
         let mut error = anyhow::anyhow!("agy turn failed ({status}): {}", detail.trim());
-        if let Some(failure) = classify_agy_failure(&format!("{error_field}\n{detail}")) {
+        if let Some(failure) = classified {
             error = error.context(failure);
+        } else {
+            // 归不到上游原因(额度/登录/策略)的失败,多半就是这条会话本身废了
+            // ——上层作废它、重开一条重试(同 `ResumeTargetLost` 的待遇),否则
+            // 这一档会永远卡在同一条坏会话上。
+            // 反过来:能归类的**不能**重开重试。09-15 实测 agy 把配额耗尽
+            // (`RESOURCE_EXHAUSTED`)也焊进会话状态,而换条新会话一样没额度,
+            // 重试只是白烧一次调用;交给冷却/故障转移处理才对。
+            error = error.context(SessionPoisoned);
         }
         return Err(error);
+    }
+    if session_poisoned {
+        tracing::warn!(
+            request_id,
+            status = %status,
+            detail = %compact_line(&error_field, 120),
+            "agy replayed a stale session-level error although this turn produced output; \
+             delivering the turn and retiring the conversation"
+        );
     }
 
     flush_buffer(
@@ -264,11 +300,14 @@ where
         })?;
         content = response;
     }
-    let total_usage = result_frame.get("usage").and_then(usage_from_agy);
+    // `result.usage` 是整条会话的累计,只在本轮一次模型调用都没记到用量时
+    // 当兜底(比如 agy 没给步级 usage),否则记账一律用本轮累计。
+    let session_usage = result_frame.get("usage").and_then(usage_from_agy);
+    let turn_usage = state.turn_usage.clone();
     let per_call_usage = state.per_call_usage.clone();
     if content.trim().is_empty()
         && per_call_usage.is_none()
-        && total_usage
+        && session_usage
             .as_ref()
             .map(|usage| usage.effective_total_tokens() == 0)
             .unwrap_or(true)
@@ -281,13 +320,14 @@ where
             stderr_text
         );
     }
-    let usage = total_usage.or_else(|| per_call_usage.clone());
+    let usage = turn_usage.or(session_usage);
     let mut result = finalize_stream_result(content, String::new(), usage, Vec::new(), false)?;
     result.finish_reason = Some("stop".to_string());
     result.last_request_usage = per_call_usage;
     Ok(RelayOutcome {
         result,
         session_id: conversation_id,
+        session_poisoned,
     })
 }
 
@@ -332,6 +372,10 @@ where
             }
             if step_state == "DONE" {
                 if let Some(usage) = step.get("usage").and_then(usage_from_agy) {
+                    state.turn_usage = Some(match state.turn_usage.take() {
+                        Some(running) => add_usage(running, &usage),
+                        None => usage.clone(),
+                    });
                     state.per_call_usage = Some(usage);
                 }
             }
@@ -439,6 +483,25 @@ fn normalize_native_arguments(parameters: Option<Value>) -> Value {
 /// 已在缓存里——整段命中在物理上不成立。按 usage.rs 的规矩(没有真实依据的
 /// 比率不能渲染成确定数字),声称整段命中的按「未报告缓存」处理;部分命中
 /// (24324/33736 这种)照实上报。
+/// 本轮内逐次模型调用的用量相加。缓存口径跟着加总:本轮但凡有一次真报了
+/// 缓存命中,本轮就算报了(每次调用的命中量已在 `usage_from_agy` 里各自
+/// 过滤过「整段命中」那种不可信的数)。
+fn add_usage(mut running: Usage, next: &Usage) -> Usage {
+    running.prompt_tokens = running.prompt_tokens.saturating_add(next.prompt_tokens);
+    running.completion_tokens = running
+        .completion_tokens
+        .saturating_add(next.completion_tokens);
+    running.total_tokens = running.total_tokens.saturating_add(next.total_tokens);
+    running.reasoning_tokens = running
+        .reasoning_tokens
+        .saturating_add(next.reasoning_tokens);
+    running.cache_read_tokens = running
+        .cache_read_tokens
+        .saturating_add(next.cache_read_tokens);
+    running.cache_reported = running.cache_reported || next.cache_reported;
+    running
+}
+
 fn usage_from_agy(value: &Value) -> Option<Usage> {
     let input = value.get("input_tokens").and_then(Value::as_u64)?;
     let output = value

@@ -230,6 +230,8 @@ where
     Ok(RelayOutcome {
         result,
         session_id: thread_id,
+        // codex 的终态帧只讲本轮,没有 agy 那种会话级粘性状态。
+        session_poisoned: false,
     })
 }
 

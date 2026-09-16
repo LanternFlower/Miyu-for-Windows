@@ -247,7 +247,12 @@ where
     let mut result = finalize_stream_result(content, state.reasoning, usage, Vec::new(), false)?;
     result.finish_reason = map_anthropic_stop_reason(stop_reason);
     result.last_request_usage = per_request_usage;
-    Ok(RelayOutcome { result, session_id })
+    Ok(RelayOutcome {
+        result,
+        session_id,
+        // claude-code 的 result 帧只讲本轮,没有 agy 那种会话级粘性状态。
+        session_poisoned: false,
+    })
 }
 
 /// MCP 前缀剥掉:Miyu 工具按本名显示(readable_tool_name / preparing_phase

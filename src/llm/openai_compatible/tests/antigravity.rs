@@ -15,6 +15,8 @@ fn fake_agy_script(dir: &std::path::Path) -> std::path::PathBuf {
     //   empty.txt  → error_message 步 + 空 SUCCESS + 零用量(静默失败)
     //   noagent.txt→ init 不带 agent(人格没挂上)
     //   lost.txt   → 忽略 --conversation,新开会话(续传目标丢失)
+    //   sticky.txt → 本轮正常出正文与用量,但 result 带着会话级粘性 ERROR
+    //   broken.txt → result ERROR、零产出、措辞归不到上游原因(会话废了)
     std::fs::write(
         &script,
         r#"#!/usr/bin/env bash
@@ -41,6 +43,16 @@ else
 fi
 if [ -f "$dir/fail.txt" ]; then
   echo "{\"event\":\"result\",\"result\":{\"conversation_id\":\"$sid\",\"status\":\"ERROR\",\"response\":\"\",\"error\":\"Quota exceeded for this model\",\"num_turns\":1,\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":0}}}"
+  exit 0
+fi
+if [ -f "$dir/broken.txt" ]; then
+  echo "{\"event\":\"result\",\"result\":{\"conversation_id\":\"$sid\",\"status\":\"ERROR\",\"response\":\"\",\"error\":\"Agent execution terminated due to error.\",\"num_turns\":9,\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":0}}}"
+  exit 0
+fi
+if [ -f "$dir/sticky.txt" ]; then
+  echo "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"$sid\",\"step_index\":0,\"state\":\"DONE\",\"step_type\":\"user_input\"}}"
+  echo "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"$sid\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"agent_response\",\"text_delta\":\"pong\",\"usage\":{\"input_tokens\":16399,\"output_tokens\":317,\"thinking_tokens\":316,\"cache_read_tokens\":0,\"total_tokens\":16716}}}"
+  echo "{\"event\":\"result\",\"result\":{\"conversation_id\":\"$sid\",\"status\":\"ERROR\",\"response\":\"pong\",\"error\":\"Agent execution terminated due to error.\",\"num_turns\":54,\"usage\":{\"input_tokens\":2800349,\"output_tokens\":49530,\"thinking_tokens\":45386,\"cache_read_tokens\":11455697,\"total_tokens\":2849879}}}"
   exit 0
 fi
 if [ -f "$dir/policy.txt" ]; then
@@ -371,7 +383,112 @@ async fn lost_conversation_is_detected_from_init_and_replayed() {
     );
 }
 
+/// agy 的 `result.status` 是会话级粘性状态:会话里出过一次错,之后每次续传
+/// 都原样回吐那次的 status/error,哪怕本轮正常跑完(09-16 真机实测:坏会话
+/// 发 ping 照样回 pong,status 仍是 ERROR)。本轮有产出就必须照常交付,不能
+/// 因为一句陈年报错把已经生成好的正文丢掉。
+#[tokio::test]
+async fn sticky_session_error_still_delivers_a_turn_that_produced_output() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("sticky.txt"), "").unwrap();
+    let client = antigravity_client(dir.path(), "agy-sticky", "all", "off");
+    let (result, chunks) = run(
+        &client,
+        vec![ChatMessage::plain("user", "ping")],
+        Vec::new(),
+    )
+    .await;
+    let result = result.expect("本轮有正文,不该判失败");
+    assert_eq!(result.content, "pong");
+    assert!(
+        chunks
+            .iter()
+            .any(|chunk| chunk.kind == ChatStreamKind::Content && chunk.text.contains("pong")),
+        "正文要照常流出去: {chunks:?}"
+    );
+    // 记账用本轮累计,不是 result 里那份会话累计(2,800,349)。
+    let usage = result.usage.unwrap();
+    assert_eq!(usage.prompt_tokens, 16_399);
+    assert_eq!(usage.completion_tokens, 317);
+}
+
+/// 粘性 ERROR 的会话交付完本轮就得退休:下一轮不许再续传到它身上,否则这一档
+/// 会永远卡在同一条坏会话上(09-16 群聊非管理员档连挂两小时的成因)。
+#[tokio::test]
+async fn poisoned_session_is_retired_so_the_next_turn_starts_fresh() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = antigravity_client(dir.path(), "agy-retire", "all", "off");
+    let first = vec![
+        ChatMessage::system("persona"),
+        ChatMessage::plain("user", "one"),
+    ];
+    // 第一轮干净跑完,落下续传映射。
+    let (result, _) = run(&client, first.clone(), Vec::new()).await;
+    let reply = result.unwrap().content;
+    let mut second = first.clone();
+    second.push(ChatMessage::assistant(reply, None));
+    second.push(ChatMessage::plain("user", "two"));
+    // 第二轮撞上粘性 ERROR:结果照常交付,但映射要被抹掉。
+    std::fs::write(dir.path().join("sticky.txt"), "").unwrap();
+    let (result, _) = run(&client, second.clone(), Vec::new()).await;
+    assert_eq!(result.unwrap().content, "pong");
+    let args = read(dir.path(), "args.txt");
+    assert!(args.contains("--conversation"), "这一轮仍是续传: {args}");
+    // 第三轮:会话已退休,必须全量重放开新的。
+    std::fs::remove_file(dir.path().join("sticky.txt")).unwrap();
+    let mut third = second;
+    third.push(ChatMessage::assistant("pong".to_string(), None));
+    third.push(ChatMessage::plain("user", "three"));
+    let (result, _) = run(&client, third, Vec::new()).await;
+    result.unwrap();
+    let args = read(dir.path(), "args.txt");
+    assert!(!args.contains("--conversation"), "坏会话该退休了: {args}");
+    let stdin = read(dir.path(), "stdin.txt");
+    assert!(stdin.contains("conversation-history"), "{stdin}");
+}
+
+/// 会话彻底废了(ERROR、零产出、措辞归不到上游原因):作废续传条目,当场
+/// 换一条干净会话全量重放重试一次。不这么做,这一档会一直续传同一条坏会话,
+/// 每条消息都换来同一句报错(09-16 群聊实录)。
+#[tokio::test]
+async fn unclassifiable_failure_retries_once_in_a_fresh_conversation() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = antigravity_client(dir.path(), "agy-broken", "all", "off");
+    let first = vec![
+        ChatMessage::system("persona"),
+        ChatMessage::plain("user", "one"),
+    ];
+    // 直调协议层:故障转移那一层会把多次尝试聚合成一条新错误,原始错误链
+    // (SessionPoisoned 标记就挂在上面)到不了外面。
+    let reply = client
+        .chat_antigravity_stream(first.clone(), Vec::new(), "req-one", &mut |_| Ok(()))
+        .await
+        .unwrap()
+        .content;
+    std::fs::write(dir.path().join("broken.txt"), "").unwrap();
+    let mut second = first;
+    second.push(ChatMessage::assistant(reply, None));
+    second.push(ChatMessage::plain("user", "two"));
+    let error = client
+        .chat_antigravity_stream(second, Vec::new(), "req-two", &mut |_| Ok(()))
+        .await
+        .unwrap_err();
+    assert!(
+        cli_relay::session_poisoned(&error),
+        "归不到上游原因的失败要判成会话废了: {error:#}"
+    );
+    // 重试那次(也就是最后一次调用)必须是全量重放,不带续传目标。
+    let args = read(dir.path(), "args.txt");
+    assert!(!args.contains("--conversation"), "重试该开新会话: {args}");
+    let stdin = read(dir.path(), "stdin.txt");
+    assert!(stdin.contains("conversation-history"), "{stdin}");
+}
+
 /// 额度用尽:result ERROR 的措辞翻成 429,进冷却/故障转移。
+///
+/// 且**不能**当成「会话废了」去重开重试:09-15 实测 agy 把配额耗尽
+/// (`RESOURCE_EXHAUSTED`)一样焊进会话状态,可换条新会话照样没额度,
+/// 重试只是白烧一次调用。
 #[tokio::test]
 async fn quota_failure_is_classified_as_rate_limit() {
     let dir = tempfile::tempdir().unwrap();
@@ -391,6 +508,10 @@ async fn quota_failure_is_classified_as_rate_limit() {
         .expect("quota error should classify as an HTTP-style failure");
     assert_eq!(failure.kind, HttpFailureKind::RateLimit);
     assert_eq!(failure.status, 429);
+    assert!(
+        !cli_relay::session_poisoned(&error),
+        "能归到上游原因的失败不该走换会话重试"
+    );
 }
 
 /// Google 策略拦截:agy 把「The prompt could not be submitted…」当普通正文流出,

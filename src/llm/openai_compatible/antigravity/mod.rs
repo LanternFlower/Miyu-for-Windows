@@ -208,9 +208,15 @@ impl OpenAiCompatibleClient {
             )
             .await;
         if let Err(error) = &outcome {
-            if plan.resume_id().is_some() && resume_target_lost(error) {
-                // agy 侧会话没了(被清理/过期):init 是流的首行、先于模型调用,
-                // 所以上面那次几乎没花额度。
+            // 两种都是「这条 agy 会话不能再用了」,处理一样:作废续传条目、
+            // 全量重放开一条新的,重试一次。
+            // - ResumeTargetLost:会话没了(被清理/过期)。init 是流的首行、先于
+            //   模型调用,所以上面那次几乎没花额度。
+            // - SessionPoisoned:会话还在,但转录已经废了(取消态步/压缩炸掉),
+            //   再续传多少次都是同一句报错——09-16 群聊非管理员档连挂两小时。
+            if plan.resume_id().is_some()
+                && (resume_target_lost(error) || cli_relay::session_poisoned(error))
+            {
                 plan.resume_lost("antigravity", request_id, error);
                 outcome = self
                     .agy_turn(
@@ -233,7 +239,20 @@ impl OpenAiCompatibleClient {
                 setup::remove_conversation_files(conversation_id);
             }
         }
-        plan.record(&outcome);
+        if outcome.session_poisoned {
+            // 本轮靠「有正文就交付」救回来了,但这条会话的粘性 ERROR 不会自己
+            // 好:记下它只会让下一轮再撞一次。退休掉,下一轮全量重放开新的。
+            if let Some(conversation_id) = &outcome.session_id {
+                tracing::warn!(
+                    request_id,
+                    conversation = %conversation_id,
+                    "retiring the poisoned agy conversation; the next turn replays into a fresh one"
+                );
+            }
+            plan.retire_session(&outcome);
+        } else {
+            plan.record(&outcome);
+        }
         Ok(outcome.result)
     }
 
