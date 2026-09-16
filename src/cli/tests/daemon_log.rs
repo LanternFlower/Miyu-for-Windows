@@ -31,14 +31,15 @@ fn daemon_log_formatter_parses_targets_and_preserves_multiline_content() {
     assert_eq!(parsed.module, "miyu::qq");
     assert_eq!(parsed.message, "listener ready port=8090");
 
-    let rendered = format_daemon_log_line(
+    let rendered = format_daemon_log_line_with_state(
         "2026-07-29T12:34:56.789Z  INFO miyu::qq: listener ready port=8090",
         false,
+        &mut None,
     );
     assert!(!rendered.contains('\x1b'));
     assert!(rendered.ends_with("[INFO] [miyu::qq] listener ready port=8090"));
     assert_eq!(
-        format_daemon_log_line("判断原因：保留这一行原有的内容", true),
+        format_daemon_log_line_with_state("判断原因：保留这一行原有的内容", true, &mut None),
         "判断原因：保留这一行原有的内容"
     );
 }
@@ -50,7 +51,7 @@ fn daemon_log_formatter_supports_legacy_lines_and_tty_colors() {
     assert_eq!(parsed.module, "miyu");
     assert_eq!(parsed.message, "OneBot connection closed reason=timeout");
 
-    let rendered = format_daemon_log_line(legacy, true);
+    let rendered = format_daemon_log_line_with_state(legacy, true, &mut None);
     assert!(rendered.contains('\x1b'));
     assert!(rendered.contains("[WARN]"));
     assert!(rendered.ends_with("OneBot connection closed reason=timeout"));
@@ -162,7 +163,7 @@ fn recent_daemon_logs_keep_multiline_order_across_rotated_files() {
     )
     .unwrap();
 
-    let lines = recent_daemon_log_lines(&paths, 4).unwrap();
+    let lines = recent_daemon_log_snapshot(&paths, 4).unwrap().lines;
     assert_eq!(
         lines,
         [
@@ -174,7 +175,7 @@ fn recent_daemon_logs_keep_multiline_order_across_rotated_files() {
     );
     let rendered = lines
         .iter()
-        .map(|line| format_daemon_log_line(line, false))
+        .map(|line| format_daemon_log_line_with_state(line, false, &mut None))
         .collect::<Vec<_>>()
         .join("\n");
     assert!(!rendered.contains('\x1b'));
@@ -195,7 +196,7 @@ fn recent_daemon_logs_include_unstructured_daemon_stream_before_rotating_logs() 
     )
     .unwrap();
 
-    let lines = recent_daemon_log_lines(&paths, 3).unwrap();
+    let lines = recent_daemon_log_snapshot(&paths, 3).unwrap().lines;
     assert_eq!(
         lines,
         [

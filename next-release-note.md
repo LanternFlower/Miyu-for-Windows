@@ -27,6 +27,12 @@
 
 ## 重要更新
 
+- 语音协议那一段只在语音功能开着时才进系统提示词：机器没开语音唤醒也没开播报，或者这个人格关了语音，就不再每轮多带它。升级后语音关着的会话第一轮缓存会冷启动一次，之后每轮少一小段；语音开着的一切照旧。
+
+- 首次引导与人格设置页多了「防失忆提醒」「情绪」两个开关（机器侧没打开的功能不会摆出来）。首次引导的功能屏最后还多了一组「MCP 服务器」，配置里开着的每台服务器逐个勾，勾选结果写进这个人格的 `persona.toml`，不勾的服务器对这个人格连拉都不拉起。
+
+- 脚本和 MCP 服务器可以查宿主信息了：脚本头部写 `Capabilities: host.info, providers.read, subsystems.read`（只对属主可信脚本生效），脚本里执行 `miyu host <方法>` 就拿到脱敏后的供应商摘要、契约版本、子系统开关；MCP 服务器在 `mcp.servers[].capabilities` 里声明同款。`miyu pm` 装扩展前会按 `requires-contracts` / `requires-capabilities` 预检。写法见 `docs/interfaces/host-capabilities.md`。
+
 - **macOS 兼容修复**：语音输入、embedding / 渲染 worker、家目录迁移，以及 `hotel-deals`、`procusage`、`query_moegirl`、`read_clipboard` 四个内置脚本在 macOS 上的问题。一批只在 Linux 上成立的限制（内存上限、Landlock 沙盒）不再误伤 macOS。感谢 @yxxbc。
 
 - 首次引导（`miyu oobe`）选功能那一屏，以及控制台里对应的那一页，都支持 **Ctrl+A 全开 / 全关**。还有没开的就全开上，已经全开了再按才是全关。

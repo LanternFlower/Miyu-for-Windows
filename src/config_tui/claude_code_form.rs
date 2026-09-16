@@ -14,7 +14,7 @@ const TOOL_SCOPES: &[&str] = &["off", "dev", "normal", "all"];
 pub(in crate::config_tui) fn edit_claude_code_provider_form(
     stdout: &mut io::Stdout,
     provider: ProviderConfig,
-    plugin: &mut crate::config::ClaudeCodePluginConfig,
+    plugin: &mut miyu_base::config::ClaudeCodePluginConfig,
 ) -> Result<Option<ProviderConfig>> {
     let mut fields = vec![
         Field::new(

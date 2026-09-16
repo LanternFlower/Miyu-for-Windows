@@ -95,7 +95,7 @@ pub(in crate::cli) fn print_repl_help() {
 /// 说明也给上，省得记不住哪个是哪个。最多四条，再多就该 Tab 补全了。
 pub(in crate::cli) fn command_hint_lines(input: &str, cols: usize) -> Vec<String> {
     let input = input.trim_start();
-    let suggestions = crate::slash_commands::repl_command_suggestions(input);
+    let suggestions = miyu_core::slash_commands::repl_command_suggestions(input);
     // 只剩一条且已经打全了就别挡着了。
     if suggestions.is_empty() || (suggestions.len() == 1 && suggestions[0] == input) {
         return Vec::new();

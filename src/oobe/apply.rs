@@ -10,10 +10,10 @@
 //! | 模型 | 供应商 | `config.providers` / `active_provider` / `active_provider_models` |
 //! | → | 完成标志 | `config.oobe_done` |
 
-use crate::config::feature_catalog::{self, FeatureItem};
-use crate::config::{AppConfig, PersonaManifest, ProviderConfig};
-use crate::paths::MiyuPaths;
 use anyhow::{bail, Context, Result};
+use miyu_base::config::feature_catalog::{self, FeatureItem};
+use miyu_base::config::{AppConfig, PersonaManifest, ProviderConfig};
+use miyu_base::paths::MiyuPaths;
 
 /// 人格屏的结果。
 pub(super) enum PersonaPick {
@@ -150,9 +150,9 @@ pub(super) fn hook_installed(paths: &MiyuPaths, shell: &str) -> bool {
 /// 打完整屏重画一次就盖掉了。
 pub(super) fn install_hook(paths: &MiyuPaths, shell: &str) -> Result<()> {
     match shell {
-        "fish" => crate::shell::fish::install(paths),
-        "bash" => crate::shell::bash::install(paths),
-        "zsh" => crate::shell::zsh::install(paths),
+        "fish" => miyu_base::shell::fish::install(paths),
+        "bash" => miyu_base::shell::bash::install(paths),
+        "zsh" => miyu_base::shell::zsh::install(paths),
         other => bail!("不认识的 shell: {other}"),
     }
 }
@@ -184,6 +184,6 @@ mod tests {
         assert!(persona_file_name("system-prompt").is_err());
         // 纯中文名可以用:目录名由 `persona_scope_name` 按名字哈希。
         assert_eq!(persona_file_name("小满").unwrap(), "小满.md");
-        assert!(crate::config::persona_scope_name("小满.md").starts_with("persona-"));
+        assert!(miyu_base::config::persona_scope_name("小满.md").starts_with("persona-"));
     }
 }

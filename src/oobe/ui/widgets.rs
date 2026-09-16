@@ -6,7 +6,7 @@
 //! - **光标和选中态分开画**：`▸` 是光标，`●`/`○` 是选中态。
 //! - 文本框的焦点落在框身上（铺底色），下面那根线只区分「正在打字」。
 
-use crate::terminal::palette::{Theme, BLUE, DIM, FAINT, GOLD};
+use miyu_base::terminal::palette::{Theme, BLUE, DIM, FAINT, GOLD};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -34,7 +34,7 @@ pub(super) fn pad(text: &str, cols: usize) -> String {
     }
 }
 
-pub(super) fn clip(text: &str, cols: usize) -> String {
+pub fn clip(text: &str, cols: usize) -> String {
     if text.width() <= cols {
         return text.to_string();
     }

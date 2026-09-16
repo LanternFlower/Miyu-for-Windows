@@ -64,7 +64,7 @@ pub(in crate::cli) fn restore_history_entry(
     entry: &ReplHistoryEntry,
     input: &mut String,
     cursor: &mut usize,
-    pasted_images: &mut Vec<Option<crate::clipboard::PastedImage>>,
+    pasted_images: &mut Vec<Option<miyu_base::clipboard::PastedImage>>,
     pasted_texts: &mut Vec<Option<PastedText>>,
     raw_pasted_lines: &mut usize,
 ) {
@@ -88,7 +88,7 @@ pub(in crate::cli) struct LiveReplEditor {
     /// 当前缓冲区里由**生粘贴**带进来的行数(折成占位符的不算)。输入区的
     /// 整体折叠只在这种内容占满缓冲区时才发生,见 `repl_visible_input_lines`。
     pub(in crate::cli) raw_pasted_lines: usize,
-    pub(in crate::cli) pasted_images: Vec<Option<crate::clipboard::PastedImage>>,
+    pub(in crate::cli) pasted_images: Vec<Option<miyu_base::clipboard::PastedImage>>,
     pub(in crate::cli) pasted_texts: Vec<Option<PastedText>>,
     pub(in crate::cli) escape_armed_until: Option<Instant>,
     /// Whether the terminal window currently has focus, per the terminal's own
@@ -115,7 +115,7 @@ pub(in crate::cli) enum LiveEditorAction {
 }
 
 impl LiveReplEditor {
-    pub(in crate::cli) fn new(mode: AgentMode, history: Vec<ReplHistoryEntry>) -> Self {
+    pub fn new(mode: AgentMode, history: Vec<ReplHistoryEntry>) -> Self {
         let history_index = history.len();
         Self {
             mode,
@@ -422,7 +422,7 @@ impl LiveReplEditor {
                     if let Some(selected) =
                         placeholder_text_near_cursor(&self.input, self.cursor, &self.pasted_texts)
                     {
-                        let _ = crate::clipboard::write_clipboard_text(&selected)?;
+                        let _ = miyu_base::clipboard::write_clipboard_text(&selected)?;
                     }
                 }
                 KeyCode::Char('v') if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -449,18 +449,18 @@ impl LiveReplEditor {
     }
 
     pub(in crate::cli) fn paste_clipboard(&mut self, paths: &MiyuPaths) -> Result<()> {
-        match crate::clipboard::read_clipboard() {
-            Ok(crate::clipboard::ClipboardContent::Image(image)) => {
+        match miyu_base::clipboard::read_clipboard() {
+            Ok(miyu_base::clipboard::ClipboardContent::Image(image)) => {
                 let index = self.pasted_images.len() + 1;
                 // 占位符只认序号,文件名不进输入框(模型侧路径另拼)。
                 let _ = image.write_temp_file(&paths.cache_dir, index);
                 let placeholder = format!("[Image {index}]");
                 insert_str_at_cursor(&mut self.input, &mut self.cursor, &placeholder);
                 self.pasted_images
-                    .push(Some(crate::clipboard::PastedImage::Binary(image)));
+                    .push(Some(miyu_base::clipboard::PastedImage::Binary(image)));
                 self.raw_pasted_lines = 0;
             }
-            Ok(crate::clipboard::ClipboardContent::MediaPath(path)) => {
+            Ok(miyu_base::clipboard::ClipboardContent::MediaPath(path)) => {
                 let index = self.pasted_images.len() + 1;
                 let label = media_placeholder_label(&path);
                 insert_str_at_cursor(
@@ -469,15 +469,15 @@ impl LiveReplEditor {
                     &format!("[{label} {index}]"),
                 );
                 self.pasted_images
-                    .push(Some(crate::clipboard::PastedImage::Path(path)));
+                    .push(Some(miyu_base::clipboard::PastedImage::Path(path)));
                 self.raw_pasted_lines = 0;
             }
-            Ok(crate::clipboard::ClipboardContent::TextPath(path)) => {
+            Ok(miyu_base::clipboard::ClipboardContent::TextPath(path)) => {
                 insert_str_at_cursor(&mut self.input, &mut self.cursor, &path);
                 self.raw_pasted_lines = 0;
             }
             _ => {
-                if let Ok(Some(text)) = crate::clipboard::read_clipboard_text() {
+                if let Ok(Some(text)) = miyu_base::clipboard::read_clipboard_text() {
                     let raw_lines = insert_pasted_text_at_cursor(
                         &mut self.input,
                         &mut self.cursor,

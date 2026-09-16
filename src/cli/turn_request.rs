@@ -9,11 +9,11 @@ use crate::cli::exit_code::{session_not_found, usage_error};
 use crate::cli::repl::session::{
     create_ephemeral_session, session_admin, session_list_entries, SessionListEntry,
 };
-use crate::config::{ActiveProviderModelConfig, AppConfig};
-use crate::i18n::text as t;
-use crate::ipc::{Command as IpcCommand, TurnOverrides};
-use crate::paths::MiyuPaths;
 use anyhow::Result;
+use miyu_base::config::{ActiveProviderModelConfig, AppConfig};
+use miyu_base::i18n::text as t;
+use miyu_base::paths::MiyuPaths;
+use miyu_core::ipc::{Command as IpcCommand, TurnOverrides};
 
 /// 本回合落在哪个会话。`ephemeral` 为真时调用方用完要拆。
 pub struct ResolvedSession {
@@ -44,8 +44,8 @@ pub fn resolve_model_argument(
     argument: &str,
 ) -> Result<ActiveProviderModelConfig> {
     let choices = config.text_provider_model_choices();
-    let choice =
-        crate::config::resolve_provider_model_argument(&choices, argument).map_err(usage_error)?;
+    let choice = miyu_base::config::resolve_provider_model_argument(&choices, argument)
+        .map_err(usage_error)?;
     Ok(ActiveProviderModelConfig {
         provider_id: choice.provider_id.clone(),
         model: choice.model.clone(),

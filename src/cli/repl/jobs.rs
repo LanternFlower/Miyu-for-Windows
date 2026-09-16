@@ -23,19 +23,19 @@ pub(in crate::cli) fn format_job_duration(seconds: u64) -> String {
 /// background command with a blank line between entries. Timers are
 /// right-aligned to the terminal width.
 pub(in crate::cli) fn background_job_lines(
-    jobs: &[crate::tools::jobs::JobOverview],
+    jobs: &[miyu_engine::tools::jobs::JobOverview],
     spinner_phase: usize,
     cols: usize,
 ) -> Vec<String> {
     if jobs.is_empty() {
         return Vec::new();
     }
-    let kind_label = |job: &crate::tools::jobs::JobOverview| match job.kind.as_str() {
+    let kind_label = |job: &miyu_engine::tools::jobs::JobOverview| match job.kind.as_str() {
         // 开发模式的子代理单列一类：那一条是去写代码的，「开发中」比「子代理」
         // 更说明它在干嘛。
-        "dev" => crate::i18n::text("dev", "开发中"),
-        "subagent" => crate::i18n::text("agent", "子代理"),
-        _ => crate::i18n::text("cmd", "命令"),
+        "dev" => miyu_base::i18n::text("dev", "开发中"),
+        "subagent" => miyu_base::i18n::text("agent", "子代理"),
+        _ => miyu_base::i18n::text("cmd", "命令"),
     };
     // Pad kinds to one column so mixed command/subagent rows keep their ids
     // and titles vertically aligned.
@@ -105,7 +105,7 @@ pub(in crate::cli) fn notify_if_unfocused(
     if !config.notifications.enabled || focused != Some(false) {
         return;
     }
-    crate::notify::notify(title, &crate::notify::clip_body(body, 120));
+    miyu_base::notify::notify(title, &miyu_base::notify::clip_body(body, 120));
 }
 
 /// Shared feed state between the remote REPL and its IPC poll thread.
@@ -114,7 +114,7 @@ pub(in crate::cli) struct SharedJobsFeed {
     /// The owning REPL's current session — strip snapshots are filtered to
     /// it (daemon "current session" can drift from the REPL's after /new).
     pub(in crate::cli) repl_session: std::sync::Mutex<Option<String>>,
-    pub(in crate::cli) jobs: std::sync::Mutex<Vec<crate::tools::jobs::JobOverview>>,
+    pub(in crate::cli) jobs: std::sync::Mutex<Vec<miyu_engine::tools::jobs::JobOverview>>,
     /// Rendered wake-turn reports waiting to be printed into the scrollback.
     pub(in crate::cli) reports: std::sync::Mutex<Vec<BackgroundReport>>,
     /// Latest session Σ read straight from the store. Background subagents
@@ -145,7 +145,7 @@ pub(in crate::cli) struct BackgroundReport {
 /// Session isolation for the strip: keep only `session`'s jobs (sessionless
 /// jobs stay visible as a legacy fallback; `None` session shows everything).
 pub(in crate::cli) fn retain_session_jobs(
-    jobs: &mut Vec<crate::tools::jobs::JobOverview>,
+    jobs: &mut Vec<miyu_engine::tools::jobs::JobOverview>,
     session: Option<&str>,
 ) {
     if let Some(session) = session {
@@ -164,11 +164,11 @@ pub(in crate::cli) enum JobsFeed {
 }
 
 impl JobsFeed {
-    pub(in crate::cli) fn current(&self) -> Vec<crate::tools::jobs::JobOverview> {
+    pub(in crate::cli) fn current(&self) -> Vec<miyu_engine::tools::jobs::JobOverview> {
         match self {
             JobsFeed::Shared(shared) => shared.jobs.lock().unwrap().clone(),
             JobsFeed::Local(session) => {
-                let mut jobs = crate::tools::jobs::overview();
+                let mut jobs = miyu_engine::tools::jobs::overview();
                 retain_session_jobs(&mut jobs, session.as_deref());
                 jobs
             }
@@ -292,7 +292,7 @@ pub(in crate::cli) fn spawn_jobs_poll_thread(paths: MiyuPaths) -> std::sync::Arc
 }
 
 pub(in crate::cli) type JobsOverviewSnapshot = (
-    Vec<crate::tools::jobs::JobOverview>,
+    Vec<miyu_engine::tools::jobs::JobOverview>,
     Option<String>,
     Vec<(String, String, String)>,
 );

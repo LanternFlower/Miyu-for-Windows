@@ -16,7 +16,7 @@ pub(in crate::cli) const RELOAD_RESPONSE_TIMEOUT: Duration = Duration::from_secs
 
 pub(in crate::cli) async fn run_web(paths: &MiyuPaths, args: WebArgs) -> Result<()> {
     if let Some(info) = ipc::daemon_info(paths).await {
-        if info.build_id == ipc::BUILD_ID {
+        if info.build_id == ipc::build_id() {
             if args.port_explicit || args.bind.is_some() {
                 bail!(
                     "{}",
@@ -86,7 +86,7 @@ pub(in crate::cli) async fn run_daemon_command(paths: &MiyuPaths, args: DaemonAr
             if launch.is_some()
                 && ipc::daemon_info(paths)
                     .await
-                    .is_some_and(|info| info.build_id == ipc::BUILD_ID)
+                    .is_some_and(|info| info.build_id == ipc::build_id())
             {
                 bail!(
                     "{}",

@@ -8,10 +8,10 @@
 //! 屏幕，看到的才是用户看到的。
 
 use crate::cli::repl::tail::screen::term::Term;
-use crate::i18n::text as t;
-use crate::llm::{ChatStreamChunk, ChatStreamKind};
-use crate::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
-use crate::tools::CommandOutputStream;
+use miyu_base::i18n::text as t;
+use miyu_core::llm::{ChatStreamChunk, ChatStreamKind};
+use miyu_engine::tools::CommandOutputStream;
+use miyu_hosts::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
 
 /// 测试里 stdout 不是终端，`live_summary` 默认为假；shellhook 真跑起来时它是
 /// 真的，得显式打开才走到静态时间线这条路。
@@ -66,7 +66,7 @@ impl Screen {
 }
 
 fn strip_ansi(text: &str) -> String {
-    crate::render::strip_ansi_text(text)
+    miyu_hosts::render::strip_ansi_text(text)
 }
 
 #[test]
@@ -411,7 +411,7 @@ fn the_spinner_stays_on_the_rail_between_steps() {
     let rows = live.lines().collect::<Vec<_>>();
     assert_eq!(rows.len(), 2, "该是连线 + 转轮两行: {live:?}");
     assert!(
-        rows[1].contains(crate::render::wait_spinner::BLOCK_MARKER),
+        rows[1].contains(miyu_hosts::render::wait_spinner::BLOCK_MARKER),
         "第二行不是转轮: {live:?}"
     );
 }
@@ -494,9 +494,9 @@ fn piped_output_keeps_the_plain_summary() {
 /// `⠹ 󰝨 思考中 · 0.1s好的,收到。…` 粘成一行）。
 #[test]
 fn a_written_back_turn_keeps_the_reply_off_the_spinner_row() {
-    use crate::cli::ipc_event::{decode_ipc_event, DecodedIpc};
+    use miyu_hosts::runtime::{decode_ipc_event, DecodedIpc};
     // 写线程报了宽度，转轮才认自己是在往终端画。
-    crate::render::set_cols_override(100);
+    miyu_hosts::render::set_cols_override(100);
     let mut renderer = static_renderer();
     let mut screen = Screen::new();
     let feed = |renderer: &mut StreamRenderer, screen: &mut Screen| {
@@ -557,7 +557,7 @@ fn a_written_back_turn_keeps_the_reply_off_the_spinner_row() {
         }
         feed(&mut renderer, &mut screen);
     }
-    crate::render::set_cols_override(0);
+    miyu_hosts::render::set_cols_override(0);
     let lines = screen.lines();
     let text = lines.join("\n");
     let reply = lines

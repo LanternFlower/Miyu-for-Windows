@@ -59,7 +59,7 @@ pub(in crate::cli) async fn create_ephemeral_session(
         IpcCommand::CreateSession {
             name: Some(ephemeral_session_name()),
             switch: false,
-            kind: Some(crate::state::ASK_SESSION_KIND.to_string()),
+            kind: Some(miyu_core::state::ASK_SESSION_KIND.to_string()),
             mode: mode.map(str::to_string),
         },
     )
@@ -77,7 +77,7 @@ pub(in crate::cli) async fn create_ephemeral_session(
 pub(in crate::cli) async fn discard_ephemeral_session(paths: &MiyuPaths, session_id: &str) {
     // CLI 中转(claude-code/antigravity)的联动:直连形态没有 daemon,DeleteSession
     // 那条路上的 forget 不会跑到,这里自己收——续传映射与 CLI 侧转录都在本进程。
-    crate::llm::forget_relay_sessions(session_id);
+    miyu_core::llm::forget_relay_sessions(session_id);
     let _ = send_ipc_admin(
         paths,
         IpcCommand::StopSessionJobs {
@@ -88,7 +88,7 @@ pub(in crate::cli) async fn discard_ephemeral_session(paths: &MiyuPaths, session
     let _ = send_ipc_admin(
         paths,
         IpcCommand::DeleteSession {
-            target: crate::ipc::SessionRef::Id {
+            target: miyu_core::ipc::SessionRef::Id {
                 id: session_id.to_string(),
             },
         },
@@ -105,7 +105,7 @@ pub(in crate::cli) struct EphemeralSessionGuard {
 
 impl Drop for EphemeralSessionGuard {
     fn drop(&mut self) {
-        crate::llm::forget_relay_sessions(&self.session_id);
+        miyu_core::llm::forget_relay_sessions(&self.session_id);
         let _ = self.state.delete_session(&self.session_id);
     }
 }
@@ -157,7 +157,7 @@ pub(in crate::cli) fn is_remote_turn_cancelled(error: &anyhow::Error) -> bool {
 /// 所以按 stderr→stdout→stdin 找第一个 tty;父进程就是触发它的 shell。后台任务
 /// 完成后 daemon 凭这份指纹校验「shell 还活着、仍在这个 tty、空闲在提示符」,
 /// 才把跟进回复写回终端。检测不到(纯管道/重定向/cron)就不带。
-pub(in crate::cli) fn detect_origin_tty() -> Option<crate::ipc::OriginTty> {
+pub(in crate::cli) fn detect_origin_tty() -> Option<miyu_core::ipc::OriginTty> {
     let fd = [2, 1, 0]
         .into_iter()
         .find(|&fd| unsafe { libc::isatty(fd) } == 1)?;
@@ -165,7 +165,7 @@ pub(in crate::cli) fn detect_origin_tty() -> Option<crate::ipc::OriginTty> {
     if !path.starts_with("/dev/") {
         return None;
     }
-    Some(crate::ipc::OriginTty {
+    Some(miyu_core::ipc::OriginTty {
         path,
         shell_pid: std::os::unix::process::parent_id(),
     })
@@ -263,7 +263,7 @@ pub(in crate::cli) async fn switch_repl_lane(
         let (state, _) = send_ipc_admin(
             paths,
             IpcCommand::GetSessionState {
-                target: crate::ipc::SessionRef::Id { id },
+                target: miyu_core::ipc::SessionRef::Id { id },
             },
         )
         .await?;
@@ -365,7 +365,7 @@ pub(in crate::cli) async fn apply_repl_session_switch(
     let _ = send_ipc_admin(
         paths,
         IpcCommand::SetReplSession {
-            target: crate::ipc::SessionRef::Id {
+            target: miyu_core::ipc::SessionRef::Id {
                 id: state.session_id.clone(),
             },
         },
@@ -439,11 +439,11 @@ pub(in crate::cli) fn session_list_entry(session: &serde_json::Value) -> Session
 pub(in crate::cli) fn session_ref_from_index(
     entries: &[SessionListEntry],
     index: usize,
-) -> Option<crate::ipc::SessionRef> {
+) -> Option<miyu_core::ipc::SessionRef> {
     index
         .checked_sub(1)
         .and_then(|index| entries.get(index))
-        .map(|entry| crate::ipc::SessionRef::Id {
+        .map(|entry| miyu_core::ipc::SessionRef::Id {
             id: entry.id.clone(),
         })
 }
@@ -520,7 +520,7 @@ pub(in crate::cli) fn session_initial_selection(
 /// What the interactive session picker came back with.
 pub(in crate::cli) enum SessionPick {
     Cancelled,
-    Switch(crate::ipc::SessionRef),
+    Switch(miyu_core::ipc::SessionRef),
     /// Deletion confirmed inside the picker. `index` is where the cursor sat,
     /// so the caller can reopen the refreshed list at the same spot.
     Delete {
@@ -558,9 +558,11 @@ pub(in crate::cli) fn select_session_target(
             Some(&labels),
         )? {
             InlineSelectOutcome::Cancelled => SessionPick::Cancelled,
-            InlineSelectOutcome::Chosen(index) => SessionPick::Switch(crate::ipc::SessionRef::Id {
-                id: entries[index].id.clone(),
-            }),
+            InlineSelectOutcome::Chosen(index) => {
+                SessionPick::Switch(miyu_core::ipc::SessionRef::Id {
+                    id: entries[index].id.clone(),
+                })
+            }
             InlineSelectOutcome::Deleted(index) => SessionPick::Delete {
                 session_id: entries[index].id.clone(),
                 index,
@@ -581,7 +583,7 @@ pub(in crate::cli) async fn resolve_repl_session_target(
     live: &mut LiveReplTail,
     mode: AgentMode,
     arg: &str,
-) -> Result<Option<crate::ipc::SessionRef>> {
+) -> Result<Option<miyu_core::ipc::SessionRef>> {
     let index = arg.parse::<usize>().ok();
     // 名字寻址在 daemon 侧按"当前人格"检索,够不着 dev 会话;dev REPL
     // 统一走列表在客户端配对,再降成不可猜的 id 显式寻址。
@@ -601,7 +603,7 @@ pub(in crate::cli) async fn resolve_repl_session_target(
         let target = match index {
             Some(index) => session_ref_from_index(&entries, index),
             None => entries.iter().find(|entry| entry.name == arg).map(|entry| {
-                crate::ipc::SessionRef::Id {
+                miyu_core::ipc::SessionRef::Id {
                     id: entry.id.clone(),
                 }
             }),
@@ -618,7 +620,7 @@ pub(in crate::cli) async fn resolve_repl_session_target(
         };
         Ok(Some(target))
     } else {
-        Ok(Some(crate::ipc::SessionRef::Name {
+        Ok(Some(miyu_core::ipc::SessionRef::Name {
             name: arg.to_string(),
         }))
     }
@@ -671,7 +673,7 @@ pub(in crate::cli) async fn repl_ipc_admin(
 pub(in crate::cli) async fn repl_get_session_state(
     paths: &MiyuPaths,
     live: &mut LiveReplTail,
-    target: crate::ipc::SessionRef,
+    target: miyu_core::ipc::SessionRef,
 ) -> Result<Option<ipc::SessionState>> {
     Ok(
         repl_ipc_admin(paths, live, IpcCommand::GetSessionState { target })
@@ -685,10 +687,10 @@ pub(in crate::cli) async fn repl_get_session_state(
 pub(in crate::cli) async fn repl_get_session_switch(
     paths: &MiyuPaths,
     live: &mut LiveReplTail,
-    target: crate::ipc::SessionRef,
+    target: miyu_core::ipc::SessionRef,
     active_session_id: &str,
 ) -> Result<Option<ipc::SessionState>> {
-    if matches!(&target, crate::ipc::SessionRef::Id { id } if id == active_session_id) {
+    if matches!(&target, miyu_core::ipc::SessionRef::Id { id } if id == active_session_id) {
         return Ok(None);
     }
     Ok(repl_get_session_state(paths, live, target)
@@ -730,7 +732,7 @@ pub(in crate::cli) async fn repl_fallback_session_state(
     repl_get_session_state(
         paths,
         live,
-        crate::ipc::SessionRef::Id {
+        miyu_core::ipc::SessionRef::Id {
             id: entry.id.clone(),
         },
     )
@@ -803,7 +805,7 @@ pub(in crate::cli) async fn repl_pick_session(
                     paths,
                     live,
                     IpcCommand::DeleteSession {
-                        target: crate::ipc::SessionRef::Id { id: session_id },
+                        target: miyu_core::ipc::SessionRef::Id { id: session_id },
                     },
                 )
                 .await?;
@@ -830,7 +832,7 @@ pub(in crate::cli) async fn repl_active_or_default_state(
     match send_ipc_admin(
         paths,
         IpcCommand::GetSessionState {
-            target: crate::ipc::SessionRef::Id {
+            target: miyu_core::ipc::SessionRef::Id {
                 id: active_session_id.to_string(),
             },
         },
@@ -928,17 +930,9 @@ where
     }
 }
 
-pub(in crate::cli) fn ipc_text<'a>(data: &'a serde_json::Value, key: &str) -> &'a str {
-    data.get(key)
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-}
-
-pub(in crate::cli) fn ipc_u64(data: &serde_json::Value, key: &str) -> u64 {
-    data.get(key)
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or_default()
-}
+// `ipc_text` / `ipc_u64` 随解码表一起住到 `runtime::ipc_events`(09-16),
+// 这里只转一手,cli 内几十处调用不动。
+pub(in crate::cli) use miyu_hosts::runtime::{ipc_text, ipc_u64};
 
 pub(in crate::cli) fn ipc_mode_name(mode: AgentMode) -> &'static str {
     match mode {
@@ -948,20 +942,20 @@ pub(in crate::cli) fn ipc_mode_name(mode: AgentMode) -> &'static str {
 }
 
 pub(in crate::cli) fn ipc_images(
-    images: &[Option<crate::clipboard::PastedImage>],
-) -> Vec<Option<crate::ipc::ImageAttachment>> {
+    images: &[Option<miyu_base::clipboard::PastedImage>],
+) -> Vec<Option<miyu_core::ipc::ImageAttachment>> {
     images
         .iter()
         .map(|image| {
             image.as_ref().map(|image| match image {
-                crate::clipboard::PastedImage::Binary(image) => {
-                    crate::ipc::ImageAttachment::Binary {
+                miyu_base::clipboard::PastedImage::Binary(image) => {
+                    miyu_core::ipc::ImageAttachment::Binary {
                         mime: image.mime.clone(),
                         data: image.data.clone(),
                     }
                 }
-                crate::clipboard::PastedImage::Path(path) => {
-                    crate::ipc::ImageAttachment::Path { path: path.clone() }
+                miyu_base::clipboard::PastedImage::Path(path) => {
+                    miyu_core::ipc::ImageAttachment::Path { path: path.clone() }
                 }
             })
         })

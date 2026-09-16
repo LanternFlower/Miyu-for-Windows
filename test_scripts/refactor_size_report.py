@@ -49,6 +49,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
+SRC_ROOTS = [SRC] + sorted((ROOT / "crates").glob("*/src"))
 # 基线跟脚本走,不认目录名(见 arch_dep_check.py 同款修法)。
 BASELINE = Path(__file__).resolve().parent / "refactor-size-baseline.json"
 
@@ -102,7 +103,7 @@ def test_line_count(lines):
 
 def collect():
     rows = {}
-    for path in sorted(SRC.rglob("*.rs")):
+    for path in sorted(p for r in SRC_ROOTS for p in r.rglob("*.rs")):
         lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
         rel = str(path.relative_to(ROOT))
         rows[rel] = {"total": len(lines), "tests": test_line_count(lines)}

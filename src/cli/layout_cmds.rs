@@ -4,7 +4,7 @@
 //! 在没 daemon 时手动搬、以及后悔了搬回去的入口。
 
 use crate::cli::*;
-use crate::paths::{
+use miyu_base::paths::{
     admin_home_name_from_env, clear_home_layout_opt_out, current_process_is_daemon,
     home_layout_opted_out, read_home_layout_admin, rollback_home_layout, try_migrate_home_layout,
     HomeLayout, Layout,
@@ -34,7 +34,7 @@ fn home_layout_for(paths: &MiyuPaths, admin_override: Option<&str>) -> Result<Ho
     let admin = match read_home_layout_admin(&paths.root_dir)? {
         Some(admin) => admin,
         None => match admin_override {
-            Some(name) if crate::paths::is_valid_home_name(name) => name.to_string(),
+            Some(name) if miyu_base::paths::is_valid_home_name(name) => name.to_string(),
             Some(name) => bail!(
                 "{}",
                 owned(

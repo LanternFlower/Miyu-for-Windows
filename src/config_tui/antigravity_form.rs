@@ -11,7 +11,7 @@ const TOOL_SCOPES: &[&str] = &["off", "dev", "normal", "all"];
 pub(in crate::config_tui) fn edit_antigravity_provider_form(
     stdout: &mut io::Stdout,
     provider: ProviderConfig,
-    plugin: &mut crate::config::AntigravityPluginConfig,
+    plugin: &mut miyu_base::config::AntigravityPluginConfig,
 ) -> Result<Option<ProviderConfig>> {
     let mut fields = vec![
         Field::new(
@@ -88,7 +88,7 @@ pub(in crate::config_tui) fn edit_antigravity_provider_form(
         if !enabled {
             // 关掉即清理 agy 侧落盘物:代理目录与全局 mcp_config 的桥条目,
             // 否则用户交互式开 agy 还会一直挂着一个指向旧二进制的 miyu 服务器。
-            crate::llm::remove_antigravity_relay_files();
+            miyu_core::llm::remove_antigravity_relay_files();
         }
         let mut updated = provider.clone();
         updated.enabled = enabled;

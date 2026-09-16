@@ -1,7 +1,7 @@
 //! 包管理器:清单/来源解析、本地包的装卸升、冲突、tar 路径逃逸。
 
 use super::*;
-use crate::config::AppConfig;
+use miyu_base::config::AppConfig;
 
 fn test_paths(root: &Path) -> MiyuPaths {
     MiyuPaths {
@@ -65,6 +65,55 @@ fn manifest_parses_and_validates_names_and_requirements() {
     assert!(PackageManifest::parse("[package]\nname = \"ok\"\nbogus = 1\n").is_err());
     assert_eq!(parse_version("0.5.0-2").unwrap(), (0, 5, 0));
     assert_eq!(parse_requirement("^0.5").unwrap(), (0, 5, 0));
+}
+
+/// 契约版本与能力声明的预检:认识且不高于支持版本才过;不认识的契约、超版本、
+/// 任何能力请求(今天一项都不授予)都拒。不声明 = 按当前版本。
+#[test]
+fn contract_and_capability_preflight_refuses_what_the_host_cannot_honor() {
+    let ok = PackageManifest::parse(
+        "[package]\nname = \"ok\"\nrequires-contracts = { scripts = 1, skills = 1, persona-manifest = 1 }\n",
+    )
+    .unwrap();
+    ok.check_contracts().unwrap();
+    PackageManifest::parse("[package]\nname = \"plain\"\n")
+        .unwrap()
+        .check_contracts()
+        .unwrap();
+
+    let newer = PackageManifest::parse(
+        "[package]\nname = \"newer\"\nrequires-contracts = { scripts = 2 }\n",
+    )
+    .unwrap();
+    let error = newer.check_contracts().unwrap_err().to_string();
+    assert!(
+        error.contains("scripts v2") && error.contains("up to v1"),
+        "{error}"
+    );
+
+    let unknown = PackageManifest::parse(
+        "[package]\nname = \"unknown\"\nrequires-contracts = { mcp-server = 1 }\n",
+    )
+    .unwrap();
+    let error = unknown.check_contracts().unwrap_err().to_string();
+    assert!(error.contains("unknown contract \"mcp-server\""), "{error}");
+
+    // 认识的能力过,表外的拒。
+    PackageManifest::parse(
+        "[package]\nname = \"cap\"\nrequires-capabilities = [\"providers.read\", \"host.info\"]\n",
+    )
+    .unwrap()
+    .check_contracts()
+    .unwrap();
+    let capability = PackageManifest::parse(
+        "[package]\nname = \"cap2\"\nrequires-capabilities = [\"providers.write\"]\n",
+    )
+    .unwrap();
+    let error = capability.check_contracts().unwrap_err().to_string();
+    assert!(
+        error.contains("providers.write") && error.contains("does not grant"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -264,6 +313,16 @@ fn invalid_packages_are_rejected_before_any_write() {
         "[package]\nname = \"p-one\"\nkind = \"persona\"\n",
     );
     assert!(plan_install(&config, &paths, &persona).is_err());
+    // 契约预检不过:文件齐全也不装
+    let contract = extension_package(temp.path(), "future", "1.0.0");
+    write(
+        &contract.join(MANIFEST_FILE),
+        "[package]\nname = \"future\"\nrequires-contracts = { scripts = 99 }\n",
+    );
+    let error = plan_install(&config, &paths, &contract)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("scripts v99"), "{error}");
     assert!(!root.join("extensions").exists());
 }
 

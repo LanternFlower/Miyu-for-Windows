@@ -13,7 +13,7 @@ use std::sync::Arc;
 /// 传 None——`parse_size(None)` 的语义正是「铺满整个终端」。
 #[test]
 fn every_tool_image_gets_a_size_not_just_memes() {
-    let config = crate::config::AppConfig::default();
+    let config = miyu_base::config::AppConfig::default();
     // 没有一个工具可以拿着 None 去调 print_image_file。
     for name in [
         "generate_image",

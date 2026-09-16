@@ -46,7 +46,7 @@ pub(in crate::cli) fn run_export(paths: &MiyuPaths, args: ExportArgs) -> Result<
     let output = args
         .output
         .unwrap_or_else(|| PathBuf::from(default_export_name()));
-    let options = crate::transfer::export::ExportOptions {
+    let options = miyu_engine::transfer::export::ExportOptions {
         all: args.all,
         index: args.index,
         platforms: args.platforms,
@@ -54,7 +54,7 @@ pub(in crate::cli) fn run_export(paths: &MiyuPaths, args: ExportArgs) -> Result<
         dry_run: args.dry_run,
         force: args.force,
     };
-    let report = crate::transfer::export::export(paths, &output, &options)?;
+    let report = miyu_engine::transfer::export::export(paths, &output, &options)?;
 
     if options.dry_run {
         for (unit, bytes) in &report.by_unit {
@@ -107,7 +107,7 @@ pub(in crate::cli) fn run_export(paths: &MiyuPaths, args: ExportArgs) -> Result<
 pub(in crate::cli) async fn run_import(paths: &MiyuPaths, args: ImportArgs) -> Result<()> {
     // The daemon holds conversation.db's WAL open; replacing the file under it
     // would leave both the old process and the new database inconsistent.
-    if crate::ipc::daemon_info(paths).await.is_some() {
+    if miyu_core::ipc::daemon_info(paths).await.is_some() {
         anyhow::bail!(
             "{}",
             t(
@@ -117,8 +117,8 @@ pub(in crate::cli) async fn run_import(paths: &MiyuPaths, args: ImportArgs) -> R
         );
     }
 
-    let options = crate::transfer::import::ImportOptions { force: args.force };
-    let report = crate::transfer::import::import(paths, &args.archive, &options)?;
+    let options = miyu_engine::transfer::import::ImportOptions { force: args.force };
+    let report = miyu_engine::transfer::import::import(paths, &args.archive, &options)?;
 
     if let Some(backup) = &report.backup {
         let path = backup.display();

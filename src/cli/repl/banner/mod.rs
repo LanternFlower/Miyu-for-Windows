@@ -9,15 +9,15 @@
 //! 艺术字是可替换的：`config/banner.txt` 存在就用它（见 [`BannerArt::from_text`]），
 //! 渐变、星空、扫光照给；`display.banner = false` 整个关掉。
 
-use crate::agent::AgentMode;
 use crate::cli::repl::tail::screen::ansi::{spans_to_ansi, AnsiSpan};
-use crate::config::AppConfig;
-use crate::i18n::text as t;
-use crate::paths::MiyuPaths;
-use crate::terminal::palette::{Theme, BLUE, CORAL, DIM, FAINT, GOLD};
-use crate::terminal::starfield::{
+use miyu_base::config::AppConfig;
+use miyu_base::i18n::text as t;
+use miyu_base::paths::MiyuPaths;
+use miyu_base::terminal::palette::{Theme, BLUE, CORAL, DIM, FAINT, GOLD};
+use miyu_base::terminal::starfield::{
     fade, gradient_banner, segs_width, star_seg, subtitle_rule, BannerArt, Seg,
 };
+use miyu_engine::agent::AgentMode;
 
 pub(in crate::cli) mod preview;
 use ratatui::style::Modifier;
@@ -51,11 +51,7 @@ pub(in crate::cli) struct BannerScene {
 
 impl BannerScene {
     /// 按配置决定画不画、画哪份艺术字。`None` = 关掉了。
-    pub(in crate::cli) fn load(
-        config: &AppConfig,
-        paths: &MiyuPaths,
-        mode: AgentMode,
-    ) -> Option<Self> {
+    pub fn load(config: &AppConfig, paths: &MiyuPaths, mode: AgentMode) -> Option<Self> {
         if !config.display.banner {
             return None;
         }
@@ -84,7 +80,7 @@ impl BannerScene {
     }
 
     /// 走一帧。返回这一帧要不要重画（每帧都画：40ms 一帧才顺）。
-    pub(in crate::cli) fn tick(&mut self) -> bool {
+    pub fn tick(&mut self) -> bool {
         self.tick = self.tick.wrapping_add(1);
         if self.born < 24 {
             self.born += 1;
@@ -465,7 +461,7 @@ pub(in crate::cli) fn plain_mode_hint(mode: AgentMode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::palette::Depth;
+    use miyu_base::terminal::palette::Depth;
 
     fn scene() -> BannerScene {
         BannerScene {
@@ -587,7 +583,7 @@ mod tests {
         std::fs::write(dir.path().join(BANNER_FILE), "subtitle: MINE\nAB\nCD\n").unwrap();
         let mut config = AppConfig::default();
         config.display.banner = true;
-        let mut paths = crate::paths::MiyuPaths::new().unwrap();
+        let mut paths = miyu_base::paths::MiyuPaths::new().unwrap();
         paths.config_dir = dir.path().to_path_buf();
         let scene = BannerScene::load(&config, &paths, AgentMode::Normal).unwrap();
         assert_eq!(scene.art.subtitle, "MINE");

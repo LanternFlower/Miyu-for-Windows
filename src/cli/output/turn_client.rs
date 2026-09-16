@@ -8,9 +8,9 @@
 
 use crate::cli::output::event::{ErrorKind, PublicEvent};
 use crate::cli::repl::session::send_ipc_command;
-use crate::ipc::{self, Command as IpcCommand, Frame as IpcFrame, Request as IpcRequest};
-use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
+use miyu_base::paths::MiyuPaths;
+use miyu_core::ipc::{self, Command as IpcCommand, Frame as IpcFrame, Request as IpcRequest};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -71,7 +71,7 @@ fn image_attachments(images: &[PathBuf]) -> Result<Vec<Option<ipc::ImageAttachme
             let absolute = std::fs::canonicalize(path).map_err(|error| {
                 crate::cli::exit_code::usage_error(format!(
                     "{}: {} ({error})",
-                    crate::i18n::text("image not found", "找不到图片"),
+                    miyu_base::i18n::text("image not found", "找不到图片"),
                     path.display()
                 ))
             })?;
@@ -263,7 +263,7 @@ pub async fn run_turn(
 pub async fn answer_question(
     paths: &MiyuPaths,
     question_id: String,
-    answers: crate::question::QuestionAnswers,
+    answers: miyu_base::question::QuestionAnswers,
 ) -> Result<()> {
     send_ipc_command(
         paths,

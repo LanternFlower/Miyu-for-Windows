@@ -66,7 +66,7 @@ fn pop_menu_uses_three_lines_without_context_metadata() {
 #[test]
 fn pop_menu_labels_an_interrupted_reply_without_showing_the_reminder() {
     let mut turn = sample_pop_turn(TurnStatus::Interrupted);
-    turn.assistant_content = crate::state::interrupted_text().to_string();
+    turn.assistant_content = miyu_core::state::interrupted_text().to_string();
     let lines = pop_menu_turn_lines(&turn, false, true, 80)
         .map(|line| strip_terminal_control_sequences(&line));
 

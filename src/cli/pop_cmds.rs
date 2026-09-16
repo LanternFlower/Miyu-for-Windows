@@ -74,7 +74,7 @@ pub(in crate::cli) async fn run_pop_via_daemon(paths: &MiyuPaths, args: PopArgs)
     let (_, data) = send_ipc_admin(
         paths,
         IpcCommand::Pop {
-            target: crate::ipc::SessionRef::Current,
+            target: miyu_core::ipc::SessionRef::Current,
             turn_ids,
         },
     )
@@ -553,7 +553,7 @@ pub(in crate::cli) async fn run_reset(paths: &MiyuPaths) -> Result<()> {
     let state = StateStore::new(paths)?;
     let memory = MemoryStore::new(&config, paths);
     state.reset_conversation()?;
-    crate::llm::forget_relay_sessions(&state.session_id());
+    miyu_core::llm::forget_relay_sessions(&state.session_id());
     memory.clear_evicted_context()?;
     memory.clear_pending_events()?;
     tools::clear_aur_review_state(paths)?;
@@ -572,14 +572,14 @@ pub(in crate::cli) async fn run_reset_all_memory_command(paths: &MiyuPaths) -> R
             paths,
             IpcCommand::ResetMemory {
                 mode: None,
-                scope: crate::ipc::MemoryResetScope::All,
+                scope: miyu_core::ipc::MemoryResetScope::All,
                 session: None,
             },
         )
         .await?;
     } else {
         let config = AppConfig::load_or_default(paths)?;
-        MemoryStore::new(&config, paths).reset_all(false)?;
+        MemoryStore::new(&config, paths).reset_all()?;
     }
     println!("{}", t("all long-term memory erased", "全部长期记忆已清空"));
     Ok(())
@@ -595,7 +595,7 @@ pub(in crate::cli) async fn run_reset_memory_command(paths: &MiyuPaths) -> Resul
             paths,
             IpcCommand::ResetMemory {
                 mode: None,
-                scope: crate::ipc::MemoryResetScope::Session,
+                scope: miyu_core::ipc::MemoryResetScope::Session,
                 session: None,
             },
         )
@@ -643,22 +643,24 @@ pub(in crate::cli) async fn run_wipe(paths: &MiyuPaths, assume_yes: bool) -> Res
         let state = StateStore::new(paths)?;
         let persona = config.active_persona_scope();
         let bindings = state.platform_session_bindings(&persona, "onebot")?;
-        let plugins = crate::platforms::plugins::PlatformPluginRegistry::built_in()?;
+        let plugins = miyu_hosts::platforms::plugins::PlatformPluginRegistry::built_in()?;
         plugins
-            .after_persona_reset(&crate::platforms::plugins::PlatformPersonaResetContext {
-                config: &config,
-                paths,
-                bindings: &bindings,
-            })
+            .after_persona_reset(
+                &miyu_hosts::platforms::plugins::PlatformPersonaResetContext {
+                    config: &config,
+                    paths,
+                    bindings: &bindings,
+                },
+            )
             .await?;
         let cleared_sessions = state.reset_persona_contexts(&persona, "onebot")?;
         for session_id in &cleared_sessions {
-            crate::llm::forget_relay_sessions(session_id);
+            miyu_core::llm::forget_relay_sessions(session_id);
         }
         state.reset_conversation_usage()?;
         // 技能与脚本是文件,不是记忆:wipe 只清她记住的东西。要连自动生成的
         // 技能一起删,用 `miyu memory reset --include-skills` 明确要。
-        MemoryStore::new(&config, paths).reset_all(false)?;
+        MemoryStore::new(&config, paths).reset_all()?;
         tools::clear_aur_review_state(paths)?;
     }
     println!("{}", print_wipe_message());

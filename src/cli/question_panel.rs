@@ -1,7 +1,7 @@
 //! Shared question handling for direct CLI output and the live REPL.
 
-use crate::question::{QuestionRequest, QuestionResponse};
-use crate::render::StreamRenderer;
+use miyu_base::question::{QuestionRequest, QuestionResponse};
+use miyu_hosts::render::StreamRenderer;
 
 pub(super) fn answer(
     renderer: &mut StreamRenderer,

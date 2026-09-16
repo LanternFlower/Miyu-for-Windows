@@ -11,7 +11,7 @@ const SANDBOX_MODES: &[&str] = &["danger-full-access", "workspace-write", "read-
 pub(in crate::config_tui) fn edit_codex_provider_form(
     stdout: &mut io::Stdout,
     provider: ProviderConfig,
-    plugin: &mut crate::config::CodexPluginConfig,
+    plugin: &mut miyu_base::config::CodexPluginConfig,
 ) -> Result<Option<ProviderConfig>> {
     let mut fields = vec![
         Field::new(

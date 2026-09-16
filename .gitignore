@@ -37,3 +37,7 @@ testkit/cli/home-demo/
 testkit/cli/out/
 testkit/cli/out-demo/
 testkit/cli/xdg-run/
+
+# testkit/host-query 的隔离 home 与实测产物
+testkit/host-query/home/
+testkit/host-query/out/

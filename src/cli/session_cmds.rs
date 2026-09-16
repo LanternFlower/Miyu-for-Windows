@@ -14,11 +14,11 @@ use crate::cli::repl::session::{
 use crate::cli::turn_request::{
     create_named_session, list_managed_sessions, resolve_managed_session,
 };
-use crate::i18n::text as t;
-use crate::ipc::{Command as IpcCommand, SessionRef, SessionState};
-use crate::paths::MiyuPaths;
-use crate::state::StateStore;
 use anyhow::Result;
+use miyu_base::i18n::text as t;
+use miyu_base::paths::MiyuPaths;
+use miyu_core::ipc::{Command as IpcCommand, SessionRef, SessionState};
+use miyu_core::state::StateStore;
 use serde_json::{json, Value};
 use std::io::{self, IsTerminal, Write};
 

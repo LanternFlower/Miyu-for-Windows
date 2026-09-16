@@ -23,7 +23,7 @@ step "格式"
 python3 test_scripts/fmt_no_regress.py
 
 step "编译"
-cargo check --all-targets
+cargo check --workspace --all-targets
 
 step "测试"
 # 数「跑了多少个」而不是「过了多少个」：只数 passed 的话，一个用例失败会被
@@ -33,7 +33,7 @@ before=$(git show HEAD:test_scripts/.test-count 2>/dev/null || echo 0)
 # 码，由下面的逻辑决定放不放行。
 # --no-fail-fast:某个 target 失败之后其余 target 照跑。不加的话一个用例
 # 失败就少统计好几百个，看起来像「测试消失了」。
-output=$(cargo test --no-fail-fast 2>&1 | tee /dev/stderr || true)
+output=$(cargo test --workspace --no-fail-fast 2>&1 | tee /dev/stderr || true)
 now=$(printf '%s\n' "$output" | awk '/^test result:/ {sum += $4 + $6} END {print sum+0}')
 failed=$(printf '%s\n' "$output" | awk '/^test result:/ {sum += $6} END {print sum+0}')
 echo "$now" > test_scripts/.test-count

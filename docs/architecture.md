@@ -1,6 +1,7 @@
 # Miyu 架构（as-built，2026-09-11）
 
-配套架构图：https://claude.ai/code/artifact/20ce2a89-cd70-41f4-a25a-36bdb303f2ea
+配套架构图：https://claude.ai/code/artifact/20ce2a89-cd70-41f4-a25a-36bdb303f2ea（09-11 三层图）；
+09-16 重构后六张图（分层与门禁、宿主端口、子系统快照、Agent 状态分组、工具面组装、包预检）：https://claude.ai/code/artifact/f62ec607-2351-4475-b816-b62ca4b1667d
 
 本文写的是**已经落地**的架构（分层重构七阶段全部合入 main，v0.5.x 线）。设计过程与
 取舍记录在 [`plan/2026-09-10-layered-architecture.md`](plan/2026-09-10-layered-architecture.md)；
@@ -39,7 +40,7 @@
     archlinux（含 AUR 审查安装）、usage_query、api_quota、send_qq_message。
   - 外装（目录扫描）：scripts、skills、MCP 服务器、插件包。
   - 每件清单声明五个字段：trust 位、分组归属、指路句、跨工具闸、附件投递
-    （阶段 1 已补，`src/tools/scripts/header.rs`）。
+    （阶段 1 已补，`crates/miyu-engine/src/tools/scripts/header.rs`）。
 
 ### 场所层 —— 入口只声明两件事
 不拥有工具，只附胶水、按信任过滤。见「四」。
@@ -197,6 +198,78 @@ state/cache/models。目录名用用户名，账号 id 另存账号表，princip
 - **未覆盖**：Landlock 不管 socket（docker.sock / X11 / dbus）。
 
 ---
+
+## 八、依赖门禁与宿主端口（2026-09-16）
+
+本节和第九节描述的边界都由机器执行:层序在 `test_scripts/arch_dep_check.py` 的 `TIERS`,跨 crate 方向由 Cargo 保证,
+行为不变由 `agent/tests/request_shape.rs` 的量尺证明。改边界先改表,再改代码;规则的操作版在 `AGENTS.md` §8。
+
+三层「下层不依赖上层」从这天起是**编译事实**而不只是文档约定：
+`test_scripts/arch_dep_check.py` 的白名单清零，历史上的 8 条反向边（`web → config_tui`、
+`tools → web/platforms/cli`、`platforms → web`、`web → cli`、`render → cli`、`llm → platforms`）
+全部消掉；此后任何跨层 `use` 都是新增，门禁直接红。
+
+消边的手法只有三种，新代码照用：
+
+| 手法 | 例子 |
+|---|---|
+| **下沉**：类型/纯函数本来就不属于上层 | 终端正文视口 `cli → terminal`；供应商目录 `config_tui → provider_catalog`；IPC 事件解码 `cli → runtime::ipc_events`；事件→渲染器 `cli → render::agent_events` |
+| **窄端口**：下层要上层的能力，上层在启动时装入 trait 实现 | `host_ports::ports::{VoicePort, QqOutreachPort}`（语音桥、终端直发 QQ）；`host_ports::live_turn`（平台回合的宿主工具位给中转线桥） |
+| **窄 trait 的假对象**：测试不借真对象 | vision 的作用域测试用 `PlatformToolContext` 假实现，不再构造 `PlatformTurnContext` |
+
+端口清单、装入点与新增规则见 [`interfaces/host-capabilities.md`](interfaces/host-capabilities.md)；
+各扩展接口的 as-built 契约在 [`interfaces/`](interfaces/README.md)。
+
+### 内置插件登记表
+
+内置插件在 `config::BUILTIN_PLUGINS`(描述符)与 `tools::builtin_plugins::REGISTRARS`(注册函数)
+各登记一行,`PLUGIN_IDS`、引导开关、中文名从前者派生,`compose` 按表挂;测试钉住两张表对齐。
+
+### 扩展查宿主信息
+
+脚本头部声明 `Capabilities:` 后,daemon 拉起它时签一次性令牌(`host_ports::host_grants`),脚本经
+`miyu host <method>` 走 IPC 拿脱敏 DTO(`host_ports::host_query`:版本与契约、供应商摘要、子系统开关),
+进程退出令牌作废;能力词表与 PM 预检共用。契约在 [`interfaces/host-capabilities.md`](interfaces/host-capabilities.md)。
+
+### 子系统启用快照
+
+五个子系统(记忆、技能、人格提醒、语音、情绪)的「人格意愿 × 机器配置」只在一处折算：
+`config::subsystems`(`SUBSYSTEMS` 表 + `EnabledSubsystems::resolve`)。Agent 构造时取一次、
+组工具面时取一次、平台插件按回合取，各挂接点只看快照——`emotion` 开关从此真的有人读，
+`memory` 的系统提示前言在构造与 `prepare_for_turn` 两条路上判据一致。挂接表在
+[`interfaces/subsystems.md`](interfaces/subsystems.md)。
+
+### Agent 的状态分组
+
+`Agent`(`crates/miyu-engine/src/agent/turn_state.rs`)按生命周期分四组，字段与语义不变：
+`core: CoreTurnSnapshot`(构造/重载定下，回合中不变)、`input: TurnInput`(场所每回合塞进来的输入)、
+`runtime: TurnRuntime`(跨回合运行态：人格提醒、缓存保活、压缩计数)、`memory: MemorySubsystem`
+(记忆整套句柄与库身份)。请求字节由 `agent/tests/request_shape.rs` 量尺钉着（重构前后 diff）。
+
+回合引擎里没有「模式」：场所传进来的 `AgentMode`(CLI `--dev`、IPC / 会话记录里的 `normal|dev`)在
+`Agent::new` / `switch_mode` 边界折成 `core.dev`(是不是保留人格 `dev` 的会话),提示词源、风格锁、
+预设对话、情境化工具、表情包提醒全按人格面裁决;`AgentMode` 只剩对外词汇。语音协议段随 `subsystems.voice`
+走(人格清单 × 机器语音配置),关着就不进系统提示词。
+
+---
+
+## 九、crate 划分(2026-09-16)
+
+单 crate 29 万行拆成 workspace:根包 `miyu`(入口层:cli / config_tui / oobe / pm / question_tui + 两个 bin)留在原地,
+打包脚本与 `target/release/miyu` 不变;下面四层住 `crates/`:
+
+| crate | 层 | 收的顶层模块 |
+|---|---|---|
+| `miyu-base` | 基础 + 配置 | paths / config / terminal / workspace / sandbox / host_ports / models_cache / embedding … |
+| `miyu-core` | 存储与协议 + 子系统 + 传输 | state / llm / ledger / alarm / memory / skills / persona_hint / ipc / args / slash_commands |
+| `miyu-engine` | 工具与引擎 | tools / agent / voice / transfer / default_kb |
+| `miyu-hosts` | 场所与展示 | platforms / runtime / web / daemon / render |
+
+依赖只能向下(Cargo 自己保证无环);层内规则仍由 `test_scripts/arch_dep_check.py` 的 `TIERS` 与 `FORBIDDEN` 管。
+非 rs 资源(`src/prompts/*.md`、`src/memes`、`src/scripts`、`src/skills/*.md`、`assets/`、`web/`)留在原处;
+`build.rs` 两份:根包的只算构建 id(唯一对整棵源码树 rerun 的脚本,入口 `install_build_id` 装入,下层运行时读 `miyu_base::build_id()`);`crates/miyu-base/build.rs` 只烘焙资源、只对资源文件 rerun,导出
+`JIEBA_INDEX` 与开发态资源根 `MIYU_WORKSPACE_ROOT`。前置工作:先把 12 条低层引高层的边烧尽
+(`docs/plan/2026-09-16-crate-split-burndown.md`),再按层切(`docs/plan/2026-09-16-crate-split.md`)。
 
 ## 把握与来源
 

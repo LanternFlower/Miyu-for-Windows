@@ -429,7 +429,7 @@ fn session_selection_defaults_to_the_current_entry() {
     assert_eq!(session_initial_selection(&entries, None), 0);
     assert!(matches!(
         session_ref_from_index(&entries, 2),
-        Some(crate::ipc::SessionRef::Id { id }) if id == "active"
+        Some(miyu_core::ipc::SessionRef::Id { id }) if id == "active"
     ));
     assert_eq!(session_initial_selection(&[entry("only", false)], None), 0);
 }

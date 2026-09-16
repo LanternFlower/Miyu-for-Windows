@@ -280,10 +280,6 @@ pub(in crate::cli) fn repl_prompt_rows(prefix: &str, lines: &[String]) -> u16 {
     repl_prompt_rows_for_cols(prefix, lines, terminal_cols())
 }
 
-pub(in crate::cli) fn repl_cursor_position(prefix: &str, input: &str, cursor: usize) -> (u16, u16) {
-    repl_cursor_position_for_cols(prefix, input, cursor, terminal_cols())
-}
-
 pub(in crate::cli) fn repl_line_rows_for_cols(prefix: &str, line: &str, cols: usize) -> u16 {
     let content_width = repl_content_width_for_cols(prefix, cols);
     let width = visible_width(line);

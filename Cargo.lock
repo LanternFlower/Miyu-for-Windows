@@ -2440,67 +2440,194 @@ name = "miyu"
 version = "0.6.0"
 dependencies = [
  "anyhow",
- "axum",
+ "base64 0.22.1",
+ "blake3",
+ "chrono",
+ "clap",
+ "crossterm 0.28.1",
+ "directories",
+ "flate2",
+ "fuzzy-matcher",
+ "image",
+ "libc",
+ "miyu-base",
+ "miyu-core",
+ "miyu-engine",
+ "miyu-hosts",
+ "rand 0.8.6",
+ "ratatui",
+ "reqwest",
+ "rodio",
+ "serde",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-segmentation",
+ "unicode-width 0.2.0",
+ "vte",
+]
+
+[[package]]
+name = "miyu-base"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "blake3",
+ "chrono",
+ "crossterm 0.28.1",
+ "directories",
+ "fancy-regex 0.17.0",
+ "fst",
+ "futures-util",
+ "hex",
+ "image",
+ "json_comments",
+ "libc",
+ "ort",
+ "rand 0.8.6",
+ "ratatui",
+ "reqwest",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tar",
+ "tempfile",
+ "tiktoken-rs",
+ "tokenizers",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "unicode-segmentation",
+ "unicode-width 0.2.0",
+ "urlencoding",
+]
+
+[[package]]
+name = "miyu-core"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "blake3",
+ "chrono",
+ "clap",
+ "directories",
+ "fst",
+ "futures-util",
+ "hex",
+ "if-addrs",
+ "image",
+ "jieba-rs",
+ "libc",
+ "miyu-base",
+ "rand 0.8.6",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2 0.10.9",
+ "tar",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "yaml-rust2",
+]
+
+[[package]]
+name = "miyu-engine"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
  "base64 0.22.1",
  "blake3",
  "bzip2 0.4.4",
  "chrono",
- "clap",
- "cosmic-text",
  "cpal",
+ "crossterm 0.28.1",
+ "directories",
+ "flate2",
+ "futures-util",
+ "hex",
+ "htmd",
+ "html2text",
+ "image",
+ "json_comments",
+ "libc",
+ "markup5ever_rcdom",
+ "miyu-base",
+ "miyu-core",
+ "pinyin",
+ "rand 0.8.6",
+ "reqwest",
+ "rodio",
+ "rusqlite",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sherpa-onnx",
+ "tar",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "trash",
+ "urlencoding",
+]
+
+[[package]]
+name = "miyu-hosts"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "blake3",
+ "chrono",
+ "cosmic-text",
  "crossterm 0.28.1",
  "directories",
  "fancy-regex 0.17.0",
  "flate2",
  "fontdb",
- "fst",
  "futures-util",
- "fuzzy-matcher",
  "hex",
- "htmd",
- "html2text",
- "if-addrs",
  "image",
- "jieba-rs",
- "json_comments",
  "libc",
- "markup5ever_rcdom",
- "ort",
- "pinyin",
+ "miyu-base",
+ "miyu-core",
+ "miyu-engine",
  "pulldown-cmark",
  "rand 0.8.6",
- "ratatui",
  "ratex-layout",
  "ratex-parser",
  "ratex-render",
  "ratex-types",
  "reqwest",
- "rodio",
- "rpassword",
  "rusqlite",
- "rustc-hash",
  "serde",
  "serde_json",
- "sha1",
  "sha2 0.10.9",
- "sherpa-onnx",
  "tar",
  "tempfile",
  "termimad",
- "tiktoken-rs",
- "tokenizers",
  "tokio",
  "tokio-util",
  "toml",
  "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "trash",
  "unicode-segmentation",
  "unicode-width 0.2.0",
  "urlencoding",
- "vte",
- "yaml-rust2",
 ]
 
 [[package]]
@@ -3535,27 +3662,6 @@ name = "roxmltree"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
-
-[[package]]
-name = "rpassword"
-version = "7.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2da316a15f47e3d053de9cb2c439650bd8fa4aaeb9365f2e5f27f492ff73c196"
-dependencies = [
- "libc",
- "rtoolbox",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rtoolbox"
-version = "0.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50a0e551c1e27e1731aba276dbeaeac73f53c7cd34d1bda485d02bd1e0f36844"
-dependencies = [
- "libc",
- "windows-sys 0.59.0",
-]
 
 [[package]]
 name = "rusqlite"

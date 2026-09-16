@@ -9,10 +9,10 @@
 //! (运行时套运行时会 panic,整个 TUI 崩出):网络请求与 IPC 统统丢到独立
 //! 线程里,那个线程自己起一个 current_thread 运行时。
 
-use crate::config::{MiniMaxTtsConfig, VoiceTtsConfig, TTS_PROVIDERS};
 use crate::config_tui::*;
-use crate::web::voice_tts::{MIMO_MODELS, MIMO_VOICES};
 use anyhow::Context as _;
+use miyu_base::config::{MiniMaxTtsConfig, VoiceTtsConfig, TTS_PROVIDERS};
+use miyu_hosts::web::voice_tts::{MIMO_MODELS, MIMO_VOICES};
 
 /// MiMo 风格标签(文档 2026-09):情绪 / 语气 / 音色定位 / 角色 / 方言,多选。
 const MIMO_STYLES: &[&str] = &[
@@ -113,7 +113,7 @@ where
 
 /// 问 `miyu-voice devices` 要输入源列表(源名, 描述);拿不到返回空。
 fn list_microphones() -> Vec<(String, String)> {
-    let Some(binary) = crate::web::voice_bridge::locate_binary() else {
+    let Some(binary) = miyu_hosts::web::voice_bridge::locate_binary() else {
         return Vec::new();
     };
     let Ok(output) = std::process::Command::new(binary)
@@ -138,10 +138,9 @@ fn list_microphones() -> Vec<(String, String)> {
 /// MiniMax 音色列表 (value, label)。
 fn fetch_minimax_voice_list(cfg: &MiniMaxTtsConfig) -> Result<Vec<(String, String)>> {
     let cfg = cfg.clone();
-    let voices =
-        block_on_thread(
-            move || async move { crate::web::voice_tts::list_minimax_voices(&cfg).await },
-        )?;
+    let voices = block_on_thread(move || async move {
+        miyu_hosts::web::voice_tts::list_minimax_voices(&cfg).await
+    })?;
     Ok(voices
         .iter()
         .filter_map(|voice| {
@@ -174,21 +173,21 @@ fn preview_tts(
     tts.active = Some(provider.to_string());
     let socket = paths.ipc_socket();
     block_on_thread(move || async move {
-        let mut stream = crate::ipc::connect(&socket).await.context(t(
+        let mut stream = miyu_core::ipc::connect(&socket).await.context(t(
             "Miyu daemon is not running (preview needs it)",
             "Miyu daemon 未运行(试听要 daemon 在跑)",
         ))?;
-        crate::ipc::send(
+        miyu_core::ipc::send(
             &mut stream,
-            &crate::ipc::Request::new(crate::ipc::Command::VoiceSpeak {
+            &miyu_core::ipc::Request::new(miyu_core::ipc::Command::VoiceSpeak {
                 text,
                 tts: Some(tts),
             }),
         )
         .await?;
-        match crate::ipc::receive::<crate::ipc::Frame>(&mut stream).await? {
-            Some(crate::ipc::Frame::Ack) => Ok(()),
-            Some(crate::ipc::Frame::Error { message, .. }) => bail!("{message}"),
+        match miyu_core::ipc::receive::<miyu_core::ipc::Frame>(&mut stream).await? {
+            Some(miyu_core::ipc::Frame::Ack) => Ok(()),
+            Some(miyu_core::ipc::Frame::Error { message, .. }) => bail!("{message}"),
             other => bail!("unexpected reply to VoiceSpeak: {other:?}"),
         }
     })
@@ -406,7 +405,7 @@ fn edit_mimo(stdout: &mut io::Stdout, paths: &MiyuPaths, config: &mut AppConfig)
                 } else {
                     format!(
                         " · {}",
-                        crate::web::voice_bridge::clip(cfg.prompt.trim(), 24)
+                        miyu_hosts::web::voice_bridge::clip(cfg.prompt.trim(), 24)
                     )
                 }
             ),
@@ -1101,7 +1100,7 @@ fn edit_voice_form(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()
     );
     run_form_without_buttons(stdout, t(" RECOGNITION ", " 识别与唤醒设置 "), &mut fields)?;
 
-    let keywords = crate::config::split_wake_keywords(&fields[0].value);
+    let keywords = miyu_base::config::split_wake_keywords(&fields[0].value);
     if keywords.is_empty() {
         bail!(t("wake keyword is empty", "唤醒词为空"));
     }

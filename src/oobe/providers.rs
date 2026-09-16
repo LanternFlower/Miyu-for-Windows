@@ -2,15 +2,14 @@
 //!
 //! 三类路：借本机已登录的 CLI（claude / codex / agy，探到才列）、常用供应商
 //! 预设（选一条 → 填 key → 拉目录 → 选模型；opencode Zen 免 key）、自定义供应商
-//! （名字 / id / 地址 / 协议 / key）。CLI 的模型目录最长要 20 秒（`cli_catalog.rs`
+//! （名字 / id / 地址 / 协议 / key）。CLI 的模型目录最长要 20 秒（`provider_catalog/cli.rs`
 //! 的超时），所以探到 CLI 就**提前**在后台线程拉，等用户走到最后一屏时目录已经在手里。
 
-use crate::config::{ActiveProviderModelConfig, AppConfig, ProviderConfig};
-use crate::default_models::OPENCODE_PROVIDER_ID;
-use crate::paths::MiyuPaths;
+use miyu_base::config::{ActiveProviderModelConfig, AppConfig, ProviderConfig};
+use miyu_base::default_models::OPENCODE_PROVIDER_ID;
+use miyu_base::paths::MiyuPaths;
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
-use std::time::Instant;
 
 /// 协议取值照 `config_tui/providers.rs` 那份下拉。**不能假定 OpenAI 兼容**——
 /// Anthropic 的 Messages 协议是平级的一档。
@@ -314,22 +313,18 @@ fn current_model(config: &AppConfig, provider: &ProviderConfig) -> String {
 /// 后台拉目录。`recv` 非阻塞，画面每帧问一次。
 pub(super) struct CatalogJob {
     receiver: Receiver<Result<Vec<String>, String>>,
-    pub started: Instant,
 }
 
 impl CatalogJob {
     pub fn spawn(config: &AppConfig, provider: ProviderConfig) -> Self {
-        let binary = crate::config_tui::builtin_cli_binary(config, &provider);
+        let binary = miyu_base::provider_catalog::builtin_cli_binary(config, &provider);
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let result = crate::config_tui::fetch_models(&provider, binary.as_deref())
+            let result = miyu_base::provider_catalog::fetch_models(&provider, binary.as_deref())
                 .map_err(|error| format!("{error:#}"));
             let _ = sender.send(result);
         });
-        Self {
-            receiver,
-            started: Instant::now(),
-        }
+        Self { receiver }
     }
 
     pub fn poll(&self) -> Option<Result<Vec<String>, String>> {
@@ -431,7 +426,7 @@ pub(super) fn apply(
         if !provider.models.iter().any(|item| item == model) {
             provider.models.push(model.to_string());
         }
-        crate::config_tui::auto_configure_model_tags(paths, &mut provider, model);
+        miyu_base::provider_catalog::auto_configure_model_tags(paths, &mut provider, model);
         provider.default_model = model.to_string();
     }
     match config
@@ -498,7 +493,7 @@ mod tests {
     #[test]
     fn detected_cli_becomes_option_and_apply_activates() {
         let mut config = AppConfig::default();
-        let paths = crate::paths::MiyuPaths::new().unwrap();
+        let paths = miyu_base::paths::MiyuPaths::new().unwrap();
         let options = options(&config, |bin| bin == "claude");
         assert!(options[0].label.contains("Claude Code"));
         assert_eq!(options[0].note, "需已登录");
@@ -529,7 +524,7 @@ mod tests {
     #[test]
     fn preset_reuses_existing_entry_and_marks_model_active() {
         let mut config = AppConfig::default();
-        let paths = crate::paths::MiyuPaths::new().unwrap();
+        let paths = miyu_base::paths::MiyuPaths::new().unwrap();
         let deepseek = options(&config, |_| false)
             .into_iter()
             .find(|option| option.label == "DeepSeek")

@@ -13,7 +13,7 @@ use crate::cli::*;
 pub(in crate::cli) async fn run_chat_with_images(
     paths: &MiyuPaths,
     message: String,
-    pasted_images: Vec<Option<crate::clipboard::PastedImage>>,
+    pasted_images: Vec<Option<miyu_base::clipboard::PastedImage>>,
 ) -> Result<()> {
     if !direct_mode_requested() {
         match try_run_remote_chat(
@@ -84,7 +84,7 @@ pub(in crate::cli) async fn run_chat_with_images(
     renderer.finish()?;
     let result = match result {
         Ok(result) => result,
-        Err(err) if crate::question::is_question_cancelled(&err) => return Ok(()),
+        Err(err) if miyu_base::question::is_question_cancelled(&err) => return Ok(()),
         Err(err) => return Err(err),
     };
     print_mixed_model_endpoint(show_mixed_model_endpoint, &result, None);
@@ -123,11 +123,11 @@ pub(in crate::cli) async fn run_chat_with_images(
 pub(in crate::cli) async fn run_chat_with_images_and_options(
     paths: &MiyuPaths,
     message: String,
-    images: Vec<Option<crate::clipboard::PastedImage>>,
+    images: Vec<Option<miyu_base::clipboard::PastedImage>>,
     plain: bool,
     mode: AgentMode,
     session: TurnSession,
-    overrides: Option<crate::ipc::TurnOverrides>,
+    overrides: Option<miyu_core::ipc::TurnOverrides>,
 ) -> Result<()> {
     let session_override = match session {
         TurnSession::Current => None,
@@ -163,7 +163,7 @@ pub(in crate::cli) async fn run_chat_with_options(
     plain: bool,
     mode: AgentMode,
     session: TurnSession,
-    overrides: Option<crate::ipc::TurnOverrides>,
+    overrides: Option<miyu_core::ipc::TurnOverrides>,
 ) -> Result<()> {
     let message = append_stdin_if_piped(message).await;
     if message.is_empty() {
@@ -220,7 +220,7 @@ pub(in crate::cli) async fn run_chat_with_options(
         let record = state.create_session(
             &config.active_persona_scope(),
             &ephemeral_session_name(),
-            crate::state::ASK_SESSION_KIND,
+            miyu_core::state::ASK_SESSION_KIND,
             None,
         )?;
         let guard = EphemeralSessionGuard {
@@ -269,7 +269,7 @@ pub(in crate::cli) async fn run_chat_with_options(
     renderer.finish()?;
     let result = match result {
         Ok(result) => result,
-        Err(err) if crate::question::is_question_cancelled(&err) => return Ok(()),
+        Err(err) if miyu_base::question::is_question_cancelled(&err) => return Ok(()),
         Err(err) => return Err(err),
     };
     print_mixed_model_endpoint(show_mixed_model_endpoint, &result, None);
@@ -318,7 +318,7 @@ pub(in crate::cli) async fn run_direct_repl(
     // Same lane as the remote REPL: resume where the last REPL was, not where
     // shell-hook happens to be pointing.
     let persona = if initial_mode == AgentMode::Dev {
-        crate::state::DEV_PERSONA.to_string()
+        miyu_core::state::DEV_PERSONA.to_string()
     } else {
         config.active_persona_scope()
     };
@@ -336,8 +336,10 @@ pub(in crate::cli) async fn run_direct_repl(
     let mut prefill = None::<String>;
     let mut live_repl = None::<LiveReplTail>;
 
-    crate::default_kb::check_update_if_due(paths).await.ok();
-    if let Ok(Some(message)) = crate::default_kb::notice_if_update_available(paths) {
+    miyu_engine::default_kb::check_update_if_due(paths)
+        .await
+        .ok();
+    if let Ok(Some(message)) = miyu_engine::default_kb::notice_if_update_available(paths) {
         println!("\x1b[2m{message}\x1b[0m");
     }
     let mut cumulative_tokens = state.session_cumulative_token_totals().unwrap_or_default();
@@ -373,13 +375,13 @@ pub(in crate::cli) async fn run_direct_repl(
                 // Direct mode owns its jobs in-process, so stop them here
                 // rather than through the daemon.
                 LiveReplOutcome::StopJob { job_id } => {
-                    let _ = crate::tools::jobs::stop_job(&job_id).await;
+                    let _ = miyu_engine::tools::jobs::stop_job(&job_id).await;
                     continue;
                 }
                 LiveReplOutcome::StopJobs => {
-                    for job in crate::tools::jobs::overview() {
+                    for job in miyu_engine::tools::jobs::overview() {
                         if job.running {
-                            let _ = crate::tools::jobs::stop_job(&job.job_id).await;
+                            let _ = miyu_engine::tools::jobs::stop_job(&job.job_id).await;
                         }
                     }
                     continue;
@@ -391,7 +393,7 @@ pub(in crate::cli) async fn run_direct_repl(
                     // 直连模式换车道:与启动时同一条语义——那条车道当前会话
                     // 非空就新开一条,再按新模式重建客户端与工具面。
                     let persona = if next == AgentMode::Dev {
-                        crate::state::DEV_PERSONA.to_string()
+                        miyu_core::state::DEV_PERSONA.to_string()
                     } else {
                         config.active_persona_scope()
                     };
@@ -433,9 +435,9 @@ pub(in crate::cli) async fn run_direct_repl(
             };
             // The user moved on: finished background commands count as
             // reported in direct mode (no daemon wake exists here).
-            for job in crate::tools::jobs::overview() {
+            for job in miyu_engine::tools::jobs::overview() {
                 if !job.running {
-                    crate::tools::jobs::acknowledge(&job.job_id);
+                    miyu_engine::tools::jobs::acknowledge(&job.job_id);
                 }
             }
             input
@@ -502,7 +504,7 @@ pub(in crate::cli) async fn run_direct_repl(
                     // 会话(与启动时 ensure_repl_session 同一条语义),否则 agent
                     // 还挂在旧人格的会话上,人格提示词与历史命名空间错位。
                     let persona = if mode == AgentMode::Dev {
-                        crate::state::DEV_PERSONA.to_string()
+                        miyu_core::state::DEV_PERSONA.to_string()
                     } else {
                         config.active_persona_scope()
                     };
@@ -597,7 +599,7 @@ pub(in crate::cli) async fn run_direct_repl(
             continue;
         }
         if command.eq_ignore_ascii_case("/variant") {
-            if !crate::models_cache::is_loaded() {
+            if !miyu_base::models_cache::is_loaded() {
                 println!(
                     "{}\n",
                     t(
@@ -916,7 +918,7 @@ pub(in crate::cli) async fn run_direct_repl(
                 footer.update_session_tokens(agent.effective_context_tokens()?);
                 footer.update_cumulative_tokens(cumulative_tokens);
             }
-            Err(err) if crate::question::is_question_cancelled(&err) => {
+            Err(err) if miyu_base::question::is_question_cancelled(&err) => {
                 let _ = state.delete_queued_prompts();
                 if let Some(live) = live_repl.as_mut() {
                     synchronized_terminal_update(CursorAfterUpdate::Shown, || {

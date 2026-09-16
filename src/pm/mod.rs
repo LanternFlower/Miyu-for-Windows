@@ -13,9 +13,9 @@
 //! 只做「防君子」的校验:清单合法、`requires-miyu` 满足、目标文件不撞别的包。
 //! 不做签名、不做沙盒。
 
-use crate::config::persona_scope_name;
-use crate::paths::MiyuPaths;
 use anyhow::{bail, Context, Result};
+use miyu_base::config::persona_scope_name;
+use miyu_base::paths::MiyuPaths;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -71,7 +71,25 @@ pub struct PackageSection {
     /// 如 `>=0.5.0`;只支持 `>=`(缺省也是 `>=`)。
     #[serde(default)]
     pub requires_miyu: String,
+    /// 包按哪一版扩展契约写,如 `{ scripts = 1, skills = 1 }`(id 见
+    /// [`SUPPORTED_CONTRACTS`])。不声明 = 按当前版本;声明了宿主不认识的契约、
+    /// 或版本高于宿主支持的 → 装前拒绝,不静默装上。
+    #[serde(default)]
+    pub requires_contracts: BTreeMap<String, u32>,
+    /// 包运行需要宿主授予的能力 id(见 [`GRANTABLE_CAPABILITIES`])。表外的 id 拒装
+    /// ——装上一个拿不到能力的包只会在运行时神秘失败。
+    #[serde(default)]
+    pub requires_capabilities: Vec<String>,
 }
+
+// ── 契约与能力预检(09-16 接口治理 Phase 7) ──
+
+/// 宿主支持的扩展契约版本(真相源在 `config::contracts`)。
+pub use miyu_base::config::SUPPORTED_CONTRACTS;
+
+/// 宿主能向包授予的能力 id:与脚本头部 `Capabilities:` 认的是同一张表
+/// (`host_ports::HOST_CAPABILITIES`),包里声明了表外的 id 就拒装。
+pub(crate) use miyu_hosts::runtime::HOST_CAPABILITIES as GRANTABLE_CAPABILITIES;
 
 fn default_kind() -> PackageKind {
     PackageKind::Extension
@@ -125,6 +143,46 @@ impl PackageManifest {
         let raw =
             fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
         Self::parse(&raw)
+    }
+
+    /// 契约版本与能力声明的静态预检:不认识的契约、超出支持的版本、任何能力
+    /// 请求都在装前拒绝。与 [`Self::check_requirement`] 一起在 `plan_install`
+    /// 里跑,任何一条不过就一个文件都不写。
+    pub fn check_contracts(&self) -> Result<()> {
+        for (id, wanted) in &self.package.requires_contracts {
+            let supported = SUPPORTED_CONTRACTS
+                .iter()
+                .find(|(known, _)| known == id)
+                .map(|(_, version)| *version);
+            match supported {
+                None => bail!(
+                    "package {} requires unknown contract {id:?}; this miyu knows: {}",
+                    self.package.name,
+                    SUPPORTED_CONTRACTS
+                        .iter()
+                        .map(|(known, version)| format!("{known} v{version}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                Some(version) if *wanted > version => bail!(
+                    "package {} requires contract {id} v{wanted}, this miyu supports up to v{version}",
+                    self.package.name
+                ),
+                Some(_) => {}
+            }
+        }
+        if let Some(capability) = self
+            .package
+            .requires_capabilities
+            .iter()
+            .find(|id| !GRANTABLE_CAPABILITIES.contains(&id.as_str()))
+        {
+            bail!(
+                "package {} requires host capability {capability:?}, which this miyu does not grant to packages",
+                self.package.name
+            );
+        }
+        Ok(())
     }
 
     /// `requires-miyu` 对当前二进制是否满足。
@@ -586,6 +644,8 @@ pub struct PlannedFile {
 pub struct InstallPlan {
     pub manifest: PackageManifest,
     pub files: Vec<PlannedFile>,
+    /// 人格包的 scope 名;装入时不用它(路径在 `files` 里已经算好),测试用它核对。
+    #[allow(dead_code)] // 测试核对人格包 scope 用
     pub persona_scope: Option<String>,
 }
 
@@ -678,12 +738,13 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 
 /// 把清单摊成文件清单。不写盘。
 pub fn plan_install(
-    config: &crate::config::AppConfig,
+    config: &miyu_base::config::AppConfig,
     paths: &MiyuPaths,
     package_root: &Path,
 ) -> Result<InstallPlan> {
     let manifest = PackageManifest::load(package_root)?;
     manifest.check_requirement()?;
+    manifest.check_contracts()?;
     let name = manifest.package.name.clone();
     let mut files = Vec::new();
     let persona_scope = match manifest.package.kind {
@@ -739,7 +800,7 @@ pub fn plan_install(
                 .context("skill directory name is not UTF-8")?
                 .to_string();
             let raw = fs::read_to_string(&skill_file)?;
-            crate::skills::manifest::parse_skill_metadata(&raw, Some(&dir_name))
+            miyu_core::skills::manifest::parse_skill_metadata(&raw, Some(&dir_name))
                 .with_context(|| format!("invalid skill {}", skill_dir.display()))?;
             let mut skill_files = Vec::new();
             collect_files(&skill_dir, &mut skill_files)?;
@@ -782,7 +843,7 @@ pub fn plan_install(
         let persona_toml = persona_dir.join("persona.toml");
         if persona_toml.is_file() {
             let raw = fs::read_to_string(&persona_toml)?;
-            crate::config::PersonaManifest::parse(&raw)
+            miyu_base::config::PersonaManifest::parse(&raw)
                 .with_context(|| format!("invalid {}", persona_toml.display()))?;
             files.push(PlannedFile {
                 destination: paths.personas_dir().join(scope).join("persona.toml"),

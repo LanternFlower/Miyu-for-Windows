@@ -9,7 +9,7 @@
 //! 清除按**上一帧记录的宽度**算行数,新帧行数不同就要靠 tick 自己配平。
 
 use crate::cli::*;
-use crate::render::wait_spinner::{SpinnerStyle, WaitSpinner};
+use miyu_hosts::render::wait_spinner::{SpinnerStyle, WaitSpinner};
 
 const COLUMNS: u16 = 120;
 
@@ -77,7 +77,7 @@ fn spinner_survives_the_sub_block_disappearing() {
 /// 块模式却要留着——两条路对"一帧有几行"的口径不同,是最可疑的地方。
 #[test]
 fn spinner_returns_the_cursor_in_block_mode() {
-    let marker = crate::render::wait_spinner::BLOCK_MARKER;
+    let marker = miyu_hosts::render::wait_spinner::BLOCK_MARKER;
     let blocks = |count: usize| {
         (0..count)
             .map(|index| format!("{marker}工具 {index}\n  明细一\n  明细二"))
@@ -106,8 +106,8 @@ fn spinner_returns_the_cursor_in_block_mode() {
 /// MoveUp 在第 0 行是空操作,漏掉的正是要查的东西。
 #[test]
 fn committed_command_block_leaves_exactly_one_trailing_blank() {
-    use crate::render::CommandLiveDisplay;
-    use crate::tools::CommandOutputStream;
+    use miyu_engine::tools::CommandOutputStream;
+    use miyu_hosts::render::CommandLiveDisplay;
 
     for output_lines in [1usize, 3, 5, 12, 40] {
         let mut frame = Vec::new();
@@ -157,8 +157,8 @@ fn committed_command_block_leaves_exactly_one_trailing_blank() {
 /// ——所以量的就是这个边界本身留下几个空行。设计上只该留一个。
 #[test]
 fn a_settled_tool_card_leaves_exactly_one_blank_before_what_follows() {
-    use crate::llm::{ChatStreamChunk, ChatStreamKind};
-    use crate::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
+    use miyu_core::llm::{ChatStreamChunk, ChatStreamKind};
+    use miyu_hosts::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
 
     let mut renderer = StreamRenderer::new(
         ReasoningDisplayMode::Summary,
@@ -207,9 +207,9 @@ fn a_settled_tool_card_leaves_exactly_one_blank_before_what_follows() {
 /// 路)。
 #[test]
 fn a_settled_command_card_leaves_exactly_one_blank_before_what_follows() {
-    use crate::llm::{ChatStreamChunk, ChatStreamKind};
-    use crate::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
-    use crate::tools::CommandOutputStream;
+    use miyu_core::llm::{ChatStreamChunk, ChatStreamKind};
+    use miyu_engine::tools::CommandOutputStream;
+    use miyu_hosts::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
 
     for output_lines in [1usize, 3, 8, 30] {
         let mut renderer = StreamRenderer::new(
@@ -263,8 +263,8 @@ fn a_settled_command_card_leaves_exactly_one_blank_before_what_follows() {
 /// 命令卡片之间的空档——截图里空档两侧正好都是命令块(08-27)。
 #[test]
 fn back_to_back_command_cards_leave_exactly_one_blank() {
-    use crate::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
-    use crate::tools::CommandOutputStream;
+    use miyu_engine::tools::CommandOutputStream;
+    use miyu_hosts::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
 
     for output_lines in [1usize, 3, 8, 30] {
         let mut renderer = StreamRenderer::new(

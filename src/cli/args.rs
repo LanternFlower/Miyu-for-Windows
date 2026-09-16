@@ -104,6 +104,10 @@ pub enum Command {
     /// 暂不公开:帮助与补全里藏起来,显式 `miyu pm …` / `miyupm …` 行为不变。
     #[command(hide = true)]
     Pm(PmArgs),
+    /// 脚本查宿主信息:`miyu host <method> [params]`,令牌取自 MIYU_HOST_TOKEN
+    /// (Miyu 拉起声明了 `Capabilities:` 的脚本时注入)。给脚本用,帮助里不列。
+    #[command(hide = true)]
+    Host(HostArgs),
     Config(ConfigArgs),
     Reload,
     Models(ModelsArgs),

@@ -9,7 +9,7 @@ use crate::cli::repl::tail::{
 };
 use crate::cli::repl::width::*;
 use crate::cli::*;
-use crate::llm::ChatStreamKind;
+use miyu_core::llm::ChatStreamKind;
 #[test]
 fn terminal_frame_tracks_ansi_and_wide_graphemes() {
     let layout = terminal_frame_layout("\x1b[32mAB\x1b[0m\n中👨‍👩‍👧‍👦".as_bytes(), (3, 2), 12, None);
@@ -62,7 +62,7 @@ fn live_frame_uses_the_gap_only_for_a_terminating_newline() {
 #[test]
 fn replayed_job_wake_turns_are_not_drawn_as_user_prompts() {
     let config = AppConfig::default();
-    let wake = crate::state::TurnReplay {
+    let wake = miyu_core::state::TurnReplay {
         display_content: "[后台任务完成] 子代理完成 82bea3 · 后台测试A".to_string(),
         assistant_content: "跑完了。".to_string(),
         entries: Vec::new(),
@@ -70,7 +70,7 @@ fn replayed_job_wake_turns_are_not_drawn_as_user_prompts() {
         interrupted: false,
         assistant_reasoning: None,
     };
-    let typed = crate::state::TurnReplay {
+    let typed = miyu_core::state::TurnReplay {
         display_content: "帮我改一下 README".to_string(),
         assistant_content: "改好了。".to_string(),
         entries: Vec::new(),
@@ -115,8 +115,12 @@ fn footer_reset_clears_turn_and_cumulative_tokens() {
             ..Default::default()
         },
     );
-    footer.set_token_usage(
-        50,
+    footer.set_token_usage_with_cache(
+        TurnTokens {
+            total: 50,
+            ..Default::default()
+        },
+        miyu_core::llm::GenerationSpeed::default(),
         100,
         Some(200_000),
         TurnTokens {
@@ -741,7 +745,7 @@ fn cursor_after_frame_clamps_to_the_last_row_when_the_echo_scrolls() {
 /// 左侧应该有一个 token 记述）。命令类任务没有词元这个概念，那儿就只有时间。
 #[test]
 fn the_job_strip_reports_tokens_left_of_the_timer() {
-    let job = |metric: Option<&str>| crate::tools::jobs::JobOverview {
+    let job = |metric: Option<&str>| miyu_engine::tools::jobs::JobOverview {
         job_id: "82bea3".into(),
         title: "查目录".into(),
         command: "seq 1 5".to_string(),
@@ -782,7 +786,7 @@ fn the_job_strip_reports_tokens_left_of_the_timer() {
 #[test]
 fn the_job_panel_title_carries_the_token_figure() {
     use crate::cli::repl::tail::screen::job_panel_title;
-    let mut job = crate::tools::jobs::JobOverview {
+    let mut job = miyu_engine::tools::jobs::JobOverview {
         job_id: "82bea3".into(),
         title: "走查后台子代理".into(),
         command: "seq 1 5".to_string(),

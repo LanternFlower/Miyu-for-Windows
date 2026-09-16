@@ -3,7 +3,7 @@
 //! 最要紧的一条是最后那组：**inline 下字节流必须逐字节和以前一样**。全屏是可选
 //! 项，为它往所有人的终端里塞标记是不能接受的。
 
-use crate::render::blocks;
+use miyu_hosts::render::blocks;
 
 /// 测试之间共用同一个进程级开关，串行跑免得互相掀桌子。
 fn with_blocks<T>(body: impl FnOnce() -> T) -> T {
@@ -63,7 +63,7 @@ fn expand_under_keeps_the_summary_as_the_handle() {
         let lines = blocks::expand_under(
             "思考 · 30 词元",
             vec!["正文".into()],
-            crate::render::SummaryStyle::Reasoning,
+            miyu_hosts::render::SummaryStyle::Reasoning,
         );
         // 头行 + 详情 + 收尾空行:展开版永远比折叠版(摘要 + 空行)高,
         // 视图偏移不会为负。
@@ -333,7 +333,7 @@ fn graphics_leave_no_trace_in_the_body() {
 /// 正文自己折行：续行也带装订边，转义序列不被切断，能断在空格就断在空格。
 #[test]
 fn body_wraps_itself_instead_of_letting_the_buffer_do_it() {
-    use crate::render::wrap_display_text;
+    use miyu_hosts::render::wrap_display_text;
 
     // 断在空格处，不硬切在词中间。
     assert_eq!(
@@ -569,7 +569,7 @@ fn job_panel_paints_thinking_body_green_not_its_handle() {
         let opened = screen.overlay_rows_ansi();
         assert!(
             opened.iter().any(|line| line.contains("38;5;10")
-                && crate::render::strip_ansi_text(line).contains("先看一眼再说")),
+                && miyu_hosts::render::strip_ansi_text(line).contains("先看一眼再说")),
             "展开的思考正文不是绿的: {opened:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -608,7 +608,7 @@ fn job_panel_rows_stay_inside_the_frame() {
         let inner = usize::from(cols) - 4;
         let over = |rows: &[String]| {
             rows.iter()
-                .map(|row| crate::render::visible_width(row))
+                .map(|row| miyu_hosts::render::visible_width(row))
                 .filter(|width| *width > inner)
                 .collect::<Vec<_>>()
         };
@@ -721,7 +721,7 @@ fn job_panel_folds_its_steps_once_the_subagent_talks() {
         );
         // 「提示词」那一行钉在最前面，不参与收缩。
         assert!(
-            rows[0].contains(crate::i18n::text("prompt", "提示词")),
+            rows[0].contains(miyu_base::i18n::text("prompt", "提示词")),
             "提示词被收进去了: {rows:?}"
         );
         // 收起来的那几步点开还在。
@@ -887,7 +887,7 @@ fn a_log_fold_opens_into_a_timeline_and_the_running_step_spins() {
             .find(|row| row.contains("sleep 5"))
             .unwrap_or_else(|| panic!("跑着的那一步不见了"));
         assert!(
-            running.contains(crate::render::timeline::LIVE_SPINNER_CELL),
+            running.contains(miyu_hosts::render::timeline::LIVE_SPINNER_CELL),
             "跑着的那一步没有转轮占位: {running:?}"
         );
         // 命令那一步点开：正文第一段是命令本身，不是把抬头再说一遍。
@@ -936,7 +936,7 @@ fn a_trailing_stats_line_is_not_a_running_step() {
             .unwrap_or_else(|| panic!("统计那一行不见了: {rows:?}"));
         assert!(!stats.contains("运行中"), "统计行被标成运行中: {stats:?}");
         assert!(
-            !stats.contains(crate::render::timeline::LIVE_SPINNER_CELL),
+            !stats.contains(miyu_hosts::render::timeline::LIVE_SPINNER_CELL),
             "统计行挂了转轮: {stats:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -1002,7 +1002,7 @@ fn a_log_preparing_row_wears_the_tools_own_glyph() {
             .find(|row| row.contains("准备编辑"))
             .unwrap_or_else(|| panic!("没有准备那一行: {rows:?}"));
         assert!(
-            row.contains(crate::render::tool_glyph_for("edit")),
+            row.contains(miyu_hosts::render::tool_glyph_for("edit")),
             "准备编辑没挂铅笔: {row:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);

@@ -130,7 +130,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                     Ok(_) => {
                         // 压住它：紧接着那次轮询还带着它，状态行会闪一下。
                         live_repl.suppress_jobs(std::iter::once(job_id.as_str()));
-                        let remaining: Vec<crate::tools::jobs::JobOverview> = live_repl
+                        let remaining: Vec<miyu_engine::tools::jobs::JobOverview> = live_repl
                             .jobs
                             .iter()
                             .filter(|job| job.job_id != job_id)
@@ -350,7 +350,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         paths,
                         &mut live_repl,
                         IpcCommand::GetSessionState {
-                            target: crate::ipc::SessionRef::Id { id: session_id },
+                            target: miyu_core::ipc::SessionRef::Id { id: session_id },
                         },
                     )
                     .await?
@@ -428,7 +428,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         paths,
                         &mut live_repl,
                         IpcCommand::RenameSession {
-                            target: crate::ipc::SessionRef::Id {
+                            target: miyu_core::ipc::SessionRef::Id {
                                 id: active_session_id.clone(),
                             },
                             name: name.clone(),
@@ -449,7 +449,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                 ReplSlashCommand::Delete => {
                     let arg = command_args.trim();
                     let target = if arg.is_empty() {
-                        crate::ipc::SessionRef::Id {
+                        miyu_core::ipc::SessionRef::Id {
                             id: active_session_id.clone(),
                         }
                     } else {
@@ -481,7 +481,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         paths,
                         &mut live_repl,
                         IpcCommand::DeleteSession {
-                            target: crate::ipc::SessionRef::Id {
+                            target: miyu_core::ipc::SessionRef::Id {
                                 id: target_state.session_id,
                             },
                         },
@@ -516,7 +516,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                 }
                 ReplSlashCommand::Sandbox => {
                     let (arg, allow_read) =
-                        crate::slash_commands::take_repl_flag(command_args, "--allow-read");
+                        miyu_core::slash_commands::take_repl_flag(command_args, "--allow-read");
                     if arg.is_empty() && allow_read {
                         repl_note(
                             &mut live_repl,
@@ -534,7 +534,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         let Some(state) = repl_get_session_state(
                             paths,
                             &mut live_repl,
-                            crate::ipc::SessionRef::Id {
+                            miyu_core::ipc::SessionRef::Id {
                                 id: active_session_id.clone(),
                             },
                         )
@@ -567,7 +567,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                             paths,
                             &mut live_repl,
                             IpcCommand::SetSandbox {
-                                target: crate::ipc::SessionRef::Id {
+                                target: miyu_core::ipc::SessionRef::Id {
                                     id: active_session_id.clone(),
                                 },
                                 root: None,
@@ -607,7 +607,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         paths,
                         &mut live_repl,
                         IpcCommand::SetSandbox {
-                            target: crate::ipc::SessionRef::Id {
+                            target: miyu_core::ipc::SessionRef::Id {
                                 id: active_session_id.clone(),
                             },
                             root: Some(path.clone()),
@@ -648,7 +648,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         paths,
                         &mut live_repl,
                         IpcCommand::Goal {
-                            target: crate::ipc::SessionRef::Id {
+                            target: miyu_core::ipc::SessionRef::Id {
                                 id: active_session_id.clone(),
                             },
                             input: command_args.to_string(),
@@ -839,7 +839,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                     )?;
                 }
                 ReplSlashCommand::Variant => {
-                    if !crate::models_cache::is_loaded() {
+                    if !miyu_base::models_cache::is_loaded() {
                         repl_note(
                             &mut live_repl,
                             &format!(
@@ -913,7 +913,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         paths,
                         &mut live_repl,
                         IpcCommand::Undo {
-                            target: crate::ipc::SessionRef::Id {
+                            target: miyu_core::ipc::SessionRef::Id {
                                 id: active_session_id.clone(),
                             },
                         },
@@ -976,7 +976,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         paths,
                         &mut live_repl,
                         IpcCommand::Pop {
-                            target: crate::ipc::SessionRef::Id {
+                            target: miyu_core::ipc::SessionRef::Id {
                                 id: active_session_id.clone(),
                             },
                             turn_ids,
@@ -1014,9 +1014,9 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                     // inline 照旧：两行提示 + 用量。
                     let fullscreen = crate::cli::in_fullscreen();
                     let notice = |text: &str| -> String {
-                        crate::render::timeline::indent_body(&format!(
+                        miyu_hosts::render::timeline::indent_body(&format!(
                             "\x1b[2m{} {text}\x1b[0m\n",
-                            crate::render::timeline::glyph_notice()
+                            miyu_hosts::render::timeline::glyph_notice()
                         ))
                     };
                     let compacting = t("compacting context…", "正在压缩上下文…");
@@ -1030,7 +1030,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                     let outcome = send_ipc_admin_streaming(
                         paths,
                         IpcCommand::Compact {
-                            target: crate::ipc::SessionRef::Id {
+                            target: miyu_core::ipc::SessionRef::Id {
                                 id: active_session_id.clone(),
                             },
                         },
@@ -1088,7 +1088,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                                 head.push_str(&usage_line);
                             }
                             let mut frame = Vec::new();
-                            crate::render::timeline::write_compact_summary(
+                            miyu_hosts::render::timeline::write_compact_summary(
                                 &mut frame, &head, &summary,
                             )?;
                             live_repl.apply_output_frame(&frame)?;
@@ -1126,8 +1126,8 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         &mut live_repl,
                         IpcCommand::ResetMemory {
                             mode: (mode == AgentMode::Dev).then(|| "dev".to_string()),
-                            scope: crate::ipc::MemoryResetScope::Session,
-                            session: Some(crate::ipc::SessionRef::Id {
+                            scope: miyu_core::ipc::MemoryResetScope::Session,
+                            session: Some(miyu_core::ipc::SessionRef::Id {
                                 id: active_session_id.clone(),
                             }),
                         },
@@ -1148,7 +1148,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         &mut live_repl,
                         IpcCommand::ResetMemory {
                             mode: (mode == AgentMode::Dev).then(|| "dev".to_string()),
-                            scope: crate::ipc::MemoryResetScope::All,
+                            scope: miyu_core::ipc::MemoryResetScope::All,
                             session: None,
                         },
                     )
@@ -1169,7 +1169,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         paths,
                         &mut live_repl,
                         IpcCommand::ResetConversation {
-                            target: crate::ipc::SessionRef::Id {
+                            target: miyu_core::ipc::SessionRef::Id {
                                 id: active_session_id.clone(),
                             },
                         },
@@ -1299,7 +1299,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
             }
             Err(err)
                 if is_remote_turn_cancelled(&err)
-                    || crate::question::is_question_cancelled(&err) =>
+                    || miyu_base::question::is_question_cancelled(&err) =>
             {
                 // 走通知条：「已取消」不是对话内容，几秒之后就不再有意义。
                 // 直接塞进正文的话它会贴着第 0 列、还会被前面那个收缩块吃进去

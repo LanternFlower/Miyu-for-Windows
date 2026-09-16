@@ -294,7 +294,7 @@ pub(in crate::cli) fn read_repl_input(
     Option<(
         AgentMode,
         String,
-        Vec<Option<crate::clipboard::PastedImage>>,
+        Vec<Option<miyu_base::clipboard::PastedImage>>,
     )>,
 > {
     let mut stdout = io::stdout();
@@ -315,7 +315,7 @@ pub(in crate::cli) fn read_repl_input(
     let mut input_row = cursor_row_or(0);
     let mut rendered_rows = 0u16;
     let mut raw_pasted_lines = 0usize;
-    let mut pasted_images: Vec<Option<crate::clipboard::PastedImage>> = Vec::new();
+    let mut pasted_images: Vec<Option<miyu_base::clipboard::PastedImage>> = Vec::new();
     let mut pasted_texts: Vec<Option<PastedText>> = Vec::new();
     // 1. 局部退出时统一恢复终端协议
     // 2. 避免多处 return 漏 Pop 键盘增强
@@ -706,12 +706,12 @@ pub(in crate::cli) fn read_repl_input(
                     if let Some(selected) =
                         placeholder_text_near_cursor(&input, cursor, &pasted_texts)
                     {
-                        let _ = crate::clipboard::write_clipboard_text(&selected)?;
+                        let _ = miyu_base::clipboard::write_clipboard_text(&selected)?;
                     }
                 }
                 KeyCode::Char('v') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    match crate::clipboard::read_clipboard() {
-                        Ok(crate::clipboard::ClipboardContent::Image(img)) => {
+                    match miyu_base::clipboard::read_clipboard() {
+                        Ok(miyu_base::clipboard::ClipboardContent::Image(img)) => {
                             let index = pasted_images.len() + 1;
                             // 占位符只认序号,文件名纯属显示噪音(模型侧路径
                             // 由 rewrite_image_placeholders_with_paths 另拼)。
@@ -719,7 +719,8 @@ pub(in crate::cli) fn read_repl_input(
                             let placeholder = format!("[Image {}]", index);
                             insert_str_at_cursor(&mut input, &mut cursor, &placeholder);
                             history_clean_index = None;
-                            pasted_images.push(Some(crate::clipboard::PastedImage::Binary(img)));
+                            pasted_images
+                                .push(Some(miyu_base::clipboard::PastedImage::Binary(img)));
                             raw_pasted_lines = 0;
                             render_repl_input(
                                 &mut stdout,
@@ -731,13 +732,13 @@ pub(in crate::cli) fn read_repl_input(
                                 raw_pasted_lines,
                             )?;
                         }
-                        Ok(crate::clipboard::ClipboardContent::MediaPath(path)) => {
+                        Ok(miyu_base::clipboard::ClipboardContent::MediaPath(path)) => {
                             let index = pasted_images.len() + 1;
                             let label = media_placeholder_label(&path);
                             let placeholder = format!("[{label} {index}]");
                             insert_str_at_cursor(&mut input, &mut cursor, &placeholder);
                             history_clean_index = None;
-                            pasted_images.push(Some(crate::clipboard::PastedImage::Path(path)));
+                            pasted_images.push(Some(miyu_base::clipboard::PastedImage::Path(path)));
                             raw_pasted_lines = 0;
                             render_repl_input(
                                 &mut stdout,
@@ -749,7 +750,7 @@ pub(in crate::cli) fn read_repl_input(
                                 raw_pasted_lines,
                             )?;
                         }
-                        Ok(crate::clipboard::ClipboardContent::TextPath(path)) => {
+                        Ok(miyu_base::clipboard::ClipboardContent::TextPath(path)) => {
                             insert_str_at_cursor(&mut input, &mut cursor, &path);
                             history_clean_index = None;
                             raw_pasted_lines = 0;
@@ -764,7 +765,7 @@ pub(in crate::cli) fn read_repl_input(
                             )?;
                         }
                         _ => {
-                            if let Ok(Some(text)) = crate::clipboard::read_clipboard_text() {
+                            if let Ok(Some(text)) = miyu_base::clipboard::read_clipboard_text() {
                                 let raw_lines = insert_pasted_text_at_cursor(
                                     &mut input,
                                     &mut cursor,

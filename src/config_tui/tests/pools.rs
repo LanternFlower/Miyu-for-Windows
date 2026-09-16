@@ -1,12 +1,12 @@
 //! 分级模型池 / 平台模型配置 / Embedding 菜单的摘要措辞：界面只按 locale 显示一个
 //! 名字，不再把配置 id 和翻译并排；「继承」说清继承到哪一层。
 
-use crate::config::{
-    AppConfig, AuxRole, EmbeddingBackend, ModelPoolRef, ModelTier, ProviderConfig,
-};
 use crate::config_tui::{
     aux_role_label, aux_role_summary, embedding_model_label, pool_ref_summary, qq_pool_slots, t,
     tier_hint, tier_pool_summary,
+};
+use miyu_base::config::{
+    AppConfig, AuxRole, EmbeddingBackend, ModelPoolRef, ModelTier, ProviderConfig,
 };
 
 fn config_with_text_model() -> AppConfig {

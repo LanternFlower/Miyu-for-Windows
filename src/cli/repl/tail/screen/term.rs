@@ -132,26 +132,6 @@ impl Term {
         self.parser = parser;
     }
 
-    /// 正文实际到哪儿为止：末尾那些空行不算。
-    ///
-    /// 活动区的实时几行是「上移 → 清行 → 重画」，擦掉之后那些行还在缓冲里、
-    /// 只是空了。把它们算进内容的话，时间线一收起来，视口底部就是一大片空白，
-    /// 正文被顶得老高（时间线越长空得越多）。
-    pub(in crate::cli) fn content_rows(&self) -> usize {
-        let mut last = self.lines.len();
-        while last > 0 {
-            let index = self.archive.len() + last - 1;
-            if index <= self.row {
-                break;
-            }
-            if !self.row_spans(index).is_empty() {
-                break;
-            }
-            last -= 1;
-        }
-        self.archive.len() + last
-    }
-
     /// 最后一行**有内容**的行号 + 1。
     ///
     /// 和 `content_rows` 的区别是它不管光标在哪儿。渲染器常在正文末尾多打两个
@@ -294,7 +274,7 @@ impl Term {
         self.cols = cols.max(1);
     }
 
-    pub(in crate::cli) fn blocks(&self) -> &[BlockSpan] {
+    pub fn blocks(&self) -> &[BlockSpan] {
         &self.blocks
     }
 
@@ -603,11 +583,11 @@ impl Perform for Term {
                 .get(1)
                 .map(|value| String::from_utf8_lossy(value).into_owned())
                 .unwrap_or_default();
-            match crate::render::blocks::parse_marker(&payload) {
-                Some(crate::render::blocks::BlockMarker::Begin(id)) => {
+            match miyu_hosts::render::blocks::parse_marker(&payload) {
+                Some(miyu_hosts::render::blocks::BlockMarker::Begin(id)) => {
                     self.pending_block = Some(id);
                 }
-                Some(crate::render::blocks::BlockMarker::End) => self.close_block(),
+                Some(miyu_hosts::render::blocks::BlockMarker::End) => self.close_block(),
                 None => {}
             }
             return;

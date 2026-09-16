@@ -15,7 +15,7 @@ pub(in crate::cli) async fn handle_live_post_turn_overflow(
     context_tokens: u64,
     show_token_usage: bool,
     cumulative_tokens: Option<&mut TurnTokens>,
-) -> Result<Option<crate::llm::ChatResult>> {
+) -> Result<Option<miyu_core::llm::ChatResult>> {
     let compact_result = agent
         .handle_overflow_after_turn(context_tokens, |event| {
             handle_live_agent_event(live, renderer, event)
@@ -150,7 +150,7 @@ pub(in crate::cli) async fn run_live_agent_turn(
     input: LiveAgentInput<'_>,
     control: &AgentTurnControl,
     renderer: &mut render::StreamRenderer,
-) -> Result<Option<crate::llm::ChatResult>> {
+) -> Result<Option<miyu_core::llm::ChatResult>> {
     renderer.use_external_cursor_control();
     renderer.use_buffered_output();
     let mut raw = if std::mem::take(&mut live.raw_mode_handoff) {

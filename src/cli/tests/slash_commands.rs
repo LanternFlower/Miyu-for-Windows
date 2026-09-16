@@ -231,7 +231,7 @@ fn every_repl_slash_command_has_a_table_entry() {
 /// `GET /api/commands` 直接从这张表按 `web` 标记过滤。
 #[test]
 fn web_commands_are_a_subset_of_the_repl_table() {
-    let web = crate::slash_commands::web_commands();
+    let web = miyu_core::slash_commands::web_commands();
     assert!(!web.is_empty(), "WebUI 一条命令都没开，命令平面等于没做");
     for spec in &web {
         assert!(

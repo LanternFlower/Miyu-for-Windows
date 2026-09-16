@@ -16,8 +16,8 @@ pub(in crate::config_tui) use emotion::*;
 pub(in crate::config_tui) use identity::*;
 pub(in crate::config_tui) use reply::*;
 
-use crate::config::{ModelPoolRef, ModelTier};
 use crate::config_tui::*;
+use miyu_base::config::{ModelPoolRef, ModelTier};
 
 pub(in crate::config_tui) fn real_context_values(
     config: &AppConfig,
@@ -246,22 +246,5 @@ where
             }
             Err(error) => message(stdout, &error.to_string())?,
         }
-    }
-}
-
-pub(in crate::config_tui) fn real_context_media_mode_label(value: &str) -> &'static str {
-    match value {
-        "off" => t("Off", "不记录"),
-        "metadata" => t("Metadata", "保留元数据"),
-        _ => t("Placeholder", "仅占位"),
-    }
-}
-
-pub(in crate::config_tui) fn real_context_media_mode_value(value: &str) -> Option<&'static str> {
-    match value.trim() {
-        "off" | "Off" | "不记录" => Some("off"),
-        "placeholder" | "Placeholder" | "仅占位" => Some("placeholder"),
-        "metadata" | "Metadata" | "保留元数据" => Some("metadata"),
-        _ => None,
     }
 }

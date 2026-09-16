@@ -6,8 +6,8 @@
 //! `validate_reply_processor_settings` 单独存在是因为它的字段互相约束（比如某
 //! 个模式下另一项必填），表单本身校验不了。
 
-use crate::config::{ModelPoolRef, ModelTier};
 use crate::config_tui::*;
+use miyu_base::config::{ModelPoolRef, ModelTier};
 
 pub(in crate::config_tui) const REPLY_PROCESSOR_PLUGIN_ID: &str = "reply_processor";
 
@@ -130,7 +130,7 @@ pub(in crate::config_tui) fn select_platform_plugins(
             .platforms
             .qq
             .plugins
-            .get(crate::config::QQ_SCHEDULED_MESSAGES_PLUGIN_ID)
+            .get(miyu_base::config::QQ_SCHEDULED_MESSAGES_PLUGIN_ID)
             .map(|plugin| plugin.enabled_or(false))
             .unwrap_or(false);
         let scheduled_messages_state = if scheduled_messages_enabled {

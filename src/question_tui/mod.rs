@@ -3,11 +3,6 @@ mod edit;
 pub(in crate::question_tui) use draw::*;
 pub(in crate::question_tui) use edit::*;
 
-use crate::i18n::text as t;
-use crate::question::{
-    validate_answers, QuestionAnswers, QuestionPrompt, QuestionRequest, QuestionResponse,
-    MAX_CUSTOM_ANSWER_CHARS,
-};
 use anyhow::{bail, Result};
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{
@@ -17,6 +12,11 @@ use crossterm::event::{
 };
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{execute, queue};
+use miyu_base::i18n::text as t;
+use miyu_base::question::{
+    validate_answers, QuestionAnswers, QuestionPrompt, QuestionRequest, QuestionResponse,
+    MAX_CUSTOM_ANSWER_CHARS,
+};
 use std::io::{self, IsTerminal, Write};
 use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -39,10 +39,6 @@ pub fn available(plain: bool) -> bool {
     {
         io::stdin().is_terminal()
     }
-}
-
-pub fn ask(request: &QuestionRequest) -> Result<QuestionResponse> {
-    ask_with(request, None, true)
 }
 
 /// 问一轮，允许调用方接管「面板上面那截正文」的回翻。
@@ -567,7 +563,7 @@ impl Drop for QuestionSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::question::QuestionOption;
+    use miyu_base::question::QuestionOption;
 
     fn multi_request() -> QuestionRequest {
         QuestionRequest {

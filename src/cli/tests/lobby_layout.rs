@@ -53,16 +53,6 @@ fn lobby_box_never_overflows_a_narrow_terminal() {
     }
 }
 
-#[test]
-fn full_box_is_the_whole_terminal() {
-    let area = EditorBox::full(TERMINAL_COLS);
-
-    assert_eq!(area.left, 0);
-    assert_eq!(area.width, TERMINAL_COLS);
-    assert_eq!(box_cols(None, TERMINAL_COLS), TERMINAL_COLS);
-    assert_eq!(box_left(None), 0);
-}
-
 /// 光标的落点必须和**画出来的**折行对得上：折了两行，光标就在第二行上。
 #[test]
 fn lobby_cursor_matches_narrow_editor_width() {

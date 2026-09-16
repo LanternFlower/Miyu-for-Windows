@@ -95,13 +95,6 @@ impl Facts {
         self.clis.iter().any(|(name, ok)| *name == bin && *ok)
             || self.shells.iter().any(|name| *name == bin)
     }
-
-    /// 不走动画时（无头测试、`--fast`）一次性探完。
-    pub fn probe_now() -> Self {
-        let mut loader = Loader::new("");
-        while loader.advance() {}
-        loader.facts
-    }
 }
 
 pub(super) struct Loader {

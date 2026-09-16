@@ -54,10 +54,10 @@ pub(in crate::cli) async fn follow_wake_run(
     {
         // 目标续轮不打表头：一个长任务会连着跑几十轮，每轮顶一行「第 N 轮」
         // 只会把真正的输出挤散。轮次已经在 footer 上（那是它常驻的位置）。
-        let header = if label == crate::tools::goal::GOAL_ROUND_LABEL {
+        let header = if label == miyu_engine::tools::goal::GOAL_ROUND_LABEL {
             String::new()
         } else if label.is_empty() {
-            crate::i18n::text("⚙ background task finished", "⚙ 后台任务完成").to_string()
+            miyu_base::i18n::text("⚙ background task finished", "⚙ 后台任务完成").to_string()
         } else {
             format!("⚙ {label}")
         };
@@ -67,9 +67,9 @@ pub(in crate::cli) async fn follow_wake_run(
             // 擦掉重画，开着的浮层跟着闪一下（用户实测：后台任务完成时已经开着
             // 的浮层会鬼畜抖动一下）。
             if !header.is_empty() {
-                let glyph = crate::render::timeline::glyph_notice();
+                let glyph = miyu_hosts::render::timeline::glyph_notice();
                 let text = header.trim_start_matches('⚙').trim_start();
-                let line = crate::render::timeline::indent_body(&format!(
+                let line = miyu_hosts::render::timeline::indent_body(&format!(
                     "\x1b[2m{glyph} {text}\x1b[0m\r\n\r\n"
                 ));
                 live.apply_output_frame(line.as_bytes())?;
@@ -126,8 +126,8 @@ pub(in crate::cli) async fn follow_wake_run(
                     ) {
                         let line = live.editor.input.trim_start().to_string();
                         match crate::cli::repl::editor::parse_repl_input(&line) {
-                            crate::slash_commands::ReplInput::Slash(
-                                crate::slash_commands::ReplSlashCommand::Goal,
+                            miyu_core::slash_commands::ReplInput::Slash(
+                                miyu_core::slash_commands::ReplSlashCommand::Goal,
                                 args,
                             ) => {
                                 let args = args.trim().to_string();
@@ -153,7 +153,7 @@ pub(in crate::cli) async fn follow_wake_run(
                                 let _ = crate::cli::repl::session::send_ipc_admin(
                                     paths,
                                     IpcCommand::Goal {
-                                        target: crate::ipc::SessionRef::Id {
+                                        target: miyu_core::ipc::SessionRef::Id {
                                             id: session_id.to_string(),
                                         },
                                         input: args,
@@ -171,8 +171,8 @@ pub(in crate::cli) async fn follow_wake_run(
                             }
                             // 其他命令运行中不可用，也不打提示（流中间的系统
                             // 消息会写坏渲染）：吞掉回车，输入原样留在输入框。
-                            crate::slash_commands::ReplInput::Slash(..) => continue,
-                            crate::slash_commands::ReplInput::Chat => {}
+                            miyu_core::slash_commands::ReplInput::Slash(..) => continue,
+                            miyu_core::slash_commands::ReplInput::Chat => {}
                         }
                     }
                     if live.handle_screen_event(&event)? {
@@ -214,7 +214,7 @@ pub(in crate::cli) async fn follow_wake_run(
                             // 续轮在 daemon 里继续跑：用户面对的是一个看起来
                             // 停了、`/goal` 却说「进行中」、还在烧额度的幽灵轮。
                             // 其他后台唤醒保持仅脱离——那些回合不是它发起的。
-                            if label == crate::tools::goal::GOAL_ROUND_LABEL {
+                            if label == miyu_engine::tools::goal::GOAL_ROUND_LABEL {
                                 let _ = send_ipc_command(
                                     paths,
                                     IpcCommand::Cancel {
@@ -261,7 +261,7 @@ pub(in crate::cli) async fn follow_wake_run(
                 live,
                 &mut renderer,
                 AgentEvent::Chunk(ChatStreamChunk {
-                    kind: crate::llm::ChatStreamKind::Content,
+                    kind: miyu_core::llm::ChatStreamKind::Content,
                     text: ipc_text(&data, "delta").to_string(),
                 }),
             )?,
@@ -269,7 +269,7 @@ pub(in crate::cli) async fn follow_wake_run(
                 live,
                 &mut renderer,
                 AgentEvent::Chunk(ChatStreamChunk {
-                    kind: crate::llm::ChatStreamKind::Reasoning,
+                    kind: miyu_core::llm::ChatStreamKind::Reasoning,
                     text: ipc_text(&data, "delta").to_string(),
                 }),
             )?,

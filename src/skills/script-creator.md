@@ -25,6 +25,7 @@ A script tool is one executable file. Miyu reads the tool contract from comment 
 - Print the result to stdout and exit 0. On failure exit non-zero and print a JSON object with `ok:false`, `error` and, when the user must act, `fix`. Miyu reports the exit code and the model reads your JSON.
 - Default timeout is 120 seconds, maximum 300. Output beyond 20000 characters is cut before the model sees it, so cap lists and offer a `limit` parameter.
 - `MIYU_SCRIPT_CACHE_DIR` points at Miyu's cache directory. Keep login profiles, cookies and caches under it. Fall back to XDG defaults when the variable is missing so the script also works from a terminal.
+- Host queries (only when the header declares `Capabilities:`): Miyu injects `MIYU_HOST_TOKEN`, `MIYU_HOST_CAPABILITIES` and `MIYU_HOST_BIN`. Run `$MIYU_HOST_BIN host <method> [json]` — methods `host.info`, `providers.list`, `providers.get`, `subsystems.enabled`; stdout is one JSON line `{"ok":true,"data":…}` or `{"ok":false,"error":{"code","message"}}`. Provider data never includes API keys or endpoints. Treat a missing variable as "host unavailable" and keep working.
 - Default to compact human-readable output and offer `format=json` for field-by-field processing.
 
 ## Header

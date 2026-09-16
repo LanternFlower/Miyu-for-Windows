@@ -2,10 +2,10 @@
 
 use super::widgets::{body_w, clip, ln, nil, pad, Cx, View, NAME_COL};
 use super::{pfocus, App, Prov, Screen, HINT_AT};
-use crate::config::feature_catalog::FeatureKind;
 use crate::oobe::providers::PROTOCOLS;
-use crate::terminal::palette::{BLUE, DIM, FAINT, GOLD, GREEN, INK};
-use crate::terminal::starfield::fade;
+use miyu_base::config::feature_catalog::FeatureKind;
+use miyu_base::terminal::palette::{BLUE, DIM, FAINT, GOLD, GREEN, INK};
+use miyu_base::terminal::starfield::fade;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
@@ -618,10 +618,10 @@ pub(super) fn build(app: &App, cx: &Cx) -> View {
     if let Some(notice) = &app.notice {
         body.push(nil());
         body.push(ln(vec![
-            Span::styled("! ", theme.fg(crate::terminal::palette::CORAL)),
+            Span::styled("! ", theme.fg(miyu_base::terminal::palette::CORAL)),
             Span::styled(
                 clip(notice, body_w().saturating_sub(2)),
-                theme.fg(crate::terminal::palette::CORAL),
+                theme.fg(miyu_base::terminal::palette::CORAL),
             ),
         ]));
     }

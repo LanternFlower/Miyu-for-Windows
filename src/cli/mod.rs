@@ -1,20 +1,20 @@
-use crate::agent::{
-    archive_and_delete_visible_turns, Agent, AgentEvent, AgentMode, AgentTurnControl,
-};
-use crate::config::{ActiveProviderModelConfig, AppConfig};
-use crate::i18n::{is_zh, text as t};
-use crate::ipc::{self, Command as IpcCommand, Frame as IpcFrame, Request as IpcRequest};
-use crate::llm::{
+use miyu_base::config::{ActiveProviderModelConfig, AppConfig};
+use miyu_base::i18n::{is_zh, text as t};
+use miyu_base::paths::MiyuPaths;
+use miyu_core::ipc::{self, Command as IpcCommand, Frame as IpcFrame, Request as IpcRequest};
+use miyu_core::llm::{
     ChatResult, ChatStreamChunk, GenerationSpeed, OpenAiCompatibleClient, ThinkingVariantOptions,
     TurnTokens, Usage,
 };
-use crate::memory::{MemoryOrganizer, MemoryStore};
-use crate::paths::MiyuPaths;
+use miyu_core::memory::{MemoryOrganizer, MemoryStore};
+use miyu_engine::agent::{
+    archive_and_delete_visible_turns, Agent, AgentEvent, AgentMode, AgentTurnControl,
+};
 mod args;
 mod daemon_cmds;
+mod entry_flows;
 pub(crate) mod exit_code;
 mod inline_picker;
-pub(crate) mod ipc_event;
 mod localize;
 mod mcp_schema;
 mod mcp_serve;
@@ -29,6 +29,7 @@ mod turn_request;
 mod usage_view;
 use args::*;
 use daemon_cmds::*;
+use entry_flows::*;
 use inline_picker::*;
 use localize::*;
 use mcp_serve::*;
@@ -42,6 +43,8 @@ mod data_cmds;
 mod embed_cmds;
 use embed_cmds::*;
 mod footer;
+mod history_replay;
+mod host_cmds;
 mod layout_cmds;
 mod migrate_cmds;
 mod model_cmds;
@@ -51,12 +54,15 @@ mod repl;
 mod select;
 mod shell_bridge;
 mod stt;
+mod terminal_guard;
 
 // 日志读取与格式化已拆到 daemon_log。
 use alarm_worker::*;
 use daemon_log::*;
 use data_cmds::*;
 use footer::*;
+use history_replay::*;
+use host_cmds::*;
 use layout_cmds::*;
 use migrate_cmds::*;
 use model_cmds::*;
@@ -65,6 +71,7 @@ use pop_cmds::*;
 use select::*;
 use shell_bridge::*;
 use stt::*;
+pub(crate) use terminal_guard::*;
 #[cfg(test)]
 mod tests;
 
@@ -74,7 +81,7 @@ pub(in crate::cli) use repl::{
     commands::*, input_layout::*, jobs::*, layout::*, placeholder::*, session::*,
 };
 // 命令表已上提到 crate 级与 WebUI 共用；这里再导出一次，cli 内的调用点不变。
-pub(in crate::cli) use crate::slash_commands::*;
+pub(in crate::cli) use miyu_core::slash_commands::*;
 use repl::direct::{run_chat_with_images, run_chat_with_options, run_direct_repl};
 use repl::editor::{load_repl_input_history, repl_input_lines};
 use repl::input::render_repl_input_with_footer;
@@ -89,14 +96,10 @@ use repl::tail::{
 use repl::wake::follow_wake_run;
 use repl::width::{truncate_visible_width, visible_width, wrap_visible_width};
 
-use crate::render;
-use crate::tools::build_tool_registry;
+use miyu_engine::tools::build_tool_registry;
+use miyu_hosts::render;
 
 // 参数类型已下沉到基础层；这里 re-export，外部按 `cli::WebArgs` 引用不断。
-pub use crate::args::WebArgs;
-use crate::shell;
-use crate::state::{QueuedPrompt, QueuedPromptAttachment, StateStore, Turn, TurnStatus};
-use crate::tools;
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use chrono::{DateTime, Local};
@@ -111,6 +114,10 @@ use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{execute, queue};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
+use miyu_base::shell;
+pub use miyu_core::args::WebArgs;
+use miyu_core::state::{QueuedPrompt, QueuedPromptAttachment, StateStore, Turn, TurnStatus};
+use miyu_engine::tools;
 use std::ffi::OsString;
 use std::io::Cursor;
 use std::io::{self, IsTerminal, Read, Seek, SeekFrom, Write};
@@ -166,7 +173,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
     let _logging_guard = if skip_diagnostic_logging {
         None
     } else {
-        match crate::logging::init(&paths, cli.debug) {
+        match miyu_base::logging::init(&paths, cli.debug) {
             Ok(guard) => Some(guard),
             Err(err) => {
                 eprintln!(
@@ -199,6 +206,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                 | Some(Command::Paths)
                 | Some(Command::Layout(_))
                 | Some(Command::Pm(_))
+                | Some(Command::Host(_))
                 | Some(Command::Import(_))
         )
     {
@@ -232,19 +240,19 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
     match cli.command {
         Some(Command::AlarmWorker(args)) => run_alarm_worker(args),
         Some(Command::DaemonWorker(args)) => {
-            let _logging_guard = crate::logging::init(&paths, cli.debug).ok();
+            let _logging_guard = miyu_base::logging::init(&paths, cli.debug).ok();
             // daemon 的 stdout/stderr 被重定向进 daemon.log，而 tracing 写的是
             // 另一个按天滚动的文件。出了事翻错文件是常态——排查一次长回复不转
             // 图片，我在 daemon.log 里绕了很久，真正的 warning 一直躺在
             // miyu.YYYY-MM-DD.log 里。所以在这条日志的开头指一次路。
             println!(
                 "{}",
-                crate::i18n::text(
+                miyu_base::i18n::text(
                     "Detailed logs (warnings, tool failures) go to miyu.YYYY-MM-DD.log in the same directory; this file only carries startup output.",
                     "详细日志（警告、工具失败）在同目录的 miyu.YYYY-MM-DD.log；本文件只有启动输出。"
                 )
             );
-            crate::daemon::run(paths, args).await
+            miyu_hosts::daemon::run(paths, args).await
         }
         Some(Command::Tool(args)) => run_tool(&paths, mode, args).await,
         Some(Command::Ask(args)) => {
@@ -273,6 +281,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
         }
         Some(Command::Layout(args)) => run_layout(&paths, args),
         Some(Command::Pm(args)) => run_pm(&paths, args).await,
+        Some(Command::Host(args)) => run_host(&paths, args).await,
         Some(Command::Config(args)) => {
             let saved = run_config(&paths, args).await?;
             if saved && ipc::daemon_info(&paths).await.is_some() {
@@ -344,15 +353,20 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                 let name = entry.name.clone();
                 session_cmds::compact_session(
                     &paths,
-                    crate::ipc::SessionRef::Id { id: entry.id },
+                    miyu_core::ipc::SessionRef::Id { id: entry.id },
                     Some(&name),
                     plain,
                 )
                 .await
             }
             None => {
-                session_cmds::compact_session(&paths, crate::ipc::SessionRef::Current, None, plain)
-                    .await
+                session_cmds::compact_session(
+                    &paths,
+                    miyu_core::ipc::SessionRef::Current,
+                    None,
+                    plain,
+                )
+                .await
             }
         },
         Some(Command::Kb(args)) => run_kb(&paths, args).await,
@@ -368,7 +382,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                 send_ipc_admin(
                     &paths,
                     IpcCommand::ResetConversation {
-                        target: crate::ipc::SessionRef::Id { id: entry.id },
+                        target: miyu_core::ipc::SessionRef::Id { id: entry.id },
                     },
                 )
                 .await?;
@@ -376,7 +390,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                 send_ipc_admin(
                     &paths,
                     IpcCommand::ResetConversation {
-                        target: crate::ipc::SessionRef::Current,
+                        target: miyu_core::ipc::SessionRef::Current,
                     },
                 )
                 .await?;
@@ -398,7 +412,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
             if run_oobe_flow(&paths).await? {
                 let result = run_repl(&paths, AgentMode::Normal).await;
                 // REPL 没能接过备用屏(启动失败)就自己退回主屏,别把终端留在备用屏上。
-                crate::terminal::release_alt_screen_if_held();
+                miyu_base::terminal::release_alt_screen_if_held();
                 result
             } else {
                 Ok(())
@@ -425,147 +439,13 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                     return Ok(());
                 }
                 let result = run_repl(&paths, AgentMode::Normal).await;
-                crate::terminal::release_alt_screen_if_held();
+                miyu_base::terminal::release_alt_screen_if_held();
                 result
             } else {
                 run_one_shot(&paths, root_turn, message, root_stdin, plain, mode).await
             }
         }
     }
-}
-
-/// 跑新手引导,返回「接下来要不要进 REPL」。
-///
-/// 开场就退出(Esc / Ctrl+C)什么都不写、也不进 REPL,下次裸 `miyu` 还会再来;
-/// 选了「进入设置界面」就先开完整设置再进;做完或跳过直接进——空会话的
-/// banner 就是第一帧,不做完成页。引导写了配置,顺手让活着的 daemon 重读。
-async fn run_oobe_flow(paths: &MiyuPaths) -> Result<bool> {
-    spawn_hangup_watchdog();
-    // 后面是全屏 REPL 的话,备用屏一路不退,中间不闪 shell 画面。
-    let keep_alt = crate::cli::repl::tail::screen::requested();
-    let outcome = crate::oobe::run(paths, keep_alt)?;
-    if outcome != crate::oobe::Outcome::Aborted {
-        let _ = send_ipc_command(paths, IpcCommand::ReloadConfig).await;
-    }
-    match outcome {
-        crate::oobe::Outcome::Aborted => {
-            crate::terminal::release_alt_screen_if_held();
-            Ok(false)
-        }
-        crate::oobe::Outcome::OpenSettings => {
-            if keep_alt {
-                crate::config_tui::run_embedded(paths)?;
-            } else {
-                crate::config_tui::run(paths)?;
-            }
-            let _ = send_ipc_command(paths, IpcCommand::ReloadConfig).await;
-            Ok(true)
-        }
-        crate::oobe::Outcome::Completed | crate::oobe::Outcome::Skipped => Ok(true),
-    }
-}
-
-/// 一次性回合的总入口(`miyu ask …` 与裸 `miyu "…"`)。
-///
-/// 没用到任何程序驱动特性时走原路(直连/阅后即焚/终端渲染),行为一字不改;
-/// 带了 `--create/--mode/--model/…` 或 JSON 输出时走新路:会话由
-/// `turn_request` 定,覆盖随 StartTurn 走,需要 daemon。
-async fn run_one_shot(
-    paths: &MiyuPaths,
-    options: TurnOptions,
-    message: String,
-    read_stdin: bool,
-    plain: bool,
-    mode: AgentMode,
-) -> Result<()> {
-    let message = if read_stdin {
-        append_stdin_to_eof(message)?
-    } else {
-        append_stdin_if_piped(message).await
-    };
-    let format = if plain {
-        OutputFormat::Text
-    } else {
-        options.output_format.unwrap_or_default()
-    };
-    let plain = plain || options.quiet;
-    let overrides = turn_request::build_overrides(paths, &options)?;
-    let programmatic = options.create
-        || options.mode.is_some()
-        || overrides.is_some()
-        || format != OutputFormat::Text
-        || !options.image.is_empty()
-        || options.cwd.is_some()
-        || options.timeout.is_some();
-    if !programmatic {
-        let session =
-            one_shot_session(paths, options.session.as_deref(), options.continue_session).await?;
-        return run_chat_with_options(paths, message, None, plain, mode, session, None).await;
-    }
-    if message.is_empty() {
-        return Err(exit_code::usage_error(t(
-            "a message is required",
-            "需要给一条消息",
-        )));
-    }
-    let session = turn_request::resolve_turn_session(paths, &options).await?;
-    let outcome = match format {
-        OutputFormat::Text => {
-            if let Some(cwd) = options.cwd.as_deref() {
-                std::env::set_current_dir(cwd).map_err(|error| {
-                    exit_code::usage_error(format!(
-                        "{}: {} ({error})",
-                        t("cannot enter --cwd", "进不去 --cwd 目录"),
-                        cwd.display()
-                    ))
-                })?;
-            }
-            let images = options
-                .image
-                .iter()
-                .map(|path| {
-                    Some(crate::clipboard::PastedImage::Path(
-                        path.to_string_lossy().into_owned(),
-                    ))
-                })
-                .collect::<Vec<_>>();
-            let turn_session = match session.session_id.clone() {
-                Some(session_id) => TurnSession::Explicit(session_id),
-                None => TurnSession::Current,
-            };
-            repl::direct::run_chat_with_images_and_options(
-                paths,
-                message,
-                images,
-                plain,
-                mode,
-                turn_session,
-                overrides,
-            )
-            .await
-        }
-        OutputFormat::Json | OutputFormat::StreamJson => {
-            output::run_json_one_shot(
-                paths,
-                output::turn_client::TurnRequest {
-                    content: message,
-                    session_id: session.session_id.clone(),
-                    images: options.image.clone(),
-                    cwd: options.cwd.clone(),
-                    overrides,
-                    timeout: options.timeout.map(Duration::from_secs),
-                },
-                format,
-            )
-            .await
-        }
-    };
-    if session.ephemeral {
-        if let Some(session_id) = session.session_id.as_deref() {
-            discard_ephemeral_session(paths, session_id).await;
-        }
-    }
-    outcome
 }
 
 async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
@@ -689,100 +569,9 @@ fn persist_repl_history_entry(paths: &MiyuPaths, session_id: &str, entry: &ReplH
 struct LiveSubmission {
     content: String,
     display_content: String,
-    images: Vec<Option<crate::clipboard::PastedImage>>,
+    images: Vec<Option<miyu_base::clipboard::PastedImage>>,
     /// 提交时输入框里的粘贴载荷(按占位符序号),给上键历史留着。
     pasted_texts: Vec<Option<PastedText>>,
-}
-
-/// 上键历史里的一条。
-///
-/// 以前存的是展开后的全文:粘贴折成的 `[粘贴 1: ~40 行]` 一进历史就散成
-/// 四十行裸文本,上键回来把输入框撑满;`[Image 1]` 则相反,原样进历史却
-/// 丢了图。现在存**输入框里的样子**加载荷,回忆时占位符照旧是活的——退格
-/// 整块删、提交时照常展开、图片重新接回缓存文件。
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct ReplHistoryEntry {
-    display: String,
-    /// 按 `[粘贴 N]` 的序号排;被整块删掉的占位符留 None,序号才对得上。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pasted_texts: Vec<Option<String>>,
-    /// 按 `[Image N]` 的序号排的缓存文件路径。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    images: Vec<Option<String>>,
-}
-
-impl ReplHistoryEntry {
-    fn plain(text: &str) -> Self {
-        Self {
-            display: text.to_string(),
-            ..Self::default()
-        }
-    }
-
-    fn from_submission(submission: &LiveSubmission) -> Self {
-        let pasted_texts = submission
-            .pasted_texts
-            .iter()
-            .map(|payload| payload.as_ref().map(|pasted| pasted.text.clone()))
-            .collect::<Vec<_>>();
-        let images = submission
-            .images
-            .iter()
-            .map(|image| image.as_ref().and_then(|image| image.history_path()))
-            .collect::<Vec<_>>();
-        Self {
-            display: submission.display_content.clone(),
-            pasted_texts: trim_trailing_none(pasted_texts),
-            images: trim_trailing_none(images),
-        }
-    }
-
-    fn has_payload(&self) -> bool {
-        !self.pasted_texts.is_empty() || !self.images.is_empty()
-    }
-
-    fn pasted_texts(&self) -> Vec<Option<PastedText>> {
-        self.pasted_texts
-            .iter()
-            .map(|text| text.as_ref().map(|text| PastedText { text: text.clone() }))
-            .collect()
-    }
-
-    /// 只接回还在的缓存文件:清理掉的图片留 None,占位符就成了普通文字。
-    fn pasted_images(&self) -> Vec<Option<crate::clipboard::PastedImage>> {
-        self.images
-            .iter()
-            .map(|path| {
-                path.as_ref()
-                    .filter(|path| std::path::Path::new(path).is_file())
-                    .map(|path| crate::clipboard::PastedImage::Path(path.clone()))
-            })
-            .collect()
-    }
-
-    /// 模型实际收到的样子;对话记录里的用户消息就是这个形态,合并去重用它。
-    fn expanded(&self) -> String {
-        if self.pasted_texts.is_empty() {
-            return self.display.clone();
-        }
-        expand_pasted_text_placeholders(&self.display, &self.pasted_texts())
-    }
-
-    /// 落盘一行:没载荷的照旧写成 JSON 字符串,老版本读得懂,文件也不膨胀。
-    fn to_json_line(&self) -> Option<String> {
-        if self.has_payload() {
-            serde_json::to_string(self).ok()
-        } else {
-            serde_json::to_string(&self.display).ok()
-        }
-    }
-
-    fn parse_line(line: &str) -> Option<Self> {
-        if let Ok(text) = serde_json::from_str::<String>(line) {
-            return Some(Self::plain(&text));
-        }
-        serde_json::from_str::<Self>(line).ok()
-    }
 }
 
 fn trim_trailing_none<T>(mut items: Vec<Option<T>>) -> Vec<Option<T>> {
@@ -812,7 +601,7 @@ fn merge_history_entry(history: &mut Vec<ReplHistoryEntry>, entry: ReplHistoryEn
 
 struct LiveAgentInput<'a> {
     content: &'a str,
-    images: &'a [Option<crate::clipboard::PastedImage>],
+    images: &'a [Option<miyu_base::clipboard::PastedImage>],
 }
 
 fn queued_prompt_lines(prompts: &[QueuedPrompt], mode: AgentMode, cols: usize) -> Vec<String> {
@@ -895,167 +684,19 @@ fn committed_user_messages_text(
     output
 }
 
-/// Redraws finished turns of a session as one ANSI frame.
-///
-/// Feeds the stored transcript back through the same `StreamRenderer` a live
-/// turn uses, so tool blocks and prose come out identical — and re-wrapped for
-/// the terminal's *current* width, which a saved byte transcript could not do.
-/// Turns older than the transcript column fall back to prompt + final reply.
-fn session_replay_frame(
-    replays: &[crate::state::TurnReplay],
-    mode: AgentMode,
-    config: &AppConfig,
-    cols: usize,
-) -> Result<Vec<u8>> {
-    use crate::state::ReplayEntry;
-    let mut frame = Vec::new();
-    for replay in replays {
-        if replay.display_content.starts_with("[目标续轮]") {
-            // 目标续轮什么都不画——实时渲染也不打表头。一个长任务几十轮，
-            // 每轮一行只会把真正的输出挤散。
-        } else if replay.is_synthetic {
-            // daemon 自己合成的轮：实时渲染画的是一条暗色 `⚙` 提示，回放要
-            // 对齐，不能变成用户气泡。
-            let notice = format!(
-                "\n\x1b[2m{} {}\x1b[0m\n\n",
-                if render::blocks::enabled() {
-                    render::timeline::glyph_notice()
-                } else {
-                    "⚙"
-                },
-                job_wake_headline(&replay.display_content)
-            );
-            let notice = if render::blocks::enabled() {
-                render::timeline::indent_body(&notice)
-            } else {
-                notice
-            };
-            frame.extend_from_slice(notice.as_bytes());
-        } else if !replay.display_content.trim().is_empty() {
-            frame.extend_from_slice(
-                committed_user_messages_text(&[(&replay.display_content, mode)], true, cols)
-                    .as_bytes(),
-            );
-        }
-        let mut renderer = render::StreamRenderer::new(
-            // 全屏：思考在时间线里只占一行，回放时补上正好补齐"重开之后
-            // 少一块"的缺口。inline 照旧不放——那边一放就是整段，回放会刷屏。
-            if render::blocks::enabled() {
-                render::ReasoningDisplayMode::Summary
-            } else {
-                render::ReasoningDisplayMode::Hidden
-            },
-            render::ToolCallDisplayMode::from_config(&config.display.tool_calls),
-            false,
-            config.display.readable_tool_names,
-            config.display.command_output_lines,
-        );
-        renderer.use_external_cursor_control();
-        renderer.use_buffered_output();
-        // 流水账里带着思考就按它的位置放，别再用 `assistant_reasoning` 那一列
-        // 补一遍。那一列只留得住**最后一回合**的思考：想完就去调工具、最后一
-        // 回合直接交卷的那种轮，它是空的——重开之后时间线上的思考那一步整个
-        // 没了（用户实测）。老轮（这次改动之前记下的）流水账里没有思考，那就
-        // 还是拿那一列兜底。
-        let journal_has_reasoning = replay
-            .entries
-            .iter()
-            .any(|entry| matches!(entry, ReplayEntry::Reasoning { .. }));
-        if !journal_has_reasoning {
-            if let Some(reasoning) = replay
-                .assistant_reasoning
-                .as_deref()
-                .filter(|text| !text.trim().is_empty())
-            {
-                renderer.write_chunk(ChatStreamChunk {
-                    kind: crate::llm::ChatStreamKind::Reasoning,
-                    text: reasoning.to_string(),
-                })?;
-            }
-        }
-        if replay.entries.is_empty() {
-            // 被中断的轮：正文尾巴上那段 `<system-reminder>` 是写给模型的，
-            // 不给人看。
-            let content = if replay.interrupted {
-                crate::state::interrupted_prefix(&replay.assistant_content)
-            } else {
-                replay.assistant_content.clone()
-            };
-            renderer.write_chunk(ChatStreamChunk {
-                kind: crate::llm::ChatStreamKind::Content,
-                text: content,
-            })?;
-        } else {
-            for entry in &replay.entries {
-                match entry {
-                    ReplayEntry::Text { text } => renderer.write_chunk(ChatStreamChunk {
-                        kind: crate::llm::ChatStreamKind::Content,
-                        text: text.clone(),
-                    })?,
-                    ReplayEntry::Reasoning { text, elapsed_ms } => {
-                        renderer.write_chunk(ChatStreamChunk {
-                            kind: crate::llm::ChatStreamKind::Reasoning,
-                            text: text.clone(),
-                        })?;
-                        renderer.replay_reasoning_elapsed(std::time::Duration::from_millis(
-                            *elapsed_ms,
-                        ));
-                    }
-                    ReplayEntry::ToolCall { name, arguments } => {
-                        renderer.write_tool_call(name, arguments)?
-                    }
-                    ReplayEntry::ToolResult {
-                        name,
-                        ok,
-                        output,
-                        elapsed_ms,
-                    } => {
-                        renderer.replay_tool_elapsed(
-                            name,
-                            std::time::Duration::from_millis(*elapsed_ms),
-                        );
-                        renderer.write_tool_result(name, *ok, output)?
-                    }
-                }
-            }
-        }
-        renderer.finish()?;
-        frame.extend_from_slice(&renderer.take_output_frame());
-        if replay.interrupted {
-            // 标一行：这一轮没说完。和后台任务那条提示一个样子。
-            let notice = format!(
-                "\x1b[2m{} {}\x1b[0m\n\n",
-                if render::blocks::enabled() {
-                    render::timeline::glyph_notice()
-                } else {
-                    "⚙"
-                },
-                t("interrupted", "已中断")
-            );
-            let notice = if render::blocks::enabled() {
-                render::timeline::indent_body(&notice)
-            } else {
-                notice
-            };
-            frame.extend_from_slice(notice.as_bytes());
-        }
-    }
-    Ok(frame)
-}
-
 fn queued_prompt_attachments(
-    images: &[Option<crate::clipboard::PastedImage>],
+    images: &[Option<miyu_base::clipboard::PastedImage>],
 ) -> Vec<QueuedPromptAttachment> {
     images
         .iter()
         .filter_map(|image| match image {
-            Some(crate::clipboard::PastedImage::Binary(image)) => {
+            Some(miyu_base::clipboard::PastedImage::Binary(image)) => {
                 Some(QueuedPromptAttachment::Binary {
                     mime: image.mime.clone(),
                     data_base64: base64::engine::general_purpose::STANDARD.encode(&image.data),
                 })
             }
-            Some(crate::clipboard::PastedImage::Path(path)) => {
+            Some(miyu_base::clipboard::PastedImage::Path(path)) => {
                 Some(QueuedPromptAttachment::Path { path: path.clone() })
             }
             None => None,
@@ -1083,165 +724,12 @@ fn persist_queued_submission(
     )
 }
 
-/// Queues a submission for the turn currently running in the daemon, using
-/// the cross-process queue target so the daemon consumes it mid-turn.
-async fn persist_remote_queued_submission(
-    paths: &MiyuPaths,
-    run_id: &str,
-    turn_id: &str,
-    submission: &LiveSubmission,
-) -> Result<QueuedPrompt> {
-    let mut stream = ipc::connect(&paths.ipc_socket()).await?;
-    ipc::send(
-        &mut stream,
-        &IpcRequest::new(IpcCommand::QueueTurnUpdate {
-            run_id: run_id.to_string(),
-            turn_id: turn_id.to_string(),
-            content: submission.content.clone(),
-            display_content: submission.display_content.clone(),
-            images: ipc_images(&submission.images),
-            supersede: false,
-        }),
-    )
-    .await?;
-    match ipc::receive::<IpcFrame>(&mut stream).await? {
-        Some(IpcFrame::TurnUpdateAccepted {
-            prompt_id,
-            seq,
-            submitted_at,
-            ..
-        }) => Ok(QueuedPrompt {
-            prompt_id,
-            seq,
-            content: submission.content.clone(),
-            display_content: submission.display_content.clone(),
-            attachments: queued_prompt_attachments(&submission.images),
-            uploaded_attachments: Vec::new(),
-            submitted_at,
-        }),
-        Some(IpcFrame::Error { message, .. }) => bail!("{message}"),
-        Some(_) => bail!("Miyu core returned an invalid queue response"),
-        None => bail!("Miyu core closed the queue connection"),
-    }
-}
-
-struct ReplCursorRestore;
-
-impl Drop for ReplCursorRestore {
-    fn drop(&mut self) {
-        // 1. 会话级兜底：恢复括号粘贴与光标
-        // 2. 再关闭 raw mode；键盘增强由 LiveRawMode / 局部输入作用域负责 Pop
-        let _ = execute!(
-            io::stdout(),
-            DisableBracketedPaste,
-            DisableFocusChange,
-            Show
-        );
-        let _ = terminal::disable_raw_mode();
-    }
-}
-
-/// Raw input is required for key events, but renderer output still relies on
-/// newline translation. 实现挪到了 `terminal::restore_output_processing`：
-/// chafa 跑完也要补一次，那边是两个调用方的公共位置。
-fn restore_live_output_processing() -> Result<()> {
-    crate::terminal::restore_output_processing()
-}
-
-/// 终端已死(PTY 对端关闭):POLLHUP/POLLERR/POLLNVAL 任一命中。
-/// 不发 SIGHUP 的断开路径(tmux kill-pane、终端崩溃、SSH 掉线)只能靠它
-/// 兜底——否则 crossterm 的 poll 对 EOF fd 永远立即就绪、read 又读不出
-/// 事件,REPL 主循环全速空转,留下一个 98% CPU 的残留进程。
-/// 挂断看门狗:独立线程每 500ms 裸 poll 探测 stdin 挂断,确认后给优雅
-/// 退出路径 5 秒宽限——主线程若卡死在 crossterm 对 HUP fd 的任何内部
-/// 自旋(事件 poll、CPR 应答等待,均为实测形态),由这里强制收尾,
-/// 保证关终端后绝不留下吃 CPU 的残留进程。
-/// REPL 是不是正跑在全屏（备用屏）里。
-///
-/// 提问面板、选择器这类"自己占一块屏"的组件要据此改行为：备用屏没有
-/// scrollback，靠打换行腾地方会把正文顶没。
-pub(crate) fn in_fullscreen() -> bool {
-    repl::tail::screen::in_fullscreen()
-}
-
-/// 全屏下正文区的尺寸（列, 行）。别的地方拿它替代 `terminal::size()`。
-pub(crate) fn content_viewport() -> Option<(u16, u16)> {
-    repl::tail::screen::content_viewport()
-}
-
-pub(crate) fn spawn_hangup_watchdog() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        std::thread::spawn(|| loop {
-            std::thread::sleep(Duration::from_millis(500));
-            if terminal_hangup() {
-                std::thread::sleep(Duration::from_secs(5));
-                if terminal_hangup() {
-                    std::process::exit(1);
-                }
-            }
-        });
-    });
-}
-
-fn terminal_hangup() -> bool {
-    let stdin_is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
-    match hangup_watch_fd(stdin_is_tty, controlling_tty_fd()) {
-        Some(fd) => fd_hung_up(fd),
-        None => false,
-    }
-}
-
-/// 盯哪个 fd 判挂断:stdin 是终端就盯 stdin;stdin 被管道/重定向占用时盯
-/// **控制终端**——管道读到 EOF 是正常收尾,不是挂断。
-///
-/// shellhook 的 `printf '%s' "$buffer" | miyu --shell-intercept --stdin` 就是
-/// 这个形态:写端 printf 一退出,stdin 立刻常驻 POLLHUP。原先一律裸 poll
-/// stdin,于是问题面板一打开(它是 `spawn_hangup_watchdog` 的第一个调用点)
-/// 就按下 5 秒倒计时,到点 `exit(1)`,daemon 看到一次性客户端断线又把回合
-/// 取消——用户看到的是「面板开着没动,几秒后自己没了」(09-10 报)。
-///
-/// 拿不到控制终端(纯后台、cron)时返回 None:宁可不判挂断,也不误杀。
-fn hangup_watch_fd(
-    stdin_is_tty: bool,
-    controlling_tty: Option<libc::c_int>,
-) -> Option<libc::c_int> {
-    if stdin_is_tty {
-        return Some(libc::STDIN_FILENO);
-    }
-    controlling_tty
-}
-
-/// 控制终端 fd,进程内只开一次。它随进程存活,不关——看门狗每 500ms 用一次。
-fn controlling_tty_fd() -> Option<libc::c_int> {
-    use std::os::unix::io::IntoRawFd;
-    static FD: std::sync::OnceLock<Option<libc::c_int>> = std::sync::OnceLock::new();
-    *FD.get_or_init(|| {
-        std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/tty")
-            .ok()
-            .map(IntoRawFd::into_raw_fd)
-    })
-}
-
-fn fd_hung_up(fd: libc::c_int) -> bool {
-    let mut pollfd = libc::pollfd {
-        fd,
-        events: 0,
-        revents: 0,
-    };
-    let ready = unsafe { libc::poll(&mut pollfd, 1, 0) };
-    ready == 1 && (pollfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL)) != 0
-}
-
 enum LiveReplOutcome {
     Exit,
     Submit(
         AgentMode,
         String,
-        Vec<Option<crate::clipboard::PastedImage>>,
+        Vec<Option<miyu_base::clipboard::PastedImage>>,
         /// 进上键历史的样子(占位符+载荷),不是展开后的全文。
         ReplHistoryEntry,
     ),
@@ -1286,52 +774,13 @@ fn run_history(paths: &MiyuPaths, args: HistoryArgs) -> Result<()> {
     run_history_with_state(&state, args)
 }
 
-fn run_history_with_state(state: &StateStore, args: HistoryArgs) -> Result<()> {
-    for entry in state.history(args.limit)? {
-        if args.raw {
-            println!("{}", serde_json::to_string(&entry)?);
-            continue;
-        }
-        let display_role = if entry.role.ends_with("_clarification") {
-            entry.role.trim_end_matches("_clarification")
-        } else {
-            entry.role.as_str()
-        };
-        println!("{} {display_role}", entry.timestamp);
-        if entry.role.starts_with("assistant") {
-            let response = crate::llm::ChatResult {
-                content: entry.content,
-                reasoning: if args.no_thinking {
-                    None
-                } else {
-                    entry.reasoning
-                },
-                usage: None,
-                usage_estimated: false,
-                tool_calls: Vec::new(),
-                provider_id: None,
-                model: None,
-                finish_reason: None,
-                thinking_signature: None,
-                last_request_usage: None,
-                responses_continuation: None,
-            };
-            render::print_assistant_response(&response, !args.no_thinking)?;
-        } else {
-            println!("{}", entry.content);
-        }
-        println!();
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod default_kb_progress_tests {
     use super::*;
 
     #[test]
     fn progress_is_emitted_as_a_complete_line() {
-        let stage = crate::default_kb::UpdateStage::FetchingRepository;
+        let stage = miyu_engine::default_kb::UpdateStage::FetchingRepository;
         let mut output = Vec::new();
 
         write_default_kb_update_progress(&mut output, stage).unwrap();
@@ -1347,91 +796,19 @@ fn join_message(parts: Vec<String>) -> String {
     parts.join(" ").trim().to_string()
 }
 
+/// 终端入口的事件处理:渲染交给 `render::apply_agent_event`,只有模型提问要在
+/// 这里弹面板(问题面板是终端入口自己的东西)。
 pub(crate) fn handle_agent_event(
     renderer: &mut render::StreamRenderer,
     event: AgentEvent,
 ) -> Result<()> {
-    match event {
-        AgentEvent::TurnStarted { .. } => Ok(()),
-        AgentEvent::RawReasoning(_) => Ok(()),
-        AgentEvent::FlushJournal => Ok(()),
-        // 单次输出模式没有常驻 footer,逐请求计量快照无处可画。
-        AgentEvent::RoundUsage { .. } => Ok(()),
-        AgentEvent::Chunk(chunk) => {
-            renderer.write_chunk(chunk)?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::ReasoningStart { received_at } => renderer.start_reasoning_phase(received_at),
-        AgentEvent::ReasoningReset { received_at } => renderer.reset_reasoning_phase(received_at),
-        AgentEvent::ReasoningPartStart { received_at } => {
-            renderer.start_reasoning_part(received_at)
-        }
-        AgentEvent::ReasoningPartEnd { received_at } => renderer.finish_reasoning_part(received_at),
-        AgentEvent::ReasoningTitle(title) => {
-            renderer.write_reasoning_title(&title)?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::ToolCall {
-            name, arguments, ..
-        } => {
-            renderer.write_tool_call(&name, &arguments)?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::ToolPreparing { name, batch } => {
-            renderer.write_tool_preparing(&name, batch)?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::ToolResult {
-            name, ok, output, ..
-        } => {
-            renderer.write_tool_result(&name, ok, &output)?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::ToolProgress { name, message, .. } => {
-            renderer.write_tool_progress(&name, &message)?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::CommandOutput {
-            name,
-            stream,
-            chunk,
-            ..
-        } => {
-            renderer.write_command_output(&name, stream, &chunk)?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::PrepareForExternalOutput { ready } => {
-            renderer.prepare_for_external_output()?;
-            let _ = ready.send(true);
-            Ok(())
-        }
-        AgentEvent::Image { .. } | AgentEvent::Artifact { .. } => Ok(()),
-        AgentEvent::AskQuestion {
+    match render::apply_agent_event(renderer, event)? {
+        Some(AgentEvent::AskQuestion {
             request, responder, ..
-        } => {
+        }) => {
             renderer.prepare_for_external_output()?;
             question_panel::answer(renderer, request, responder, None)
         }
-        AgentEvent::QueuedPromptsConsumed { .. } => Ok(()),
-        AgentEvent::GenerationSuperseded { .. } => Ok(()),
-        AgentEvent::SpinnerTick => renderer.tick_spinner(),
-        AgentEvent::CompactStart => {
-            renderer.write_system_message(t("Compacting context...", "正在压缩上下文..."))?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::CompactChunk(chunk) => {
-            renderer.write_compact_chunk(&chunk)?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::CompactEnd => {
-            renderer.finish_compact()?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::PopStart => renderer.tick_spinner(),
-        AgentEvent::PopEnd => renderer.tick_spinner(),
-        AgentEvent::Notice { text } => {
-            renderer.write_system_message(&text)?;
-            renderer.tick_spinner()
-        }
+        _ => Ok(()),
     }
 }

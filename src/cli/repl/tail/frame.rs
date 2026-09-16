@@ -513,7 +513,8 @@ impl LiveReplTail {
             )?;
         }
         let lifted = output_bottom.filter(|_| {
-            crate::terminal::kitty::images_emitted() && (leading_scroll > 0 || !scrolls.is_empty())
+            miyu_base::terminal::kitty::images_emitted()
+                && (leading_scroll > 0 || !scrolls.is_empty())
         });
         if let Some(bottom) = lifted {
             queue_lifted_frame(

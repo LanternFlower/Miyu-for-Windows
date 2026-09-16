@@ -369,13 +369,6 @@ pub(in crate::config_tui) fn edit_keyword_list(
     }
 }
 
-pub(in crate::config_tui) fn format_id_list(ids: &[i64]) -> String {
-    ids.iter()
-        .map(i64::to_string)
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 pub(in crate::config_tui) fn parse_id_list(value: &str) -> Result<Vec<i64>> {
     value
         .split([',', ' ', '\u{3000}', ';', '\n', '\r', '\t'])

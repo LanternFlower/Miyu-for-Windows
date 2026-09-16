@@ -8,7 +8,6 @@ mod footer_tail;
 mod footer_width;
 mod hangup;
 mod input_editing;
-mod ipc_event;
 mod lobby_layout;
 mod pop_menu;
 mod shared;

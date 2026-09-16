@@ -14,10 +14,10 @@ pub(in crate::cli) async fn try_run_remote_chat(
     show_reasoning: Option<bool>,
     plain: bool,
     mode: AgentMode,
-    images: &[Option<crate::clipboard::PastedImage>],
+    images: &[Option<miyu_base::clipboard::PastedImage>],
     session_override: Option<String>,
     jobs_feed: Option<&JobsFeed>,
-    overrides: Option<crate::ipc::TurnOverrides>,
+    overrides: Option<miyu_core::ipc::TurnOverrides>,
 ) -> Result<Option<RemoteTurnSummary>> {
     let refreshed_paths = if direct_mode_requested() {
         None
@@ -201,7 +201,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                         let line = live_tail.editor.input.trim_start().to_string();
                         match parse_repl_input(&line) {
                             ReplInput::Slash(
-                                crate::slash_commands::ReplSlashCommand::Goal,
+                                miyu_core::slash_commands::ReplSlashCommand::Goal,
                                 args,
                             ) => {
                                 let args = args.trim().to_string();
@@ -226,7 +226,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                                 let _ = super::super::session::send_ipc_admin(
                                     paths,
                                     IpcCommand::Goal {
-                                        target: crate::ipc::SessionRef::Id {
+                                        target: miyu_core::ipc::SessionRef::Id {
                                             id: turn_session_id.clone(),
                                         },
                                         input: args,
@@ -419,7 +419,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                 handle_agent_event(
                     &mut renderer,
                     AgentEvent::Chunk(ChatStreamChunk {
-                        kind: crate::llm::ChatStreamKind::Content,
+                        kind: miyu_core::llm::ChatStreamKind::Content,
                         text: delta.to_string(),
                     }),
                 )?;
@@ -430,7 +430,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                 handle_agent_event(
                     &mut renderer,
                     AgentEvent::Chunk(ChatStreamChunk {
-                        kind: crate::llm::ChatStreamKind::Reasoning,
+                        kind: miyu_core::llm::ChatStreamKind::Reasoning,
                         text: delta.to_string(),
                     }),
                 )?;
@@ -558,7 +558,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                             // 图**下面**那一行空反倒一直没有，正文直接贴着图。
                             renderer.queue_after_timeline(format!(
                                 "{}\n",
-                                crate::render::timeline::indent_body(&placeholder)
+                                miyu_hosts::render::timeline::indent_body(&placeholder)
                             ));
                             if let Some(live) = live.as_deref_mut() {
                                 live.apply_renderer_frame(&mut renderer)?;
@@ -599,7 +599,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                     live.apply_renderer_frame(&mut renderer)?;
                     synchronized_terminal_update(CursorAfterUpdate::Hidden, || live.suspend())?;
                 }
-                let request = crate::question::QuestionRequest {
+                let request = miyu_base::question::QuestionRequest {
                     questions: serde_json::from_value(
                         data.get("questions").cloned().unwrap_or_default(),
                     )?,
@@ -628,7 +628,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                     let leave_summary = !renderer.timeline_static();
                     crate::question_tui::ask_with(&request, Some(&mut scroll), leave_summary)
                         .unwrap_or_else(|err| {
-                            crate::question::QuestionResponse::Unavailable(err.to_string())
+                            miyu_base::question::QuestionResponse::Unavailable(err.to_string())
                         })
                 };
                 // 全屏下面板退场之后，下一帧就按缓冲恢复正文和输入区，
@@ -645,7 +645,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                     renderer.write_question_exchange(&request, &asked)?;
                 }
                 match asked {
-                    crate::question::QuestionResponse::Answered(answers) => {
+                    miyu_base::question::QuestionResponse::Answered(answers) => {
                         send_ipc_command(
                             paths,
                             IpcCommand::AnswerQuestion {
@@ -660,7 +660,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                     // open. That is not the user calling the turn off, so the
                     // question is resolved and the turn carries on; the tool
                     // that asked finds out that nobody answered and can say so.
-                    crate::question::QuestionResponse::Unavailable(_) => {
+                    miyu_base::question::QuestionResponse::Unavailable(_) => {
                         let _ = send_ipc_command(
                             paths,
                             IpcCommand::CloseQuestion {
@@ -671,8 +671,8 @@ pub(in crate::cli) async fn try_run_remote_chat(
                     }
                     // The terminal question UI maps its close gestures to
                     // Cancelled; that one really is "stop this turn".
-                    crate::question::QuestionResponse::Closed
-                    | crate::question::QuestionResponse::Cancelled => {
+                    miyu_base::question::QuestionResponse::Closed
+                    | miyu_base::question::QuestionResponse::Cancelled => {
                         let _ = send_ipc_command(
                             paths,
                             IpcCommand::Cancel {
@@ -737,7 +737,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
             "context.compact_delta" => handle_agent_event(
                 &mut renderer,
                 AgentEvent::CompactChunk(ChatStreamChunk {
-                    kind: crate::llm::ChatStreamKind::Content,
+                    kind: miyu_core::llm::ChatStreamKind::Content,
                     text: ipc_text(&data, "delta").to_string(),
                 }),
             )?,

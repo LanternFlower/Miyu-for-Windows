@@ -1,12 +1,12 @@
 //! QQ 会话、人格与模型选择。
 
-use crate::config::{
-    AppConfig, PlatformConversationKind, PlatformModelPoolInheritance, PlatformPersonaOverride,
-};
 use crate::config_tui::{
     parse_id_lines, parse_id_list, parse_keyword_lines, platform_conversation_id_label,
     platform_conversation_kind_label, platform_persona_summary, route_pool_summary, t,
     vision_provider_model_choice_values, PersonaMenuTarget,
+};
+use miyu_base::config::{
+    AppConfig, PlatformConversationKind, PlatformModelPoolInheritance, PlatformPersonaOverride,
 };
 
 #[test]

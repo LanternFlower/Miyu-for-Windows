@@ -2,10 +2,6 @@
 //! Tab 切换模式行看两种颜色，其余任意键退出。调 `config/banner.txt` 时用它对样。
 
 use super::BannerScene;
-use crate::agent::AgentMode;
-use crate::config::AppConfig;
-use crate::i18n::text as t;
-use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -15,10 +11,14 @@ use crossterm::terminal::{
     LeaveAlternateScreen,
 };
 use crossterm::{execute, queue};
+use miyu_base::config::AppConfig;
+use miyu_base::i18n::text as t;
+use miyu_base::paths::MiyuPaths;
+use miyu_engine::agent::AgentMode;
 use std::io::{self, IsTerminal, Write};
 use std::time::Duration;
 
-pub(crate) fn run(config: &AppConfig, paths: &MiyuPaths) -> Result<()> {
+pub fn run(config: &AppConfig, paths: &MiyuPaths) -> Result<()> {
     if !io::stdout().is_terminal() {
         bail!(
             "{}",

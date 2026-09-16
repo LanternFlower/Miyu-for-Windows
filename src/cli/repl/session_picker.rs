@@ -156,7 +156,7 @@ fn run(
                 return Ok(matches
                     .get(selected)
                     .map_or(SessionPick::Cancelled, |(_, index)| {
-                        SessionPick::Switch(crate::ipc::SessionRef::Id {
+                        SessionPick::Switch(miyu_core::ipc::SessionRef::Id {
                             id: entries[*index].id.clone(),
                         })
                     }))

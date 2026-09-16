@@ -689,7 +689,7 @@ pub(in crate::config_tui) fn edit_qq_sleep_hours(
     else {
         return Ok(());
     };
-    match crate::config::parse_sleep_hours(&value) {
+    match miyu_base::config::parse_sleep_hours(&value) {
         Ok(_) => config.platforms.qq.sleep_hours = value.trim().to_string(),
         Err(error) => message(stdout, &error)?,
     }

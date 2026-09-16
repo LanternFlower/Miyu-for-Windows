@@ -7,7 +7,7 @@
 
 use crate::config_tui::*;
 
-const SCHEDULED_ID: &str = crate::config::QQ_SCHEDULED_MESSAGES_PLUGIN_ID;
+const SCHEDULED_ID: &str = miyu_base::config::QQ_SCHEDULED_MESSAGES_PLUGIN_ID;
 
 fn plugin_tasks(config: &AppConfig) -> Vec<serde_json::Value> {
     config

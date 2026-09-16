@@ -185,7 +185,7 @@ pub(in crate::cli) async fn run_tool_call(paths: &MiyuPaths, args: ToolCallArgs)
 
     // 直连回退:本地建 registry(guard/超时同源),会话与来源按环境作用域化。
     // jobs 等 daemon 内存态在本地进程不可见,直连调试形态可接受。
-    if depth >= crate::tools::workspace::MAX_BRIDGE_DEPTH {
+    if depth >= miyu_base::workspace::MAX_BRIDGE_DEPTH {
         bail!("tool bridge recursion limit reached (depth {depth})");
     }
     let registry = build_tool_registry(&config, paths, mode, false)?;
@@ -199,20 +199,20 @@ pub(in crate::cli) async fn run_tool_call(paths: &MiyuPaths, args: ToolCallArgs)
             )
         );
     }
-    let turn_origin: crate::tools::workspace::TurnOrigin = origin
+    let turn_origin: miyu_base::workspace::TurnOrigin = origin
         .as_deref()
         .and_then(|raw| serde_json::from_str(raw).ok())
-        .unwrap_or(crate::tools::workspace::TurnOrigin::Human);
-    let invoke = crate::tools::workspace::with_turn_origin(
+        .unwrap_or(miyu_base::workspace::TurnOrigin::Human);
+    let invoke = miyu_base::workspace::with_turn_origin(
         turn_origin,
-        crate::tools::workspace::with_bridge_depth(depth + 1, async {
+        miyu_base::workspace::with_bridge_depth(depth + 1, async {
             registry.call(&name, &arguments).await
         }),
     );
     let output = match session {
         Some(session) => {
             let session: std::sync::Arc<str> = session.into();
-            crate::tools::workspace::with_session(session, invoke).await?
+            miyu_base::workspace::with_session(session, invoke).await?
         }
         None => invoke.await?,
     };
@@ -229,7 +229,7 @@ pub(in crate::cli) async fn run_tool_call(paths: &MiyuPaths, args: ToolCallArgs)
 pub(in crate::cli) fn remote_tool_image_size(
     tool_name: &str,
     requested: &str,
-    config: &crate::config::AppConfig,
+    config: &miyu_base::config::AppConfig,
 ) -> Option<String> {
     let requested = requested.trim();
     if !requested.is_empty() {
@@ -279,7 +279,7 @@ pub(in crate::cli) fn remote_tool_image_asset_id(event: &serde_json::Value) -> O
 }
 
 pub(in crate::cli) fn remote_image_preview(
-    asset: &crate::state::ImageAssetData,
+    asset: &miyu_core::state::ImageAssetData,
 ) -> Result<tempfile::NamedTempFile> {
     let suffix = if asset.asset.mime == "image/gif" {
         ".png"
@@ -306,8 +306,8 @@ pub(in crate::cli) fn remote_image_preview(
 #[cfg(test)]
 mod remote_tool_image_tests {
     use crate::cli::tool_cmds::*;
-    use crate::ipc::Frame as IpcFrame;
     use image::{Delay, Frame, Rgba, RgbaImage};
+    use miyu_core::ipc::Frame as IpcFrame;
 
     #[test]
     fn web_tool_image_event_exposes_asset_id_to_remote_cli() {
@@ -359,8 +359,8 @@ mod remote_tool_image_tests {
                 }))
                 .unwrap();
         }
-        let asset = crate::state::ImageAssetData {
-            asset: crate::state::ImageAsset {
+        let asset = miyu_core::state::ImageAssetData {
+            asset: miyu_core::state::ImageAsset {
                 asset_id: "img-gif".to_string(),
                 turn_id: "turn-1".to_string(),
                 tool_id: Some("tool-1".to_string()),

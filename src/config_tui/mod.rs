@@ -1,6 +1,5 @@
 mod antigravity_form;
 mod claude_code_form;
-mod cli_catalog;
 mod codex_form;
 mod personas;
 mod platforms;
@@ -8,8 +7,6 @@ mod plugin_settings;
 mod plugins;
 mod providers;
 mod quota;
-pub(crate) use cli_catalog::builtin_cli_binary;
-pub(crate) use providers::{auto_configure_model_tags, fetch_models};
 mod real_context;
 mod scheduled_messages;
 mod settings;
@@ -34,35 +31,35 @@ use undo::*;
 use voice::*;
 use widgets::*;
 
-use crate::config::{
-    merge_group_join_approval_settings, merge_real_context_settings, ActiveProviderModelConfig,
-    ApiQuotaAccountConfig, ApiQuotaProviderConfig, AppConfig, PlatformCommandPermission,
-    PlatformConversationConfig, PlatformConversationKind, PlatformModelPoolInheritance,
-    PlatformModelRoute, PlatformPersonaOverride, PlatformRateLimit, PlatformSessionLimits,
-    ProviderConfig, ProviderModelChoice, QqGroupJoinApprovalGroupConfig,
-    QqGroupJoinApprovalPluginSettings, QqMemeCollectorPluginSettings,
-    QqMessageHistoryPluginSettings, RealContextIdentityMapping, RealContextPluginSettings,
-    MAX_COMMAND_OUTPUT_LINES, MAX_PLATFORM_COMMAND_PREFIX_CHARS, MAX_PLATFORM_SESSION_QUEUED,
-    MAX_PLATFORM_SESSION_RUNNING, MAX_REPL_REPLAY_TURNS, QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID,
-    QQ_MEME_COLLECTOR_PLUGIN_ID, QQ_MESSAGE_HISTORY_PLUGIN_ID, REAL_CONTEXT_PLUGIN_ID,
-};
-use crate::default_models::{OPENCODE_DEFAULT_VISION_MODEL, OPENCODE_PROVIDER_ID};
-use crate::i18n::{is_zh, text as t};
-use crate::llm::{
-    thinking_variant_options_for_model, ThinkingVariantOptions, ThinkingVariantPreferences,
-};
-use crate::paths::MiyuPaths;
-use crate::platforms::commands::{self, PlatformCommandDescriptor};
-use crate::platforms::plugins::{
-    active_judgement_skip_ids, apply_active_judgement_skip_editor_changes,
-};
-use crate::state::StateStore;
 use anyhow::{bail, Result};
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use crossterm::style::{Attribute, Print, SetAttribute};
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, queue};
+use miyu_base::config::{
+    merge_group_join_approval_settings, merge_real_context_settings, ActiveProviderModelConfig,
+    ApiQuotaAccountConfig, ApiQuotaProviderConfig, AppConfig, PlatformCommandPermission,
+    PlatformConversationConfig, PlatformConversationKind, PlatformModelPoolInheritance,
+    PlatformModelRoute, PlatformPersonaOverride, PlatformRateLimit, PlatformSessionLimits,
+    ProviderConfig, QqGroupJoinApprovalGroupConfig, QqGroupJoinApprovalPluginSettings,
+    QqMemeCollectorPluginSettings, QqMessageHistoryPluginSettings, RealContextIdentityMapping,
+    RealContextPluginSettings, MAX_COMMAND_OUTPUT_LINES, MAX_PLATFORM_COMMAND_PREFIX_CHARS,
+    MAX_PLATFORM_SESSION_QUEUED, MAX_PLATFORM_SESSION_RUNNING, MAX_REPL_REPLAY_TURNS,
+    QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID, QQ_MEME_COLLECTOR_PLUGIN_ID, QQ_MESSAGE_HISTORY_PLUGIN_ID,
+    REAL_CONTEXT_PLUGIN_ID,
+};
+use miyu_base::default_models::{OPENCODE_DEFAULT_VISION_MODEL, OPENCODE_PROVIDER_ID};
+use miyu_base::i18n::{is_zh, text as t};
+use miyu_base::paths::MiyuPaths;
+use miyu_core::llm::{
+    thinking_variant_options_for_model, ThinkingVariantOptions, ThinkingVariantPreferences,
+};
+use miyu_core::state::StateStore;
+use miyu_hosts::platforms::commands::{self, PlatformCommandDescriptor};
+use miyu_hosts::platforms::plugins::{
+    active_judgement_skip_ids, apply_active_judgement_skip_editor_changes,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -83,8 +80,8 @@ pub fn run_embedded(paths: &MiyuPaths) -> Result<bool> {
 
 fn run_with(paths: &MiyuPaths, owns_alt_screen: bool) -> Result<bool> {
     AppConfig::init_files(paths)?;
-    crate::models_cache::try_load(paths);
-    crate::models_cache::spawn_background_refresh(paths.clone());
+    miyu_base::models_cache::try_load(paths);
+    miyu_base::models_cache::spawn_background_refresh(paths.clone());
     let config = AppConfig::load_or_default(paths)?;
     let thinking_variants = ThinkingVariantPreferences::load(paths);
     TerminalSession::start(owns_alt_screen)?.run(paths, config, thinking_variants)
@@ -164,9 +161,11 @@ fn sync_usage_ledger_after_save(
     };
     let path = paths
         .state_dir
-        .join(crate::state::usage::USAGE_HISTORY_FILE);
-    for (old, new) in crate::config::detect_provider_renames(&before.providers, &config.providers) {
-        match crate::state::usage::rename_provider(&path, &old, &new) {
+        .join(miyu_core::state::usage::USAGE_HISTORY_FILE);
+    for (old, new) in
+        miyu_base::config::detect_provider_renames(&before.providers, &config.providers)
+    {
+        match miyu_core::state::usage::rename_provider(&path, &old, &new) {
             Ok(rows) => tracing::info!(
                 old = %old,
                 new = %new,
@@ -194,7 +193,7 @@ fn sync_usage_ledger_after_save(
 fn dirty_snapshot(config: &AppConfig) -> Option<String> {
     let mut probe = config.clone();
     probe.plugins.memory = probe.memory_config().clone();
-    probe.memory = crate::config::MemoryConfig::default();
+    probe.memory = miyu_base::config::MemoryConfig::default();
     serde_json::to_string(&probe).ok()
 }
 
@@ -481,14 +480,16 @@ impl<'a> ProviderBrowser<'a> {
         self.fetch_seq += 1;
         if let Some(provider) = self.config.providers.get(self.provider_idx).cloned() {
             let seq = self.fetch_seq;
-            let cli_binary = cli_catalog::builtin_cli_binary(&self.config, &provider);
+            let cli_binary =
+                miyu_base::provider_catalog::builtin_cli_binary(&self.config, &provider);
             let (tx, rx) = mpsc::channel();
             self.fetch_rx = Some(rx);
             self.loading = true;
             self.status = t("Fetching model list...", "正在获取模型列表...").to_string();
             std::thread::spawn(move || {
                 let result =
-                    fetch_models(&provider, cli_binary.as_deref()).map_err(|err| err.to_string());
+                    miyu_base::provider_catalog::fetch_models(&provider, cli_binary.as_deref())
+                        .map_err(|err| err.to_string());
                 let _ = tx.send((seq, result));
             });
         } else {
@@ -592,7 +593,7 @@ impl<'a> ProviderBrowser<'a> {
         let added = insert_custom_model(self.config, self.provider_idx, &self.raw_models, &name);
         if added {
             if let Some(provider) = self.config.providers.get_mut(self.provider_idx) {
-                auto_configure_model_tags(self.paths, provider, &name);
+                miyu_base::provider_catalog::auto_configure_model_tags(self.paths, provider, &name);
             }
         } else {
             self.undo.undo(self.config);
@@ -750,7 +751,11 @@ impl<'a> ProviderBrowser<'a> {
                 let mut model_updated = false;
                 if let Some(model) = self.models.get(self.model_idx).cloned() {
                     if let Some(provider) = self.config.providers.get_mut(self.provider_idx) {
-                        auto_configure_model_tags(self.paths, provider, &model.full);
+                        miyu_base::provider_catalog::auto_configure_model_tags(
+                            self.paths,
+                            provider,
+                            &model.full,
+                        );
                     }
                     if let Some(provider) = self.config.providers.get_mut(self.provider_idx) {
                         if edit_model_form(
@@ -803,7 +808,11 @@ impl<'a> ProviderBrowser<'a> {
                 removed = Some((provider_id, model));
             } else {
                 provider.models.push(model.full.clone());
-                auto_configure_model_tags(self.paths, provider, &model.full);
+                miyu_base::provider_catalog::auto_configure_model_tags(
+                    self.paths,
+                    provider,
+                    &model.full,
+                );
                 if provider.default_model.trim().is_empty() {
                     provider.default_model = model.full.clone();
                 }
@@ -986,7 +995,7 @@ impl<'a> ProviderBrowser<'a> {
     }
 }
 
-use crate::config::EMBEDDING_MODALITY;
+use miyu_base::config::EMBEDDING_MODALITY;
 
 #[cfg(test)]
 mod tests;

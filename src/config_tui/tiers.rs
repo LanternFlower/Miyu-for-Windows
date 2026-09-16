@@ -7,12 +7,8 @@
 //!
 //! 界面上档位只按 locale 显示一个名字（中文「轻量」/ 英文 `lite`），配置文件里
 //! 存的仍是 `ModelTier::label()` 那套英文 id。
-use crate::config::{AuxRole, ModelTier};
 use crate::config_tui::*;
-
-pub(in crate::config_tui) fn tier_display_name(tier: ModelTier) -> &'static str {
-    tier_hint(tier)
-}
+use miyu_base::config::{AuxRole, ModelTier};
 
 /// 档位在当前 locale 下的显示名：只说「什么档」，不说工具——档位不影响工具集。
 pub(in crate::config_tui) fn tier_hint(tier: ModelTier) -> &'static str {

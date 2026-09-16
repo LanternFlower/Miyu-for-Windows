@@ -1,38 +1,5 @@
 {
-  "_说明": "Measured from the unmodified main baseline for release 0.6.0. Existing dependency debt only. New/increased edges remain failures.",
-  "source_commit": "b4d2ac929dbfa547c9e85468dfde8649f5228f88",
-  "waivers": {
-    "llm->platforms": {
-      "count": 1,
-      "reason": "Existing at main b4d2ac92: src/llm/openai_compatible/cli_relay/mod.rs"
-    },
-    "platforms->web": {
-      "count": 4,
-      "reason": "Existing at main b4d2ac92: src/platforms/onebot/voice_inbound.rs, src/platforms/tool.rs"
-    },
-    "render->cli": {
-      "count": 2,
-      "reason": "Existing at main b4d2ac92: src/render/markdown.rs, src/render/mod.rs"
-    },
-    "tools->cli": {
-      "count": 2,
-      "reason": "Existing at main b4d2ac92: src/tools/memes/validate.rs, src/tools/vision/print.rs"
-    },
-    "tools->platforms": {
-      "count": 5,
-      "reason": "Existing at main b4d2ac92: src/tools/platform_outreach.rs, src/tools/vision/mod.rs"
-    },
-    "tools->web": {
-      "count": 5,
-      "reason": "Existing at main b4d2ac92: src/tools/platform_outreach.rs, src/tools/voice_chat.rs, src/tools/voice_speak.rs"
-    },
-    "web->cli": {
-      "count": 4,
-      "reason": "Existing at main b4d2ac92: src/web/actor/job_wake.rs"
-    },
-    "web->config_tui": {
-      "count": 2,
-      "reason": "Existing at main b4d2ac92: src/web/providers_api.rs"
-    }
-  }
+  "_说明": "跨层引用白名单。2026-09-16 完整层序上线时登记的 12 条边已全部烧尽(含测试夹具);此后任何跨层引用都是新增,门禁直接红。要放行必须先写清端口设计,再把边和理由登记到这里。",
+  "source_commit": "843c169a7900be8d9c3d0096a9fd23ecbff2d25c",
+  "waivers": {}
 }

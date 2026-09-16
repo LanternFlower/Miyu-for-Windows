@@ -3,13 +3,13 @@
 //! `status` 一眼看出为什么语义检索没生效（没启用/没模型/没运行库/worker 起不来），
 //! `reindex` 把当前人格记忆、当前表情库、知识库缺的向量一次补齐。
 
-use crate::config::{AppConfig, EmbeddingBackend};
-use crate::embedding::{installed_local_models, runtime_library, shutdown_worker, Embedder};
-use crate::memory::MemoryStore;
-use crate::paths::MiyuPaths;
-use crate::tools;
 use anyhow::Result;
 use clap::{Args, Subcommand};
+use miyu_base::config::{AppConfig, EmbeddingBackend};
+use miyu_base::embedding::{installed_local_models, runtime_library, shutdown_worker, Embedder};
+use miyu_base::paths::MiyuPaths;
+use miyu_core::memory::MemoryStore;
+use miyu_engine::tools;
 use std::time::Instant;
 
 #[derive(Debug, Args)]
@@ -80,7 +80,7 @@ async fn status(config: &AppConfig, paths: &MiyuPaths) -> Result<()> {
             if !embedding.enabled {
                 "disabled in config".to_string()
             } else {
-                match crate::embedding::resolve_local_model(&embedding.local_model) {
+                match miyu_base::embedding::resolve_local_model(&embedding.local_model) {
                     Ok(_) => "remote provider/model not found".to_string(),
                     Err(error) => format!("{error:#}"),
                 }

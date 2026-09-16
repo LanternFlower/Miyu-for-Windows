@@ -109,8 +109,8 @@ pub(in crate::cli) fn cursor_position_or(fallback: (u16, u16)) -> (u16, u16) {
     // 取证：这一问要是没答上来，活动区就会按**外部输出之前**的位置重画，
     // 正好盖在刚打出来的图上。终端渲染大图（sixel 动辄上百 KB）期间不会
     // 回答 ESC[6n，图越大越容易在这里超时——所以要看得见它。
-    if crate::terminal::chafa::trace_enabled() {
-        crate::terminal::chafa::trace(&format!(
+    if miyu_base::terminal::chafa::trace_enabled() {
+        miyu_base::terminal::chafa::trace(&format!(
             "CPR {:?} {}ms fallback={:?}{}",
             answer,
             started.elapsed().as_millis(),
@@ -163,7 +163,7 @@ pub(in crate::cli) struct LiveReplTail {
     /// 那行永远没人清(用户 08-20 截图实锤)。
     pub(in crate::cli) footer_offset: Option<u16>,
     pub(in crate::cli) footer_spinner_last: Option<std::time::Instant>,
-    pub(in crate::cli) jobs: Vec<crate::tools::jobs::JobOverview>,
+    pub(in crate::cli) jobs: Vec<miyu_engine::tools::jobs::JobOverview>,
     /// 已经下过"停"的任务 → 下达的时刻。见 `suppress_jobs`。
     pub(in crate::cli) suppressed_jobs: std::collections::HashMap<String, std::time::Instant>,
     /// Σ 上那份实时加数：这一轮里跑着的前台子代理此刻烧了多少。
@@ -244,7 +244,7 @@ pub(in crate::cli) struct TerminalFrameTracker {
 }
 
 impl TerminalFrameTracker {
-    pub(in crate::cli) fn new(start: (u16, u16), columns: u16, bottom_margin: Option<u16>) -> Self {
+    pub fn new(start: (u16, u16), columns: u16, bottom_margin: Option<u16>) -> Self {
         let columns = usize::from(columns.max(1));
         let cursor_col = usize::from(start.0).min(columns.saturating_sub(1));
         let cursor_row = usize::from(start.1);
@@ -575,7 +575,7 @@ pub(in crate::cli) fn max_live_tail_start(terminal_rows: u16, tail_rows: u16) ->
 }
 
 impl LiveReplTail {
-    pub(in crate::cli) fn new(
+    pub fn new(
         mode: AgentMode,
         history: Vec<ReplHistoryEntry>,
         queued: Vec<QueuedPrompt>,
@@ -655,10 +655,6 @@ impl LiveReplTail {
                 screen.set_banner(None);
             }
         }
-    }
-
-    pub(in crate::cli) fn session_empty(&self) -> bool {
-        self.editor.mode_switchable
     }
 
     /// 换车道:输入框竖条换色、banner 的模式行跟着走。
@@ -821,8 +817,11 @@ impl LiveReplTail {
         self.footer.update_live_extra_tokens(tokens)
     }
 
-    pub(in crate::cli) fn set_jobs(&mut self, jobs: Vec<crate::tools::jobs::JobOverview>) -> bool {
-        let jobs: Vec<crate::tools::jobs::JobOverview> = if self.suppressed_jobs.is_empty() {
+    pub(in crate::cli) fn set_jobs(
+        &mut self,
+        jobs: Vec<miyu_engine::tools::jobs::JobOverview>,
+    ) -> bool {
+        let jobs: Vec<miyu_engine::tools::jobs::JobOverview> = if self.suppressed_jobs.is_empty() {
             jobs
         } else {
             let now = std::time::Instant::now();
@@ -993,7 +992,7 @@ impl LiveRawMode {
     ///
     /// 返回:
     /// - 成功时返回会在 Drop 时恢复终端的守卫对象
-    pub(in crate::cli) fn start() -> Result<Self> {
+    pub fn start() -> Result<Self> {
         enable_live_raw_mode()?;
         let mut stdout = io::stdout();
         if let Err(error) = execute!(stdout, EnableBracketedPaste) {

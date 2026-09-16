@@ -50,14 +50,6 @@ impl EditorBox {
             width,
         }
     }
-
-    /// 全宽贴左（普通会话、inline）。
-    pub(in crate::cli) fn full(cols: usize) -> Self {
-        Self {
-            left: 0,
-            width: cols.max(1),
-        }
-    }
 }
 
 /// 取 `Option<EditorBox>` 的可用宽度；`None` 走全宽。

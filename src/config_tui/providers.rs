@@ -46,103 +46,10 @@ pub(in crate::config_tui) struct ModelEntry {
 }
 
 impl ModelEntry {
-    pub(in crate::config_tui) fn new(name: &str, full: &str) -> Self {
+    pub fn new(name: &str, full: &str) -> Self {
         Self {
             name: name.to_string(),
             full: full.to_string(),
-        }
-    }
-}
-
-/// `cli_binary`:内置 CLI 供应商列模型要跑的二进制(见 `cli_catalog`);
-/// HTTP 供应商忽略。
-pub(crate) fn fetch_models(
-    provider: &ProviderConfig,
-    cli_binary: Option<&str>,
-) -> Result<Vec<String>> {
-    if provider.is_builtin_cli_provider() {
-        // 本机 CLI 后端没有 /models HTTP 端点:目录问 CLI 要(失败就报错),
-        // 再并上配置里手工加的名字。只返回 `provider.models` 的话,用户一旦
-        // 只激活一个模型,下次进来就只剩那一个可选(09-03)。
-        return crate::config_tui::cli_catalog::builtin_cli_catalog(provider, cli_binary);
-    }
-    let api_key = provider.api_key.as_deref().unwrap_or_default();
-    let mut api_key = if let Some(env_name) = api_key.strip_prefix("$env:") {
-        std::env::var(env_name).unwrap_or_default()
-    } else {
-        api_key.to_string()
-    };
-    if api_key.is_empty() && provider.is_opencode_zen() {
-        api_key = "public".to_string();
-    }
-    let url = models_url(&provider.base_url);
-    let mut request = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(provider.timeout_seconds))
-        .build()?
-        .get(url)
-        .header("Accept", "application/json")
-        .header("User-Agent", "miyu-config");
-    if !api_key.is_empty() {
-        request = request.bearer_auth(api_key);
-    }
-    let response = request.send()?;
-    let status = response.status();
-    let body = response.text()?;
-    if !status.is_success() {
-        bail!("{status}: {body}");
-    }
-    let parsed: ModelsResponse = serde_json::from_str(&body)?;
-    Ok(parsed
-        .data
-        .into_iter()
-        .map(|model| model.id)
-        .filter(|id| !id.is_empty())
-        .collect())
-}
-
-/// 该模型在 models.dev 目录里的条目(读磁盘全量目录,没有就联网取一次)。
-pub(in crate::config_tui) fn catalog_entry(
-    paths: &MiyuPaths,
-    provider: &ProviderConfig,
-    model: &str,
-) -> Option<crate::models_cache::ModelCatalogEntry> {
-    crate::models_cache::describe_models(
-        paths,
-        &provider.id,
-        &provider.base_url,
-        &[model.to_string()],
-    )
-    .pop()
-}
-
-/// 从目录自动同步模型元数据:输入模态、上下文窗口,只补空缺不覆盖手填
-/// (09-04,与 WebUI 「从目录补全」同一语义)。价格不落盘——运行时本来就按
-/// 目录价估算,编辑表单里只把目录价显示出来。
-pub(crate) fn auto_configure_model_tags(
-    paths: &MiyuPaths,
-    provider: &mut ProviderConfig,
-    model: &str,
-) {
-    let needs_modalities = !provider.model_modalities.contains_key(model);
-    let needs_window = !provider.model_context_window.contains_key(model);
-    if !needs_modalities && !needs_window {
-        return;
-    }
-    let Some(entry) = catalog_entry(paths, provider, model) else {
-        return;
-    };
-    if needs_modalities {
-        if let Some(modalities) = entry.modalities.filter(|modalities| !modalities.is_empty()) {
-            provider
-                .model_modalities
-                .insert(model.to_string(), modalities);
-        }
-    }
-    if needs_window {
-        if let Some(window) = entry.context_window.filter(|window| *window > 0) {
-            provider
-                .model_context_window
-                .insert(model.to_string(), window as usize);
         }
     }
 }
@@ -151,7 +58,7 @@ pub(crate) fn auto_configure_model_tags(
 /// `filter` 过滤后按组织分组;"All" 组恒收全部。
 ///
 /// 手填的必须置顶:它们不在供应商目录里,混进几百条中间就等于没加。同名去重
-/// 是给内置 CLI 供应商准备的——它的目录本来就并了 `models`(见 `cli_catalog`)。
+/// 是给内置 CLI 供应商准备的——它的目录本来就并了 `models`(见 `provider_catalog::cli`)。
 ///
 /// 抽成自由函数是为了能直接测:`ProviderBrowser` 要一份 `MiyuPaths`,建一个
 /// 就会去碰真实 home。
@@ -250,28 +157,6 @@ pub(in crate::config_tui) fn remove_custom_model(
     true
 }
 
-pub(in crate::config_tui) fn models_url(base_url: &str) -> String {
-    let mut url = base_url.trim().trim_end_matches('/').to_string();
-    if url.ends_with("/chat/completions") {
-        url.truncate(url.len() - "/chat/completions".len());
-    }
-    if url.ends_with("/v1") {
-        format!("{url}/models")
-    } else {
-        format!("{url}/v1/models")
-    }
-}
-
-#[derive(Deserialize)]
-pub(in crate::config_tui) struct ModelsResponse {
-    pub(in crate::config_tui) data: Vec<ModelInfo>,
-}
-
-#[derive(Deserialize)]
-pub(in crate::config_tui) struct ModelInfo {
-    pub(in crate::config_tui) id: String,
-}
-
 pub(in crate::config_tui) fn select_active_provider(
     stdout: &mut io::Stdout,
     config: &mut AppConfig,
@@ -368,12 +253,14 @@ pub(in crate::config_tui) fn embedding_model_label(config: &AppConfig) -> String
         return t("disabled", "已关闭").to_string();
     }
     match embedding.resolved_backend() {
-        crate::config::EmbeddingBackend::Remote if embedding.remote_is_configured() => format!(
+        miyu_base::config::EmbeddingBackend::Remote if embedding.remote_is_configured() => format!(
             "{}/{}",
             embedding.provider_id.trim(),
             embedding.model.trim()
         ),
-        crate::config::EmbeddingBackend::Remote => t("remote: not set", "远程：未设置").to_string(),
+        miyu_base::config::EmbeddingBackend::Remote => {
+            t("remote: not set", "远程：未设置").to_string()
+        }
         _ => format!("{} · {}", t("local", "本地"), embedding.local_model.trim()),
     }
 }
@@ -388,7 +275,7 @@ enum EmbeddingRow {
 
 fn embedding_rows(config: &AppConfig) -> Vec<EmbeddingRow> {
     let mut rows = Vec::new();
-    let installed: Vec<String> = crate::embedding::installed_local_models()
+    let installed: Vec<String> = miyu_base::embedding::installed_local_models()
         .into_iter()
         .map(|model| model.manifest.id)
         .collect();
@@ -422,10 +309,10 @@ fn embedding_rows(config: &AppConfig) -> Vec<EmbeddingRow> {
 fn embedding_row_is_current(config: &AppConfig, row: &EmbeddingRow) -> bool {
     let embedding = &config.embedding;
     match (row, embedding.resolved_backend()) {
-        (EmbeddingRow::Local { id, .. }, crate::config::EmbeddingBackend::Local) => {
+        (EmbeddingRow::Local { id, .. }, miyu_base::config::EmbeddingBackend::Local) => {
             id == embedding.local_model.trim()
         }
-        (EmbeddingRow::Remote { provider, model }, crate::config::EmbeddingBackend::Remote) => {
+        (EmbeddingRow::Remote { provider, model }, miyu_base::config::EmbeddingBackend::Remote) => {
             provider == embedding.provider_id.trim() && model == embedding.model.trim()
         }
         _ => false,
@@ -511,9 +398,9 @@ pub(in crate::config_tui) fn edit_embedding_model(
                     // 远程就留 auto，配置文件里少一行显式后端。
                     config.embedding.local_model = id.clone();
                     config.embedding.backend = if config.embedding.remote_is_configured() {
-                        crate::config::EmbeddingBackend::Local
+                        miyu_base::config::EmbeddingBackend::Local
                     } else {
-                        crate::config::EmbeddingBackend::Auto
+                        miyu_base::config::EmbeddingBackend::Auto
                     };
                     return Ok(());
                 }
@@ -522,7 +409,7 @@ pub(in crate::config_tui) fn edit_embedding_model(
                     // 清掉远程模型会变成「远程：未设置」的死局。
                     config.embedding.provider_id = provider.clone();
                     config.embedding.model = model.clone();
-                    config.embedding.backend = crate::config::EmbeddingBackend::Auto;
+                    config.embedding.backend = miyu_base::config::EmbeddingBackend::Auto;
                     return Ok(());
                 }
                 EmbeddingRow::Advanced => edit_embedding_advanced(stdout, config)?,
@@ -607,68 +494,6 @@ pub(in crate::config_tui) fn edit_embedding_advanced(
     config.embedding.timeout_seconds = timeout;
     config.embedding.min_score = score;
     Ok(())
-}
-
-pub(in crate::config_tui) fn select_model_pool(
-    stdout: &mut io::Stdout,
-    choices: Vec<ProviderModelChoice>,
-    pool: &mut Option<Vec<ActiveProviderModelConfig>>,
-    _multimodal: bool,
-    title: &str,
-    inherit_label: &str,
-) -> Result<()> {
-    let mut selected = 0usize;
-    loop {
-        let mut options = Vec::with_capacity(choices.len() + 1);
-        let inherit_marker = if pool.as_ref().is_none_or(Vec::is_empty) {
-            "[*] "
-        } else {
-            "[ ] "
-        };
-        options.push(format!("{inherit_marker}{inherit_label}"));
-        options.extend(choices.iter().map(|choice| {
-            let active = pool.as_ref().is_some_and(|entries| {
-                entries.iter().any(|entry| {
-                    entry.provider_id == choice.provider_id && entry.model == choice.model
-                })
-            });
-            format!("{}{}", if active { "[*] " } else { "[ ] " }, choice.label())
-        }));
-        draw_menu(
-            stdout,
-            title,
-            &options,
-            selected,
-            t(
-                "[Tab]add/remove [Enter/q]confirm",
-                "[Tab]加入/移出 [Enter/q]确认",
-            ),
-        )?;
-        match read_key()? {
-            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => return Ok(()),
-            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
-            KeyCode::Tab if selected == 0 => *pool = None,
-            KeyCode::Tab => {
-                let choice = &choices[selected - 1];
-                let entries = pool.get_or_insert_with(Vec::new);
-                if let Some(index) = entries.iter().position(|entry| {
-                    entry.provider_id == choice.provider_id && entry.model == choice.model
-                }) {
-                    entries.remove(index);
-                } else {
-                    entries.push(ActiveProviderModelConfig {
-                        provider_id: choice.provider_id.clone(),
-                        model: choice.model.clone(),
-                    });
-                }
-                if entries.is_empty() {
-                    *pool = None;
-                }
-            }
-            _ => {}
-        }
-    }
 }
 
 pub(in crate::config_tui) fn edit_provider_form(
@@ -789,7 +614,7 @@ pub(in crate::config_tui) fn edit_model_form(
     thinking_variants: &mut ThinkingVariantPreferences,
 ) -> Result<bool> {
     // 目录信息只用来预填与提示;真正落盘的仍是表单里保存的值。
-    let catalog = catalog_entry(paths, provider, model);
+    let catalog = miyu_base::provider_catalog::catalog_entry(paths, provider, model);
     let context_window = provider
         .model_context_window
         .get(model)
@@ -824,8 +649,8 @@ pub(in crate::config_tui) fn edit_model_form(
     let cost = provider.model_costs.get(model).copied();
     let currency_value = cost
         .map(|cost| match cost.currency {
-            crate::config::CostCurrency::Usd => "USD",
-            crate::config::CostCurrency::Cny => "CNY",
+            miyu_base::config::CostCurrency::Usd => "USD",
+            miyu_base::config::CostCurrency::Cny => "CNY",
         })
         .unwrap_or("")
         .to_string();
@@ -943,11 +768,11 @@ pub(in crate::config_tui) fn edit_model_form(
                 };
                 provider.model_costs.insert(
                     model.to_string(),
-                    crate::config::ModelCostConfig {
+                    miyu_base::config::ModelCostConfig {
                         currency: if currency == "CNY" {
-                            crate::config::CostCurrency::Cny
+                            miyu_base::config::CostCurrency::Cny
                         } else {
-                            crate::config::CostCurrency::Usd
+                            miyu_base::config::CostCurrency::Usd
                         },
                         input,
                         output,

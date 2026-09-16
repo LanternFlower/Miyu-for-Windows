@@ -107,7 +107,7 @@ fn style_carries_across_lines() {
 
 #[test]
 fn osc8_hyperlink_attaches_to_spans() {
-    let input = crate::render::osc8("https://example.org", "label");
+    let input = miyu_hosts::render::osc8("https://example.org", "label");
     let lines = parse_ansi(&input);
     let span = lines[0]
         .iter()
@@ -120,7 +120,7 @@ fn osc8_hyperlink_attaches_to_spans() {
 fn osc8_closes_and_later_text_is_unlinked() {
     let input = format!(
         "{}tail",
-        crate::render::osc8("https://example.org", "label")
+        miyu_hosts::render::osc8("https://example.org", "label")
     );
     let lines = parse_ansi(&input);
     let tail = lines[0]
@@ -141,7 +141,7 @@ fn stray_cursor_sequences_do_not_eat_text() {
 
 #[test]
 fn real_markdown_header_round_trips() {
-    let rendered = crate::render::render_markdown_line("# 标题");
+    let rendered = miyu_hosts::render::render_markdown_line("# 标题");
     let spans = parse_ansi_line(&rendered);
     // 文本必须一字不差地还原（含 `#` 前缀——现有渲染器是保留它的）。
     assert_eq!(spans_text(&spans), "# 标题");
@@ -157,7 +157,7 @@ fn real_markdown_header_round_trips() {
 
 #[test]
 fn real_markdown_inline_code_is_cyan() {
-    let rendered = crate::render::render_markdown_line("跑 `cargo build` 试试");
+    let rendered = miyu_hosts::render::render_markdown_line("跑 `cargo build` 试试");
     let spans = parse_ansi_line(&rendered);
     assert_eq!(spans_text(&spans), "跑 cargo build 试试");
     assert_eq!(
@@ -169,7 +169,7 @@ fn real_markdown_inline_code_is_cyan() {
 
 #[test]
 fn real_markdown_bold_is_bold_blue() {
-    let rendered = crate::render::render_markdown_line("这里 **很重要** 注意");
+    let rendered = miyu_hosts::render::render_markdown_line("这里 **很重要** 注意");
     let spans = parse_ansi_line(&rendered);
     assert_eq!(spans_text(&spans), "这里 很重要 注意");
     let style = style_of(&spans, "很重要").expect("粗体正文应当单独成 span");
@@ -179,7 +179,7 @@ fn real_markdown_bold_is_bold_blue() {
 
 #[test]
 fn real_markdown_list_marker_is_magenta() {
-    let rendered = crate::render::render_markdown_line("- 一条");
+    let rendered = miyu_hosts::render::render_markdown_line("- 一条");
     let spans = parse_ansi_line(&rendered);
     assert_eq!(spans_text(&spans), "- 一条");
     // TERTIARY_STYLE，列表标记单独上色。
@@ -190,7 +190,7 @@ fn real_markdown_list_marker_is_magenta() {
 
 #[test]
 fn real_blockquote_keeps_the_green_bar() {
-    let rendered = crate::render::render_markdown_line("> 引用");
+    let rendered = miyu_hosts::render::render_markdown_line("> 引用");
     let spans = parse_ansi_line(&rendered);
     assert_eq!(spans_text(&spans), "| 引用");
     assert!(
@@ -201,7 +201,7 @@ fn real_blockquote_keeps_the_green_bar() {
 
 #[test]
 fn real_code_highlight_splits_tokens() {
-    let rendered = crate::render::highlight_code_line("rust", "let x = \"hi\"; // 注释");
+    let rendered = miyu_hosts::render::highlight_code_line("rust", "let x = \"hi\"; // 注释");
     let spans = parse_ansi_line(&rendered);
     assert_eq!(spans_text(&spans), "let x = \"hi\"; // 注释");
     // 关键字 iris、字符串绿、注释 ANSI green——三种颜色必须都还原出来。
@@ -221,7 +221,7 @@ fn real_code_highlight_splits_tokens() {
 #[test]
 fn real_patch_diff_keeps_row_backgrounds() {
     let diff = "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-old\n+new\n";
-    let rendered = crate::render::render_patch_diff("src/x.rs", diff);
+    let rendered = miyu_hosts::render::render_patch_diff("src/x.rs", diff);
     let lines = parse_ansi(&rendered);
     // 删除行的暗红底、新增行的暗蓝底，是 patch 唯一的语义信号。
     assert!(
@@ -249,7 +249,7 @@ fn real_table_borders_are_dim() {
         "| --- | --- |".to_string(),
         "| a | b |".to_string(),
     ];
-    let rendered = crate::render::render_table(&table);
+    let rendered = miyu_hosts::render::render_table(&table);
     let lines = parse_ansi(&rendered);
     let border = lines
         .iter()
@@ -268,9 +268,9 @@ fn real_table_borders_are_dim() {
 fn no_style_bytes_leak_into_text() {
     // 最要紧的一条：解析后任何 span 的文本里都不该残留 ESC。
     let samples = [
-        crate::render::render_markdown_line("# 标题 **粗** `码` [链接](https://x.org)"),
-        crate::render::highlight_code_line("python", "def f(x): return 1  # ok"),
-        crate::render::render_markdown_line("> 引用 *斜* ~~删~~"),
+        miyu_hosts::render::render_markdown_line("# 标题 **粗** `码` [链接](https://x.org)"),
+        miyu_hosts::render::highlight_code_line("python", "def f(x): return 1  # ok"),
+        miyu_hosts::render::render_markdown_line("> 引用 *斜* ~~删~~"),
     ];
     for sample in samples {
         for span in parse_ansi_line(&sample) {

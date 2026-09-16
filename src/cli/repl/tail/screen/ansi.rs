@@ -27,14 +27,6 @@ pub(in crate::cli) struct AnsiSpan {
 }
 
 impl AnsiSpan {
-    pub(in crate::cli) fn raw(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            style: Style::new(),
-            link: None,
-        }
-    }
-
     pub(in crate::cli) fn styled(text: impl Into<String>, style: Style) -> Self {
         Self {
             text: text.into(),
@@ -374,3 +366,6 @@ impl Perform for AnsiSink {
             .map(|uri| String::from_utf8_lossy(uri).into_owned());
     }
 }
+
+#[cfg(test)]
+mod test_support;

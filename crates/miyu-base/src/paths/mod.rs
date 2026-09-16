@@ -1,0 +1,647 @@
+mod home_layout;
+mod legacy_migration;
+mod resource_migration;
+pub mod resources;
+pub use home_layout::*;
+pub use legacy_migration::*;
+pub(crate) use resource_migration::*;
+
+/// Miyu 自己这个可执行文件的路径，**在它可能被替换之前**记下来。
+///
+/// 好几处功能靠再执行一遍自己来干活：daemon 是 `miyu __daemon`，长图渲染器是
+/// `miyu __render_worker`，闹钟和知识库索引也是。它们原本各自调
+/// `std::env::current_exe()`，而那在 Linux 上读的是 `/proc/self/exe`——**一旦
+/// 磁盘上的文件被换掉（升级安装包、开发时重新编译），这个符号链接就变成
+/// `/path/to/miyu (deleted)`，拿它去 spawn 必然 ENOENT。**
+///
+/// 后果很隐蔽：长回复不再转图片、直接发成大段文字，只在滚动日志里留一条
+/// warning，用户看到的是「这功能怎么不работа了」。
+///
+/// 所以：第一次调用就把结果缓存下来（daemon 启动时立刻预热，那时文件还在），
+/// 并且把 `(deleted)` 后缀剥掉——路径本身通常仍指向新装上的那个二进制。
+pub fn miyu_executable() -> Result<PathBuf> {
+    // cargo test 下 current_exe 是 libtest 测试二进制:拿它当 miyu 去 spawn,
+    // 子进程会把参数当测试过滤器再跑一遍测试,里面再 spawn 孙进程——指数级
+    // 复制。09-05 知识库改动后的后台 `kb embed reindex` 就这样把机器连续三次
+    // 吃到 OOM 死机。测试里一律拒绝,让依赖它的代码路径明确失败而不是复制自己。
+    if cfg!(any(test, feature = "testkit")) {
+        // 给一个必然不存在的路径:只拼字符串的用法(MCP 配置、命令行)照常,
+        // 真去 spawn 的会得到 ENOENT 而不是复制测试进程。
+        return Ok(PathBuf::from("/nonexistent/miyu-test-harness"));
+    }
+    static EXECUTABLE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    if let Some(path) = EXECUTABLE.get() {
+        return Ok(path.clone());
+    }
+    let raw = std::env::current_exe().context("locating the Miyu executable")?;
+    let resolved = strip_deleted_suffix(&raw).unwrap_or(raw);
+    Ok(EXECUTABLE.get_or_init(|| resolved).clone())
+}
+
+/// 进程启动早期预热一次，趁二进制还没被换掉。
+/// `~/.miyu` (or `MIYU_HOME`) without building the whole `MiyuPaths`, for
+/// asset lookups that run before or outside path setup.
+pub fn miyu_home_dir() -> Option<PathBuf> {
+    std::env::var_os("MIYU_HOME")
+        .map(PathBuf::from)
+        .or_else(|| BaseDirs::new().map(|dirs| dirs.home_dir().join(".miyu")))
+}
+
+pub fn prime_miyu_executable() {
+    let _ = miyu_executable();
+}
+
+/// `/proc/self/exe` 在文件被替换后会读出 `".../miyu (deleted)"`。
+/// 剥掉那个后缀，且只在剥完确实存在时才采信——不然宁可用原样报错，
+/// 也好过悄悄跑到一个不相干的路径上。
+fn strip_deleted_suffix(path: &Path) -> Option<PathBuf> {
+    const SUFFIX: &str = " (deleted)";
+    let name = path.file_name()?.to_str()?;
+    let stripped = name.strip_suffix(SUFFIX)?;
+    let candidate = path.with_file_name(stripped);
+    candidate.exists().then_some(candidate)
+}
+
+use crate::i18n::text as t;
+use anyhow::{bail, Context, Result};
+use directories::{BaseDirs, UserDirs};
+use serde::{Deserialize, Serialize};
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{symlink, DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::path::{Component, Path, PathBuf};
+
+#[derive(Debug, Clone)]
+pub struct MiyuPaths {
+    /// Everything below lives under this root (`~/.miyu`, or `MIYU_HOME`).
+    /// Kept as its own field because the model is told where Miyu's files are
+    /// and guessing it back from a child directory would silently break the
+    /// day the layout changes.
+    pub root_dir: PathBuf,
+    pub config_dir: PathBuf,
+    pub config_file: PathBuf,
+    pub skills_dir: PathBuf,
+    pub data_dir: PathBuf,
+    pub cache_dir: PathBuf,
+    pub state_dir: PathBuf,
+    pub pictures_dir: PathBuf,
+    pub fish_hook_file: PathBuf,
+    pub bash_hook_file: PathBuf,
+    pub zsh_hook_file: PathBuf,
+    pub scripts_dir: PathBuf,
+    pub system_scripts_dir: PathBuf,
+}
+
+impl MiyuPaths {
+    pub fn new() -> Result<Self> {
+        let base = BaseDirs::new().context(t(
+            "could not determine XDG base directories",
+            "无法确定 XDG 基础目录",
+        ))?;
+        let legacy_config_dir = base.config_dir().join("miyu");
+        let legacy_data_dir = base.data_dir().join("miyu");
+        let legacy_cache_dir = base.cache_dir().join("miyu");
+        let legacy_state_dir = base
+            .state_dir()
+            .unwrap_or_else(|| base.data_dir())
+            .join("miyu");
+        let legacy_documents_dir = UserDirs::new()
+            .and_then(|dirs| dirs.document_dir().map(PathBuf::from))
+            .unwrap_or_else(|| base.home_dir().join("Documents"))
+            .join("Miyu");
+        let legacy_pictures_root = std::env::var_os("XDG_PICTURES_DIR")
+            .map(PathBuf::from)
+            .or_else(|| UserDirs::new().and_then(|dirs| dirs.picture_dir().map(PathBuf::from)))
+            .unwrap_or_else(|| base.home_dir().join("Pictures"));
+        let explicit_home = std::env::var_os("MIYU_HOME").map(PathBuf::from);
+        let root_dir = explicit_home
+            .clone()
+            .unwrap_or_else(|| base.home_dir().join(".miyu"));
+        let config_dir = root_dir.join("config");
+        let data_dir = root_dir.join("data");
+        let cache_dir = root_dir.join("cache");
+        let state_dir = root_dir.join("state");
+
+        // `miyu mcp-serve` 工具桥被成员的 Landlock 沙盒关着,读不到 daemon home
+        // 下的布局标记(read_home_layout_admin / try_migrate_resource_layout 里的
+        // open 会 EACCES),整段迁移逻辑会让 MiyuPaths::new() 直接 Err、mcp-serve
+        // 起不来 → claude 报 CONNECTION_CLOSED(09-12 逐层诊断坐实)。桥只经 IPC
+        // 代理到 daemon(工具执行、作用域都在 daemon 侧),压根不需要迁移/标记/
+        // skills 路径。这里给一条确定的新布局快路:零文件读取,socket 路径(runtime
+        // 目录,沙盒放行)照样能算出来。任何 mcp-serve 调用都走(默认 home 也可能被
+        // 沙盒关着;config_dir 就算和 daemon 的旧布局不一致也无所谓,桥不读它)。
+        if std::env::args().any(|arg| arg == "mcp-serve") {
+            let system_scripts_dir = resources::directory(resources::ResourceKind::Scripts);
+            return Ok(Self {
+                config_file: config_dir.join("config.jsonc"),
+                skills_dir: config_dir.join("skills"),
+                scripts_dir: config_dir.join("scripts"),
+                pictures_dir: data_dir.join("pictures"),
+                fish_hook_file: base.config_dir().join("fish/conf.d/miyu.fish"),
+                bash_hook_file: config_dir.join("shell/bash-hook.sh"),
+                zsh_hook_file: config_dir.join("shell/zsh-hook.zsh"),
+                system_scripts_dir,
+                root_dir,
+                config_dir,
+                data_dir,
+                cache_dir,
+                state_dir,
+            });
+        }
+
+        let legacy = LegacyLayout {
+            config_dir: legacy_config_dir.clone(),
+            data_dir: legacy_data_dir.clone(),
+            cache_dir: legacy_cache_dir.clone(),
+            state_dir: legacy_state_dir.clone(),
+            documents_dir: legacy_documents_dir,
+            pictures_dirs: vec![
+                legacy_pictures_root.join("miyu"),
+                legacy_pictures_root.join("Miyu"),
+            ],
+        };
+        let next = Layout {
+            root_dir: root_dir.clone(),
+            config_dir: config_dir.clone(),
+            data_dir: data_dir.clone(),
+            cache_dir: cache_dir.clone(),
+            state_dir: state_dir.clone(),
+        };
+
+        // A client from a newly installed binary may start while the previous
+        // daemon still has the legacy SQLite files open. Keep that client on
+        // the legacy layout; daemon version negotiation will stop the old
+        // process, and the newly spawned daemon performs the migration.
+        let migration_enabled = explicit_home.is_none() && !cfg!(any(test, feature = "testkit"));
+        let marker_exists = layout_marker_exists(&next)?;
+        let use_legacy_temporarily = migration_enabled
+            && !marker_exists
+            && legacy.exists()?
+            && legacy_daemon_is_running(&legacy);
+        let (config_dir, data_dir, cache_dir, state_dir) = if use_legacy_temporarily {
+            (
+                legacy_config_dir,
+                legacy_data_dir,
+                legacy_cache_dir,
+                legacy_state_dir,
+            )
+        } else {
+            if migration_enabled {
+                migrate_legacy_layout(&legacy, &next)?;
+            } else if explicit_home.is_some() {
+                ensure_private_dir(&root_dir)?;
+            }
+            (config_dir, data_dir, cache_dir, state_dir)
+        };
+        let resource_layout = Layout {
+            root_dir: root_dir.clone(),
+            config_dir: config_dir.clone(),
+            data_dir: data_dir.clone(),
+            cache_dir: cache_dir.clone(),
+            state_dir: state_dir.clone(),
+        };
+        let resource_marker_exists = resource_layout_marker_exists(&resource_layout)?;
+        let daemon_process = current_process_is_daemon();
+        let resource_migration_deferred = if use_legacy_temporarily
+            || resource_marker_exists
+            || cfg!(any(test, feature = "testkit"))
+        {
+            false
+        } else {
+            !try_migrate_resource_layout(&resource_layout, daemon_process)?
+        };
+        // 家目录布局(阶段 6):资源迁移落定之后再搬;有别的 daemon 在跑就
+        // 下次再来。搬完(或本来就是新布局)标记里记着管理员的家目录名。
+        let home_admin = if use_legacy_temporarily
+            || resource_migration_deferred
+            || cfg!(any(test, feature = "testkit"))
+            || home_layout_opted_out(&root_dir)?
+        {
+            read_home_layout_admin(&root_dir)?
+        } else {
+            let home_layout = HomeLayout {
+                layout: resource_layout.clone(),
+                admin: admin_home_name_from_env(),
+            };
+            try_migrate_home_layout(&home_layout, daemon_process)?;
+            read_home_layout_admin(&root_dir)?
+        };
+        let admin_home = home_admin
+            .as_deref()
+            .map(|admin| root_dir.join("home").join(admin));
+        let pictures_dir = if use_legacy_temporarily {
+            legacy_pictures_root.join("miyu")
+        } else if let Some(home) = &admin_home {
+            home.join("pictures")
+        } else {
+            data_dir.join("pictures")
+        };
+        let fish_hook_file = base.config_dir().join("fish/conf.d/miyu.fish");
+        let bash_hook_file = config_dir.join("shell/bash-hook.sh");
+        let zsh_hook_file = config_dir.join("shell/zsh-hook.zsh");
+        let resource_config_dir = if use_legacy_temporarily || resource_migration_deferred {
+            config_dir.clone()
+        } else {
+            data_dir.clone()
+        };
+        // 新布局下 skills/scripts 是「已装扩展」,住 extensions/。
+        let extensions_dir = admin_home.as_ref().map(|_| root_dir.join("extensions"));
+        let scripts_dir = match &extensions_dir {
+            Some(extensions) => extensions.join("scripts"),
+            None => resource_config_dir.join("scripts"),
+        };
+        let skills_dir = match &extensions_dir {
+            Some(extensions) => extensions.join("skills"),
+            None => resource_config_dir.join("skills"),
+        };
+        // 内置脚本目录默认在系统前缀下,`MIYU_SYSTEM_SCRIPTS_DIR` 可覆盖——
+        // 打包到非标准前缀、或隔离测试时用得上。
+        let system_scripts_dir = resources::directory(resources::ResourceKind::Scripts);
+
+        Ok(Self {
+            // The canonical home even inside the transient legacy window: that
+            // window only exists while an old daemon still holds the XDG files
+            // open, and it closes as soon as the new daemon migrates them here.
+            root_dir,
+            config_file: config_dir.join("config.jsonc"),
+            skills_dir,
+            config_dir,
+            data_dir,
+            cache_dir,
+            state_dir,
+            pictures_dir,
+            fish_hook_file,
+            bash_hook_file,
+            zsh_hook_file,
+            scripts_dir,
+            system_scripts_dir,
+        })
+    }
+
+    pub fn create_dirs(&self) -> Result<()> {
+        let prompts_dir = self.prompts_dir();
+        let identities_dir = self.identities_dir();
+        let persona_avatars_dir = self.persona_avatars_dir();
+        let skill_drafts_dir = self.skill_drafts_dir();
+        if let Some(home) = self.admin_home_dir() {
+            ensure_private_dir(&self.root_dir.join("home"))?;
+            ensure_private_dir(&home)?;
+        }
+        for directory in [
+            &self.config_dir,
+            &self.skills_dir,
+            &self.data_dir,
+            &self.cache_dir,
+            &self.state_dir,
+            &self.pictures_dir,
+            &self.scripts_dir,
+            &prompts_dir,
+            &identities_dir,
+            &persona_avatars_dir,
+            &skill_drafts_dir,
+        ] {
+            ensure_private_dir(directory)?;
+        }
+        Ok(())
+    }
+
+    /// Returns the root used for Miyu-owned, user-authored resources. During
+    /// an upgrade this intentionally remains the old config directory until
+    /// the resource migration marker has been committed.
+    pub fn resource_dir(&self) -> &Path {
+        if self.skills_dir == self.config_dir.join("skills") {
+            &self.config_dir
+        } else {
+            &self.data_dir
+        }
+    }
+
+    // ── 家目录布局(阶段 6) ──
+
+    /// 管理员的家目录名;None = 还是老布局(`data/` 一锅端)。每次读标记文件,
+    /// 十几字节,调用频度是每回合个位数,不值得加字段——加字段要改六十处测试
+    /// 夹具。
+    pub fn home_admin(&self) -> Option<String> {
+        read_home_layout_admin(&self.root_dir).ok().flatten()
+    }
+
+    pub fn homes_dir(&self) -> PathBuf {
+        self.root_dir.join("home")
+    }
+
+    /// 某个账号的家目录(不保证存在)。
+    pub fn user_home_dir(&self, username: &str) -> PathBuf {
+        self.homes_dir().join(username)
+    }
+
+    /// 成员的「思考档位偏好」视图:偏好/锁文件唯一取自 `state_dir`,把它换成成员
+    /// 家目录,成员改 effort 只落在 `home/<user>/thinking-variants.json`,既不碰
+    /// 管理员的全局档位,也不改缓存/日志(那些取 cache_dir,不动)。09-13 #162:
+    /// 模型 effort 不再是 admin only,成员各有各的档位。
+    pub fn member_thinking_view(&self, username: &str) -> MiyuPaths {
+        let mut scoped = self.clone();
+        scoped.state_dir = self.user_home_dir(username);
+        scoped
+    }
+
+    pub fn admin_home_dir(&self) -> Option<PathBuf> {
+        self.home_admin().map(|admin| self.user_home_dir(&admin))
+    }
+
+    /// 共享人格目录:新布局 `personas/`,老布局 `data/personas`。
+    pub fn personas_dir(&self) -> PathBuf {
+        if self.home_admin().is_some() {
+            self.root_dir.join("personas")
+        } else {
+            self.data_dir.join("personas")
+        }
+    }
+
+    pub fn extensions_dir(&self) -> Option<PathBuf> {
+        self.home_admin().map(|_| self.root_dir.join("extensions"))
+    }
+
+    fn admin_owned(&self, home_name: &str, legacy_name: &str) -> PathBuf {
+        match self.admin_home_dir() {
+            Some(home) => home.join(home_name),
+            None => self.data_dir.join(legacy_name),
+        }
+    }
+
+    pub fn artifacts_dir(&self) -> PathBuf {
+        self.admin_owned("artifacts", "artifacts")
+    }
+
+    pub fn documents_dir(&self) -> PathBuf {
+        self.admin_owned("documents", "documents")
+    }
+
+    pub fn ledger_dir(&self) -> PathBuf {
+        self.admin_owned("ledger", "ledger")
+    }
+
+    pub fn shared_files_dir(&self) -> PathBuf {
+        self.admin_owned("shares", "shared")
+    }
+
+    /// 属主档案(「希望 AI 如何认知你」):新布局 `home/<admin>/profile.md`,
+    /// 老布局 `identities/user-identity.md`。只在属主类入口注入,通讯平台不看。
+    pub fn profile_file(&self) -> PathBuf {
+        match self.admin_home_dir() {
+            Some(home) => home.join("profile.md"),
+            None => self.identities_dir().join("user-identity.md"),
+        }
+    }
+
+    /// 某个成员的档案文件。
+    pub fn user_profile_file(&self, username: &str) -> PathBuf {
+        self.user_home_dir(username).join("profile.md")
+    }
+
+    /// 会话库所在目录:新布局在管理员家目录(成员的会话暂靠 owner 列区分,
+    /// 按人拆库是下一步),老布局在 state。
+    pub fn conversation_db_dir(&self) -> PathBuf {
+        match self.admin_home_dir() {
+            Some(home) => home,
+            None => self.state_dir.clone(),
+        }
+    }
+
+    pub fn resources_use_config_dir(&self) -> bool {
+        self.resource_dir() == self.config_dir
+    }
+
+    pub fn legacy_config_dir(&self) -> Option<PathBuf> {
+        let base = BaseDirs::new()?;
+        (self.config_dir == base.home_dir().join(".miyu/config"))
+            .then(|| base.config_dir().join("miyu"))
+    }
+
+    pub fn migrated_resource_path(&self, path: &Path) -> Option<PathBuf> {
+        let relative = if path.is_absolute() {
+            path.strip_prefix(&self.config_dir).ok().or_else(|| {
+                self.legacy_config_dir()
+                    .as_deref()
+                    .and_then(|legacy| path.strip_prefix(legacy).ok())
+            })?
+        } else {
+            path
+        };
+        let relative = normalize_resource_relative_path(relative)?;
+        let namespace = relative.components().next()?.as_os_str().to_str()?;
+        if !matches!(
+            namespace,
+            "skills" | "scripts" | "prompts" | "identities" | "persona-avatars"
+        ) {
+            return None;
+        }
+        // 新布局:扩展住 extensions/,身份跟属主进家目录。
+        if let Some(extensions) = self.extensions_dir() {
+            if matches!(namespace, "skills" | "scripts") {
+                return Some(extensions.join(relative));
+            }
+        }
+        if namespace == "identities" {
+            if let Some(home) = self.admin_home_dir() {
+                if relative == Path::new("identities/user-identity.md") {
+                    return Some(home.join("profile.md"));
+                }
+                return Some(home.join(relative));
+            }
+        }
+        Some(self.resource_dir().join(relative))
+    }
+
+    pub fn prompts_dir(&self) -> PathBuf {
+        self.resource_dir().join("prompts")
+    }
+
+    pub fn identities_dir(&self) -> PathBuf {
+        match self.admin_home_dir() {
+            Some(home) => home.join("identities"),
+            None => self.resource_dir().join("identities"),
+        }
+    }
+
+    pub fn persona_avatars_dir(&self) -> PathBuf {
+        self.resource_dir().join("persona-avatars")
+    }
+
+    pub fn skill_drafts_dir(&self) -> PathBuf {
+        self.state_dir.join("skill-drafts")
+    }
+
+    pub fn logs_dir(&self) -> PathBuf {
+        self.cache_dir.join("logs")
+    }
+
+    pub fn runtime_dir(&self) -> PathBuf {
+        match std::env::var_os("XDG_RUNTIME_DIR") {
+            Some(runtime_dir) => runtime_dir_for(
+                Path::new(&runtime_dir),
+                std::env::var_os("MIYU_HOME").as_deref().map(Path::new),
+            ),
+            None => self.state_dir.join("miyu"),
+        }
+    }
+
+    pub fn ipc_socket(&self) -> PathBuf {
+        self.runtime_dir().join("core.sock")
+    }
+
+    pub fn ipc_lock(&self) -> PathBuf {
+        self.runtime_dir().join("core.lock")
+    }
+
+    pub fn daemon_start_lock(&self) -> PathBuf {
+        self.runtime_dir().join("starter.lock")
+    }
+
+    pub fn daemon_launch_state_file(&self) -> PathBuf {
+        self.state_dir.join("daemon-launch.json")
+    }
+
+    pub fn managed_web_password_dir(&self) -> PathBuf {
+        self.state_dir.join("web-passwords")
+    }
+
+    pub fn print(&self) {
+        println!(
+            "{}: {}",
+            t("config directory", "配置目录"),
+            self.config_dir.display()
+        );
+        println!(
+            "{}: {}",
+            t("config file", "配置文件"),
+            self.config_file.display()
+        );
+        println!(
+            "{}: {}",
+            t("skills directory", "skills 目录"),
+            self.skills_dir.display()
+        );
+        println!(
+            "{}: {}",
+            t("skill drafts directory", "skill 草稿目录"),
+            self.skill_drafts_dir().display()
+        );
+        println!(
+            "{}: {}",
+            t("prompts directory", "prompts 目录"),
+            self.prompts_dir().display()
+        );
+        println!(
+            "{}: {}",
+            t("identities directory", "identities 目录"),
+            self.identities_dir().display()
+        );
+        println!(
+            "{}: {}",
+            t("persona avatars directory", "人格头像目录"),
+            self.persona_avatars_dir().display()
+        );
+        println!(
+            "{}: {}",
+            t("data directory", "数据目录"),
+            self.data_dir.display()
+        );
+        if let Some(home) = self.admin_home_dir() {
+            println!(
+                "{}: {}",
+                t("admin home directory", "管理员家目录"),
+                home.display()
+            );
+            println!(
+                "{}: {}",
+                t("personas directory", "人格目录"),
+                self.personas_dir().display()
+            );
+        }
+        println!(
+            "{}: {}",
+            t("cache directory", "缓存目录"),
+            self.cache_dir.display()
+        );
+        println!(
+            "{}: {}",
+            t("state directory", "状态目录"),
+            self.state_dir.display()
+        );
+        println!(
+            "{}: {}",
+            t("log directory", "日志目录"),
+            self.logs_dir().display()
+        );
+        println!(
+            "{}: {}",
+            t("pictures directory", "图片目录"),
+            self.pictures_dir.display()
+        );
+        println!(
+            "{}: {}",
+            t("fish hook file", "fish hook 文件"),
+            self.fish_hook_file.display()
+        );
+        println!(
+            "{}: {}",
+            t("bash hook file", "bash hook 文件"),
+            self.bash_hook_file.display()
+        );
+        println!(
+            "{}: {}",
+            t("zsh hook file", "zsh hook 文件"),
+            self.zsh_hook_file.display()
+        );
+        println!(
+            "{}: {}",
+            t("scripts directory", "scripts 目录"),
+            self.scripts_dir.display()
+        );
+        println!(
+            "{}: {}",
+            t("system scripts directory", "系统 scripts 目录"),
+            self.system_scripts_dir.display()
+        );
+    }
+}
+
+fn runtime_dir_for(runtime_root: &Path, explicit_home: Option<&Path>) -> PathBuf {
+    let name = explicit_home.map_or_else(
+        || "miyu".to_string(),
+        |home| {
+            let normalized = normalize_home(home);
+            let digest = blake3::hash(normalized.as_os_str().as_encoded_bytes());
+            format!("miyu-{}", &digest.to_hex()[..12])
+        },
+    );
+    runtime_root.join(name)
+}
+
+fn normalize_home(home: &Path) -> PathBuf {
+    if let Ok(canonical) = fs::canonicalize(home) {
+        return canonical;
+    }
+    let absolute = if home.is_absolute() {
+        home.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("/"))
+            .join(home)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+#[cfg(test)]
+mod tests;

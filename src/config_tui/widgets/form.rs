@@ -383,7 +383,7 @@ pub(in crate::config_tui) fn edit_dialog_list(
     stdout: &mut io::Stdout,
     value: &mut String,
 ) -> Result<()> {
-    let mut pairs = crate::persona_hint::parse_dialogs(value);
+    let mut pairs = miyu_core::persona_hint::parse_dialogs(value);
     let mut selected = 0usize;
     loop {
         let mut options: Vec<String> = pairs
@@ -412,7 +412,7 @@ pub(in crate::config_tui) fn edit_dialog_list(
         )?;
         match read_key()? {
             KeyCode::Esc | KeyCode::Char('q') => {
-                *value = crate::persona_hint::format_dialogs(&pairs);
+                *value = miyu_core::persona_hint::format_dialogs(&pairs);
                 return Ok(());
             }
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
@@ -451,7 +451,7 @@ pub(in crate::config_tui) fn edit_string_list(
     title: &'static str,
     value: &mut String,
 ) -> Result<()> {
-    let mut items: Vec<String> = crate::config::split_wake_keywords(value);
+    let mut items: Vec<String> = miyu_base::config::split_wake_keywords(value);
     let mut selected = 0usize;
     loop {
         let mut options: Vec<String> = items.clone();
@@ -684,7 +684,7 @@ pub(in crate::config_tui) fn draw_form(
 pub(in crate::config_tui) fn field_display_value(field: &Field, reveal_sensitive: bool) -> String {
     if field.dialog_list {
         // 列表式字段没有 $EDITOR;摘要成对数,原始序列化文本不上屏。
-        let pairs = crate::persona_hint::parse_dialogs(&field.value).len();
+        let pairs = miyu_core::persona_hint::parse_dialogs(&field.value).len();
         return if pairs == 0 {
             t("(empty; Enter opens the list)", "(空,回车进列表)").to_string()
         } else if is_zh() {
@@ -768,7 +768,7 @@ pub(in crate::config_tui) struct Field {
 }
 
 impl Field {
-    pub(in crate::config_tui) fn new(label: &'static str, value: String) -> Self {
+    pub fn new(label: &'static str, value: String) -> Self {
         Self {
             label,
             value,

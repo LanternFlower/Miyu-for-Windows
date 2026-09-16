@@ -51,20 +51,26 @@
 
 - 报错信息处理优化，例如 429 这样的额度报错码并没有处理并可视化输出给用户。
 
-### core层和normal重构
+### core层和normal重构 ✅ 已完成（2026-09-16，分支 worktree-core-normal-2026-09-16，待验收合入）
 
-剔除无用代码、解耦耦合代码、提升代码可维护性。core层和normal层是这个软件的核心，一定要
+原目标：剔除无用代码、解耦耦合代码、提升代码可维护性；给 MCP / 内置插件统一的接口规范，
+让插件能通过接口拿到供应商配置等信息；理清 core→子系统与子系统之间的通信；为 miyu pm 铺路。
 
-#### 接口规范优化
+落地记录在 `docs/plan/2026-09-16-core-normal-interfaces.md`，接口契约在 `docs/interfaces/`，
+架构图 https://claude.ai/code/artifact/f62ec607-2351-4475-b816-b62ca4b1667d 。
 
-目前只有scripts接口有规范，有相关的文档和skill；对于MCP还有内置插件都没有统一的规范，旁人难以进行扩展编写。也许可以仿照astrbot，或者deepseek harness的形式，将大部分东西给出接口，例如供应商配置、各种信息，都可以通过接口调用，插件有了信息，也就有了扩展的空间。
-现在Miyu的架构分层分core、从core扩展出来的各个子系统：preset（persona）、scripts、mcp、扩展等等，子系统又会提供接口，例如scripts是一个接脚本的接口，有一套自己的规范；mcp这个扩展又是一个接口，有一套自己的规范等等。
+- [x] 解耦：`arch_dep_check` 白名单清零（8 条反向边全消），子系统之间也不许互相 use
+- [x] core→子系统：`config::subsystems` 一张表 + 启用快照；子系统间通信 = 端口查询 / 事件
+- [x] 接口规范：`docs/interfaces/` 十份 as-built 契约（scripts / MCP client / MCP server / 内置工具 / 平台 hook / 宿主端口 / 子系统 / 供应商目录 / 兼容规则）
+- [x] 插件拿宿主信息：脚本头部 `Capabilities:` + `miyu host <method>`（供应商摘要、契约版本、子系统开关，脱敏）
+- [x] 内置插件登记表：新增插件从 12 处降到 5 处
+- [x] Agent 44 字段按生命周期分四组；请求字节量尺前后一致
+- [x] miyu pm：`requires-contracts` / `requires-capabilities` 装前预检
+- [x] 死代码：删 88 项，104 项只有测试在用改为 `#[cfg(test)]`，清单见 `docs/plan/2026-09-16-dead-code-inventory.md`
+- [x] `AgentMode` 退出回合引擎（agent 内只剩 `core.dev` 一位；对外 normal|dev 协议词汇不动）；`VOICE_PROTOCOL` 随语音快照（语音关着的机器与人格少一段，各冷启动一次）；测试专用符号 29 删 / 75 留作夹具，专用测试 11 条删
+- [x] `persona_reminder` / `emotion` 人格开关进引导页与人格页；`render/tests/timeline.rs` 已拆两份（规模门禁绿）
 
-现在的问题在于，Miyu的core-->子系统这里的接口缺乏清晰的规范，子系统和子系统之间的通信又如何处理？这也是问题。
-
-接口做规范了，后续miyu pm的“包管理”才有办法推进。
-
-我希望你能够解决这部分问题。
+剩余（另开专项）：75 项测试夹具搬进测试模块；成员私有人格的按人宿主查询。
 
 ### config TUI 前端修改
 

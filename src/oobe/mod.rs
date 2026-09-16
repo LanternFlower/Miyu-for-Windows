@@ -17,8 +17,6 @@ mod probe;
 mod providers;
 mod ui;
 
-use crate::config::AppConfig;
-use crate::paths::MiyuPaths;
 use anyhow::Result;
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{self, Event, KeyEventKind};
@@ -27,6 +25,8 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, BeginSynchronizedUpdate, EndSynchronizedUpdate,
     EnterAlternateScreen, LeaveAlternateScreen,
 };
+use miyu_base::config::AppConfig;
+use miyu_base::paths::MiyuPaths;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io;
@@ -60,7 +60,7 @@ impl Drop for TerminalGuard {
         if self.keep_alt {
             // 画面留着、光标不动：全屏 REPL 接手时直接在这一帧上重画,
             // 中间既不闪也不把光标甩到左上角。
-            crate::terminal::hold_alt_screen();
+            miyu_base::terminal::hold_alt_screen();
         } else {
             let _ = execute!(io::stdout(), Show, LeaveAlternateScreen);
         }
@@ -71,11 +71,11 @@ impl Drop for TerminalGuard {
 /// 跑一遍引导。返回怎么收的场；配置已经写好（或按 [`Outcome::Aborted`] 一个字没写）。
 ///
 /// `keep_alt_screen`：调用方紧接着要进全屏画面，备用屏留着别退。
-pub(crate) fn run(paths: &MiyuPaths, keep_alt_screen: bool) -> Result<Outcome> {
+pub fn run(paths: &MiyuPaths, keep_alt_screen: bool) -> Result<Outcome> {
     let config = AppConfig::load_or_default(paths)?;
     // models.dev 目录：选完模型按它补上下文窗口与模态（和设置界面同一套动作）。
-    crate::models_cache::try_load(paths);
-    crate::models_cache::spawn_background_refresh(paths.clone());
+    miyu_base::models_cache::try_load(paths);
+    miyu_base::models_cache::spawn_background_refresh(paths.clone());
     let mut app = ui::App::new(config, paths.clone());
     let guard = TerminalGuard::enter(keep_alt_screen)?;
     let backend = CrosstermBackend::new(io::stdout());

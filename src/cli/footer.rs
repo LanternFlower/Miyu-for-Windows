@@ -62,7 +62,7 @@ impl ReplFooterStatus {
                 context_window: window.map(|(value, _)| value),
                 context_window_assumed: matches!(
                     window,
-                    Some((_, crate::config::ContextWindowSource::Assumed))
+                    Some((_, miyu_base::config::ContextWindowSource::Assumed))
                 ),
                 ..meter_cumulative(cumulative)
             },
@@ -71,7 +71,7 @@ impl ReplFooterStatus {
 
     pub(in crate::cli) fn update_token_usage(
         &mut self,
-        result: &crate::llm::ChatResult,
+        result: &miyu_core::llm::ChatResult,
         session_tokens: u64,
         context_window: Option<usize>,
         cumulative: TurnTokens,
@@ -86,25 +86,6 @@ impl ReplFooterStatus {
                 cumulative,
             );
         }
-    }
-
-    pub(in crate::cli) fn set_token_usage(
-        &mut self,
-        turn_tokens: u64,
-        session_tokens: u64,
-        context_window: Option<usize>,
-        cumulative: TurnTokens,
-    ) {
-        self.set_token_usage_with_cache(
-            TurnTokens {
-                total: turn_tokens,
-                ..TurnTokens::default()
-            },
-            GenerationSpeed::default(),
-            session_tokens,
-            context_window,
-            cumulative,
-        );
     }
 
     pub(in crate::cli) fn set_token_usage_with_cache(

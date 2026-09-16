@@ -50,6 +50,7 @@
 | `Example` | `stub_example`、`示例` | stub 加载模式下附在桩上的一行调用示例，如 `{"city":"Tokyo"}`。只给「容易猜错、契约又短」的脚本写 |
 | `Hint` | `cross_hint`、`指路`、`指路句` | `Hint: <工具>: <句子>`。被指的工具在同一注册表里时，句子追加到本脚本描述末尾；不在场一个字不加。可写多行 |
 | `Requires` | `requires_prior`、`需先调用`、`前置工具` | 逗号分隔。本回合先调用过其中之一才放行，否则以 tool error 拒（数据驱动的跨工具闸） |
+| `Capabilities` | `capability`、`能力`、`宿主能力` | 逗号分隔，脚本要向宿主查的信息：`host.info`、`providers.read`、`subsystems.read`。只有 `Trust: owner`（缺省）的脚本在 daemon 里跑时才拿到令牌；不认识的 id 记 warn 并忽略。见下「查宿主信息」 |
 
 ## 运行时契约
 
@@ -61,6 +62,18 @@
 - **缓存目录**：`MIYU_SCRIPT_CACHE_DIR` 指向 Miyu 的缓存目录，登录态、cookie、中间产物放这里；变量不存在（终端直接跑）时退回 XDG 默认。
 - **输出格式**：默认紧凑可读，提供 `format=json` 供逐字段处理。
 - **图片回传**：stdout 里一行 `MIYU-IMAGE: <路径> | <说明>`（说明可省）会被整行摘掉，图片交给投递层（终端内联、WebUI、QQ 各自渲染）。相对路径按 `MIYU_SCRIPT_CACHE_DIR` 解析；文件不存在只记警告。
+- **查宿主信息**（头部写了 `Capabilities:` 才有）：Miyu 拉起脚本时注入一次性令牌 `MIYU_HOST_TOKEN`、授权集 `MIYU_HOST_CAPABILITIES`（逗号分隔）和自身路径 `MIYU_HOST_BIN`；脚本跑 `$MIYU_HOST_BIN host <method> ['{json}']`，stdout 是一行 JSON：成功 `{"ok":true,"data":…}`，失败 `{"ok":false,"error":{"code":"permission_denied|unknown_method|invalid_argument|not_found|unavailable","message":"…"}}`，退出码 1。令牌只在这一次运行内有效，脚本退出即作废。方法：`host.info`（版本、契约版本、授权集、当前人格）、`providers.list`（供应商摘要 + 当前激活选择；**没有** api key、地址、超时）、`providers.get {"provider_id":…}`（加上下文窗口与模态）、`subsystems.enabled`（当前人格的记忆/技能/提醒/语音/情绪开关）。变量不存在（终端直接跑、非 daemon、`Trust: external`）时按「宿主不可用」处理，脚本仍要能工作。
+
+```python
+import json, os, subprocess
+def host(method, params=None):
+    binary, token = os.environ.get("MIYU_HOST_BIN"), os.environ.get("MIYU_HOST_TOKEN")
+    if not binary or not token:
+        return None  # 宿主不可用:退回默认行为
+    out = subprocess.run([binary, "host", method, json.dumps(params or {})], capture_output=True, text=True)
+    reply = json.loads(out.stdout or "{}")
+    return reply["data"] if reply.get("ok") else None
+```
 
 ## 用 manage_script 注册
 

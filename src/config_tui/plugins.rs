@@ -716,7 +716,7 @@ pub(in crate::config_tui) fn apply_plugin_fields(
             config.plugins.archlinux.enabled = parse_bool_field(&fields[0].value)?;
         }
         8 => {
-            config.memory = crate::config::MemoryConfig::default();
+            config.memory = miyu_base::config::MemoryConfig::default();
             config.plugins.memory.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.memory.evicted_context_enabled = parse_bool_field(&fields[1].value)?;
             config.plugins.memory.association_enabled = parse_bool_field(&fields[2].value)?;

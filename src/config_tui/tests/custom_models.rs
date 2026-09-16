@@ -1,7 +1,7 @@
 //! 手填模型名（供应商目录里没有的内测模型）在模型菜单里的行为。
 
-use crate::config::{ActiveProviderModelConfig, AppConfig, ModelTier, ProviderConfig};
 use crate::config_tui::{group_models, insert_custom_model, remove_custom_model};
+use miyu_base::config::{ActiveProviderModelConfig, AppConfig, ModelTier, ProviderConfig};
 
 fn config_with_provider() -> AppConfig {
     let mut config = AppConfig::default();

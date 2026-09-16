@@ -408,7 +408,7 @@ pub(in crate::question_tui) fn editor_option_line(
     format!("\x1b[35m›\x1b[0m {marker}{value}")
 }
 
-pub(in crate::question_tui) fn wrap_display_text(value: &str, width: usize) -> Vec<String> {
+pub fn wrap_display_text(value: &str, width: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut current = String::new();
     let mut current_width = 0usize;

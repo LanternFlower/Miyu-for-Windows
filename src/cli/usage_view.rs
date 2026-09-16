@@ -20,7 +20,7 @@ pub(in crate::cli) fn state_cumulative(state: &ipc::SessionState) -> TurnTokens 
 pub(in crate::cli) fn compact_watermark_text(
     context_tokens: usize,
     window: usize,
-    context: &crate::config::ContextConfig,
+    context: &miyu_base::config::ContextConfig,
 ) -> String {
     let tier = |label: &str, ratio: f32| -> String {
         let threshold = (window as f32 * ratio).max(1.0) as usize;
@@ -44,7 +44,7 @@ pub(in crate::cli) fn compact_watermark_text(
 }
 
 pub(in crate::cli) fn usage_overview_text(
-    snapshot: &crate::state::UsageSnapshot,
+    snapshot: &miyu_core::state::UsageSnapshot,
     context: Option<(u64, Option<usize>)>,
 ) -> String {
     let compact = render::format_compact_count;
@@ -153,7 +153,7 @@ pub(in crate::cli) fn readable_bytes(bytes: u64) -> String {
 
 /// `t` for messages built at runtime — the static version cannot take a `format!`.
 pub(in crate::cli) fn owned(en: String, zh: String) -> String {
-    if crate::i18n::is_zh() {
+    if miyu_base::i18n::is_zh() {
         zh
     } else {
         en
@@ -161,7 +161,7 @@ pub(in crate::cli) fn owned(en: String, zh: String) -> String {
 }
 
 pub(in crate::cli) fn print_chat_token_usage(
-    result: &crate::llm::ChatResult,
+    result: &miyu_core::llm::ChatResult,
     enabled: bool,
     session_token_total: u64,
     context_window: Option<usize>,
@@ -183,7 +183,7 @@ pub(in crate::cli) fn print_chat_token_usage(
 /// 同上，但不打 stdout——把那一行用量做成字符串（全屏下要写进缓冲）。关着
 /// 或没有用量时是 None。
 pub(in crate::cli) fn chat_token_usage_text(
-    result: &crate::llm::ChatResult,
+    result: &miyu_core::llm::ChatResult,
     enabled: bool,
     session_token_total: u64,
     context_window: Option<usize>,
@@ -206,7 +206,7 @@ pub(in crate::cli) fn chat_token_usage_text(
 
 pub(in crate::cli) fn result_context_window(
     config: &AppConfig,
-    result: &crate::llm::ChatResult,
+    result: &miyu_core::llm::ChatResult,
 ) -> Option<usize> {
     if config.active_provider_model_choices().len() > 1 {
         return None;
@@ -225,7 +225,7 @@ pub(in crate::cli) async fn handle_post_turn_overflow(
     context_tokens: u64,
     show_token_usage: bool,
     cumulative_tokens: Option<&mut TurnTokens>,
-) -> Result<Option<crate::llm::ChatResult>> {
+) -> Result<Option<miyu_core::llm::ChatResult>> {
     let compact_result = agent
         .handle_overflow_after_turn(context_tokens, |event| handle_agent_event(renderer, event))
         .await?;

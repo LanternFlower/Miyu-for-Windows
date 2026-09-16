@@ -118,7 +118,7 @@ pub(in crate::cli) fn expand_tilde(path: &str) -> PathBuf {
 /// 报错而不是静默截断。与 `append_stdin_if_piped` 的 5 秒探测是两回事。
 /// 与 daemon 的回合正文上限同源:超了在客户端就报用法错误,别送过去吃一个
 /// 回合失败。
-pub(in crate::cli) const STDIN_EXPLICIT_MAX_CHARS: usize = crate::runtime::MAX_CONTENT_CHARS;
+pub(in crate::cli) const STDIN_EXPLICIT_MAX_CHARS: usize = miyu_hosts::runtime::MAX_CONTENT_CHARS;
 
 pub(in crate::cli) fn append_stdin_to_eof(message: String) -> anyhow::Result<String> {
     let mut input = String::new();
@@ -126,7 +126,7 @@ pub(in crate::cli) fn append_stdin_to_eof(message: String) -> anyhow::Result<Str
     if input.chars().count() + message.chars().count() > STDIN_EXPLICIT_MAX_CHARS {
         return Err(crate::cli::exit_code::usage_error(format!(
             "{} ({STDIN_EXPLICIT_MAX_CHARS})",
-            crate::i18n::text("stdin exceeds the character limit", "标准输入超过字符上限")
+            miyu_base::i18n::text("stdin exceeds the character limit", "标准输入超过字符上限")
         )));
     }
     let input = input.trim();

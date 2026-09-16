@@ -72,8 +72,8 @@ fn short_image_link(path: &std::path::Path, filename: &str) -> Result<String> {
 }
 
 pub(in crate::cli) fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
-    match crate::clipboard::read_clipboard() {
-        Ok(crate::clipboard::ClipboardContent::Image(img)) => {
+    match miyu_base::clipboard::read_clipboard() {
+        Ok(miyu_base::clipboard::ClipboardContent::Image(img)) => {
             let path = img.write_temp_file(&paths.cache_dir, 0)?;
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("image");
             // 占位符里的文件名是跨进程找回图片的唯一线索,删不得;但 32 位
@@ -88,7 +88,7 @@ pub(in crate::cli) fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
             io::stdout().flush()?;
             Ok(())
         }
-        Ok(crate::clipboard::ClipboardContent::MediaPath(path)) => {
+        Ok(miyu_base::clipboard::ClipboardContent::MediaPath(path)) => {
             let source = std::path::Path::new(&path);
             let filename = source
                 .file_name()
@@ -96,7 +96,7 @@ pub(in crate::cli) fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
                 .unwrap_or("image");
             let dir = paths.cache_dir.join("clipboard_images");
             std::fs::create_dir_all(&dir)?;
-            crate::clipboard::cleanup_clipboard_images(&dir);
+            miyu_base::clipboard::cleanup_clipboard_images(&dir);
             // 这条路(剪贴板里是图片**文件**而不是图片数据,例如从 QQ 或文件
             // 管理器复制)原先原样打出源文件名,而 QQ 的文件名正好是 32 位
             // 哈希,占位符就又长又吵——`Image` 分支早就截短了,这里漏了
@@ -112,12 +112,12 @@ pub(in crate::cli) fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
             io::stdout().flush()?;
             Ok(())
         }
-        Ok(crate::clipboard::ClipboardContent::TextPath(path)) => {
+        Ok(miyu_base::clipboard::ClipboardContent::TextPath(path)) => {
             print!("{}", path);
             io::stdout().flush()?;
             Ok(())
         }
-        Ok(crate::clipboard::ClipboardContent::Text(text)) => {
+        Ok(miyu_base::clipboard::ClipboardContent::Text(text)) => {
             let text = normalize_pasted_newlines(&text);
             if should_summarize_pasted_text(&text) {
                 let index = shell_pasted_text_index(&paths.cache_dir, &text)?;
@@ -230,7 +230,7 @@ pub(in crate::cli) async fn run_shell_intercept(
         Err(err) => {
             println!(
                 "\x1b[31m{}: {:#}\x1b[0m",
-                crate::i18n::text("error", "错误"),
+                miyu_base::i18n::text("error", "错误"),
                 err
             );
             let _ = io::stdout().flush();

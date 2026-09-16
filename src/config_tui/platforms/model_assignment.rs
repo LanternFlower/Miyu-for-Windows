@@ -11,8 +11,8 @@
 //!
 //! 界面上不出现 `inherit` / `global` / `lite` 这些配置 id，只按 locale 显示一个
 //! 名字；「继承」一律写成「继承 xx 池」，说清继承到哪一层。
-use crate::config::{ActiveProviderModelConfig, ModelPoolRef, ModelTier, ProviderModelChoice};
 use crate::config_tui::*;
+use miyu_base::config::{ActiveProviderModelConfig, ModelPoolRef, ModelTier, ProviderModelChoice};
 
 /// One model-consuming slot on a platform.
 pub(in crate::config_tui) struct PoolSlot {

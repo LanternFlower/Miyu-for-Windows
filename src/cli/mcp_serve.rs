@@ -282,7 +282,7 @@ async fn call_tool(
             .unwrap_or_default()
             .to_string());
     }
-    if depth >= crate::tools::workspace::MAX_BRIDGE_DEPTH {
+    if depth >= miyu_base::workspace::MAX_BRIDGE_DEPTH {
         bail!("tool bridge recursion limit reached (depth {depth})");
     }
     let config = AppConfig::load_or_default(paths)?;
@@ -295,20 +295,20 @@ async fn call_tool(
     if !registry.contains(name) {
         bail!("{:#}", registry.unknown_tool_error(name));
     }
-    let turn_origin: crate::tools::workspace::TurnOrigin = origin
+    let turn_origin: miyu_base::workspace::TurnOrigin = origin
         .as_deref()
         .and_then(|raw| serde_json::from_str(raw).ok())
-        .unwrap_or(crate::tools::workspace::TurnOrigin::Human);
-    let invoke = crate::tools::workspace::with_turn_origin(
+        .unwrap_or(miyu_base::workspace::TurnOrigin::Human);
+    let invoke = miyu_base::workspace::with_turn_origin(
         turn_origin,
-        crate::tools::workspace::with_bridge_depth(depth + 1, async {
+        miyu_base::workspace::with_bridge_depth(depth + 1, async {
             registry.call(name, arguments).await
         }),
     );
     match session {
         Some(session) => {
             let session: std::sync::Arc<str> = session.clone().into();
-            crate::tools::workspace::with_session(session, invoke).await
+            miyu_base::workspace::with_session(session, invoke).await
         }
         None => invoke.await,
     }

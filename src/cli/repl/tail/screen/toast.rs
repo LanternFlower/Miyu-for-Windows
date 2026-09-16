@@ -7,13 +7,13 @@
 //! 长的东西照旧进正文（`/help` 那种整页清单浮起来也没法看），判据就是行数。
 
 use super::Screen;
-use crate::render::visible_width;
 use crossterm::{
     cursor::MoveTo,
     queue,
     style::Print,
     terminal::{Clear, ClearType},
 };
+use miyu_hosts::render::visible_width;
 use std::time::{Duration, Instant};
 
 /// 浮层靠哪边。
@@ -95,10 +95,6 @@ impl Screen {
         }
     }
 
-    pub(in crate::cli) fn toast_active(&self) -> bool {
-        self.toast.is_some()
-    }
-
     /// 画通知条。浮在**右上角**。
     ///
     /// 原来贴着输入框上方，正好压住刚写完的那几行正文——而通知说的多半是
@@ -138,10 +134,6 @@ impl Screen {
         self.command_hint = lines;
         self.invalidate();
         true
-    }
-
-    pub(in crate::cli) fn command_hint_open(&self) -> bool {
-        !self.command_hint.is_empty()
     }
 
     /// Esc：先关掉候选面板。关了就返回真。
@@ -227,7 +219,7 @@ impl Screen {
         // 通知用主色（和代码块、表头一个色），暗色那套是"附注"的语气——
         // 而通知是要人看见的。候选面板照旧走暗色：它是打字时的陪衬。
         let dim = if matches!(align, FloatAlign::Right) {
-            crate::render::PRIMARY_STYLE
+            miyu_hosts::render::PRIMARY_STYLE
         } else {
             "\x1b[2m"
         };
@@ -267,19 +259,6 @@ impl Screen {
             }
         }
         Ok(())
-    }
-
-    /// 通知条压住了哪几行（选区、点击都要避开它）。
-    pub(in crate::cli) fn toast_rows(&self, body: u16) -> Option<(u16, u16)> {
-        let toast = self.toast.as_ref()?;
-        let height = u16::try_from(toast.lines.len() + 2).unwrap_or(3);
-        if body < height {
-            return None;
-        }
-        Some(match toast.align {
-            FloatAlign::Right => (0, height),
-            FloatAlign::Left | FloatAlign::Column(_) => (body - height, height),
-        })
     }
 }
 

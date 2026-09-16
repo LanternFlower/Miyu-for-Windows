@@ -117,10 +117,10 @@ pub(in crate::config_tui) fn edit_dev_prompt(
     stdout: &mut io::Stdout,
     paths: &MiyuPaths,
 ) -> Result<()> {
-    let path = paths.config_dir.join(crate::config::DEV_PROMPT_FILE);
+    let path = paths.config_dir.join(miyu_base::config::DEV_PROMPT_FILE);
     let current = std::fs::read_to_string(&path).unwrap_or_default();
     let prefill = if current.trim().is_empty() {
-        crate::config::DEFAULT_DEV_SYSTEM_PROMPT.to_string()
+        miyu_base::config::DEFAULT_DEV_SYSTEM_PROMPT.to_string()
     } else {
         current.trim_end().to_string()
     };
@@ -305,7 +305,7 @@ pub(in crate::config_tui) fn manage_personas(
                         write_persona_aux(
                             paths,
                             config,
-                            &crate::config::persona_scope_name(&values.name),
+                            &miyu_base::config::persona_scope_name(&values.name),
                             &values.hint,
                             &values.dialogs,
                         )?;
@@ -366,15 +366,15 @@ pub(in crate::config_tui) fn apply_persona_edit(
     let new_path = config.persona_path(paths, new_name);
     let old_content = std::fs::read(&old_path)?;
     let mut persisted = AppConfig::load_or_default(paths)?;
-    let state = crate::state::StateStore::new(paths)?;
+    let state = miyu_core::state::StateStore::new(paths)?;
     write_persona(paths, config, new_name, content)?;
     if let Err(error) = move_persona_scope(paths, config, old_name, new_name) {
         let _ = std::fs::remove_file(&new_path);
         return Err(error);
     }
 
-    let old_scope = crate::config::persona_scope_name(old_name);
-    let new_scope = crate::config::persona_scope_name(new_name);
+    let old_scope = miyu_base::config::persona_scope_name(old_name);
+    let new_scope = miyu_base::config::persona_scope_name(new_name);
     if let Err(error) = state.rename_persona_scope(&old_scope, &new_scope) {
         let _ = move_persona_scope(paths, config, new_name, old_name);
         let _ = std::fs::remove_file(&new_path);
@@ -420,8 +420,8 @@ pub(in crate::config_tui) fn apply_persona_delete(
         persisted.prompt.active_persona.clear();
         persisted.save(paths)?;
     }
-    let scope = crate::config::persona_scope_name(name);
-    crate::state::StateStore::new(paths)?.delete_persona_scope(&scope)?;
+    let scope = miyu_base::config::persona_scope_name(name);
+    miyu_core::state::StateStore::new(paths)?.delete_persona_scope(&scope)?;
     let path = config.persona_path(paths, name);
     if path.exists() {
         std::fs::remove_file(path)?;
@@ -447,10 +447,12 @@ pub(in crate::config_tui) fn persona_aux_values(
     config: &AppConfig,
     scope: &str,
 ) -> (String, String) {
-    let hint = std::fs::read_to_string(crate::persona_hint::manual_hint_path(config, paths, scope))
-        .map(|text| text.trim().to_string())
-        .unwrap_or_default();
-    let dialogs = crate::persona_hint::dialogs_raw(config, paths, scope);
+    let hint = std::fs::read_to_string(miyu_core::persona_hint::manual_hint_path(
+        config, paths, scope,
+    ))
+    .map(|text| text.trim().to_string())
+    .unwrap_or_default();
+    let dialogs = miyu_core::persona_hint::dialogs_raw(config, paths, scope);
     (hint, dialogs)
 }
 
@@ -465,11 +467,11 @@ pub(in crate::config_tui) fn write_persona_aux(
 ) -> Result<()> {
     let targets = [
         (
-            crate::persona_hint::manual_hint_path(config, paths, scope),
+            miyu_core::persona_hint::manual_hint_path(config, paths, scope),
             hint,
         ),
         (
-            crate::persona_hint::dialogs_path(config, paths, scope),
+            miyu_core::persona_hint::dialogs_path(config, paths, scope),
             dialogs,
         ),
     ];
@@ -542,7 +544,7 @@ pub(in crate::config_tui) fn new_persona(
     write_persona_aux(
         paths,
         config,
-        &crate::config::persona_scope_name(&name),
+        &miyu_base::config::persona_scope_name(&name),
         &fields[2].value,
         &fields[3].value,
     )?;
@@ -559,7 +561,7 @@ pub(in crate::config_tui) fn edit_persona(
     let (hint, dialogs) = persona_aux_values(
         paths,
         config,
-        &crate::config::persona_scope_name(current_name),
+        &miyu_base::config::persona_scope_name(current_name),
     );
     let mut fields = vec![
         Field::new(
@@ -588,7 +590,7 @@ pub(in crate::config_tui) fn edit_miyu_persona_extras(
     paths: &MiyuPaths,
     config: &AppConfig,
 ) -> Result<()> {
-    let (hint, dialogs) = crate::persona_hint::miyu_aux_prefill(config, paths);
+    let (hint, dialogs) = miyu_core::persona_hint::miyu_aux_prefill(config, paths);
     let mut fields = persona_aux_fields(hint, dialogs, true);
     if !run_form(stdout, t(" MIYU EXTRAS ", " Miyu 人格附加 "), &mut fields)? {
         return Ok(());
@@ -602,7 +604,7 @@ pub(in crate::config_tui) fn ensure_persona_name_available(
     candidate: &str,
     current: Option<&str>,
 ) -> Result<()> {
-    let candidate_scope = crate::config::persona_scope_name(candidate);
+    let candidate_scope = miyu_base::config::persona_scope_name(candidate);
     for existing in list_personas(paths, config)? {
         if current == Some(existing.as_str()) {
             continue;
@@ -616,7 +618,7 @@ pub(in crate::config_tui) fn ensure_persona_name_available(
                 )
             );
         }
-        if crate::config::persona_scope_name(&existing) == candidate_scope {
+        if miyu_base::config::persona_scope_name(&existing) == candidate_scope {
             bail!(
                 "{}",
                 t(
@@ -636,8 +638,8 @@ pub(in crate::config_tui) fn move_persona_scope(
     new_name: &str,
 ) -> Result<()> {
     if old_name == new_name
-        || crate::config::persona_scope_name(old_name)
-            == crate::config::persona_scope_name(new_name)
+        || miyu_base::config::persona_scope_name(old_name)
+            == miyu_base::config::persona_scope_name(new_name)
     {
         return Ok(());
     }
@@ -676,16 +678,16 @@ pub(in crate::config_tui) fn move_persona_scope(
             completed.push((source, target));
         }
     }
-    let old_scope = crate::config::persona_scope_name(old_name);
-    let new_scope = crate::config::persona_scope_name(new_name);
+    let old_scope = miyu_base::config::persona_scope_name(old_name);
+    let new_scope = miyu_base::config::persona_scope_name(new_name);
     let file_moves = [
         (
-            crate::persona_hint::manual_hint_path(config, paths, &old_scope),
-            crate::persona_hint::manual_hint_path(config, paths, &new_scope),
+            miyu_core::persona_hint::manual_hint_path(config, paths, &old_scope),
+            miyu_core::persona_hint::manual_hint_path(config, paths, &new_scope),
         ),
         (
-            crate::persona_hint::dialogs_path(config, paths, &old_scope),
-            crate::persona_hint::dialogs_path(config, paths, &new_scope),
+            miyu_core::persona_hint::dialogs_path(config, paths, &old_scope),
+            miyu_core::persona_hint::dialogs_path(config, paths, &new_scope),
         ),
     ];
     for (source, target) in file_moves {
@@ -704,10 +706,10 @@ pub(in crate::config_tui) fn remove_persona_scope(
     remove_dir_if_exists(config.persona_memory_data_dir(paths, name))?;
     remove_dir_if_exists(config.persona_memory_state_dir(paths, name))?;
     remove_dir_if_exists(config.persona_skills_dir(paths, name))?;
-    let scope = crate::config::persona_scope_name(name);
+    let scope = miyu_base::config::persona_scope_name(name);
     for path in [
-        crate::persona_hint::manual_hint_path(config, paths, &scope),
-        crate::persona_hint::dialogs_path(config, paths, &scope),
+        miyu_core::persona_hint::manual_hint_path(config, paths, &scope),
+        miyu_core::persona_hint::dialogs_path(config, paths, &scope),
     ] {
         if path.exists() {
             std::fs::remove_file(path)?;
@@ -1001,7 +1003,7 @@ pub(in crate::config_tui) fn sanitize_persona_name(value: &str) -> Result<String
     }
     // "dev" 是开发模式的保留人格(记忆/技能命名空间挂其名下);同名
     // 用户人格会与 dev 模式共享记忆库,必须挡在创建入口。
-    if persona_display_name(&name).eq_ignore_ascii_case(crate::state::DEV_PERSONA) {
+    if persona_display_name(&name).eq_ignore_ascii_case(miyu_core::state::DEV_PERSONA) {
         bail!(
             "{}",
             t(

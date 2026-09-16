@@ -10,8 +10,8 @@
 use super::build::build;
 use super::widgets::{body_w, line_width, nil, set_body_w, BODY_MAX};
 use super::{App, Screen, FORM_AT, GLINT_AT, INTRO_END, STEPS, SUBTITLE_AT};
-use crate::terminal::palette::{BLUE, CORAL, DIM, FAINT, GOLD};
-use crate::terminal::starfield::{
+use miyu_base::terminal::palette::{BLUE, CORAL, DIM, FAINT, GOLD};
+use miyu_base::terminal::starfield::{
     fade, gradient_banner, gradient_t, hairline, hash2, star_seg, subtitle_rule, Seg,
 };
 use ratatui::layout::Rect;

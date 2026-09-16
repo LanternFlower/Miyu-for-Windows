@@ -1,0 +1,532 @@
+use anyhow::Result;
+use base64::Engine;
+use sha2::Digest;
+use std::cell::OnceCell;
+use std::collections::HashMap;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
+
+const MAX_CLIPBOARD_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+const CLIPBOARD_CACHE_MAX_BYTES: u64 = 50 * 1024 * 1024;
+const CLIPBOARD_CLEANUP_INTERVAL: Duration = Duration::from_secs(30);
+static LAST_IMAGE_CACHE_CLEANUP: LazyLock<Mutex<HashMap<PathBuf, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub struct ClipboardImage {
+    pub mime: String,
+    pub data: Vec<u8>,
+    data_url: OnceCell<String>,
+    /// 粘贴时落到缓存目录的文件;上键历史靠它把 `[Image N]` 重新接回图片。
+    cache_path: OnceCell<PathBuf>,
+}
+
+pub enum PastedImage {
+    Binary(ClipboardImage),
+    Path(String),
+}
+
+impl PastedImage {
+    /// 能写进上键历史的落地路径:内联图取它粘贴时的缓存文件,路径图就是
+    /// 路径本身。没落盘的内联图返回 None,回忆时那个占位符就接不回来。
+    pub fn history_path(&self) -> Option<String> {
+        match self {
+            PastedImage::Binary(image) => image.cache_path().map(|path| path.display().to_string()),
+            PastedImage::Path(path) => Some(path.clone()),
+        }
+    }
+}
+
+impl ClipboardImage {
+    pub fn new(mime: String, data: Vec<u8>) -> Self {
+        Self {
+            mime,
+            data,
+            data_url: OnceCell::new(),
+            cache_path: OnceCell::new(),
+        }
+    }
+
+    pub fn cache_path(&self) -> Option<&Path> {
+        self.cache_path.get().map(PathBuf::as_path)
+    }
+
+    pub fn data_url(&self) -> &str {
+        self.data_url
+            .get_or_init(|| {
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&self.data);
+                format!("data:{};base64,{}", self.mime, encoded)
+            })
+            .as_str()
+    }
+
+    pub fn write_temp_file(&self, cache_dir: &std::path::Path, _index: usize) -> Result<PathBuf> {
+        let path = self.write_cache_file(cache_dir, Path::new("clipboard_images"))?;
+        let _ = self.cache_path.set(path.clone());
+        Ok(path)
+    }
+
+    pub fn write_cache_file(&self, cache_dir: &Path, relative_dir: &Path) -> Result<PathBuf> {
+        write_image_cache_file(cache_dir, relative_dir, &self.mime, &self.data)
+    }
+}
+
+pub fn write_image_cache_file(
+    cache_dir: &Path,
+    relative_dir: &Path,
+    mime: &str,
+    data: &[u8],
+) -> Result<PathBuf> {
+    let dir = cache_dir.join(relative_dir);
+    std::fs::create_dir_all(&dir)?;
+    cleanup_image_cache_throttled(&dir);
+    let ext = match mime.trim().to_ascii_lowercase().as_str() {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpeg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/bmp" => "bmp",
+        "image/svg+xml" => "svg",
+        _ => "img",
+    };
+    let hash = sha2::Sha256::digest(data);
+    let short_hash = hex::encode(&hash[..16]);
+    let path = dir.join(format!("{short_hash}.{ext}"));
+    if !path.exists() {
+        std::fs::write(&path, data)?;
+    }
+    Ok(path)
+}
+
+pub fn read_clipboard_image() -> Result<Option<ClipboardImage>> {
+    read_clipboard_image_of("image/png")
+}
+
+fn read_clipboard_image_of(mime: &str) -> Result<Option<ClipboardImage>> {
+    if let Some(img) = try_command("wl-paste", &["-t", mime], mime)? {
+        return Ok(Some(img));
+    }
+    if let Some(img) = try_command(
+        "xclip",
+        &["-selection", "clipboard", "-t", mime, "-o"],
+        mime,
+    )? {
+        return Ok(Some(img));
+    }
+    Ok(None)
+}
+
+fn try_command(cmd: &str, args: &[&str], mime: &str) -> Result<Option<ClipboardImage>> {
+    let output = Command::new(cmd)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() && !output.stdout.is_empty() => {
+            if output.stdout.len() > MAX_CLIPBOARD_IMAGE_BYTES {
+                return Ok(None);
+            }
+            Ok(Some(ClipboardImage::new(mime.to_string(), output.stdout)))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// 附件占位符的三种标签。图片、视频、PDF 共用同一条通路
+/// (`PastedImage::Path` → 内联内容块),但**显示给用户的标签必须分开**:把视频
+/// 显示成 `[Image N]`,用户会以为粘错了(08-28 用户点名)。
+///
+/// 放在这里而不是 cli 侧:`agent` 改写占位符时也要认这几个前缀,而 agent 不该
+/// 依赖 cli。两份各写一套迟早漂移——刚在视频格式表上吃过这个亏。
+///
+/// 长度不齐(`[PDF ` 只有 5 位),匹配方按各自长度来,别写死。
+pub const MEDIA_PLACEHOLDER_PREFIXES: [&str; 3] = ["[Image ", "[Video ", "[PDF "];
+
+/// 这段文本以哪个媒体占位符前缀开头。
+pub fn media_placeholder_prefix(segment: &str) -> Option<&'static str> {
+    MEDIA_PLACEHOLDER_PREFIXES
+        .into_iter()
+        .find(|prefix| segment.starts_with(prefix))
+}
+
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"];
+/// 视频与图片共用同一条附件通路(占位符 → `PastedImage::Path` → 内联内容块),
+/// 到 `agent::input` 才按扩展名分成 image_url / video_url 两种块。
+///
+/// 不认视频的后果是整条链路根本收不到东西:剪贴板里是 `.mp4` 时会落进
+/// `TextPath`,Ctrl+V 粘出来就是一行纯文本路径,连占位符都没有(08-27 用户实测)。
+/// 名单与 `tools::vision::video_mime` 保持一致。
+const VIDEO_EXTENSIONS: &[&str] = &["mp4", "m4v", "mkv", "mov", "webm", "mpeg", "mpg"];
+/// PDF 走同一条附件通路。不在名单里的后果与视频当年一样:Ctrl+V 粘出来只是
+/// 一行纯文本路径,连占位符都没有,能读 PDF 的模型也就永远收不到文件。
+/// 名单与 `tools::vision::pdf_mime` 保持一致。
+const PDF_EXTENSIONS: &[&str] = &["pdf"];
+
+pub enum ClipboardContent {
+    None,
+    Image(ClipboardImage),
+    /// 图片或视频文件的路径。
+    MediaPath(String),
+    TextPath(String),
+    Text(String),
+}
+
+pub fn read_clipboard() -> Result<ClipboardContent> {
+    let targets = list_clipboard_targets()?;
+    let has_uri_list = targets.iter().any(|t| {
+        t == "text/uri-list"
+            || t == "x-special/gnome-copied-files"
+            || t == "application/glfw+clipboard-32678"
+    });
+    let has_image = targets.iter().any(|t| t.starts_with("image/"));
+    let has_text = targets
+        .iter()
+        .any(|t| t == "text/plain" || t == "TEXT" || t == "STRING" || t == "UTF8_STRING");
+    if has_uri_list || has_text {
+        if let Some(text) = read_clipboard_text()? {
+            if has_uri_list || text.starts_with("file://") || text.starts_with('/') {
+                if let Some(cp) = parse_clipboard_path(&text) {
+                    if cp.is_media {
+                        return Ok(ClipboardContent::MediaPath(cp.path));
+                    } else {
+                        return Ok(ClipboardContent::TextPath(cp.path));
+                    }
+                }
+            }
+            if has_text {
+                return Ok(ClipboardContent::Text(text));
+            }
+        }
+    }
+    if has_image {
+        // 持有者不一定提供 image/png target:按它实际声明的格式读取,
+        // 否则只 offer JPEG/WebP 的复制源在粘贴时会静默丢失。
+        for mime in [
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "image/gif",
+            "image/bmp",
+        ] {
+            if !targets.iter().any(|target| target == mime) {
+                continue;
+            }
+            if let Some(img) = read_clipboard_image_of(mime)? {
+                return Ok(ClipboardContent::Image(img));
+            }
+        }
+        // 兜底保持老行为:有的持有者不如实上报 target,仍直接请求 PNG。
+        if let Some(img) = read_clipboard_image()? {
+            return Ok(ClipboardContent::Image(img));
+        }
+    }
+    Ok(ClipboardContent::None)
+}
+
+fn list_clipboard_targets() -> Result<Vec<String>> {
+    if let Some(targets) = try_targets_command("wl-paste", &["-l"])? {
+        return Ok(targets);
+    }
+    if let Some(targets) =
+        try_targets_command("xclip", &["-selection", "clipboard", "-t", "TARGETS", "-o"])?
+    {
+        return Ok(targets);
+    }
+    Ok(Vec::new())
+}
+
+fn try_targets_command(cmd: &str, args: &[&str]) -> Result<Option<Vec<String>>> {
+    let output = Command::new(cmd)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+    match output {
+        Ok(o) if o.status.success() && !o.stdout.is_empty() => {
+            let targets = String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|line| line.trim().to_string())
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>();
+            if targets.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(targets))
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
+pub struct ClipboardPath {
+    pub path: String,
+    /// 图片或视频——两者共用同一条附件通路。
+    pub is_media: bool,
+}
+
+pub fn read_clipboard_text() -> Result<Option<String>> {
+    if let Some(text) = try_text_command("wl-paste", &[])? {
+        return Ok(Some(text));
+    }
+    if let Some(text) = try_text_command("xclip", &["-selection", "clipboard", "-o"])? {
+        return Ok(Some(text));
+    }
+    if let Some(text) = try_text_command("xsel", &["--clipboard", "--output"])? {
+        return Ok(Some(text));
+    }
+    Ok(None)
+}
+
+pub fn write_clipboard_text(text: &str) -> Result<bool> {
+    if try_write_text_command("wl-copy", &[], text)? {
+        return Ok(true);
+    }
+    if try_write_text_command("xclip", &["-selection", "clipboard"], text)? {
+        return Ok(true);
+    }
+    if try_write_text_command("xsel", &["--clipboard", "--input"], text)? {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn try_write_text_command(cmd: &str, args: &[&str], text: &str) -> Result<bool> {
+    let mut child = match Command::new(cmd)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return Ok(false),
+    };
+
+    if let Some(stdin) = &mut child.stdin {
+        stdin.write_all(text.as_bytes())?;
+    }
+    Ok(child.wait().map(|status| status.success()).unwrap_or(false))
+}
+
+fn try_text_command(cmd: &str, args: &[&str]) -> Result<Option<String>> {
+    let output = Command::new(cmd)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+    match output {
+        Ok(o) if o.status.success() && !o.stdout.is_empty() => {
+            let text = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if text.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(text))
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
+pub fn parse_clipboard_path(text: &str) -> Option<ClipboardPath> {
+    let text = text.trim();
+    if text.is_empty() || text.contains('\n') || text.contains('\r') {
+        return None;
+    }
+    let raw = text.strip_prefix("file://").unwrap_or(text);
+    let raw = if text.starts_with("file://") {
+        urlencoding::decode(raw)
+            .map(|s| s.into_owned())
+            .unwrap_or_else(|_| raw.to_string())
+    } else {
+        raw.to_string()
+    };
+    let path_str = if raw.starts_with('/') {
+        raw.to_string()
+    } else if let Some(rest) = raw.strip_prefix("~/") {
+        if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {
+            home.join(rest).display().to_string()
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+    let path = Path::new(&path_str);
+    if !path.exists() {
+        return None;
+    }
+    let is_media = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| {
+            let e = e.to_ascii_lowercase();
+            IMAGE_EXTENSIONS.contains(&e.as_str())
+                || VIDEO_EXTENSIONS.contains(&e.as_str())
+                || PDF_EXTENSIONS.contains(&e.as_str())
+        })
+        .unwrap_or(false);
+    Some(ClipboardPath {
+        path: path_str,
+        is_media,
+    })
+}
+
+pub fn cleanup_clipboard_images(dir: &Path) {
+    cleanup_clipboard_images_with_max(dir, CLIPBOARD_CACHE_MAX_BYTES);
+}
+
+fn cleanup_image_cache_throttled(dir: &Path) {
+    let should_cleanup = LAST_IMAGE_CACHE_CLEANUP
+        .lock()
+        .map(|mut cleanups| {
+            let now = Instant::now();
+            let due = cleanups
+                .get(dir)
+                .map(|previous| now.duration_since(*previous) >= CLIPBOARD_CLEANUP_INTERVAL)
+                .unwrap_or(true);
+            if due {
+                cleanups.insert(dir.to_path_buf(), now);
+            }
+            due
+        })
+        .unwrap_or(true);
+    if should_cleanup {
+        cleanup_clipboard_images_with_max(dir, CLIPBOARD_CACHE_MAX_BYTES);
+    }
+}
+
+fn cleanup_clipboard_images_with_max(dir: &Path, max_bytes: u64) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    let mut files: Vec<(PathBuf, u64, std::time::SystemTime)> = Vec::new();
+    let mut total: u64 = 0;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if !meta.is_file() && !meta.file_type().is_symlink() {
+            continue;
+        }
+        let size = meta.len();
+        let atime = meta.accessed().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        total += size;
+        files.push((path, size, atime));
+    }
+
+    if total <= max_bytes {
+        return;
+    }
+
+    files.sort_by(|a, b| a.2.cmp(&b.2));
+
+    for (path, size, _) in &files {
+        if total <= max_bytes {
+            break;
+        }
+        let _ = std::fs::remove_file(path);
+        total -= size;
+    }
+}
+
+#[cfg(test)]
+mod clipboard_path_tests {
+    use super::*;
+
+    /// 剪贴板里是**图片或视频文件**时才走附件通路(占位符 → `PastedImage::Path`)。
+    ///
+    /// 视频原先不在白名单里,`is_media` 为假就落进 `TextPath`——Ctrl+V 粘出来是
+    /// 一行纯文本路径,连占位符都没有,后面整条内联链路根本收不到东西
+    /// (08-27 用户实测"我 ctrl+V 粘贴不会出现图片那样的占位符")。
+    ///
+    /// 这条钉的是**真正把关的那一层**:此前那条用例直接构造
+    /// `PastedImage::Path(video)` 喂给 agent,正好跳过这道闸,绿得没有意义。
+    #[test]
+    fn video_paths_take_the_attachment_lane() {
+        let temp = tempfile::tempdir().unwrap();
+        let make = |name: &str| {
+            let path = temp.path().join(name);
+            std::fs::write(&path, b"x").unwrap();
+            path.display().to_string()
+        };
+
+        for name in ["clip.mp4", "clip.mkv", "clip.mov", "clip.webm"] {
+            let path = make(name);
+            let parsed = parse_clipboard_path(&path).expect("路径存在");
+            assert!(parsed.is_media, "{name} 应当走附件通路");
+        }
+        for name in ["shot.png", "shot.jpeg"] {
+            let path = make(name);
+            assert!(parse_clipboard_path(&path).unwrap().is_media, "{name}");
+        }
+        // 既不是图片也不是视频的仍旧当文本路径。
+        let path = make("notes.txt");
+        assert!(!parse_clipboard_path(&path).unwrap().is_media);
+        // 两份格式表必须同步:`VIDEO_EXTENSIONS` 决定"进不进附件通路",
+        // `tools::vision::video_mime` 决定"进来之后当图还是当视频"。
+        // 只在一边加格式会静默降级——多出来的那个会被当成图片去读,
+        // 失败后落回工具提示,没人看得出是漏配(08-27 二轮自审)。
+        for ext in VIDEO_EXTENSIONS {
+            let path = make(&format!("sync.{ext}"));
+            assert!(
+                parse_clipboard_path(&path).unwrap().is_media,
+                "VIDEO_EXTENSIONS 里的 {ext} 应当走附件通路"
+            );
+            assert!(
+                crate::media_mime::video_mime(&path).is_some(),
+                "{ext} 在 VIDEO_EXTENSIONS 里,video_mime 也必须认它"
+            );
+        }
+        // file:// 前缀与不存在的路径照旧。
+        let path = make("clip2.mp4");
+        assert!(
+            parse_clipboard_path(&format!("file://{path}"))
+                .unwrap()
+                .is_media
+        );
+        assert!(parse_clipboard_path("/nope/missing.mp4").is_none());
+    }
+
+    /// PDF 走同一条附件通路(09-08)。漏配的后果与视频当年一样:Ctrl+V 粘出来
+    /// 只是一行文本路径,能读 PDF 的模型永远收不到文件本体。
+    #[test]
+    fn pdf_paths_take_the_attachment_lane() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("report.pdf");
+        std::fs::write(&path, b"%PDF-1.4\n").unwrap();
+        let path = path.display().to_string();
+
+        assert!(parse_clipboard_path(&path).expect("路径存在").is_media);
+        // 两份格式表同步,同视频的规矩。
+        for ext in PDF_EXTENSIONS {
+            let named = temp.path().join(format!("sync.{ext}"));
+            std::fs::write(&named, b"%PDF-1.4\n").unwrap();
+            let named = named.display().to_string();
+            assert!(
+                parse_clipboard_path(&named).unwrap().is_media,
+                "PDF_EXTENSIONS 里的 {ext} 应当走附件通路"
+            );
+            assert!(
+                crate::media_mime::pdf_mime(&named).is_some(),
+                "{ext} 在 PDF_EXTENSIONS 里,pdf_mime 也必须认它"
+            );
+        }
+        // 大小写与查询串不该骗过判据。
+        assert!(crate::media_mime::pdf_mime("/tmp/A.PDF").is_some());
+        assert!(crate::media_mime::pdf_mime("https://x/a.pdf?v=1").is_some());
+        assert!(crate::media_mime::pdf_mime("/tmp/a.pdfx").is_none());
+        assert!(crate::media_mime::pdf_mime("/tmp/a.png").is_none());
+    }
+}

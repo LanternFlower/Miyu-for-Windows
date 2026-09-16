@@ -89,11 +89,6 @@ pub(in crate::cli) fn is_miyu_log_target(value: &str) -> bool {
             .is_some_and(|suffix| !suffix.is_empty())
 }
 
-pub(in crate::cli) fn format_daemon_log_line(line: &str, ansi: bool) -> String {
-    let mut decision_color = None;
-    format_daemon_log_line_with_state(line, ansi, &mut decision_color)
-}
-
 pub(in crate::cli) fn format_daemon_log_line_with_state(
     line: &str,
     ansi: bool,
@@ -191,12 +186,7 @@ pub(in crate::cli) struct DaemonLogStreamFormatter {
 }
 
 impl DaemonLogStreamFormatter {
-    pub(in crate::cli) fn push(
-        &mut self,
-        bytes: &[u8],
-        ansi: bool,
-        output: &mut impl Write,
-    ) -> io::Result<()> {
+    pub fn push(&mut self, bytes: &[u8], ansi: bool, output: &mut impl Write) -> io::Result<()> {
         self.pending.extend_from_slice(bytes);
         let Some(last_newline) = self.pending.iter().rposition(|byte| *byte == b'\n') else {
             return Ok(());
@@ -358,13 +348,6 @@ pub(in crate::cli) fn recent_daemon_log_snapshot(
         lines,
         cursor: daemon_log_follow_cursor_for_files(&files, &offsets),
     })
-}
-
-pub(in crate::cli) fn recent_daemon_log_lines(
-    paths: &MiyuPaths,
-    limit: usize,
-) -> Result<Vec<String>> {
-    Ok(recent_daemon_log_snapshot(paths, limit)?.lines)
 }
 
 #[derive(Debug, Eq, PartialEq)]

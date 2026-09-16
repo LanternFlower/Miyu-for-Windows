@@ -261,20 +261,6 @@ pub(in crate::cli) fn inline_select_key(
     }
 }
 
-pub(in crate::cli) fn inline_single_select(
-    title: &str,
-    lines: &[String],
-    search: &[String],
-    initial_selected: usize,
-) -> Result<Option<usize>> {
-    match inline_single_select_deletable(title, lines, search, initial_selected, None)? {
-        InlineSelectOutcome::Chosen(index) => Ok(Some(index)),
-        // Unreachable without delete labels, but folding it into `None` keeps
-        // callers that never opted in from having to care.
-        InlineSelectOutcome::Cancelled | InlineSelectOutcome::Deleted(_) => Ok(None),
-    }
-}
-
 /// Fuzzy picker. Passing `delete_labels` (one per row, used in the inline
 /// confirmation) enables Ctrl+D deletion and returns `Deleted` once the user
 /// confirms; the caller performs the deletion and decides whether to reopen.

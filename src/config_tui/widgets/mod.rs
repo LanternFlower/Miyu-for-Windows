@@ -54,7 +54,7 @@ pub(in crate::config_tui) struct FcitxState {
 }
 
 impl FcitxState {
-    pub(in crate::config_tui) fn new() -> Self {
+    pub fn new() -> Self {
         let last_state = fcitx5_state();
         run_fcitx5_remote("-c");
         Self { last_state }

@@ -43,13 +43,13 @@ pub(in crate::cli) fn run_init(paths: &MiyuPaths, kind: InitKind) -> Result<()> 
     )?;
     StateStore::new(paths)?.init_files()?;
     let config = AppConfig::load_or_default(paths)?;
-    if crate::default_kb::bundled_available() {
+    if miyu_engine::default_kb::bundled_available() {
         print_init_step(
             interactive,
             t("Importing default knowledge base", "正在导入默认知识库"),
             &paths.data_dir.join("kb").display().to_string(),
         )?;
-        if let Err(err) = crate::default_kb::ensure_initialized(paths, &config) {
+        if let Err(err) = miyu_engine::default_kb::ensure_initialized(paths, &config) {
             if interactive {
                 eprintln!(
                     "{}: {err}",

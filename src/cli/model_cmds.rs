@@ -20,7 +20,7 @@ pub(in crate::cli) fn short_model_name(model: &str, provider: &str) -> String {
 
 pub(in crate::cli) fn print_mixed_model_endpoint(
     show: bool,
-    result: &crate::llm::ChatResult,
+    result: &miyu_core::llm::ChatResult,
     variant: Option<&str>,
 ) {
     if !show {
@@ -56,10 +56,10 @@ pub(in crate::cli) fn show_mixed_model_endpoint(config: &AppConfig, interactive:
 }
 
 pub(in crate::cli) fn initialize_models_cache(paths: &MiyuPaths) {
-    crate::models_cache::try_load(paths);
-    crate::models_cache::spawn_background_refresh(paths.clone());
+    miyu_base::models_cache::try_load(paths);
+    miyu_base::models_cache::spawn_background_refresh(paths.clone());
     if let Ok(config) = AppConfig::load_or_default(paths) {
-        crate::models_cache::spawn_provider_api_refresh(config.providers);
+        miyu_base::models_cache::spawn_provider_api_refresh(config.providers);
     }
 }
 
@@ -127,7 +127,7 @@ pub(in crate::cli) async fn run_models_global(
                 )
             );
         }
-        let choice = crate::config::resolve_provider_model_argument(&choices, target)
+        let choice = miyu_base::config::resolve_provider_model_argument(&choices, target)
             .map_err(anyhow::Error::msg)?;
         vec![ActiveProviderModelConfig {
             provider_id: choice.provider_id.clone(),
@@ -237,7 +237,7 @@ pub(in crate::cli) async fn run_models_for_session(
             );
             return Ok(true);
         }
-        let choice = crate::config::resolve_provider_model_argument(&choices, target)
+        let choice = miyu_base::config::resolve_provider_model_argument(&choices, target)
             .map_err(anyhow::Error::msg)?;
         let label = choice.label();
         let models = vec![ActiveProviderModelConfig {
@@ -347,7 +347,7 @@ pub(in crate::cli) fn run_list_models(paths: &MiyuPaths) -> Result<()> {
 
 pub(in crate::cli) fn print_model_choices(
     config: &AppConfig,
-    choices: &[crate::config::ProviderModelChoice],
+    choices: &[miyu_base::config::ProviderModelChoice],
     override_pool: Option<&[ActiveProviderModelConfig]>,
 ) {
     for (index, choice) in choices.iter().enumerate() {
@@ -453,8 +453,8 @@ pub(in crate::cli) fn run_variant(paths: &MiyuPaths, args: VariantArgs) -> Resul
             )
         );
     }
-    if !crate::models_cache::is_loaded() {
-        crate::models_cache::refresh_blocking(paths).map_err(|error| {
+    if !miyu_base::models_cache::is_loaded() {
+        miyu_base::models_cache::refresh_blocking(paths).map_err(|error| {
             anyhow::anyhow!(
                 "{}: {error:#}",
                 t("failed to load model metadata", "无法加载模型元数据")

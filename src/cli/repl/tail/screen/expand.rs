@@ -198,13 +198,13 @@ pub(in crate::cli) fn layer_hit(
 
 /// 展开一块：从登记处取内容、解析成 `Body`。取不到就没得展开。
 pub(in crate::cli) fn load_body(id: u64, cols: usize) -> Option<Body> {
-    let lines = crate::render::blocks::get(id)?;
+    let lines = miyu_hosts::render::blocks::get(id)?;
     if lines.is_empty() {
         return None;
     }
     // 不补结尾换行：补了会在缓冲里多出一行空的。
     let mut body = Body::parse(&lines.join("\r\n"), cols);
-    body.version = crate::render::blocks::version(id);
+    body.version = miyu_hosts::render::blocks::version(id);
     (!body.rows.is_empty()).then_some(body)
 }
 
@@ -353,21 +353,13 @@ impl Screen {
         true
     }
 
-    /// 收起所有展开的块。
-    pub(in crate::cli) fn collapse_all(&mut self) {
-        if !self.expanded.is_empty() {
-            self.expanded.clear();
-            self.invalidate();
-        }
-    }
-
     /// 展开着的块如果内容变了就重取。正在想的那一步点开之后要能**继续**流，
     /// 不然点开的一瞬间就定格了。
     pub(in crate::cli) fn refresh_expanded(&mut self) -> bool {
         let stale: Vec<u64> = self
             .expanded
             .iter()
-            .filter(|(id, body)| crate::render::blocks::version(**id) != body.version)
+            .filter(|(id, body)| miyu_hosts::render::blocks::version(**id) != body.version)
             .map(|(id, _)| *id)
             .collect();
         if stale.is_empty() {

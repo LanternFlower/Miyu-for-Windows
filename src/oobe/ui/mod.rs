@@ -17,11 +17,11 @@ pub(super) mod widgets;
 use super::apply;
 use super::probe::{Facts, Fcitx, Ime, Loader};
 use super::providers::{CatalogJob, Prefetch, ProviderOption};
-use crate::config::feature_catalog::{self, FeatureItem, FeatureKind, FeatureSources};
-use crate::config::{AppConfig, ProviderConfig};
-use crate::paths::MiyuPaths;
-use crate::terminal::palette::{Depth, Theme};
-use crate::terminal::starfield::BannerArt;
+use miyu_base::config::feature_catalog::{self, FeatureItem, FeatureKind, FeatureSources};
+use miyu_base::config::{AppConfig, ProviderConfig};
+use miyu_base::paths::MiyuPaths;
+use miyu_base::terminal::palette::{Depth, Theme};
+use miyu_base::terminal::starfield::BannerArt;
 use widgets::Cx;
 
 pub(super) const STEPS: [&str; 5] = ["人格", "功能", "认识你", "终端", "模型"];
@@ -338,17 +338,20 @@ impl App {
             return;
         }
         let manifest = apply::current_manifest(&self.config, &self.paths);
-        let default_persona = crate::skills::is_default_persona(&self.config);
+        let default_persona = miyu_core::skills::is_default_persona(&self.config);
         // 内置脚本对每个人格都列出来:默认人格默认全勾,自定义人格默认不勾、勾了才挂。
         let dirs = [
-            crate::tools::builtin_scripts_dir(&self.paths),
+            miyu_engine::tools::builtin_scripts_dir(&self.paths),
             self.paths.scripts_dir.clone(),
         ];
         let dir_refs: Vec<&std::path::Path> = dirs.iter().map(|dir| dir.as_path()).collect();
         let sources = FeatureSources {
             voice_available: super::probe::which("miyu-voice") || voice_beside_exe(),
-            scripts: crate::tools::list_scripts_with_origin(&dir_refs, Some(&self.paths)),
-            skills: crate::skills::persona_skill_options(&self.config, &self.paths),
+            persona_reminder_available: self.config.prompt.persona_reminder,
+            emotion_available: self.config.platforms.qq.enabled,
+            scripts: miyu_engine::tools::list_scripts_with_origin(&dir_refs, Some(&self.paths)),
+            skills: miyu_core::skills::persona_skill_options(&self.config, &self.paths),
+            mcp_servers: mcp_server_options(&self.config),
         };
         self.feats = feature_catalog::catalog(&manifest, &sources, default_persona);
         self.feat_cur = 0;
@@ -360,6 +363,7 @@ impl App {
             FeatureKind::Subsystem | FeatureKind::Plugin => "内置功能",
             FeatureKind::Script => "脚本",
             FeatureKind::Skill => "技能",
+            FeatureKind::Mcp => "MCP 服务器",
         }
     }
 
@@ -466,7 +470,7 @@ impl App {
     }
 
     pub fn commit_features(&mut self) -> bool {
-        let default_persona = crate::skills::is_default_persona(&self.config);
+        let default_persona = miyu_core::skills::is_default_persona(&self.config);
         match apply::save_features(
             &self.config,
             &self.paths,
@@ -649,6 +653,88 @@ pub(super) fn filter_models(models: &[String], query: &str) -> Vec<usize> {
 }
 
 #[cfg(test)]
+mod feature_tests {
+    use super::*;
+    use miyu_base::config::McpServerConfig;
+
+    /// 功能屏按真实配置摆表:机器级 MCP 开着就列出开着的服务器,关着的服务器与
+    /// 机器级关着时整格都不出现。
+    #[test]
+    fn features_screen_lists_enabled_mcp_servers_only_when_mcp_is_on() {
+        std::env::set_var("MIYU_OOBE_NO_IME", "1");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let paths = MiyuPaths {
+            root_dir: root.to_path_buf(),
+            config_dir: root.join("config"),
+            config_file: root.join("config/config.jsonc"),
+            skills_dir: root.join("config/skills"),
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            state_dir: root.join("state"),
+            pictures_dir: root.join("pictures"),
+            fish_hook_file: root.join("fish/miyu.fish"),
+            bash_hook_file: root.join("shell/bash-hook.sh"),
+            zsh_hook_file: root.join("shell/zsh-hook.zsh"),
+            scripts_dir: root.join("config/scripts"),
+            system_scripts_dir: std::path::PathBuf::new(),
+        };
+        let mut config = AppConfig::default();
+        config.mcp.enabled = true;
+        config.mcp.servers = vec![
+            McpServerConfig {
+                id: "named".into(),
+                display_name: "有名字".into(),
+                command: "echo".into(),
+                args: vec!["a".into()],
+                env: Default::default(),
+                timeout_seconds: 30,
+                enabled: true,
+                capabilities: Vec::new(),
+            },
+            McpServerConfig {
+                id: "bare".into(),
+                display_name: String::new(),
+                command: "echo".into(),
+                args: Vec::new(),
+                env: Default::default(),
+                timeout_seconds: 30,
+                enabled: true,
+                capabilities: Vec::new(),
+            },
+            McpServerConfig {
+                id: "off".into(),
+                display_name: "关着".into(),
+                command: "echo".into(),
+                args: Vec::new(),
+                env: Default::default(),
+                timeout_seconds: 30,
+                enabled: false,
+                capabilities: Vec::new(),
+            },
+        ];
+        let mut app = App::new(config.clone(), paths.clone());
+        app.persona_scope = config.active_persona_scope();
+        app.load_features();
+        let mcp: Vec<(&str, &str, bool)> = app
+            .feats
+            .iter()
+            .filter(|item| item.kind == FeatureKind::Mcp)
+            .map(|item| (item.id.as_str(), item.name.as_str(), item.on))
+            .collect();
+        assert_eq!(mcp, [("named", "有名字", true), ("bare", "bare", true)]);
+        assert_eq!(App::section_of(FeatureKind::Mcp), "MCP 服务器");
+
+        let mut off = config;
+        off.mcp.enabled = false;
+        let mut app = App::new(off.clone(), paths);
+        app.persona_scope = off.active_persona_scope();
+        app.load_features();
+        assert!(app.feats.iter().all(|item| item.kind != FeatureKind::Mcp));
+    }
+}
+
+#[cfg(test)]
 mod search_tests {
     use super::filter_models;
 
@@ -666,9 +752,31 @@ mod search_tests {
     }
 }
 
+/// 引导表里的 MCP 一格:机器级 `mcp.enabled` 开着才列,只列 `servers[].enabled` 的;
+/// 说明行是命令本身(截到一行),显示名空的由目录退回 id。
+fn mcp_server_options(config: &miyu_base::config::AppConfig) -> Vec<(String, String, String)> {
+    if !config.mcp.enabled {
+        return Vec::new();
+    }
+    config
+        .mcp
+        .servers
+        .iter()
+        .filter(|server| server.enabled && !server.id.trim().is_empty())
+        .map(|server| {
+            let mut hint = server.command.clone();
+            for arg in &server.args {
+                hint.push(' ');
+                hint.push_str(arg);
+            }
+            (server.id.clone(), server.display_name.clone(), hint)
+        })
+        .collect()
+}
+
 /// `miyu-voice` 也可能和主程序放在一起而不在 PATH 里。
 fn voice_beside_exe() -> bool {
-    crate::paths::miyu_executable()
+    miyu_base::paths::miyu_executable()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join("miyu-voice").is_file()))
         .unwrap_or(false)
