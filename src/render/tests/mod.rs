@@ -11,5 +11,6 @@ mod reasoning;
 mod shared;
 mod table;
 mod timeline;
+mod todo;
 mod tool_summary;
 mod usage;

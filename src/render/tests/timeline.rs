@@ -122,7 +122,7 @@ fn a_run_without_timing_reports_what_it_did_not_zero_seconds() {
 }
 
 /// 测试之间共用同一个进程级开关，串行跑免得互相掀桌子。
-fn with_blocks<T>(body: impl FnOnce() -> T) -> T {
+pub(super) fn with_blocks<T>(body: impl FnOnce() -> T) -> T {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = LOCK
         .lock()
@@ -133,7 +133,7 @@ fn with_blocks<T>(body: impl FnOnce() -> T) -> T {
     out
 }
 
-fn timeline_renderer() -> crate::render::StreamRenderer {
+pub(super) fn timeline_renderer() -> crate::render::StreamRenderer {
     timeline_renderer_with_preview_rows(10)
 }
 
@@ -719,22 +719,22 @@ fn the_background_jobs_tool_gets_the_list_glyph() {
 fn the_todo_tool_still_leaves_a_step_on_the_timeline() {
     with_blocks(|| {
         let mut renderer = timeline_renderer();
-        renderer
-            .write_tool_call("run_command", r#"{"command":"ls"}"#)
-            .unwrap();
-        renderer
-            .write_tool_result("run_command", true, "out")
-            .unwrap();
-        renderer
-            .write_tool_call("todowrite", r#"{"todos":[]}"#)
-            .unwrap();
-        renderer
-            .write_tool_result("todowrite", true, "todo list updated")
-            .unwrap();
+        renderer.use_buffered_output();
+        for (name, args) in [
+            ("run_command", r#"{"command":"ls"}"#),
+            ("todowrite", r#"{"todos":[]}"#),
+        ] {
+            renderer.write_tool_call(name, args).unwrap();
+            renderer.write_tool_result(name, true, "out").unwrap();
+        }
         renderer.finalize_tools_summary().unwrap();
-        let steps = renderer
-            .timeline_step_lines()
-            .into_iter()
+        // 清单是一段的句点(09-16):两步都在收缩块的展开内容里,不在 live 时间线上。
+        let frame = String::from_utf8_lossy(&renderer.take_output_frame()).into_owned();
+        let steps = frame
+            .lines()
+            .filter_map(block_id_in)
+            .filter_map(crate::render::blocks::get)
+            .flatten()
             .map(|line| crate::render::strip_ansi_text(&line))
             .collect::<Vec<_>>();
         assert!(

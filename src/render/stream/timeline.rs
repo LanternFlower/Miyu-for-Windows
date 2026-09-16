@@ -1205,6 +1205,8 @@ impl StreamRenderer {
             .max()
             .unwrap_or_default();
         self.timeline.note_start_since(spent);
+        // 清单是一段的句点:表落在收缩行之后、新一段之前(对齐 WebUI)。
+        let ends_segment = entries.iter().any(|e| e.name == "todowrite" && !e.failed);
         for PendingStep {
             name,
             display,
@@ -1258,6 +1260,9 @@ impl StreamRenderer {
         self.last_tool_summary.clear();
         self.live_block = None;
         self.live_tool_blocks.clear();
+        // 只记意图:五个调用方各有各的后续动作(三个自己会 `cut_timeline`,两个
+        // 紧接着重挂 live 区),就地收段会和它们打架。切段交回 `settle_tool_batch`。
+        self.timeline_ends_after_tools |= ends_segment;
         self.settle_new_steps()
     }
 
@@ -2249,6 +2254,7 @@ impl StreamRenderer {
 
     pub(crate) fn cut_timeline(&mut self) -> anyhow::Result<()> {
         use std::io::Write as _;
+        self.timeline_ends_after_tools = false; // 段收了,意图作废
         if self.timeline.is_empty() {
             self.timeline = Timeline::default();
             // 没有时间线可收，攒着的结果也没有理由再等。
@@ -2295,20 +2301,27 @@ impl StreamRenderer {
             };
             steps.push(step_rows(step, target));
         }
+        // 段尾那行空跟着这一段的最后一样东西走:有清单表就留到表后面。
+        let result_follows = !self.pending_after_timeline.is_empty();
         let mut expanded = vec![format!("\x1b[2m{INDENT}⌄ {summary}\x1b[0m")];
         expanded.push(rail());
         expanded.extend(thread(steps));
-        expanded.push(String::new());
+        expanded.extend((!result_follows).then(String::new));
         let stdout = &mut self.output;
         blocks::write_expandable(stdout, expanded, |writer| {
             writeln!(writer, "\x1b[2m{INDENT}› {summary}\x1b[0m")?;
-            // 收缩行后面留一行空：不留的话它和紧跟的正文（或下一段过程）挤在
-            // 一起，看着像同一段。
+            if result_follows {
+                return Ok(());
+            }
             writeln!(writer)
         })?;
         stdout.flush()?;
-        // 收缩行落地了，这一段干出来的结果接在它下面。
-        self.flush_after_timeline()
+        self.flush_after_timeline()?;
+        if result_follows {
+            writeln!(self.output)?;
+        }
+        self.output.flush()?;
+        Ok(())
     }
 }
 

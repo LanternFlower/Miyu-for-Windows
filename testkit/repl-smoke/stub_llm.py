@@ -25,6 +25,14 @@ REASONING = os.environ.get("STUB_REASONING")
 # 置 STUB_TOOL=1:第一次请求先要一次 run_command,拿到结果再正常作答。
 # 全屏 TUI 的时间线、命令窥视、点开看完整输出都得有真工具才验得了。
 TOOL = os.environ.get("STUB_TOOL")
+# 置 STUB_TODO=1:先写一份任务清单。全屏下表格排在时间线之后,
+# 「表被 Worked for 截断 / 表要等整条时间线跑完才出现」只能这么验。
+TODO = os.environ.get("STUB_TODO")
+TODO_ITEMS = int(os.environ.get("STUB_TODO_ITEMS", "4"))
+# 置 STUB_STAGE_PREFACE=1:第一段之后每次调工具前先吐一句正文。正文是时间线的
+# 分段点,于是一轮里能出好几个 `Worked for` —— 「表被下一段收缩行截断」要两段
+# 才撞得上。
+STAGE_PREFACE = os.environ.get("STUB_STAGE_PREFACE")
 # 置 STUB_ASK=1:第一次请求先问一个问题。全屏下提问面板是盖上去的,一退场
 # 就没了,「问了什么答了什么有没有进正文」只能这么验。
 ASK = os.environ.get("STUB_ASK")
@@ -75,6 +83,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def do_POST(self):
+        # 模型请求的往返延迟:两批工具之间 live 区空着的那个窗口靠它撑开。
+        time.sleep(float(os.environ.get("STUB_RESPONSE_DELAY", "0")))
         length = int(self.headers.get("content-length", "0"))
         body = self.rfile.read(length) if length else b""
         # 按请求里已有几条 tool 结果决定这一轮要什么,免得来回死循环。
@@ -109,8 +119,15 @@ class Handler(BaseHTTPRequestHandler):
                 stages.append("ask")
             if SUBAGENT:
                 stages.append("subagent")
+            if TODO:
+                stages.append("todo")
             if TOOL:
-                stages.append("tool")
+                for round_index in range(int(os.environ.get("STUB_TOOL_ROUNDS", "1"))):
+                    stages.append("tool")
+                    # 清单反复写是真实用法(每做完一件就推进一格),而每一次都会
+                    # 切一段——「思考行被下一步顶掉」只在第二次之后才看得见。
+                    if TODO and os.environ.get("STUB_TODO_REPEAT"):
+                        stages.append("todo")
             if EDIT:
                 stages.append("edit")
             if FAIL:
@@ -130,6 +147,12 @@ class Handler(BaseHTTPRequestHandler):
                 for chunk in ("先想一句，", "再动手。"):
                     self._sse({"choices": [{"index": 0,
                                             "delta": {"reasoning_content": chunk},
+                                            "finish_reason": None}]})
+                    time.sleep(CHUNK_SLEEP)
+            if STAGE_PREFACE and done > 0:
+                for chunk in (f"第 {done + 1} 段开始,", "接着干。\n\n"):
+                    self._sse({"choices": [{"index": 0,
+                                            "delta": {"content": chunk},
                                             "finish_reason": None}]})
                     time.sleep(CHUNK_SLEEP)
             if stage == "ask":
@@ -163,6 +186,16 @@ class Handler(BaseHTTPRequestHandler):
                     "prompt": f"{SUBAGENT_MARK}BGSUB-SENT：跑一条命令看看，然后简单说一句。",
                     "background": True,
                 }, ensure_ascii=False)
+            elif stage == "todo":
+                name = "todowrite"
+                todos = [
+                    {"content": f"走查任务 {i + 1}:这一条长到足以铺满一行表格",
+                     "status": "completed" if i == 0 else
+                               ("in_progress" if i == 1 else "pending"),
+                     "priority": "medium"}
+                    for i in range(TODO_ITEMS)
+                ]
+                arguments = json.dumps({"todos": todos}, ensure_ascii=False)
             elif stage == "edit":
                 name = "edit"
                 patch = (

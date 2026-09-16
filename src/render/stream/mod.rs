@@ -52,6 +52,10 @@ pub struct StreamRenderer {
     /// 倒过来了（用户实测报的表情包、搜图、todo、提问全是这一个毛病）。
     /// `cut_timeline` 把这一段收成一行之后再把它们放出来。
     pub(crate) pending_after_timeline: Vec<String>,
+    /// 这一批工具里有清单:收完这批就把这一段收成 `Worked for`,表跟在
+    /// 它后面。由 `timeline_push_tools` 记下,批次边界消费(见
+    /// `settle_tool_batch`)——不在推步骤的路上就地收段。
+    pub(crate) timeline_ends_after_tools: bool,
     /// 正在跑的每个工具各自那一块（工具事件名 → 块 id）。见 `refresh_live_block`。
     pub(crate) live_tool_blocks: BTreeMap<String, u64>,
     /// 这一轮里每个子代理**至此**烧掉的词元（工具事件名 → 数）。
@@ -146,6 +150,7 @@ impl StreamRenderer {
             readable_tool_names,
             command_output_lines,
             pending_after_timeline: Vec::new(),
+            timeline_ends_after_tools: false,
             live_tool_blocks: BTreeMap::new(),
             subagent_tokens: BTreeMap::new(),
             command_display: None,

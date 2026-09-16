@@ -281,6 +281,11 @@ impl StreamRenderer {
             return self.update_tool_summary_display();
         }
         self.finalize_tools_summary()?;
+        // 清单写完 = 这一段忙完了。收段要在这儿做,不在 `timeline_push_tools`
+        // 里面——这里才是「收完这批再重挂 live 区」的那个时序。
+        if std::mem::take(&mut self.timeline_ends_after_tools) {
+            self.cut_timeline()?;
+        }
         if self.timeline_enabled() && self.wait_spinner.is_none() && self.live_summary {
             self.ensure_tool_waiting_phase()?;
         }
