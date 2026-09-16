@@ -138,7 +138,7 @@ pub(super) fn timeline_renderer() -> crate::render::StreamRenderer {
 }
 
 /// `display.command_output_lines`:命令跑着/跑完时抬头底下露几行输出。
-fn timeline_renderer_with_preview_rows(rows: usize) -> crate::render::StreamRenderer {
+pub(super) fn timeline_renderer_with_preview_rows(rows: usize) -> crate::render::StreamRenderer {
     let mut renderer = crate::render::StreamRenderer::new(
         crate::render::ReasoningDisplayMode::Summary,
         crate::render::ToolCallDisplayMode::Summary,
@@ -151,7 +151,7 @@ fn timeline_renderer_with_preview_rows(rows: usize) -> crate::render::StreamRend
 }
 
 /// 一行里挂着的那一块的 id（行首的私有 OSC 标记）。
-fn block_id_in(line: &str) -> Option<u64> {
+pub(super) fn block_id_in(line: &str) -> Option<u64> {
     let rest = line.split_once("\x1b]1337;miyu-block=")?.1;
     rest.split_once('\u{7}')?.0.parse().ok()
 }
@@ -965,8 +965,15 @@ fn a_subagent_speech_keeps_its_place_when_it_thinks_again() {
             .position(|line| line.contains("最后的结论"))
             .unwrap();
         assert!(speech < fold && fold < last, "时序乱了: {text:?}");
-        let inner = crate::render::blocks::get(id)
+        // 命令 09-17 起不在抬头上,要多钻一层:收缩行 → 那一步 → 命令全文。
+        let fold_content = crate::render::blocks::get(id)
             .unwrap_or_default()
+            .iter()
+            .filter_map(|line| block_id_in(line))
+            .filter_map(crate::render::blocks::get)
+            .flatten()
+            .collect::<Vec<_>>();
+        let inner = fold_content
             .iter()
             .filter_map(|line| block_id_in(line))
             .filter_map(crate::render::blocks::get)
@@ -1245,9 +1252,12 @@ fn a_subagent_command_step_opens_like_the_main_line() {
         );
         let id = renderer.subagent_overlay_id("subagent").expect("没登记");
         let panel = crate::render::blocks::get(id).unwrap_or_default();
+        // 抬头上现在是 title(这里没给,所以只有工具名);命令搬进了正文。
         let step = panel
             .iter()
-            .find(|line| crate::render::strip_ansi_text(line).contains("ls -la"))
+            .find(|line| {
+                crate::render::strip_ansi_text(line).contains(t("Run command", "运行命令"))
+            })
             .unwrap_or_else(|| panic!("那一步不见了: {panel:?}"));
         let step_id = block_id_in(step).expect("那一步没挂块");
         let detail: Vec<String> = crate::render::blocks::get(step_id)
@@ -1271,100 +1281,6 @@ fn a_subagent_command_step_opens_like_the_main_line() {
             detail.iter().any(|line| line.contains("total 0")),
             "点开没有输出: {detail:?}"
         );
-    });
-}
-
-/// 全屏：命令跑完之后抬头底下留着六行输出（超出的换成省略标记），点开才是全部
-///（用户：实时输出调整为 6 行；完成后保留区域）。收成 `Worked for` 之后点开
-/// 那一块，这几行还在。
-#[test]
-fn a_finished_commands_preview_rows_follow_the_configured_count() {
-    with_blocks(|| {
-        // 全屏这几行原来写死 6,只有 shellhook 的静态时间线跟配置走;现在两边同
-        // 一个量,都归 display.command_output_lines 管。
-        let mut renderer = timeline_renderer_with_preview_rows(6);
-        renderer.use_buffered_output();
-        renderer
-            .write_tool_call("run_command", r#"{"command":"seq 1 8"}"#)
-            .unwrap();
-        for index in 1..=8 {
-            renderer
-                .write_command_output(
-                    "run_command",
-                    crate::tools::CommandOutputStream::Stdout,
-                    format!("line-{index}\n").as_bytes(),
-                )
-                .unwrap();
-        }
-        renderer
-            .write_tool_result("run_command", true, r#"{"success":true,"exit_code":0}"#)
-            .unwrap();
-        renderer.finalize_tools_summary().unwrap();
-        let (_, live) = renderer.timeline_live(Vec::new());
-        let live = crate::render::strip_ansi_text(&live.unwrap_or_default());
-        for kept in ["line-4", "line-8"] {
-            assert!(
-                live.contains(kept),
-                "跑完之后 {kept} 没留在抬头底下: {live:?}"
-            );
-        }
-        assert!(
-            live.contains("⋮") && !live.contains("line-2"),
-            "超出六行的没换成省略标记: {live:?}"
-        );
-        // 尾巴行从连线穿过：`  │ line-8`。
-        assert!(
-            live.lines().any(|line| line.starts_with("  │ line-8")),
-            "尾巴行没有连线前缀: {live:?}"
-        );
-        // 收成 Worked for 之后，点开那一块里这几行还在。
-        renderer.cut_timeline().unwrap();
-        let frame = String::from_utf8_lossy(&renderer.take_output_frame()).into_owned();
-        let id = block_id_in(&frame).expect("收缩行没挂块");
-        let detail = crate::render::blocks::get(id)
-            .unwrap_or_default()
-            .iter()
-            .map(|line| crate::render::strip_ansi_text(line))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            detail.contains("line-8") && detail.contains("⋮"),
-            "收缩之后尾巴丢了: {detail:?}"
-        );
-    });
-
-    // 0 = 一行预览都不露(用户明确要的那一档)。
-    with_blocks(|| {
-        let mut renderer = timeline_renderer_with_preview_rows(0);
-        renderer.use_buffered_output();
-        renderer
-            .write_tool_call("run_command", r#"{"command":"seq 1 8"}"#)
-            .unwrap();
-        for index in 1..=8 {
-            renderer
-                .write_command_output(
-                    "run_command",
-                    crate::tools::CommandOutputStream::Stdout,
-                    format!("line-{index}\n").as_bytes(),
-                )
-                .unwrap();
-        }
-        // 覆盖范围说清楚:这里断的是「跑完之后」那条路(tool_summary.rs 的
-        // detail_tail)。「跑着的时候」那条在 timeline_running_tool_lines 里,
-        // 要渲染器处在真有工具在飞的活动帧才走得到,本夹具够不着——那一行的
-        // 行数来源也改成了同一个配置,但没有测试守着,改它时当心。
-        renderer
-            .write_tool_result("run_command", true, r#"{"success":true,"exit_code":0}"#)
-            .unwrap();
-        renderer.finalize_tools_summary().unwrap();
-        let (_, live) = renderer.timeline_live(Vec::new());
-        let live = crate::render::strip_ansi_text(&live.unwrap_or_default());
-        for line in 1..=8 {
-            assert!(
-                !live.contains(&format!("line-{line}")),
-                "设 0 跑完之后还留着预览行: {live:?}"
-            );
-        }
     });
 }
 

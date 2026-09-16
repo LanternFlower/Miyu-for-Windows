@@ -81,7 +81,10 @@ pub struct StreamRenderer {
     pub(crate) tool_stats: BTreeMap<String, ToolStats>,
     pub(crate) tool_seq: usize,
     pub(crate) readable_tool_names: bool,
-    pub(crate) command_output_lines: usize,
+    /// 抬头底下露几行**命令**(不是输出)。配置键仍叫 `command_output_lines`——
+    /// 语义 09-17 从「输出行数」改成「命令行数」,但键名不动:改了的话用户
+    /// 已经设过的值会掉回默认。
+    pub(crate) command_display_lines: usize,
     pub(crate) command_display: Option<CommandLiveDisplay>,
     pub(crate) summary_line_active: bool,
     pub(crate) summary_lines_active: u16,
@@ -129,7 +132,7 @@ impl StreamRenderer {
         tool_call_mode: ToolCallDisplayMode,
         plain: bool,
         readable_tool_names: bool,
-        command_output_lines: usize,
+        command_display_lines: usize,
     ) -> Self {
         Self {
             reasoning_mode,
@@ -148,7 +151,7 @@ impl StreamRenderer {
             tool_stats: BTreeMap::new(),
             tool_seq: 0,
             readable_tool_names,
-            command_output_lines,
+            command_display_lines,
             pending_after_timeline: Vec::new(),
             timeline_ends_after_tools: false,
             live_tool_blocks: BTreeMap::new(),
@@ -546,11 +549,11 @@ impl StreamRenderer {
     fn interrupt_command_display(&mut self, mut display: CommandLiveDisplay) {
         let width = timeline::detail_width();
         display.set_result(false);
+        let rows = display.command_rows(width, self.command_display_lines, true);
         let (detail, tail) = if self.timeline_static() {
-            (display.static_detail(width, true), Vec::new())
+            (rows, Vec::new())
         } else {
-            let tail = display.detail_tail(width, true, self.command_output_lines);
-            (display.timeline_detail(width), tail)
+            (display.timeline_detail(width), rows)
         };
         // 命令工具在统计里叫什么名字（`run_command` / `Bash`）由事件决定，
         // 找那个还没跑完的就是它。

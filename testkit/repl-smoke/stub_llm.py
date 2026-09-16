@@ -234,7 +234,11 @@ class Handler(BaseHTTPRequestHandler):
                     command = SUBAGENT_COMMAND
                 else:
                     command = TOOL_COMMAND
-                arguments = json.dumps({"command": command})
+                arguments = json.dumps(
+                    {"command": command,
+                     "title": os.environ.get("STUB_TOOL_TITLE", "跑个命令")},
+                    ensure_ascii=False,
+                )
             self._sse({"choices": [{"index": 0, "delta": {"tool_calls": [{
                 "index": 0,
                 "id": f"call_stub_{done}",

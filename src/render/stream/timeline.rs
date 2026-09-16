@@ -775,21 +775,6 @@ pub(crate) fn format_seconds(elapsed: Duration) -> String {
     }
 }
 
-/// 命令的单行窥视：取第一条有内容的行，截到能放下。
-pub(crate) fn command_peek(arguments: &str) -> Option<String> {
-    let command = serde_json::from_str::<serde_json::Value>(arguments)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("command")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| arguments.to_string());
-    let line = command.lines().find(|line| !line.trim().is_empty())?;
-    Some(crate::render::clip_to_display_width(line.trim(), 72))
-}
-
 /// 工具输出切成可展开的行。
 ///
 /// JSON 先排版再给——工具的返回十有八九是一长串 JSON，原样贴出来是一行糊到
@@ -1671,16 +1656,13 @@ impl StreamRenderer {
                 } else {
                     own
                 };
-                // 跑着的命令把此刻的输出露在这一行底下。静态版没处点开，就地
-                // 给几行（和它跑完之后落下来的那几行同一个量）；全屏给四行，
-                // 超出的换成省略标记——想看全的点开，展开内容会把这几行一起换掉。
+                // 跑着的时候底下也是**命令本身**,和跑完落下来的那几行同一份,
+                // 于是前后不跳版。输出点开才看;设 0 就一行都不露。
                 let tail = if crate::render::is_command_tool(name) {
-                    // 全屏与静态时间线同一个量,都归「命令输出显示行数」管;
-                    // 设 0 就是不露预览行(live_tail 自己认这个 0)。
-                    let rows = self.command_output_lines;
+                    let rows = self.command_display_lines;
                     self.command_display
                         .as_ref()
-                        .map(|display| display.live_tail(detail_width(), rows))
+                        .map(|display| display.command_rows(detail_width(), rows, false))
                         .unwrap_or_default()
                 } else {
                     Vec::new()
@@ -1980,8 +1962,24 @@ impl StreamRenderer {
         // `{"patchText": "*** Begin Patch\n…"}` 出来，那一行就再也读不出是在
         // 改哪个文件了（用户实测截图）。
         let subject = crate::render::tool_peek(tool, args).unwrap_or_default();
-        let peek = (!subject.trim().is_empty())
-            .then(|| crate::render::clip_to_display_width(&subject, 72));
+        // 和主线同一套规矩:命令给 title,编辑给路径加 `+3 -1`。浮层拿不到
+        // `__patch_preview__` 的真 diff,按调用参数里那份信封数。
+        let peek = if crate::render::is_command_tool(tool) {
+            crate::render::command_peek(args)
+        } else if subject.trim().is_empty() {
+            None
+        } else {
+            let head = crate::render::clip_to_display_width(&subject, 72);
+            Some(match crate::render::envelope_diff_stat(tool, args) {
+                Some((added, removed)) => {
+                    format!(
+                        "{head}{PEEK_SEP}{}",
+                        crate::render::diff_stat_label(added, removed)
+                    )
+                }
+                None => head,
+            })
+        };
         let mut body = Vec::new();
         // 编辑类工具：正文给 **diff**，不给参数也不给那份结果 JSON。
         // 工具自己跑那条路会用改前改后算真 diff（`__patch_preview__`），但那条

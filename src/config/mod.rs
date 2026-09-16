@@ -550,6 +550,8 @@ pub struct DisplayConfig {
     pub show_token_usage: bool,
     #[serde(default = "default_mixed_model_endpoint_display")]
     pub mixed_model_endpoint_display: String,
+    /// 命令那一步抬头底下露几行**命令**。09-17 之前露的是命令输出,现在输出
+    /// 退到点开里;键名不改,改了用户设过的值会掉回默认。
     #[serde(default = "default_command_output_lines")]
     pub command_output_lines: usize,
     /// How many finished turns a reopened REPL redraws; 0 disables replay.

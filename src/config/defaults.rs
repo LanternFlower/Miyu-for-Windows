@@ -154,7 +154,7 @@ pub(crate) fn default_tool_call_display() -> String {
 }
 
 pub(crate) fn default_command_output_lines() -> usize {
-    10
+    8
 }
 
 pub(crate) fn default_repl_replay_turns() -> usize {

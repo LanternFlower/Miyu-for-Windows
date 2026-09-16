@@ -389,6 +389,43 @@ impl CommandLiveDisplay {
         lines
     }
 
+    /// 抬头底下留着的那几行：**命令本身**，最多 `max_rows` 行，装不下时在
+    /// 底部补一行 `⋮ 已省略`。
+    ///
+    /// 09-17 之前这里放的是命令输出的尾巴。用户裁定反过来：跑了什么命令是要紧
+    /// 的，输出不是——输出退到点开里（`timeline_detail` 本来就给「完整命令 +
+    /// 完整输出」）。命令要留**头**不留尾，所以省略标记在底部，和输出那边（留尾
+    /// 不留头、标记在顶部）正相反。
+    ///
+    /// 跑砸了整段红：和输出那边同一个规矩，一眼认得出是报错。
+    pub(crate) fn command_rows(&self, width: usize, max_rows: usize, failed: bool) -> Vec<String> {
+        if max_rows == 0 {
+            return Vec::new();
+        }
+        let mut rows = Vec::new();
+        for line in self.command.lines() {
+            rows.extend(wrap_plain_text(line, width));
+        }
+        let style = if failed { "\x1b[31m" } else { "" };
+        let reset = if failed { "\x1b[0m" } else { "" };
+        let omitted = rows.len() > max_rows;
+        let keep = if omitted {
+            max_rows.saturating_sub(1)
+        } else {
+            max_rows
+        };
+        rows.truncate(keep);
+        let mut lines: Vec<String> = rows
+            .into_iter()
+            .map(|line| format!("{style}{line}{reset}"))
+            .collect();
+        if omitted {
+            let style = if failed { "\x1b[31m" } else { "\x1b[2m" };
+            lines.push(format!("{style}⋮ {}\x1b[0m", t("omitted", "已省略")));
+        }
+        lines
+    }
+
     /// 静态时间线（shellhook／单次 CLI）里这一步下面直接印出来的内容：**只有
     /// 输出的尾巴**，最多 `max_output_rows` 行。
     ///
@@ -840,6 +877,16 @@ pub(crate) fn wrap_display_text(text: &str, width: usize) -> Vec<String> {
 /// 以前是拿整串（连转义带控制字符）去量宽度的：一行带颜色的文字会被当成比它
 /// 实际宽得多，于是提前截断；更糟的是切点可能落在转义序列中间，半个序列流到
 /// 终端上就是乱码。全屏 TUI 把块标记（OSC）也放进了行里，这条必须是对的。
+/// 抬头右边那句窥视:命令给的是模型自报的 `title`,不是命令文本——命令就印在
+/// 抬头底下。没填就留空(中转线的原生 Bash 没这个参数,天然走空)。
+pub(crate) fn command_peek(arguments: &str) -> Option<String> {
+    let args = serde_json::from_str::<serde_json::Value>(arguments).ok()?;
+    let title = args
+        .get("title")
+        .and_then(serde_json::Value::as_str)?
+        .trim();
+    (!title.is_empty()).then(|| crate::render::clip_to_display_width(title, 72))
+}
 pub(crate) fn clip_to_display_width(text: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();

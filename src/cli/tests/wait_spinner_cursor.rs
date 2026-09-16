@@ -302,12 +302,16 @@ fn back_to_back_command_cards_leave_exactly_one_blank() {
         // 第二张卡片开画:它与上一张之间该只隔一个空行。
         renderer.write_tool_call("run_command", "pwd").unwrap();
         let frame = renderer.take_output_frame();
-        let rows = terminal_frame_layout(&frame, (0, 0), COLUMNS, None)
-            .cursor
-            .1;
+        // 数的是**空行**,不是行数。09-17 起 live 区里多了一行命令本身(内容行,
+        // 不是空行),拿行数当空行数的代理会被它戳穿。
+        let painted = crate::render::strip_ansi_text(&String::from_utf8_lossy(&frame));
+        let blanks = painted
+            .lines()
+            .filter(|line| line.trim().is_empty())
+            .count();
         assert!(
-            rows <= 1,
-            "上一张卡片输出 {output_lines} 行时,两张命令卡片之间空出了 {rows} 行"
+            blanks <= 1,
+            "上一张卡片输出 {output_lines} 行时,两张命令卡片之间空出了 {blanks} 行: {painted:?}"
         );
     }
 }

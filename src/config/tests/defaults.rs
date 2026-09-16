@@ -57,7 +57,8 @@ fn display_readable_tool_names_defaults_enabled() {
     assert!(display.readable_tool_names);
     assert!(!display.show_token_usage);
     assert_eq!(display.mixed_model_endpoint_display, "interactive");
-    assert_eq!(display.command_output_lines, 10);
+    // 09-17:这个数管的从「露几行输出」改成「露几行命令」,默认跟着 10 → 8。
+    assert_eq!(display.command_output_lines, 8);
 
     let display: DisplayConfig = serde_json::from_str(r#"{"command_output_lines":3}"#).unwrap();
     assert_eq!(display.command_output_lines, 3);

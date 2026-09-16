@@ -223,14 +223,14 @@
         },
         {
           path: "display.command_output_lines",
-          label: "命令输出显示行数",
-          hint: "TUI 与 shell 无缝对话里命令输出的预览行数,0 = 不显示预览",
+          label: "命令显示行数",
+          hint: "命令那一步抬头底下露几行命令本身,0 = 不露;输出点开才看",
           kind: "number",
           integer: true,
           min: 0,
           max: 1000,
           unit: "行",
-          default: 10,
+          default: 8,
         },
         {
           path: "display.repl_replay_turns",

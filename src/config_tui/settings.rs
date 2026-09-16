@@ -68,7 +68,7 @@ pub(in crate::config_tui) fn edit_settings(
         )
         .choices(&["summary", "full", "hidden"]),
         Field::new(
-            t("Command output lines", "命令输出显示行数"),
+            t("Command lines", "命令显示行数"),
             config.display.command_output_lines.to_string(),
         ),
         Field::boolean(

@@ -165,28 +165,38 @@ fn an_edit_prints_its_diff_right_under_the_step() {
     );
 }
 
+/// 抬头底下印的是**命令本身**，不是命令输出（用户 09-17 裁定：跑了什么要紧，
+/// 输出不要紧）。命令留头不留尾，装不下时底部补 `⋮ 已省略`；输出一个字都不露。
+///
+/// 抬头那一行右边给的是模型自报的 `title`，不是命令文本——命令就在下面，
+/// 再窥视一遍是同一句话说两遍。
 #[test]
-fn a_command_prints_only_the_tail_of_its_output() {
+fn a_command_prints_itself_not_its_output() {
     let mut renderer = static_renderer();
     let mut screen = Screen::new();
+    let command = (1..=12)
+        .map(|index| format!("echo 命令第 {index} 行"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let arguments = serde_json::json!({ "command": command, "title": "跑十二行" });
     renderer
-        .write_tool_call("run_command", r#"{"command":"seq 1 12"}"#)
+        .write_tool_call("run_command", &arguments.to_string())
         .unwrap();
     for index in 1..=12 {
         renderer
             .write_command_output(
                 "run_command",
                 CommandOutputStream::Stdout,
-                format!("第 {index} 行\n").as_bytes(),
+                format!("输出第 {index} 行\n").as_bytes(),
             )
             .unwrap();
     }
-    // 跑着的时候：转轮行底下露出输出尾巴（最多 `command_output_lines` 行）。
+    // 跑着的时候：转轮行底下就是命令,跑完之后落地的也是它,前后不跳版。
     let (_, live) = renderer.timeline_waiting();
     let live = strip_ansi(&live.expect("live 区是空的"));
-    assert!(live.contains("seq 1 12"), "跑着的那一行没有命令: {live:?}");
-    assert!(live.contains("第 12 行"), "输出尾巴没露出来: {live:?}");
-    assert!(!live.contains("第 1 行\n"), "露出来的不是尾巴: {live:?}");
+    assert!(live.contains("跑十二行"), "抬头没给 title: {live:?}");
+    assert!(live.contains("echo 命令第 1 行"), "命令没露出来: {live:?}");
+    assert!(!live.contains("输出第 12 行"), "输出不该露: {live:?}");
     screen.feed(&renderer.take_output_frame());
 
     renderer
@@ -196,54 +206,29 @@ fn a_command_prints_only_the_tail_of_its_output() {
     let lines = screen.lines();
     let step = lines
         .iter()
-        .position(|line| line.trim_start().starts_with("$ ") && line.contains("seq 1 12"))
+        .position(|line| line.trim_start().starts_with("$ "))
         .unwrap_or_else(|| panic!("命令那一步没落地: {lines:?}"));
     let after = &lines[step..];
+    assert!(after[0].contains("跑十二行"), "抬头没给 title: {after:?}");
+    assert!(
+        after[1].starts_with("  │ ") && after[1].contains("echo 命令第 1 行"),
+        "抬头底下第一行该是命令的头一行、从连线穿过: {after:?}"
+    );
     assert!(
         after
             .iter()
-            .any(|line| line.contains(t("earlier output omitted", "已省略较早输出"))),
+            .any(|line| line.contains(t("omitted", "已省略"))),
         "超出的部分没标省略: {after:?}"
     );
+    // 留头不留尾：省略标记在**底部**，最后一行命令不该露。
     assert!(
-        after
-            .iter()
-            .any(|line| line.starts_with("  │ ") && line.contains("第 12 行")),
-        "尾巴没落地／没从连线穿过: {after:?}"
-    );
-    assert!(
-        after[1].contains(t("earlier output omitted", "已省略较早输出")),
-        "抬头底下第一行该是省略标记，不空行: {after:?}"
+        !after.iter().any(|line| line.contains("echo 命令第 12 行")),
+        "命令该留头不留尾: {after:?}"
     );
     assert!(
-        !after.iter().any(|line| line.contains("第 3 行")),
-        "落地的应该只是尾巴: {after:?}"
+        !after.iter().any(|line| line.contains("输出第")),
+        "输出一个字都不该露,它只在点开里: {after:?}"
     );
-    // 命令本身不再单独印一遍（那一行上已经有了）。
-    assert_eq!(
-        after
-            .iter()
-            .filter(|line| line.contains("seq 1 12"))
-            .count(),
-        1,
-        "命令印了两遍: {after:?}"
-    );
-    // 跑着时那一行（转轮 + 命令）被擦干净了，换成了落地的静态行；屏上剩下的
-    // 转轮只是"等下一步"的那一个，独自落在连线底下。
-    let spinner_rows = lines
-        .iter()
-        .filter(|line| {
-            line.trim_start()
-                .chars()
-                .next()
-                .is_some_and(|ch| ('⠀'..='⣿').contains(&ch))
-        })
-        .collect::<Vec<_>>();
-    assert!(
-        spinner_rows.iter().all(|line| !line.contains("seq 1 12")),
-        "跑着时那一行没擦掉: {lines:?}"
-    );
-    assert_eq!(spinner_rows.len(), 1, "该只剩等下一步的那个转轮: {lines:?}");
 }
 
 #[test]
@@ -290,24 +275,26 @@ fn a_failed_step_is_red_and_only_commands_show_their_output() {
     let raw = String::from_utf8_lossy(&frame);
     screen.feed(&frame);
     let lines = screen.lines();
-    let shown = lines.iter().filter(|line| line.contains("错误第")).count();
-    assert!(shown > 0, "命令的报错输出一行都没印: {lines:?}");
+    // 09-17 起抬头底下印的是命令,不是输出;跑砸了的话那几行命令整段标红。
     assert!(
-        shown <= 4,
-        "命令的报错输出没按行数限制（{shown} 行）: {lines:?}"
+        !lines.iter().any(|line| line.contains("错误第")),
+        "输出不该露在抬头底下: {lines:?}"
     );
     assert!(
-        raw.contains("\x1b[31m错误第 9 行"),
-        "命令的报错输出不是红的: {raw:?}"
+        raw.contains("\x1b[31mseq 1 9 >&2; exit 3"),
+        "跑砸了的命令那几行不是红的: {raw:?}"
     );
-    // 输出从连线穿过，不空行。
+    // 命令从连线穿过，不空行。
     let step = lines
         .iter()
-        .position(|line| line.contains("exit 3"))
+        .position(|line| {
+            let line = line.trim_start();
+            line.contains(t("Run command", "运行命令")) && !line.starts_with('│')
+        })
         .expect("命令那一步没落地");
     assert!(
-        lines[step + 1].starts_with("  │ "),
-        "输出没从连线穿过: {lines:?}"
+        lines[step + 1].starts_with("  │ ") && lines[step + 1].contains("exit 3"),
+        "命令没从连线穿过: {lines:?}"
     );
 
     // 跑成的普通工具只留那一行，不印输出。
@@ -452,9 +439,14 @@ fn a_command_still_running_at_the_end_is_folded_in_as_interrupted() {
     );
     screen.feed(&frame);
     let lines = screen.lines();
+    // 命令现在印在抬头**底下**,抬头上只有耗时与 title;被打断的抬头挂的是
+    // 打叉图标而不是 `$`,所以按工具名认。
     let step = lines
         .iter()
-        .find(|line| line.contains("sleep 30"))
+        .find(|line| {
+            let line = line.trim_start();
+            line.contains(t("Run command", "运行命令")) && !line.starts_with('│')
+        })
         .unwrap_or_else(|| panic!("没跑完的命令没收进时间线: {lines:?}"));
     assert!(
         step.contains(t("interrupted", "已中断")),
@@ -462,8 +454,14 @@ fn a_command_still_running_at_the_end_is_folded_in_as_interrupted() {
     );
     assert!(raw.contains("\x1b[31m"), "被打断的那一步没标红: {raw:?}");
     assert!(
-        lines.iter().any(|line| line.contains("开始")),
-        "打断前的输出丢了: {lines:?}"
+        lines.iter().any(|line| line.contains("sleep 30")),
+        "命令本身没落地: {lines:?}"
+    );
+    // 09-17 起输出只在点开里。静态时间线没处点开,所以它就是看不到了——
+    // 用户裁定三个面统一换,这是明知的代价。
+    assert!(
+        !lines.iter().any(|line| line.contains("开始")),
+        "输出不该露在抬头底下: {lines:?}"
     );
 }
 

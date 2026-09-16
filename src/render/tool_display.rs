@@ -195,7 +195,7 @@ pub(crate) fn tool_peek(name: &str, arguments: &str) -> Option<String> {
         return Some(subject);
     }
     if is_command_tool(tool_event_base_name(name)) {
-        if let Some(command) = crate::render::timeline::command_peek(arguments) {
+        if let Some(command) = crate::render::command_peek(arguments) {
             return Some(command);
         }
     }

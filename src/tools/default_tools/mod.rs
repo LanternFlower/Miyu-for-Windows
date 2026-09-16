@@ -44,7 +44,7 @@ pub fn register_run_command(registry: &mut ToolRegistry, allow_command_execution
     registry.register(ToolSpec::new_with_progress(
         "run_command",
         "Run a shell command in the workspace when skills.allow_command_execution is enabled. Set background=true for long-running commands (builds, dev servers): it returns a job_id immediately; poll with job(action=status) and stop with job(action=stop).",
-        json!({"type":"object","properties":{"command":{"type":"string","description": "Command to run."},"timeout_seconds":{"type":"integer","description": "Optional timeout in seconds (1-600, default 120). Ignored when background=true."},"background":{"type":"boolean","description": "Run detached as a background command and return a short job_id immediately."},"title":{"type":"string","description": "Short display title (<=16 chars) for the background command."}},"required":["command"],"additionalProperties":false}),
+        json!({"type":"object","properties":{"command":{"type":"string","description": "Command to run."},"timeout_seconds":{"type":"integer","description": "Optional timeout in seconds (1-600, default 120). Ignored when background=true."},"background":{"type":"boolean","description": "Run detached as a background command and return a short job_id immediately."},"title":{"type":"string","description": "What this command is for (<=16 chars)."}},"required":["command","title"],"additionalProperties":false}),
         move |args, progress| async move {
             run_command(args, allow_command_execution, progress).await
         },

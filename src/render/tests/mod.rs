@@ -4,6 +4,7 @@
 //! 所以分组按部件走：命令块、Markdown、表格、工具摘要、推理计时。
 
 mod command;
+mod command_step;
 mod markdown;
 mod math;
 mod patch;

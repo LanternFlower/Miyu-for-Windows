@@ -19,11 +19,12 @@
       },
       "title": {
         "type": "string",
-        "description": "Short title for the background command (at most 16 characters), shown in the UI status line, e.g. “release build”. Recommended when background=true."
+        "description": "What this command is for, at most 16 characters (e.g. \"release build\"). Required. The UI shows it in place of the command text, so a reader who cannot read shell still knows what the command does."
       }
     },
     "required": [
-      "command"
+      "command",
+      "title"
     ]
   },
   "permission": "readonly",

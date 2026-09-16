@@ -4,7 +4,7 @@
 //! （`finish_subagent_timer`）。并行子代理各占一块，settled 的要冻在原地，不能
 //! 因为别人还在跑就跟着重排。
 
-use super::timeline::{command_peek, tool_output_lines};
+use super::timeline::tool_output_lines;
 use crate::render::*;
 
 impl StreamRenderer {
@@ -25,7 +25,7 @@ impl StreamRenderer {
         if is_command_tool(name) {
             let mut display = CommandLiveDisplay::new(
                 arguments,
-                self.command_output_lines,
+                self.command_display_lines,
                 self.tool_call_mode != ToolCallDisplayMode::Hidden,
                 self.tool_call_mode == ToolCallDisplayMode::Full,
             );
@@ -135,20 +135,20 @@ impl StreamRenderer {
                     && crate::render::parse_command_result(output)
                         .is_none_or(|result| result.success);
                 // 全屏：完整命令 + 完整输出，点开才看。静态版没处点开，就地
-                // 印输出的尾巴（命令本身已经在那一行上了）。
+                // 抬头底下印**命令本身**,不是输出(用户 09-17 裁定:跑了什么
+                // 要紧,输出退到点开里)。静态时间线没处点开,那几行就是它能给的
+                // 全部;全屏则是抬头底下留着几行、点开才是命令加输出。
                 let static_timeline = self.timeline_static();
-                let preview_rows = self.command_output_lines;
+                let preview_rows = self.command_display_lines;
                 let (detail, tail) = self.command_display.take().map_or_else(
                     || (Vec::new(), Vec::new()),
                     |mut display| {
                         display.set_result(ok);
+                        let rows = display.command_rows(width, preview_rows, !ok);
                         if static_timeline {
-                            (display.static_detail(width, !ok), Vec::new())
+                            (rows, Vec::new())
                         } else {
-                            // 全屏：跑完之后抬头底下留着几行输出（和跑着的时候
-                            // 一个量），点开才是全部（用户：完成后保留区域）。
-                            let tail = display.detail_tail(width, !ok, preview_rows);
-                            (display.timeline_detail(width), tail)
+                            (display.timeline_detail(width), rows)
                         }
                     },
                 );
@@ -310,6 +310,18 @@ impl StreamRenderer {
             // 全屏：diff 是"编辑文件"这一步的详情，不是正文。直接打屏的话它
             // 既不在时间线里（点不开、收不起），也不在缓冲里（重开就没了）。
             if self.timeline_enabled() {
+                // 抬头那一行补上 `+3 -1`:光有路径看不出这次编辑是顺手一改还是
+                // 大手术。真 diff 只有这条侧信道有,所以在这儿补(用户 09-17)。
+                if let Some((added, removed)) = preview_diff_stat(json) {
+                    let subject = self.tool_stats_entry(name).subject.clone();
+                    let stat = diff_stat_label(added, removed);
+                    self.tool_stats_entry(name).peek = Some(match subject {
+                        Some(subject) => {
+                            format!("{subject}{}{stat}", super::timeline::PEEK_SEP)
+                        }
+                        None => stat,
+                    });
+                }
                 if let Some(diff) = patch_preview_lines(json, super::timeline::detail_width()) {
                     self.tool_stats_entry(name).detail = diff;
                 }

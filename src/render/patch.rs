@@ -31,6 +31,42 @@ pub(crate) fn write_patch_result(stdout: &mut impl Write, output: &str) -> Resul
     Ok(true)
 }
 
+/// 这次编辑加了几行、删了几行。
+///
+/// 抬头那一行光有路径,看不出改动大小;`+3 -1` 一眼就知道是顺手一改还是大手术。
+/// 数的是 diff 正文里的 `+`/`-` 行,`+++`/`---` 那两行文件头不算。一个补丁改好
+/// 几个文件时**合计**(抬头上的路径已经是「第一个 +2 项」的合计口径,统计跟着
+/// 合计才自洽;用户 09-17 裁定)。
+pub(crate) fn diff_stat(diff: &str) -> Option<(usize, usize)> {
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    for line in diff.lines() {
+        if line.starts_with("+++") || line.starts_with("---") {
+            continue;
+        }
+        if line.starts_with('+') {
+            added += 1;
+        } else if line.starts_with('-') {
+            removed += 1;
+        }
+    }
+    (added + removed > 0).then_some((added, removed))
+}
+
+/// 补丁预览 JSON(`{path, diff}`)里的加减行数。
+pub(crate) fn preview_diff_stat(output: &str) -> Option<(usize, usize)> {
+    let value = serde_json::from_str::<Value>(output.trim()).ok()?;
+    diff_stat(value.get("diff").and_then(Value::as_str)?)
+}
+
+/// `+3 -1`,加绿减红。
+///
+/// 收色用 SGR 39(恢复默认前景)而不是 `0`:抬头整行被包在 `\x1b[2m…\x1b[0m` 里,
+/// 用 0 会把后面的 dim 一起关掉,半行亮半行暗。
+pub(crate) fn diff_stat_label(added: usize, removed: usize) -> String {
+    format!("\x1b[32m+{added}\x1b[39m \x1b[31m-{removed}\x1b[39m")
+}
+
 /// 补丁预览切成可展开的行。解析不出 diff 就返回 `None`（没什么可展开的）。
 pub(crate) fn patch_preview_lines(output: &str, width: usize) -> Option<Vec<String>> {
     let value = serde_json::from_str::<Value>(output.trim()).ok()?;
@@ -57,6 +93,25 @@ fn trim_blank_edges(rendered: String) -> Vec<String> {
         lines.pop();
     }
     lines
+}
+
+/// 调用参数里那份 apply_patch 信封的加减行数。
+///
+/// 子代理浮层拿不到 `__patch_preview__` 的真 diff,只有这份信封;信封本身就是
+/// `+`/`-` 的形状,数出来的量和真 diff 一致(除非补丁应用后被上下文吸收)。
+pub(crate) fn envelope_diff_stat(tool: &str, arguments: &str) -> Option<(usize, usize)> {
+    if !matches!(
+        crate::render::tool_event_base_name(tool),
+        "edit" | "kb" | "artifact" | "apply_patch" | "apply_artifact_patch"
+    ) {
+        return None;
+    }
+    let args = serde_json::from_str::<Value>(arguments.trim()).ok()?;
+    let patch = args
+        .get("patchText")
+        .or_else(|| args.get("patch_text"))
+        .and_then(Value::as_str)?;
+    diff_stat(patch)
 }
 
 /// apply_patch 的**信封**（`*** Begin Patch … *** End Patch`）渲染成 diff。
