@@ -113,6 +113,7 @@ fn supersede_inherits_targets_only_for_the_same_sender() {
         .insert(
             event.sender_id.clone(),
             PendingReply {
+                owner: context.ownership.clone(),
                 generation: 1,
                 started: Instant::now(),
                 trigger: TriggerKind::Probability,

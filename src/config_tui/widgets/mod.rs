@@ -9,9 +9,11 @@
 
 mod draw;
 mod form;
+mod input;
 mod select;
 pub(in crate::config_tui) use draw::*;
 pub(in crate::config_tui) use form::*;
+pub(in crate::config_tui) use input::*;
 pub(in crate::config_tui) use select::*;
 
 use crate::config_tui::*;
@@ -26,9 +28,7 @@ pub(in crate::config_tui) fn show_tui_error(
         format!("{error:#}"),
         t("Press any key to go back", "按任意键返回").to_string(),
     ];
-    draw_menu(stdout, t(" ERROR ", " 错误 "), &options, 1, "")?;
-    let _ = read_key()?;
-    Ok(())
+    wait_for_key(|| draw_menu(stdout, t(" ERROR ", " 错误 "), &options, 1, ""))
 }
 
 pub(in crate::config_tui) fn format_text_file(content: &str) -> String {

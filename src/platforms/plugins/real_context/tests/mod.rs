@@ -3,5 +3,6 @@
 mod history;
 mod runtime;
 mod shared;
+mod supersession;
 mod targeting;
 mod trigger;

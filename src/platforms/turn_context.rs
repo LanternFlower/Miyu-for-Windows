@@ -52,6 +52,7 @@ impl PlatformFollowupRun {
 }
 
 pub(crate) struct PlatformTurnContext {
+    pub(crate) ownership: TurnOwnership,
     pub(crate) conversation: PlatformConversation,
     pub(crate) sender_id: String,
     pub(crate) sender_display_name: String,
@@ -101,6 +102,7 @@ impl PlatformTurnContext {
         plugins: Arc<plugins::PlatformPluginRegistry>,
     ) -> Self {
         Self {
+            ownership: TurnOwnership::default(),
             conversation,
             sender_id,
             sender_display_name,

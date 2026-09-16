@@ -239,11 +239,20 @@ impl LiveReplTail {
             // 空会话大厅:整屏交给 banner 画(星空 + 渐变字),输入框嵌在字下面的
             // 窄框里,不在屏底。第一句话发出去后 banner 撤掉,回到屏底、全宽。
             let lobby = self.banner.as_ref().map(|banner| {
-                banner.lobby(
-                    usize::from(cols),
-                    usize::from(terminal_rows),
-                    usize::from(total_rows),
-                )
+                if self.lobby_panel_rows == 0 {
+                    banner.lobby(
+                        usize::from(cols),
+                        usize::from(terminal_rows),
+                        usize::from(total_rows),
+                    )
+                } else {
+                    banner.lobby_with_bottom_space(
+                        usize::from(cols),
+                        usize::from(terminal_rows),
+                        usize::from(total_rows),
+                        usize::from(self.lobby_panel_rows),
+                    )
+                }
             });
             screen.set_banner(lobby.as_ref().map(|lobby| lobby.rows.clone()));
             if std::env::var_os("MIYU_LOBBY_TRACE").is_some() {

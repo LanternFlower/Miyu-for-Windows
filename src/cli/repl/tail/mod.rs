@@ -195,6 +195,8 @@ pub(in crate::cli) struct LiveReplTail {
     pub(in crate::cli) banner: Option<crate::cli::repl::banner::BannerScene>,
     /// inline 后端里 banner 占了活动区顶上的几行(全屏下为 0,画在正文区)。
     pub(in crate::cli) banner_rows: u16,
+    /// Bottom space temporarily reserved for a lobby selector.
+    pub(in crate::cli) lobby_panel_rows: u16,
     /// 空会话按 Tab 换车道:下一次会话切换不打「已切换到会话」——用户看到的是
     /// 模式行变色,不是换会话。一次性,用过即清。
     pub(in crate::cli) suppress_switch_note: bool,
@@ -614,6 +616,7 @@ impl LiveReplTail {
             },
             banner: None,
             banner_rows: 0,
+            lobby_panel_rows: 0,
             suppress_switch_note: false,
         })
     }
