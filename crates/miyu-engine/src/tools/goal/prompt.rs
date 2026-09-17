@@ -44,9 +44,11 @@ fn end_calls(goal: &GoalRecord) -> String {
 /// 让它对着自己的结论补作业。
 pub fn goal_round_prompt(goal: &GoalRecord, full: bool) -> String {
     let calls = end_calls(goal);
+    // 开头标签是「这一轮是合成的」的唯一判据（回放、上键历史都认它），别改成别的。
+    let tag = miyu_core::state::GOAL_ROUND_TAG;
     if !full {
         return format!(
-            "<goal_round>\n\
+            "{tag}\n\
              Round {} of {} — your standing objective, set by the user with `/goal`: {}\n\
              Make one concrete step of progress now, or end the goal — both calls are \
              complete as written:\n{calls}\n</goal_round>",
@@ -56,7 +58,7 @@ pub fn goal_round_prompt(goal: &GoalRecord, full: bool) -> String {
         );
     }
     format!(
-        "<goal_round>\n\
+        "{tag}\n\
          Your standing objective, set by the user with `/goal`. These rounds start on their own \
          while the session is idle; the objective may be unrelated to the messages above.\n\
          Objective: {}  ·  Round {} of {}\n\n\

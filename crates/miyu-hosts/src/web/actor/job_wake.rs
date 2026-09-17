@@ -450,8 +450,10 @@ pub(in crate::web) fn wake_local_session_for_job(
     )
     .map(|(label, body)| format!("- {label}:\n{body}\n"))
     .unwrap_or_default();
+    // 开头标签是「这一轮是合成的」的唯一判据（回放、上键历史都认它），别改成别的。
+    let tag = miyu_core::state::BACKGROUND_JOB_REPORT_TAG;
     let content = format!(
-        "<background-job-report>{noun}「{}」已执行完毕：\n\
+        "{tag}{noun}「{}」已执行完毕：\n\
          - job_id: {}\n- 任务: {}\n- 状态: {}（运行 {} 秒）\n\
          - 日志: {}\n{result_block}\
          这是系统自动触发的跟进，不是用户消息。\
@@ -617,8 +619,10 @@ pub(in crate::web) async fn wake_platform_session_for_job(
     )
     .map(|(label, body)| format!("- {label}:\n{body}\n"))
     .unwrap_or_default();
+    // 开头标签是「这一轮是合成的」的唯一判据（回放、上键历史都认它），别改成别的。
+    let tag = miyu_core::state::BACKGROUND_JOB_REPORT_TAG;
     let content = format!(
-        "<background-job-report>{noun}「{}」已执行完毕：\n- job_id: {}\n- 任务: {}\n- 状态: {}（运行 {} 秒）\n\
+        "{tag}{noun}「{}」已执行完毕：\n- job_id: {}\n- 任务: {}\n- 状态: {}（运行 {} 秒）\n\
          {result_block}这是系统自动触发的跟进，不是用户消息。\
          </background-job-report>",
         completion.title,

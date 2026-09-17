@@ -903,6 +903,45 @@ fn repl_history_loads_user_messages_from_state() {
     );
 }
 
+/// daemon 自己合成的轮（后台任务唤醒、目标续轮）不进上键历史——它们在库里也是
+/// `role == "user"`，原来一并被当成「你说过的话」捞进来（用户 09-17）。
+#[test]
+fn repl_history_skips_synthetic_turns() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = state_only_paths(temp.path());
+    let state = StateStore::new(&paths).unwrap();
+    state.start_turn("turn_1", "first", 999999).unwrap();
+    state.complete_turn("turn_1", "reply", None).unwrap();
+    state
+        .start_turn(
+            "turn_2",
+            &format!(
+                "{}子代理「跑一下」已执行完毕：\n- job_id: j1\n这是系统自动触发的跟进，不是用户消息。</background-job-report>",
+                miyu_core::state::BACKGROUND_JOB_REPORT_TAG
+            ),
+            999999,
+        )
+        .unwrap();
+    state.complete_turn("turn_2", "跟进汇报", None).unwrap();
+    state
+        .start_turn(
+            "turn_3",
+            &format!(
+                "{}\nRound 1 of 3 — your standing objective</goal_round>",
+                miyu_core::state::GOAL_ROUND_TAG
+            ),
+            999999,
+        )
+        .unwrap();
+    state.complete_turn("turn_3", "续轮", None).unwrap();
+    state.start_turn("turn_4", "second", 999999).unwrap();
+
+    assert_eq!(
+        history_displays(&load_repl_input_history(&state, &paths).unwrap()),
+        vec!["first".to_string(), "second".to_string()]
+    );
+}
+
 fn history_displays(history: &[ReplHistoryEntry]) -> Vec<String> {
     history.iter().map(|entry| entry.display.clone()).collect()
 }

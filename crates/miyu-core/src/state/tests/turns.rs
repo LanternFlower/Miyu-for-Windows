@@ -978,3 +978,17 @@ fn loading_one_turn_by_id_matches_the_full_scan() {
     // 不存在的 id 是 None,不是空回合。
     assert!(store.load_turn("turn_zzz").unwrap().is_none());
 }
+
+/// 回放 SQL 里写死的两个 LIKE 前缀要和常量一致：产出方、上键历史都按常量来，SQL
+/// 是唯一没法引用常量的地方，靠这条钉住。
+#[test]
+fn synthetic_turn_markers_match_the_replay_sql() {
+    use crate::state::{is_synthetic_user_content, BACKGROUND_JOB_REPORT_TAG, GOAL_ROUND_TAG};
+    assert_eq!(BACKGROUND_JOB_REPORT_TAG, "<background-job-report>");
+    assert_eq!(GOAL_ROUND_TAG, "<goal_round>");
+    assert!(is_synthetic_user_content("<background-job-report>x"));
+    assert!(is_synthetic_user_content("<goal_round>\nRound 1"));
+    assert!(!is_synthetic_user_content(
+        "帮我看看 <background-job-report> 这个标签"
+    ));
+}

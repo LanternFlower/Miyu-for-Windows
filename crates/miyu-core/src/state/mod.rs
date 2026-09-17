@@ -398,6 +398,21 @@ fn turn_chars(turn: &Turn) -> usize {
             .sum::<usize>()
 }
 
+/// daemon 自己合成的轮在 `user_content` 开头带的标签：后台任务唤醒、目标续轮。
+///
+/// 它们在库里就是一条普通的 `role == "user"` 行（`turns` 表没有 origin 列），只能
+/// 靠这个开头认。产出方（`job_wake` / `goal_round_prompt`）、回放的 SQL、上键历史
+/// 三处都得对着同一份写——原来各抄各的，历史那条路压根没抄（用户 09-17：「后台
+/// 任务的完成报告居然会出现在上方向键可以调出来的历史输入里」）。
+pub const BACKGROUND_JOB_REPORT_TAG: &str = "<background-job-report>";
+pub const GOAL_ROUND_TAG: &str = "<goal_round>";
+
+/// 这条「用户消息」是不是 daemon 合成的（后台任务唤醒 / 目标续轮），不是谁敲的。
+pub fn is_synthetic_user_content(content: &str) -> bool {
+    let content = content.trim_start();
+    content.starts_with(BACKGROUND_JOB_REPORT_TAG) || content.starts_with(GOAL_ROUND_TAG)
+}
+
 fn turns_to_entries(turns: Vec<Turn>) -> Vec<StoredConversationEntry> {
     let mut entries = Vec::with_capacity(turns.len() * 3);
     for turn in turns {
