@@ -111,6 +111,8 @@ pub(in crate::cli) struct Overlay {
     display_expand: (bool, bool),
     /// `过程收起成 Worked for`。见 `display_expand` 那段——同一条路交进来。
     display_fold: bool,
+    /// `命令显示行数`。同上。
+    display_command_lines: usize,
     /// 鼠标停在面板里哪一块上。可点的东西要看得出来「这里能点」——正文那侧
     /// 一直有（`Screen::hover`），面板这侧原来整个没有：`Moved` 和别的鼠标事件
     /// 一起被吞掉了（用户 09-17：「浮层的 tag 行没有悬浮变色的效果」）。
@@ -154,6 +156,7 @@ impl Overlay {
             open_seeded: std::collections::HashSet::new(),
             display_expand: (false, false),
             display_fold: true,
+            display_command_lines: 8,
             hover: None,
             selection: None,
             scroll: 0,
@@ -174,6 +177,7 @@ impl Overlay {
         // 面板刚打开那一帧是收着的，下一帧才展开——闪一下。
         display_expand: (bool, bool),
         display_fold: bool,
+        display_command_lines: usize,
     ) -> Self {
         let mut panel = Self {
             source: Source::File {
@@ -190,6 +194,7 @@ impl Overlay {
             open_seeded: std::collections::HashSet::new(),
             display_expand,
             display_fold,
+            display_command_lines,
             hover: None,
             selection: None,
             scroll: 0,
@@ -390,6 +395,7 @@ impl Overlay {
             let block = self.step_blocks.get(index).copied().filter(|id| *id != 0);
             let step = self.to_step(index, step, head_width, block);
             self.remember_block(index, step.block_id());
+            let tail = step.tail().to_vec();
             let row = match step.block_id() {
                 Some(id) => format!(
                     "{}{}{}",
@@ -406,6 +412,9 @@ impl Overlay {
                 entries.push(miyu_hosts::render::timeline::PanelEntry::Header(row));
             } else {
                 entries.push(miyu_hosts::render::timeline::PanelEntry::Step(row));
+            }
+            if !tail.is_empty() {
+                entries.push(miyu_hosts::render::timeline::PanelEntry::Tail(tail));
             }
         }
         miyu_hosts::render::timeline::thread_panel(entries)
@@ -462,6 +471,22 @@ impl Overlay {
             StepKind::Tool => self.display_expand.1,
             _ => false,
         });
+        // 命令那一步抬头底下露几行**命令**——和主线一个样子（抬头给 title、
+        // 正文给命令）。露几行由用户的「命令显示行数」说了算；整段暗色，它是
+        // 附注不是正文（用户 09-17：「tag 行是暗色，而命令预览是正常文字颜色，
+        // 这不合理」）。
+        if self.display_command_lines > 0 {
+            if let Some(command) = log.command_tail() {
+                let width = miyu_hosts::render::timeline::panel_detail_width();
+                let rows: Vec<String> = command
+                    .lines()
+                    .flat_map(|line| miyu_hosts::render::wrap_display_text(line, width))
+                    .take(self.display_command_lines)
+                    .map(|line| format!("\x1b[2m{line}\x1b[0m"))
+                    .collect();
+                step.set_tail(rows);
+            }
+        }
         // 这一步自己那块：按位置复用，内容每帧重灌（日志还在长）。
         let detail = miyu_hosts::render::timeline::step_detail_lines(&step);
         let id = match block {
@@ -505,7 +530,26 @@ impl Overlay {
         } else {
             log.head.clone()
         };
-        let head = miyu_hosts::render::clip_to_display_width(&head, head_width);
+        // 加减行数单独上色（绿加红减），和主线、前台浮层一个样子。它是从文本里
+        // 摘出来的（见 `LogStep::diff`），所以要自己留出宽度再接回去——先裁剩下
+        // 那截，不然裁刀会从数字中间切过去。
+        let stat = log
+            .diff
+            .map(|(added, removed)| miyu_hosts::render::diff_stat_label(added, removed));
+        let room = match &stat {
+            // `+123 -45` 那几个字符是可见宽度，转义序列不占列。
+            Some(_) => head_width.saturating_sub(
+                log.diff
+                    .map(|(added, removed)| format!(" · +{added} -{removed}").chars().count())
+                    .unwrap_or(0),
+            ),
+            None => head_width,
+        };
+        let mut head = miyu_hosts::render::clip_to_display_width(&head, room.max(8));
+        if let Some(stat) = stat {
+            head.push_str(" · ");
+            head.push_str(&stat);
+        }
         // 正在跑／正在准备的那一行左边距上转着点阵，和主线一样。
         if log.running || log.preparing {
             miyu_hosts::render::timeline::panel_live_step_line(glyph, &format!("{head}{status}"))

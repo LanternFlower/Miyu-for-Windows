@@ -12,25 +12,25 @@
   [2m└──────────────────┘[0m
 
 [1G[2K[2m[36m⠋[0m[1G[2K[1G[2K[2m[36m⠋[0m [2m[36m]1337;miyu-block=<ID>$ 运行命令 · <N>ms · 看看输出[0m
-[1G[2K[2m[36m[2m  │[0m printf '第一行[0m
-[1G[2K[2m[36m[2m  │[0m '[0m
-[1G[2K[2m[36m[2m  │[0m printf '第二行[0m
-[1G[2K[2m[36m[2m  │[0m ']1337;miyu-block-end[0m[4A[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[4A[1G[2K[2m[36m]1337;miyu-block=<ID>[2m  $ 运行命令 · <N>ms · 看看输出[0m[0m
-[1G[2K[2m[36m[2m  │[0m printf '第一行[0m
-[1G[2K[2m[36m[2m  │[0m '[0m
-[1G[2K[2m[36m[2m  │[0m printf '第二行[0m
-[1G[2K[2m[36m[2m  │[0m ']1337;miyu-block-end[0m
+[1G[2K[2m[36m[2m  │[0m [2mprintf '第一行[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2m'[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2mprintf '第二行[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2m'[0m]1337;miyu-block-end[0m[4A[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[4A[1G[2K[2m[36m]1337;miyu-block=<ID>[2m  $ 运行命令 · <N>ms · 看看输出[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2mprintf '第一行[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2m'[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2mprintf '第二行[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2m'[0m]1337;miyu-block-end[0m
 [1G[2K[2m[36m⠋[0m [2m[36m│[0m[5A[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[5A[1G[2K[2m[36m]1337;miyu-block=<ID>[2m  $ 运行命令 · <N>ms · 看看输出[0m[0m
-[1G[2K[2m[36m[2m  │[0m printf '第一行[0m
-[1G[2K[2m[36m[2m  │[0m '[0m
-[1G[2K[2m[36m[2m  │[0m printf '第二行[0m
-[1G[2K[2m[36m[2m  │[0m ']1337;miyu-block-end[0m
+[1G[2K[2m[36m[2m  │[0m [2mprintf '第一行[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2m'[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2mprintf '第二行[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2m'[0m]1337;miyu-block-end[0m
 [1G[2K[2m[36m[2m  │[0m[0m
 [1G[2K[2m[36m⠋[0m [2m[36m]1337;miyu-block=<ID> 编辑文件 · <N>ms · /tmp/golden.txt]1337;miyu-block-end[0m[6A[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[6A[1G[2K[2m[36m]1337;miyu-block=<ID>[2m  $ 运行命令 · <N>ms · 看看输出[0m[0m
-[1G[2K[2m[36m[2m  │[0m printf '第一行[0m
-[1G[2K[2m[36m[2m  │[0m '[0m
-[1G[2K[2m[36m[2m  │[0m printf '第二行[0m
-[1G[2K[2m[36m[2m  │[0m ']1337;miyu-block-end[0m
+[1G[2K[2m[36m[2m  │[0m [2mprintf '第一行[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2m'[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2mprintf '第二行[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2m'[0m]1337;miyu-block-end[0m
 [1G[2K[2m[36m[2m  │[0m[0m
 [1G[2K[2m[36m]1337;miyu-block=<ID>[2m   编辑文件 · <N>ms · /tmp/golden.txt · [32m+2[39m [31m-1[39m[0m]1337;miyu-block-end[0m
 [1G[2K[2m[36m⠋[0m [2m[36m│[0m[7A[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[7A  [2m[90m┃[0m [2m[90m已回答 2 个问题[0m
@@ -38,20 +38,20 @@
   [2m[90m┃[0m [2m[90m要不要提交：先看看[0m
 
 [1G[2K[2m[36m]1337;miyu-block=<ID>[2m  $ 运行命令 · <N>ms · 看看输出[0m[0m
-[1G[2K[2m[36m[2m  │[0m printf '第一行[0m
-[1G[2K[2m[36m[2m  │[0m '[0m
-[1G[2K[2m[36m[2m  │[0m printf '第二行[0m
-[1G[2K[2m[36m[2m  │[0m ']1337;miyu-block-end[0m
+[1G[2K[2m[36m[2m  │[0m [2mprintf '第一行[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2m'[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2mprintf '第二行[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2m'[0m]1337;miyu-block-end[0m
 [1G[2K[2m[36m[2m  │[0m[0m
 [1G[2K[2m[36m]1337;miyu-block=<ID>[2m   编辑文件 · <N>ms · /tmp/golden.txt · [32m+2[39m [31m-1[39m[0m]1337;miyu-block-end[0m
 [1G[2K[2m[36m[2m  │[0m[0m
 [1G[2K[2m[36m]1337;miyu-block=<ID>[2m   询问用户 · 已回答 · 今晚的打算[0m]1337;miyu-block-end[0m
 [1G[2K[2m[36m[2m  │[0m[0m
 [1G[2K[2m[36m⠋[0m [2m[36m]1337;miyu-block=<ID>󰚩 子代理 · <N>ms · … 提示词 · 去看看那个目录里有什么]1337;miyu-block-end[0m[10A[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[1B[1G[2K[10A[1G[2K[2m[36m]1337;miyu-block=<ID>[2m  $ 运行命令 · <N>ms · 看看输出[0m[0m
-[1G[2K[2m[36m[2m  │[0m printf '第一行[0m
-[1G[2K[2m[36m[2m  │[0m '[0m
-[1G[2K[2m[36m[2m  │[0m printf '第二行[0m
-[1G[2K[2m[36m[2m  │[0m ']1337;miyu-block-end[0m
+[1G[2K[2m[36m[2m  │[0m [2mprintf '第一行[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2m'[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2mprintf '第二行[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2m'[0m]1337;miyu-block-end[0m
 [1G[2K[2m[36m[2m  │[0m[0m
 [1G[2K[2m[36m]1337;miyu-block=<ID>[2m   编辑文件 · <N>ms · /tmp/golden.txt · [32m+2[39m [31m-1[39m[0m]1337;miyu-block-end[0m
 [1G[2K[2m[36m[2m  │[0m[0m
@@ -63,7 +63,7 @@
 ]1337;miyu-block-end  跑完了，结果如上。
 
 [1G[2K[2m[36m⠋[0m [2m[36m]1337;miyu-block=<ID>$ 运行命令 · <N>ms · 故意跑砸[0m
-[1G[2K[2m[36m[2m  │[0m exit 3]1337;miyu-block-end[0m[1A[1G[2K[1B[1G[2K[1A[1G[2K[2m[36m]1337;miyu-block=<ID>[31m   运行命令 · <N>ms · 故意跑砸[0m[0m
+[1G[2K[2m[36m[2m  │[0m [2mexit 3[0m]1337;miyu-block-end[0m[1A[1G[2K[1B[1G[2K[1A[1G[2K[2m[36m]1337;miyu-block=<ID>[31m   运行命令 · <N>ms · 故意跑砸[0m[0m
 [1G[2K[2m[36m[2m  │[0m [31mexit 3[0m]1337;miyu-block-end[0m
 [1G[2K[2m[36m⠋[0m [2m[36m│[0m[2A[1G[2K[1B[1G[2K[1B[1G[2K[2A]1337;miyu-block=<ID>[2m  › Worked for <N>ms · 1 tool · 1 err[0m
 

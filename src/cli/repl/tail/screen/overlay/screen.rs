@@ -17,6 +17,7 @@ impl Screen {
         };
         panel.display_expand = self.display_expand;
         panel.display_fold = self.display_fold;
+        panel.display_command_lines = self.display_command_lines;
         self.overlay = Some(panel);
         self.invalidate();
         self.needs_clear = true;
@@ -46,9 +47,11 @@ impl Screen {
             panel_inner_width(self.cols),
             self.display_expand,
             self.display_fold,
+            self.display_command_lines,
         );
         panel.display_expand = self.display_expand;
         panel.display_fold = self.display_fold;
+        panel.display_command_lines = self.display_command_lines;
         self.overlay = Some(panel);
         self.invalidate();
         self.needs_clear = true;
@@ -177,16 +180,27 @@ impl Screen {
     /// 把当前的两个显示开关交给后台面板。见 `Screen::display_expand`。
     ///
     /// 每轮都交一次：`/config` 改完下一轮就该生效，和渲染器那侧同一个节奏。
-    pub(in crate::cli) fn set_display_expand(&mut self, reasoning: bool, tools: bool, fold: bool) {
-        if self.display_expand == (reasoning, tools) && self.display_fold == fold {
+    pub(in crate::cli) fn set_display_expand(
+        &mut self,
+        reasoning: bool,
+        tools: bool,
+        fold: bool,
+        command_lines: usize,
+    ) {
+        if self.display_expand == (reasoning, tools)
+            && self.display_fold == fold
+            && self.display_command_lines == command_lines
+        {
             return;
         }
         self.display_expand = (reasoning, tools);
         self.display_fold = fold;
+        self.display_command_lines = command_lines;
         // 档位变了：已经排好的那份要按新档位重排一次，不然要等下一次日志变动。
         if let Some(panel) = &mut self.overlay {
             panel.display_expand = (reasoning, tools);
             panel.display_fold = fold;
+            panel.display_command_lines = command_lines;
             panel.force_reload();
         }
         self.invalidate();

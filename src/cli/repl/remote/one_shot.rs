@@ -103,6 +103,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
             config.display.expand_reasoning,
             config.display.expand_tool_calls,
             config.display.fold_timeline,
+            config.display.command_output_lines,
         );
         renderer.use_external_cursor_control();
         renderer.use_buffered_output();

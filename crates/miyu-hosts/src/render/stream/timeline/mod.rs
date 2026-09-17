@@ -246,6 +246,15 @@ impl Step {
         self.block = id;
     }
 
+    /// 抬头底下露着的那几行。见 [`Step::tail`]——只有命令那一步用。
+    pub fn set_tail(&mut self, tail: Vec<String>) {
+        self.tail = tail;
+    }
+
+    pub fn tail(&self) -> &[String] {
+        &self.tail
+    }
+
     /// 这一步出来就是展开态吗。见 [`Step::open`]。
     pub fn set_open(&mut self, open: bool) {
         self.open = open;

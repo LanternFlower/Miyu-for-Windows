@@ -62,6 +62,46 @@ pub(super) struct LogStep {
     pub(super) args: Option<String>,
     /// 这一步是哪个工具（`edit` / `run_command` …）。画 diff 要按它判。
     pub(super) tool: Option<String>,
+    /// 抬头末尾那段加减行数。**从文本里摘出来单存**：写日志那一侧把它拼成纯文本
+    /// `· +3 -1`（那样读日志和订标记流两条路都有），而屏幕上它该是绿加红减
+    /// ——和主线、前台浮层一个样子（用户 09-17：「浮层里编辑文件的加减没有
+    /// 颜色」）。留在文本里就只能是白的，所以在这儿摘走，画的时候再上色。
+    pub(super) diff: Option<(usize, usize)>,
+}
+
+/// 把抬头末尾那段 ` · +3 -1` 摘下来。返回加减行数，`head` 里那一段去掉。
+fn split_diff_stat(head: &mut String) -> Option<(usize, usize)> {
+    let (rest, stat) = head.rsplit_once(" · ")?;
+    let (added, removed) = stat.trim().split_once(' ')?;
+    let added = added.strip_prefix('+')?.parse().ok()?;
+    let removed = removed.strip_prefix('-')?.parse().ok()?;
+    *head = rest.to_string();
+    Some((added, removed))
+}
+
+impl LogStep {
+    /// 命令那一步的命令全文。抬头上只有 title，命令归正文（用户 09-17 拍的版）。
+    ///
+    /// 只有标记流那条路拿得到（参数在那儿）；读日志时抬头里就只剩 title 了。
+    pub(super) fn command_text(&self) -> Option<String> {
+        let (tool, args) = (self.tool.as_deref()?, self.args.as_deref()?);
+        if !miyu_base::tool_names::is_command_tool(miyu_base::tool_names::tool_event_base_name(
+            tool,
+        )) {
+            return None;
+        }
+        miyu_engine::tools::tool_subject(tool, args)
+    }
+
+    /// 抬头底下该露命令吗。
+    ///
+    /// 模型没给 title 时抬头上**已经是命令本身**了（见 `tool_line_text` 那处
+    /// 退路），底下再露一遍就是同一句话说两遍。
+    pub(super) fn command_tail(&self) -> Option<String> {
+        let args = self.args.as_deref()?;
+        miyu_engine::tools::command_peek(args)?;
+        self.command_text()
+    }
 }
 
 /// `运行命令 · ls` → `ls`：抬头里 ` · ` 后面那段是主题。
@@ -319,17 +359,22 @@ pub(super) fn steps_from_events<'a>(
                     step.body.push(rest.to_string());
                 }
             }
-            LogEvent::ToolCall(call) => steps.push(LogStep {
-                kind: StepKind::Tool,
-                glyph: glyph_for(&call),
-                subject: subject_of(&call.text),
-                head: call.text.to_string(),
-                status: None,
-                body: Vec::new(),
-                tool: call.tool.as_deref().map(str::to_string),
-                args: call.args.as_deref().map(str::to_string),
-                ..Default::default()
-            }),
+            LogEvent::ToolCall(call) => {
+                let mut head = call.text.to_string();
+                let diff = split_diff_stat(&mut head);
+                steps.push(LogStep {
+                    kind: StepKind::Tool,
+                    glyph: glyph_for(&call),
+                    subject: subject_of(&head),
+                    head,
+                    diff,
+                    status: None,
+                    body: Vec::new(),
+                    tool: call.tool.as_deref().map(str::to_string),
+                    args: call.args.as_deref().map(str::to_string),
+                    ..Default::default()
+                })
+            }
             LogEvent::ToolResult { line: result, ok } => {
                 // `运行命令 ok · 1.2s · ls`：耗时摘出来单存，抬头照主线的写法
                 // 「名字 · 秒数 · 窥视」。
@@ -366,24 +411,29 @@ pub(super) fn steps_from_events<'a>(
                     //（网页端由结果整块渲染）。那就拿结果这一行自己立一步：图标用
                     // **工具自己的**，正文里那个 ok/err 去掉（状态由 `status` 单独
                     // 盖，留着会读成「运行命令 ok · … · ok」）。
-                    None => steps.push(LogStep {
-                        kind: StepKind::Tool,
-                        glyph: if ok {
-                            glyph_for(&result)
-                        } else {
-                            glyph_err().to_string()
-                        },
-                        tool: result.tool.as_deref().map(str::to_string),
-                        args: result.args.as_deref().map(str::to_string),
-                        subject: subject_of(&text),
-                        head: match elapsed {
+                    None => {
+                        let mut head = match elapsed {
                             Some(elapsed) => with_elapsed(&text, elapsed),
                             None => text,
-                        },
-                        status: Some(if ok { "ok" } else { "err" }),
-                        elapsed,
-                        ..Default::default()
-                    }),
+                        };
+                        let diff = split_diff_stat(&mut head);
+                        steps.push(LogStep {
+                            kind: StepKind::Tool,
+                            glyph: if ok {
+                                glyph_for(&result)
+                            } else {
+                                glyph_err().to_string()
+                            },
+                            tool: result.tool.as_deref().map(str::to_string),
+                            args: result.args.as_deref().map(str::to_string),
+                            subject: subject_of(&head),
+                            head,
+                            diff,
+                            status: Some(if ok { "ok" } else { "err" }),
+                            elapsed,
+                            ..Default::default()
+                        })
+                    }
                 }
             }
             LogEvent::Preparing(preparing) => {
@@ -486,8 +536,11 @@ pub(super) fn log_detail_body(step: &LogStep) -> Vec<String> {
     // ——和主线那一步点开一个样子。原来是把抬头（`运行命令 · 5.3s · echo …`）整个
     // 再说一遍（用户实测：命令展开处理异常）。没有主题的（思考、提示词）还是
     // 抬头本身：行里那一份是裁过的，这儿这份是完整的。
+    // 命令那一步的正文是**命令全文**。抬头给的是 title（用户 09-17 拍的版），
+    // 所以命令只能在这儿露——不然点开看到的是一句 title 再说一遍。
+    let command = step.command_text();
     let mut texts: Vec<&str> = Vec::new();
-    match &step.subject {
+    match command.as_deref().or(step.subject.as_deref()) {
         Some(subject) => {
             texts.push(subject);
             if !step.body.is_empty() {
@@ -529,6 +582,50 @@ mod tests {
         assert_eq!(steps.len(), 1, "准备执行攒了一堆: {steps:?}");
     }
 
+    /// 命令那一步：抬头给 **title**，命令全文归正文。
+    ///
+    /// 主线和前台浮层一直是这么写的，后台这条路却把命令全文当窥视塞进抬头——
+    /// 同一步在两块面板上长得不一样（用户 09-17 实测截图：「命令不对啊，正确的
+    /// 是这样的」「不是说没有单独搞一套吗，怎么还是不统一呢」）。
+    #[test]
+    fn a_command_step_puts_the_title_on_the_head_and_the_command_in_the_body() {
+        let args = serde_json::json!({
+            "command": "echo hi; ls -la /tmp",
+            "title": "看看临时目录",
+        })
+        .to_string();
+        let call = serde_json::json!({
+            "name": "run_command",
+            "display": "运行命令",
+            "args": args,
+        })
+        .to_string();
+        let steps = steps_from_events(
+            std::iter::once(format!("__subtool_call__{call}")).filter_map(|m| from_marker(&m)),
+            true,
+        );
+        assert_eq!(steps.len(), 1, "{steps:#?}");
+        assert!(
+            steps[0].head.contains("看看临时目录"),
+            "抬头上不是 title: {:?}",
+            steps[0].head
+        );
+        assert!(
+            !steps[0].head.contains("echo hi"),
+            "命令全文又跑到抬头上了: {:?}",
+            steps[0].head
+        );
+        assert_eq!(
+            steps[0].command_text().as_deref(),
+            Some("echo hi; ls -la /tmp"),
+            "正文里拿不到命令全文"
+        );
+        assert!(
+            log_detail_body(&steps[0]).join("\n").contains("echo hi"),
+            "点开看不到命令"
+        );
+    }
+
     /// 编辑那一步要有 diff：抬头上 `+N -M`，点开是渲染好的 diff。
     ///
     /// 子代理内层的编辑拿不到 `__patch_preview__` 的真 diff，只有调用参数里那份
@@ -549,11 +646,9 @@ mod tests {
             true,
         );
         assert_eq!(steps.len(), 1, "{steps:#?}");
-        assert!(
-            steps[0].head.contains("+2 -1"),
-            "抬头上没有加减行数: {:?}",
-            steps[0].head
-        );
+        // 加减行数从文本里摘出来单存了——画的时候要上色（绿加红减），留在
+        // 文本里就只能是白的。
+        assert_eq!(steps[0].diff, Some((2, 1)), "没摘出加减行数: {steps:#?}");
         let body = log_detail_body(&steps[0]).join("\n");
         assert!(
             body.contains("新的一行") && body.contains("旧的一行"),

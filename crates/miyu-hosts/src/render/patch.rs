@@ -51,7 +51,7 @@ pub(crate) fn preview_diff_stat(output: &str) -> Option<(usize, usize)> {
 ///
 /// 收色用 SGR 39(恢复默认前景)而不是 `0`:抬头整行被包在 `\x1b[2m…\x1b[0m` 里,
 /// 用 0 会把后面的 dim 一起关掉,半行亮半行暗。
-pub(crate) fn diff_stat_label(added: usize, removed: usize) -> String {
+pub fn diff_stat_label(added: usize, removed: usize) -> String {
     format!("\x1b[32m+{added}\x1b[39m \x1b[31m-{removed}\x1b[39m")
 }
 

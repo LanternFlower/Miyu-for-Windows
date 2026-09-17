@@ -348,11 +348,25 @@ pub(crate) fn tool_line_text(json: &str) -> String {
     if let Some(args) = value.get("args").and_then(serde_json::Value::as_str) {
         let args = args.trim();
         if !args.is_empty() {
-            // 先按工具自己的规矩摘一句主题（命令文本、检索词、路径……），摘不
-            // 出来就把参数的值串起来，**不**原样甩 JSON——`{"action": "info",
-            // "package_name": "zzq"}` 在面板里读起来是一团括号引号（用户实测：
-            // 浮层的参数窥视是裸 JSON）。什么都摘不出来就不带主题。
-            if let Some(subject) = crate::tools::tool_peek(name, args) {
+            // 命令那一步的窥视是 **title**，不是命令全文——命令全文归正文
+            //（用户 09-17 拍的版：抬头给 title、正文给命令）。主线和前台浮层
+            // 一直是这么写的，后台这条路却走 `tool_peek`，那个对命令工具先摘
+            // 出的是命令本身：同一步在两块面板上长得不一样（用户实测截图：
+            // 「命令不对啊，正确的是这样的」）。
+            let peek = if miyu_base::tool_names::is_command_tool(
+                miyu_base::tool_names::tool_event_base_name(name),
+            ) {
+                // 没给 title 的命令退回命令本身：主线那儿命令还露在抬头底下，
+                // 这条路上抬头是唯一的落点，空着比长一点更糟。
+                crate::tools::command_peek(args).or_else(|| crate::tools::tool_peek(name, args))
+            } else {
+                // 先按工具自己的规矩摘一句主题（检索词、路径……），摘不出来就把
+                // 参数的值串起来，**不**原样甩 JSON——`{"action": "info",
+                // "package_name": "zzq"}` 在面板里读起来是一团括号引号（用户实测：
+                // 浮层的参数窥视是裸 JSON）。什么都摘不出来就不带主题。
+                crate::tools::tool_peek(name, args)
+            };
+            if let Some(subject) = peek {
                 out.push_str(" · ");
                 out.push_str(&miyu_base::terminal::clip_to_display_width(&subject, 200));
             }

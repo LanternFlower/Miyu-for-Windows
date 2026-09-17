@@ -23,6 +23,7 @@ impl Screen {
             open_seeded: std::collections::HashSet::new(),
             display_expand: (false, false),
             display_fold: true,
+            display_command_lines: 8,
             overlay: None,
             hover: None,
             input_rows: Vec::new(),

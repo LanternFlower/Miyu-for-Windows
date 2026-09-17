@@ -299,7 +299,6 @@ impl CommandLiveDisplay {
     /// 完整输出」）。命令要留**头**不留尾，所以省略标记在底部，和输出那边（留尾
     /// 不留头、标记在顶部）正相反。
     ///
-    /// 跑砸了整段红：和输出那边同一个规矩，一眼认得出是报错。
     pub(crate) fn command_rows(&self, width: usize, max_rows: usize, failed: bool) -> Vec<String> {
         if max_rows == 0 {
             return Vec::new();
@@ -308,8 +307,12 @@ impl CommandLiveDisplay {
         for line in self.command.lines() {
             rows.extend(wrap_plain_text(line, width));
         }
-        let style = if failed { "\x1b[31m" } else { "" };
-        let reset = if failed { "\x1b[0m" } else { "" };
+        // 露在抬头底下的这几行是**附注**，跟着抬头一起暗——抬头是暗色而它是正常
+        // 文字色的话，附注比把手还显眼（用户 09-17：「tag 行是暗色，而命令预览是
+        // 正常文字颜色，这不合理」）。点开看到的那份仍是正常色：那儿它才是内容。
+        // 跑砸了整段红：和输出那边同一个规矩，一眼认得出是报错。
+        let style = if failed { "\x1b[31m" } else { "\x1b[2m" };
+        let reset = "\x1b[0m";
         let omitted = rows.len() > max_rows;
         let keep = if omitted {
             max_rows.saturating_sub(1)
