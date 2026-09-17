@@ -42,11 +42,11 @@ impl TtyRenderSetup {
         title: String,
     ) -> Self {
         Self {
-            reasoning_mode: crate::render::ReasoningDisplayMode::from_config(
-                &config.display.reasoning,
+            reasoning_mode: crate::render::ReasoningDisplayMode::from_expand(
+                config.display.expand_reasoning,
             ),
-            tool_call_mode: crate::render::ToolCallDisplayMode::from_config(
-                &config.display.tool_calls,
+            tool_call_mode: crate::render::ToolCallDisplayMode::from_expand(
+                config.display.expand_tool_calls,
             ),
             readable_tool_names: config.display.readable_tool_names,
             command_output_lines: config.display.command_output_lines,

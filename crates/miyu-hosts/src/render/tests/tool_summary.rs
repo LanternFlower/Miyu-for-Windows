@@ -1067,9 +1067,9 @@ fn the_screen_never_shows_a_raw_marker() {
 /// 叠着，而且那些工具**根本不进时间线**——`Worked for` 数不到它们（报告 §1.1 的
 /// S5；用户 todolist:11「用的是旧版本的 inline」）。
 ///
-/// 现在有时间线就收进去，档位只决定**详情摆哪**。
+/// 现在有时间线就收进去，档位只决定**这一步默认开着还是合着**。
 #[test]
-fn detailed_tool_calls_become_timeline_steps_in_fullscreen() {
+fn expanded_tool_calls_become_timeline_steps_in_fullscreen() {
     use crate::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
 
     fn run(mode: ToolCallDisplayMode) -> String {
@@ -1086,47 +1086,45 @@ fn detailed_tool_calls_become_timeline_steps_in_fullscreen() {
         renderer
             .write_tool_call("glob", r#"{"pattern":"*.rs"}"#)
             .unwrap();
-        let frame = String::from_utf8_lossy(&renderer.take_output_frame()).into_owned();
-        frame
-            .split('\n')
-            .map(super::shared::strip_ansi_for_test)
-            .collect::<Vec<_>>()
-            .join("\n")
+        String::from_utf8_lossy(&renderer.take_output_frame()).into_owned()
     }
 
     super::timeline::with_blocks(|| {
         let full = run(ToolCallDisplayMode::Full);
+        let full_text = super::shared::strip_ansi_for_test(&full);
         assert!(
-            !full.contains(&format!("{} ", t("args", "参数"))),
-            "详细档还在打旧卡片:\n{full}"
+            !full_text.contains(&format!("{} ", t("args", "参数"))),
+            "展开档还在打旧卡片:\n{full_text}"
         );
         assert!(
-            full.contains(&crate::render::readable_tool_name("read")),
-            "详细档那一步没进时间线:\n{full}"
+            full_text.contains(&crate::render::readable_tool_name("read")),
+            "展开档那一步没进时间线:\n{full_text}"
         );
         assert!(
-            full.contains("│ 第一行"),
-            "详细档该把工具输出摆在那一步底下:\n{full}"
+            full.contains("miyu-block-open="),
+            "展开档那一步该出来就是展开态"
+        );
+        assert!(
+            !full_text.contains("│ 第一行"),
+            "还在往 tag 行底下挂预览:\n{full_text}"
         );
 
-        // 摘要档同一段过程也有那一步，但输出**不**铺出来（收在块里点开才看）。
+        // 收起档同一段过程也有那一步，只是出来是合着的。
         let summary = run(ToolCallDisplayMode::Summary);
+        let summary_text = super::shared::strip_ansi_for_test(&summary);
         assert!(
-            summary.contains(&crate::render::readable_tool_name("read")),
-            "摘要档丢了那一步:\n{summary}"
+            summary_text.contains(&crate::render::readable_tool_name("read")),
+            "收起档丢了那一步:\n{summary_text}"
         );
-        assert!(
-            !summary.contains("│ 第一行"),
-            "摘要档不该把输出铺在抬头底下:\n{summary}"
-        );
+        assert!(!summary.contains("miyu-block-open="), "收起档不该默认展开");
     });
 }
 
 /// 子代理浮层也跟着那两个开关走（todolist:11 最后一句的前台那半）。
 ///
-/// 浮层原来只看「有没有时间线」，不看 `显示思考过程` / `显示工具调用信息` ——
-/// 主线那一步的详情按档位摆，浮层里同一件事却永远收着。现在详细档下浮层里的
-/// 思考全文与工具详情同样摆在各自抬头底下。
+/// 浮层原来只看「有没有时间线」，不看那两个开关——主线那一步按档位摆，浮层里
+/// 同一件事却永远收着。现在展开档下浮层里的思考与工具那一步**出来就是展开态**，
+/// 和主线同一个规矩。
 ///
 /// 后台那块浮层（从日志攒步）还没跟上：它手上没有配置入口（报告 §2.4），
 /// 要等两个组装器合一。
@@ -1156,45 +1154,50 @@ fn the_subagent_panel_follows_the_two_display_switches() {
             .expect("浮层没登记");
         crate::render::blocks::get(id)
             .expect("浮层是空的")
-            .into_iter()
-            .map(|line| super::shared::strip_ansi_for_test(&line))
-            .collect::<Vec<_>>()
             .join("\n")
     }
 
     super::timeline::with_blocks(|| {
-        let detailed = panel(ReasoningDisplayMode::Full, ToolCallDisplayMode::Full);
-        assert!(
-            detailed.contains("先列一下再决定"),
-            "详细档下浮层该把思考全文摆出来:\n{detailed}"
+        let expanded = panel(ReasoningDisplayMode::Full, ToolCallDisplayMode::Full);
+        // 两步各自默认开着：思考一块、工具一块。
+        assert_eq!(
+            expanded.matches("miyu-block-open=").count(),
+            2,
+            "展开档下浮层那两步该出来就是展开态:\n{expanded}"
         );
+        let text = super::shared::strip_ansi_for_test(&expanded);
         assert!(
-            detailed.contains("第一行"),
-            "详细档下浮层该把工具详情摆出来:\n{detailed}"
+            !text.contains("│ 先列一下再决定"),
+            "还在往 tag 行底下挂预览:\n{text}"
         );
 
-        let summary = panel(ReasoningDisplayMode::Summary, ToolCallDisplayMode::Summary);
-        // 摘要档下抬头还在，但正文收在各自的块里，不铺在浮层那几行上。
+        let collapsed = panel(ReasoningDisplayMode::Summary, ToolCallDisplayMode::Summary);
+        let collapsed_text = super::shared::strip_ansi_for_test(&collapsed);
+        // 收起档下抬头还在，正文收在各自的块里。
         assert!(
-            summary.contains(&t("thought", "已思考")),
-            "摘要档下浮层丢了思考那一步:\n{summary}"
+            collapsed_text.contains(&t("thought", "已思考")),
+            "收起档下浮层丢了思考那一步:\n{collapsed_text}"
         );
         assert!(
-            !summary.contains("第一行"),
-            "摘要档下浮层不该把工具详情铺出来:\n{summary}"
+            !collapsed.contains("miyu-block-open="),
+            "收起档不该默认展开:\n{collapsed}"
+        );
+        assert!(
+            !collapsed_text.contains("第一行"),
+            "收起档下浮层不该把工具详情铺出来:\n{collapsed_text}"
         );
     });
 }
 
-/// 浮层收段之后，露在抬头底下的那几行不该丢。
+/// 浮层收段之后，那几步的「默认开着」不该丢。
 ///
-/// 面板那份收缩原来拿 `step.line` 拼行、不走 `step_rows`——于是「显示思考过程 =
-/// 详细」下摆在抬头底下的思考全文，一收段就没了（子代理开口说话就会收段，所以
-/// 这条路每次都走）。主线那份从来不丢，因为它走 `step_rows`。
+/// 面板那份收缩原来拿 `step.line` 拼行、不走 `step_rows`——于是这一位（以及命令
+/// 那一步抬头底下露着的几行）一收段就没了（子代理开口说话就会收段，所以这条路
+/// 每次都走）。主线那份从来不丢，因为它走 `step_rows`。
 ///
 /// 两份合成 `fold_block_lines` 之后，这件事由同一条规则管。
 #[test]
-fn folding_the_panel_keeps_what_was_showing_under_the_head() {
+fn folding_the_panel_keeps_the_open_state_of_its_steps() {
     use crate::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
     super::timeline::with_blocks(|| {
         let mut renderer = StreamRenderer::new(
@@ -1237,13 +1240,27 @@ fn folding_the_panel_keeps_what_was_showing_under_the_head() {
             .unwrap_or_else(|| panic!("收缩行没挂块，点不开:\n{fold_row:?}"));
         let inside = crate::render::blocks::get(marker)
             .expect("收缩行点开是空的")
+            .join("\n");
+        assert!(
+            inside.contains("miyu-block-open="),
+            "收段之后那几步的「默认开着」丢了:\n{inside}"
+        );
+        // 点开那一块看得到思考全文——它是块的内容，不是抬头底下的预览。
+        let thought = inside
+            .split("miyu-block-open=")
+            .nth(1)
+            .and_then(|rest| rest.split('\u{7}').next())
+            .and_then(|digits| digits.parse::<u64>().ok())
+            .expect("默认开着的那一步没挂块");
+        let body = crate::render::blocks::get(thought)
+            .expect("那一步点开是空的")
             .into_iter()
             .map(|line| super::shared::strip_ansi_for_test(&line))
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            inside.contains("先列一下再决定"),
-            "收段之后露在抬头底下的思考全文丢了:\n{inside}"
+            body.contains("先列一下再决定"),
+            "收段之后那一步的正文丢了:\n{body}"
         );
     });
 }

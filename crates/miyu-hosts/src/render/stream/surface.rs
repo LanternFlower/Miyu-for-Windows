@@ -23,20 +23,24 @@
 //! 过去文档一直拿宿主的名字称呼同一个面，才显得像两样东西
 //! （`docs/plan/2026-09-17-render-unification.md` §5）。
 //!
-//! | 面 | plain | 目的地是终端 | 全屏 | tool_calls | 过程怎么画 | 宿主 |
-//! |---|---|---|---|---|---|---|
-//! | S0 Plain | 是 | – | 否 | 强制 Hidden | 只有正文 | `--plain` |
-//! | S1 Pipe | 否 | 否 | 否 | Summary | 老的一行摘要 `~ 工具×1 ok` | stdout 接管道 |
-//! | S2 Cards | 否 | 是 | 否 | Full | 旧的工具卡片，无时间线 | 非全屏 + `tool_calls=full` |
-//! | **S3 Static** | 否 | 是 | 否 | Summary | 静态时间线：每步落 scrollback、无块、无 `Worked for` | shellhook／单次 `miyu "…"`／inline REPL／唤醒跟进／daemon 回写 |
-//! | **S4 Full** | 否 | 是 | 是 | 任意 | 可展开时间线 + `Worked for` 收缩；`full` 档把详情摆在每一步底下 | 全屏 TUI |
+//! | 面 | plain | 目的地是终端 | 全屏 | 过程怎么画 | 宿主 |
+//! |---|---|---|---|---|---|
+//! | S0 Plain | 是 | – | 否 | 只有正文 | `--plain` |
+//! | S1 Pipe | 否 | 否 | 否 | 老的一行摘要 `~ 工具×1 ok` | stdout 接管道 |
+//! | **S3 Static** | 否 | 是 | 否 | 静态时间线：每步落 scrollback、无块、无 `Worked for` | shellhook／单次 `miyu "…"`／inline REPL／唤醒跟进／daemon 回写 |
+//! | **S4 Full** | 否 | 是 | 是 | 可展开时间线 + `Worked for` 收缩 | 全屏 TUI |
 //!
-//! 原来这儿还有第六个 S5（全屏 + `tool_calls=full`）：命令走时间线、别的工具打
-//! 旧卡片，两种版式在同一屏上叠着。它**不是设计出来的**，是谓词组合的副产品
-//! ——非命令那几支只认 `Summary`，而命令那一支先问「有没有时间线」。
+//! **这张表里再没有「档位」这一列了。** 原来有两个多出来的面：S2 Cards（非全屏 +
+//! `tool_calls=full` → 旧工具卡片、整条时间线消失）和 S5（全屏 + `tool_calls=full`
+//! → 命令走时间线、别的工具打卡片，两种版式叠在一屏上）。两个都**不是设计出来
+//! 的**，是「显示档位」顺手决定了「走哪条路」的副产品。
 //!
-//! 现在两个显示开关都改成「**有时间线就收进去，档位只决定详情摆哪**」
-//!（`captures_tools` / `captures_reasoning`），S5 不再是一个单独的面。
+//! 09-17 两步收干净：先是 `captures_tools` / `captures_reasoning` 改成「有时间线
+//! 就收进去」（S5 消失），再是 `timeline_static()` 去掉 `tool_call_mode == Summary`
+//! 那道闸（S2 消失，用户原话：「非全屏和全屏的路径不是已经统一了吗，为什么你还
+//! 在分」）。现在档位只有一件事可管：**内容默认看不看得见**——能点开的面上是
+//! 「这一步出来就是展开态」（`Step::open`），点不开的面上是「正文就地印在抬头
+//! 底下」。
 //!
 //! 「目的地是终端」这一列就是 `live_summary`：它问的不是「我的 stdout 是不是
 //! 终端」，而是「这些字节最后进不进一个有活动区的终端」——daemon 往 shellhook
@@ -85,41 +89,27 @@ pub const PANEL_CAPS: SurfaceCaps = SurfaceCaps {
 };
 
 impl crate::render::StreamRenderer {
-    /// 这个面能做什么。
-    ///
-    /// 与旧谓词的对应（`surface_caps_match_the_old_predicates` 钉着）：
-    ///
-    /// | 能力位 | 旧写法 |
-    /// |---|---|
-    /// | `expandable` | `blocks::enabled()` |
-    /// | `commit_immediately` | `timeline_static()` |
-    /// | `fold` | `timeline_enabled() && !timeline_static()` |
-    /// | `detail == Inline` | `timeline_static()` |
+    /// 这个面能做什么。**只由「能不能点开」和「收不收段」两位决定**——
+    /// 显示档位一位都不参与（见模块头）。
     pub fn caps(&self) -> SurfaceCaps {
         let expandable = crate::render::blocks::enabled();
-        // 「没有可点开的详情，全文就不必攒」——这一位读的人是
-        // `timeline_push_thought` / `write_tool_result` 那几处：它们据此决定要不
-        // 要构造那份展开内容。
+        // 用户 todolist:21「TUI 不自动收起 Worked for」——不收段 = 每一步跑完
+        // 就地落下去，和逐步落地的面一个走法。**它只管收不收段**：那些步照样
+        // 挂块、照样点得开，详情照样收在块后面（见 `commit_static_steps`）。
+        // 「有时间线但点不开」的面（shellhook／单次／inline）：详情没处收，只能
+        // 就地印。管道那种连时间线都没有的不算——那儿走的是老的一行摘要。
         //
-        // **它不等于「详情印不印在屏上」**：真正决定那件事的是
-        // `commit_static_steps`——凡是 `commit_immediately` 的面，它把每一步的
-        // `body` 原样打在抬头底下，而且**不挂块标记**。所以开了「不自动收起」的
-        // 全屏，那些步其实是点不开的、详情就地铺开——和 shellhook 一个样子
-        //（用户 todolist:21 要的正是「和 shellhook 差不多的效果」）。
-        //
-        // 阶段 2 的提交信息里我写的是「仍然能点开，详情照旧收在块后面」，那句话
-        // **是错的**：`s4-full-open.ansi` 里只有 5 个块标记（不收起那一档的常规
-        // 步骤一个都没有），而 `s4-full.ansi` 有 18 个。当时的等价性测试只比了
-        // `caps()` 这个结构体，没有比渲染出来的字节，所以那句话没被拦下。
+        // 09-17 之前 `timeline_static()` 还挂着 `tool_call_mode == Summary`，
+        // 于是档位一调就换面；现在它只问「不是全屏、但字节进终端」。
         let inline_detail = self.timeline_static();
-        // 用户 todolist:21「TUI 不自动收起 Worked for」——整个需求就落在这一行:
-        // 不收段 = 每一步跑完就地落下去,和逐步落地的面一个走法。
-        let keep_open = expandable && self.keep_timeline_open;
+        let keep_open = expandable && !self.fold_timeline;
         let commit_immediately = inline_detail || keep_open;
         SurfaceCaps {
             expandable,
             commit_immediately,
             fold: self.timeline_enabled() && !commit_immediately,
+            // 详情摆哪只看**能不能点开**，不看档位。档位（展开 / 收起）决定的是
+            // 「默认看不看得见」，不是「走哪条路」——那正是 09-17 拆掉的耦合。
             detail: if inline_detail {
                 DetailPlacement::Inline
             } else {

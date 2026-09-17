@@ -1,8 +1,16 @@
-//! 能力位与旧谓词的**等价性**：穷举四个模式位的每一种组合，逐位比对。
+//! 能力位是怎么算出来的：穷举模式位的每一种组合，逐位比对。
 //!
-//! 阶段 2 是「只改名」，那就得先有一张网证明改名前后一个字节都没动。等哪天要
-//! 让某个能力位与旧谓词**故意**分家（比如「全屏但不自动收起」），改的是这里的
-//! 期望值，而且只改那一位——谁跟着变了，一眼看得见。
+//! 阶段 2 这里比的是「能力位 == 旧谓词」，因为那一步只改名。09-17 之后**旧谓词
+//! 没了**：`timeline_static()` 不再看显示档位，`caps()` 也不再看。现在比的是
+//! 那个更小的模型——
+//!
+//! - `expandable` = 有没有登记处（全屏）
+//! - `commit_immediately` = 点不开的时间线，或者关了「收起成 Worked for」
+//! - `fold` = 有时间线且不是逐步落地
+//! - `detail` = 能点开就收在块后面，点不开的时间线就地印
+//!
+//! **显示档位（展开思考 / 展开工具）一位都不参与。** 它只决定内容默认看不看得
+//! 见，不决定走哪条路——那正是用户 09-17 让拆掉的耦合。
 
 use super::timeline::with_blocks;
 use crate::render::stream::surface::DetailPlacement;
@@ -18,7 +26,7 @@ fn renderer(plain: bool, live_summary: bool, tool_calls: ToolCallDisplayMode) ->
 
 /// 2 × 2 × 2 × 3 = 24 组。每组都比四位。
 #[test]
-fn surface_caps_match_the_old_predicates() {
+fn surface_caps_follow_only_expandable_and_folding() {
     for blocks_on in [false, true] {
         let check = || {
             for plain in [false, true] {
@@ -28,8 +36,8 @@ fn surface_caps_match_the_old_predicates() {
                         ToolCallDisplayMode::Summary,
                         ToolCallDisplayMode::Full,
                     ] {
-                        let renderer = renderer(plain, live_summary, tool_calls);
-                        let caps = renderer.caps();
+                        let surface = renderer(plain, live_summary, tool_calls);
+                        let caps = surface.caps();
                         let label = format!(
                             "blocks={blocks_on} plain={plain} live={live_summary} tools={tool_calls:?}"
                         );
@@ -40,19 +48,24 @@ fn surface_caps_match_the_old_predicates() {
                         );
                         assert_eq!(
                             caps.commit_immediately,
-                            renderer.timeline_static(),
-                            "commit_immediately 与 timeline_static() 不符: {label}"
+                            surface.timeline_static(),
+                            "收起成 Worked for 开着时，只有点不开的时间线才逐步落地: {label}"
                         );
                         assert_eq!(
                             caps.fold,
-                            renderer.timeline_enabled() && !renderer.timeline_static(),
+                            surface.timeline_enabled() && !caps.commit_immediately,
                             "fold 与 `有时间线且不就地落地` 不符: {label}"
                         );
                         assert_eq!(
                             caps.detail == DetailPlacement::Inline,
-                            renderer.timeline_static(),
-                            "detail 与 timeline_static() 不符: {label}"
+                            surface.timeline_static(),
+                            "详情摆哪只看能不能点开: {label}"
                         );
+                        // 档位换一遍，四位一个都不许动——思考以后要从时间线里
+                        // 搬出去，这三件事之间不能有耦合（用户 09-17）。
+                        let mut expanded = renderer(plain, live_summary, tool_calls);
+                        expanded.reasoning_mode = ReasoningDisplayMode::Full;
+                        assert_eq!(expanded.caps(), caps, "档位不该改变这个面: {label}");
                     }
                 }
             }
@@ -74,6 +87,16 @@ fn the_three_surfaces_have_the_shapes_we_expect() {
     assert!(!pipe.expandable && !pipe.commit_immediately && !pipe.fold);
 
     // S3 静态时间线:每步立刻落地、详情就地印、没有 `Worked for`。
+    // **档位不影响它是哪个面**：`Full` 档原来会把这条线整个换成旧卡片面（S2），
+    // 那是 09-17 收掉的最后一处耦合。
+    for tool_calls in [ToolCallDisplayMode::Summary, ToolCallDisplayMode::Full] {
+        let caps = renderer(false, true, tool_calls).caps();
+        assert!(caps.commit_immediately && !caps.fold && caps.detail_inline());
+        assert!(
+            renderer(false, true, tool_calls).timeline_enabled(),
+            "非全屏 + {tool_calls:?} 该照样有时间线"
+        );
+    }
     let static_caps = renderer(false, true, ToolCallDisplayMode::Summary).caps();
     assert!(static_caps.commit_immediately, "静态版该立刻落地");
     assert!(!static_caps.fold, "静态版不该有收缩行");
@@ -102,16 +125,17 @@ fn panel_caps_are_fixed() {
 /// 「TUI 不自动收起」开了之后:每一步就地落下去、段末没有 `Worked for …`
 /// ——和 shell 无缝对话那条路一个样子(用户 todolist:21)。
 ///
-/// **注意这里比的只是 `caps()` 这个结构体**,不是渲染出来的字节。`expandable`
-/// 为真的意思是「这个面有登记处」,不等于「每一步都挂了块标记」:走
-/// `commit_static_steps` 落地的那些步**不挂标记**,所以不收起那一档里常规步骤
-/// 其实点不开(`s4-full-open.ansi` 只有 5 个标记,`s4-full.ansi` 有 18 个)。
-/// 阶段 2 的提交信息把这一点写反了,更正记在 `surface.rs` 的 `caps()` 里。
+/// 它**只管收不收段**：那些步照样挂块、照样点得开，详情照样收在块后面。
+/// 09-17 之前 `commit_static_steps` 顺手把它们变成点不开、正文铺一地
+///（`s4-full-open.ansi` 只有 5 个标记，`s4-full.ansi` 有 18 个）——用户原话：
+///「即使不自动收起过程为 true，也不应该以 tag 行下预览的形式出现 tag 行的内容」。
+/// 字节那一层由 `golden.rs` 的 `fullscreen_with_the_timeline_kept_open_is_frozen`
+/// 钉着。
 #[test]
 fn keeping_the_timeline_open_stops_folding() {
     with_blocks(|| {
         let mut renderer = renderer(false, true, ToolCallDisplayMode::Summary);
-        renderer.keep_timeline_open = true;
+        renderer.fold_timeline = false;
         let caps = renderer.caps();
         assert!(caps.expandable, "开着也该能点开");
         assert!(!caps.fold, "开着就不该再收成 Worked for");

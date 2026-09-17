@@ -57,16 +57,17 @@ pub(in crate::config_tui) fn edit_settings(
         ),
         Field::new(t("Interface language", "界面语言"), language.to_string())
             .choices(&["auto", "en", "zh"]),
-        Field::new(
-            t("Show reasoning", "显示思考过程"),
-            config.display.reasoning.clone(),
-        )
-        .choices(&["summary", "full", "hidden"]),
-        Field::new(
-            t("Show tool call details", "显示工具调用信息"),
-            config.display.tool_calls.clone(),
-        )
-        .choices(&["summary", "full", "hidden"]),
+        // 三值档（隐藏/摘要/完整）09-17 拆成布尔、隐藏档删掉——用户原话
+        //「是否展开思考内容 / 是否展开工具内容 / 是否缩起成 Worked for，
+        // 这样更简洁」。三位互不相干：思考以后要从时间线里搬出去。
+        Field::boolean(
+            t("Expand reasoning", "展开思考内容"),
+            config.display.expand_reasoning,
+        ),
+        Field::boolean(
+            t("Expand tool details", "展开工具内容"),
+            config.display.expand_tool_calls,
+        ),
         Field::new(
             t("Command lines", "命令显示行数"),
             config.display.command_output_lines.to_string(),
@@ -103,8 +104,11 @@ pub(in crate::config_tui) fn edit_settings(
             config.tools.block_dangerous_commands,
         ),
         Field::boolean(
-            t("Keep the timeline open", "不自动收起过程"),
-            config.display.keep_timeline_open,
+            t(
+                "Fold finished steps into Worked for",
+                "过程收起成 Worked for",
+            ),
+            config.display.fold_timeline,
         ),
     ];
     // The read-back below is by index, so an insert in the middle silently
@@ -125,8 +129,8 @@ pub(in crate::config_tui) fn edit_settings(
     config.display.language = language_choice_value(&fields[6].value)
         .unwrap_or("auto")
         .to_string();
-    config.display.reasoning = fields[7].value.trim().to_string();
-    config.display.tool_calls = fields[8].value.trim().to_string();
+    config.display.expand_reasoning = parse_bool_field(&fields[7].value)?;
+    config.display.expand_tool_calls = parse_bool_field(&fields[8].value)?;
     config.display.command_output_lines = fields[9]
         .value
         .trim()
@@ -141,7 +145,7 @@ pub(in crate::config_tui) fn edit_settings(
         .parse::<usize>()?
         .min(MAX_REPL_REPLAY_TURNS);
     config.tools.block_dangerous_commands = parse_bool_field(&fields[14].value)?;
-    config.display.keep_timeline_open = parse_bool_field(&fields[15].value)?;
+    config.display.fold_timeline = parse_bool_field(&fields[15].value)?;
     Ok(())
 }
 

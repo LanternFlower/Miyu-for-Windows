@@ -482,21 +482,16 @@ pub fn thinking_variant_options_for_model(
 pub(in crate::llm::openai_compatible) fn reasoning_visibility(
     config: &AppConfig,
 ) -> ReasoningVisibility {
-    match config
-        .display
-        .reasoning
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "hidden" => ReasoningVisibility::Hidden,
-        "full" => ReasoningVisibility::Full,
-        _ => ReasoningVisibility::Summary,
+    // 隐藏档 09-17 已删（用户拍板），配置里只剩「展不展开」一位。
+    if config.display.expand_reasoning {
+        ReasoningVisibility::Full
+    } else {
+        ReasoningVisibility::Summary
     }
 }
 
 pub(in crate::llm::openai_compatible) fn reasoning_summary_is_detailed(config: &AppConfig) -> bool {
-    config.display.reasoning.trim().eq_ignore_ascii_case("full")
+    config.display.expand_reasoning
 }
 
 pub(in crate::llm::openai_compatible) fn provider_looks_anthropic(

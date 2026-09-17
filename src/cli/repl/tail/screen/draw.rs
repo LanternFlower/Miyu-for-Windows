@@ -120,6 +120,8 @@ impl Screen {
         self.expire_toast();
         // 展开着的块内容可能还在长（正在想的那一步）——画之前先对一次版本。
         self.refresh_expanded();
+        // 「完整」那一档落下来的步：出来就是展开态，不用点。只开一次。
+        self.seed_open_blocks();
         let body = self.body_height(tail_height);
         self.body = Some(body);
         // 正文区的尺寸交出去：图片、表格、公式按它算才不会顶出可视范围。

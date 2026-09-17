@@ -143,12 +143,12 @@ pub(super) fn session_replay_frame(
             } else {
                 render::ReasoningDisplayMode::Hidden
             },
-            render::ToolCallDisplayMode::from_config(&config.display.tool_calls),
+            render::ToolCallDisplayMode::from_expand(config.display.expand_tool_calls),
             false,
             config.display.readable_tool_names,
             config.display.command_output_lines,
         );
-        renderer.keep_timeline_open = config.display.keep_timeline_open;
+        renderer.fold_timeline = config.display.fold_timeline;
         renderer.use_external_cursor_control();
         renderer.use_buffered_output();
         // 流水账里带着思考就按它的位置放，别再用 `assistant_reasoning` 那一列

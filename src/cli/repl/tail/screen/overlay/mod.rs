@@ -102,6 +102,9 @@ pub(in crate::cli) struct Overlay {
     /// 面板里自己的展开状态。子代理内层也是一条时间线，那里每一步同样能点开，
     /// 而它的开合和正文那边互不相干，所以各带各的表。
     expanded: Expanded,
+    /// 「默认开着」的块里已经替用户开过的那些。面板每帧重解析，不记着的话
+    /// 收起来下一帧就被顶开。见 `screen::expand::seed_open`。
+    open_seeded: std::collections::HashSet<u64>,
     scroll: usize,
     /// 停在底部就跟着新内容走；自己往回翻过就别再拽他。
     follow: bool,
@@ -131,6 +134,7 @@ impl Overlay {
             command: String::new(),
             body: parse_body(&lines, cols),
             expanded: Expanded::new(),
+            open_seeded: std::collections::HashSet::new(),
             scroll: 0,
             follow: true,
             height: 0,
@@ -158,6 +162,7 @@ impl Overlay {
             body: parse_body(&[], cols),
             cols,
             expanded: Expanded::new(),
+            open_seeded: std::collections::HashSet::new(),
             scroll: 0,
             follow: true,
             height: 0,
@@ -177,6 +182,7 @@ impl Overlay {
         }
         self.cols = cols;
         self.expanded.clear();
+        self.open_seeded.clear();
         match &mut self.source {
             Source::Block { id, version } => {
                 let id = *id;
@@ -259,6 +265,17 @@ impl Overlay {
         // 展开着的那几块留着，只是把内容换成新的——同 `refresh` 里那条注释：
         // 一刷新就整张清掉的话，刚点开的东西立刻自己缩回去。
         super::expand::reload_expanded(&mut self.expanded, self.cols);
+        self.seed_open();
+    }
+
+    /// 「完整」那一档的步：面板里同样是出来就展开，不用点。
+    fn seed_open(&mut self) {
+        super::expand::seed_open(
+            &Layer::Body(&self.body),
+            &mut self.expanded,
+            &mut self.open_seeded,
+            self.cols,
+        );
     }
 
     /// 把流水账渲染成一条**能点开**的时间线。
@@ -503,6 +520,7 @@ impl Overlay {
                     // 块 id 现在是按位置复用的，第 i 步永远是第 i 步，
                     // 保住它是安全的。
                     super::expand::reload_expanded(&mut self.expanded, self.cols);
+                    self.seed_open();
                 }
             }
             Source::File { .. } => self.reload_file(false),

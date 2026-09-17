@@ -171,7 +171,7 @@ fn a_newer_config_is_read_as_is_and_its_unknown_fields_survive() {
         Some(&serde_json::Value::Bool(true)),
         "顶层的陌生字段没留住"
     );
-    assert_eq!(config.display.reasoning, "summary");
+    assert!(!config.display.expand_reasoning, "默认不展开思考");
     let out = serde_json::to_value(&config).expect("写不出");
     assert_eq!(out["config_version"], 99);
     assert_eq!(

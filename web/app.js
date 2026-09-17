@@ -6065,9 +6065,10 @@
   }
 
   /*
-   * display.reasoning 只决定后端产生什么(摘要/完整/不产生);
-   * WebUI 是否渲染仅以「有没有思考内容」为准,hidden 时若仍收到文本则不渲染(保底)。
-   * 默认展开/收起由本地偏好 miyu.web.reasoningExpanded 决定,与 summary/full 无关。
+   * 09-17 起「隐藏」那一档在配置里没有了(用户拍板删掉),后端只剩「展开/收起」
+   * 一位布尔。这个保底判断留着是给**老 daemon**用的:网页和 daemon 可以不同版本,
+   * 旧的那边仍可能报 `hidden`。WebUI 是否渲染仍以「有没有思考内容」为准;
+   * 默认展开/收起由本地偏好 miyu.web.reasoningExpanded 决定。
    */
   function reasoningHidden() {
     return state.display?.reasoning === "hidden";

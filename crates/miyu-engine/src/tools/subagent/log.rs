@@ -40,11 +40,8 @@ pub(super) fn spawn_subagent_log_bridge(
         // 思考和正文都是**逐 delta** 来的。一条一行的话日志会变成每行一个词的
         // 字符梯，谁也读不下去（用户实测截图：整屏 `[正文] the` / `[正文] and`）。
         // 攒成段落，遇到别的事件或段落够长了才落盘。
-        let mut thinking = String::new();
-        let mut speech = String::new();
-        // 这一段攒了多久：攒够 `STREAM_FLUSH_INTERVAL` 就落一条，别让面板干等。
-        let mut thinking_flush: Option<std::time::Instant> = None;
-        let mut speech_flush: Option<std::time::Instant> = None;
+        let mut thinking = StreamBuffer::new("[思考]", "[思考+]");
+        let mut speech = StreamBuffer::new("[正文]", "[正文+]");
         // 上一次内层调用是什么时候发出的：结果回来时算耗时写进 `[结果]`。
         // 流水账里没有时间戳，面板那边"这一步花了多久""这一段 Worked for 多久"
         // 只能靠这个（用户实测：后台面板的收缩行没有 Worked for）。
@@ -70,23 +67,17 @@ pub(super) fn spawn_subagent_log_bridge(
             }
             let mut lines: Vec<String> = Vec::new();
             if let Some(text) = message.strip_prefix("__subagent_reasoning__") {
-                flush_stream_buffer(&mut speech, "[正文]", &mut lines);
+                flush_stream_buffer(&mut speech, &mut lines);
                 if thinking.is_empty() && thinking_since.is_none() {
                     thinking_since = Some(std::time::Instant::now());
                 }
-                accumulate_stream(
-                    &mut thinking,
-                    &mut thinking_flush,
-                    text,
-                    "[思考]",
-                    &mut lines,
-                );
+                accumulate_stream(&mut thinking, text, &mut lines);
             } else if let Some(text) = message.strip_prefix("__subagent_content__") {
-                flush_stream_buffer(&mut thinking, "[思考]", &mut lines);
-                accumulate_stream(&mut speech, &mut speech_flush, text, "[正文]", &mut lines);
+                flush_stream_buffer(&mut thinking, &mut lines);
+                accumulate_stream(&mut speech, text, &mut lines);
             } else {
-                flush_stream_buffer(&mut thinking, "[思考]", &mut lines);
-                flush_stream_buffer(&mut speech, "[正文]", &mut lines);
+                flush_stream_buffer(&mut thinking, &mut lines);
+                flush_stream_buffer(&mut speech, &mut lines);
                 let elapsed = if message.starts_with("__subtool_call__") {
                     last_call = Some(std::time::Instant::now());
                     None
@@ -118,8 +109,8 @@ pub(super) fn spawn_subagent_log_bridge(
         }
         // 收尾：最后那段没等到分隔符的也要落盘。
         let mut lines: Vec<String> = Vec::new();
-        flush_stream_buffer(&mut thinking, "[思考]", &mut lines);
-        flush_stream_buffer(&mut speech, "[正文]", &mut lines);
+        flush_stream_buffer(&mut thinking, &mut lines);
+        flush_stream_buffer(&mut speech, &mut lines);
         stamp_thought_lines(&mut lines, &mut thinking_since);
         if !lines.is_empty() {
             let _ = std::fs::OpenOptions::new()
@@ -173,41 +164,92 @@ pub(super) const STREAM_FLUSH_INTERVAL: std::time::Duration = std::time::Duratio
 
 /// 把一小段流式文本攒进缓冲，攒够一个自然段（空行）、够长了、或者攒够久了就落
 /// 一条。
-pub(super) fn accumulate_stream(
-    buffer: &mut String,
-    since: &mut Option<std::time::Instant>,
-    text: &str,
-    tag: &str,
-    lines: &mut Vec<String>,
-) {
-    if buffer.is_empty() {
-        *since = Some(std::time::Instant::now());
+///
+/// **落下来的每一条都是原样的一截，不 `trim`。** 一条日志行不等于一行正文：
+/// 上面那道 300ms 的时间闸会把一句话切成好几条，读那侧要原样拼回去；两头的
+/// 空白一掐，英文就会粘成 `the quickbrown fox`。段里的换行也原样留着——写进
+/// 日志就是续行，读那侧按续行拼（`LogEvent::Continuation`）。
+pub(super) fn accumulate_stream(stream: &mut StreamBuffer, text: &str, lines: &mut Vec<String>) {
+    if stream.buffer.is_empty() {
+        stream.since = Some(std::time::Instant::now());
     }
-    buffer.push_str(text);
-    while let Some(index) = buffer.find("\n\n") {
-        let chunk: String = buffer.drain(..index + 2).collect();
-        if !chunk.trim().is_empty() {
-            lines.push(format!("{tag} {}", chunk.trim()));
-        }
-        *since = Some(std::time::Instant::now());
+    stream.buffer.push_str(text);
+    while let Some(index) = stream.buffer.find("\n\n") {
+        let chunk: String = stream.buffer.drain(..index + 2).collect();
+        stream.push(lines, &chunk);
+        stream.since = Some(std::time::Instant::now());
     }
     // 一直不出现空行的话也不能无限攒下去——攒够长、或者攒够久，都得落。
-    let stale = since.is_some_and(|at| at.elapsed() >= STREAM_FLUSH_INTERVAL);
-    if !buffer.trim().is_empty() && (buffer.chars().count() > 600 || stale) {
-        lines.push(format!("{tag} {}", buffer.trim()));
-        buffer.clear();
-        *since = None;
+    let stale = stream
+        .since
+        .is_some_and(|at| at.elapsed() >= STREAM_FLUSH_INTERVAL);
+    if !stream.buffer.trim().is_empty() && (stream.buffer.chars().count() > 600 || stale) {
+        let chunk = std::mem::take(&mut stream.buffer);
+        stream.push(lines, &chunk);
+        stream.since = None;
+    }
+}
+
+/// 一条流（思考／正文）攒到哪儿了。
+pub(super) struct StreamBuffer {
+    tag: &'static str,
+    /// 同一段里的续截用的标签（`[正文+]`）——读那侧据此粘回去，而不是另起一行。
+    continued_tag: &'static str,
+    buffer: String,
+    since: Option<std::time::Instant>,
+    /// 这一段已经落过一截了：下一截是**续**，不是新的一行。
+    continued: bool,
+}
+
+impl StreamBuffer {
+    pub(super) fn new(tag: &'static str, continued_tag: &'static str) -> Self {
+        Self {
+            tag,
+            continued_tag,
+            buffer: String::new(),
+            since: None,
+            continued: false,
+        }
+    }
+
+    fn push(&mut self, lines: &mut Vec<String>, chunk: &str) {
+        if chunk.is_empty() {
+            return;
+        }
+        let tag = if self.continued {
+            self.continued_tag
+        } else {
+            self.tag
+        };
+        lines.push(format!("{tag} {chunk}"));
+        // 攒够一个自然段（结尾是空行）落的那一截，本身就把段收掉了；
+        // 中途被时间闸／长度闸切开的才算"还没说完"。
+        self.continued = !chunk.ends_with("\n\n");
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
+    }
+
+    /// 测试用：假装这一段已经攒够久了。
+    #[cfg(test)]
+    pub(super) fn age(&mut self, by: std::time::Duration) {
+        self.since = self.since.map(|at| at - by);
     }
 }
 
 /// 把缓冲里剩的那截落成一条（别的事件来了、或者收尾了）。
-pub(super) fn flush_stream_buffer(buffer: &mut String, tag: &str, lines: &mut Vec<String>) {
-    if buffer.trim().is_empty() {
-        buffer.clear();
+pub(super) fn flush_stream_buffer(stream: &mut StreamBuffer, lines: &mut Vec<String>) {
+    if stream.buffer.trim().is_empty() {
+        stream.buffer.clear();
+        stream.continued = false;
         return;
     }
-    lines.push(format!("{tag} {}", buffer.trim()));
-    buffer.clear();
+    // 同 `accumulate_stream`：原样落，拼接的活儿归读那侧。
+    let chunk = std::mem::take(&mut stream.buffer);
+    stream.push(lines, &chunk);
+    // 别的事件插进来了：这一段到此为止，下次是新的一行。
+    stream.continued = false;
 }
 /// 内层工具事件压成一句人话。原样贴 JSON 的话日志里全是转义引号。
 ///
@@ -283,19 +325,19 @@ pub(super) fn readable_subagent_log_line_timed(message: &str, elapsed: Option<Du
         let phase = crate::tools::preparing_phase(name).unwrap_or("");
         return format!("[准备] {name}\t{phase}");
     }
+    // 原始标记是**逐 delta** 的一截，不是一行：写成 `+` 标签，读那侧才会粘回去
+    // 而不是一句一个台阶。也不 trim——两头的空白就是词边界。
     if let Some(text) = message.strip_prefix("__subagent_reasoning__") {
-        let text = text.trim();
         if text.is_empty() {
             return String::new();
         }
-        return format!("[思考] {text}");
+        return format!("[思考+] {text}");
     }
     if let Some(text) = message.strip_prefix("__subagent_content__") {
-        let text = text.trim();
         if text.is_empty() {
             return String::new();
         }
-        return format!("[正文] {text}");
+        return format!("[正文+] {text}");
     }
     if let Some(text) = message.strip_prefix("__subtool_call__") {
         return format!("[工具] {}", subtool_summary(text));

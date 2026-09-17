@@ -51,8 +51,8 @@ pub(in crate::cli) async fn run_chat_with_images(
         PersonaLane::Active,
         crate::question_tui::available(false),
     )?;
-    let reasoning_mode = render::ReasoningDisplayMode::from_config(&config.display.reasoning);
-    let tool_call_mode = render::ToolCallDisplayMode::from_config(&config.display.tool_calls);
+    let reasoning_mode = render::ReasoningDisplayMode::from_expand(config.display.expand_reasoning);
+    let tool_call_mode = render::ToolCallDisplayMode::from_expand(config.display.expand_tool_calls);
     let readable_tool_names = config.display.readable_tool_names;
     let command_output_lines = config.display.command_output_lines;
     let show_token_usage = config.display.show_token_usage;
@@ -240,12 +240,12 @@ pub(in crate::cli) async fn run_chat_with_options(
     let reasoning_mode = if show_reasoning == Some(false) {
         render::ReasoningDisplayMode::Hidden
     } else {
-        render::ReasoningDisplayMode::from_config(&config.display.reasoning)
+        render::ReasoningDisplayMode::from_expand(config.display.expand_reasoning)
     };
     let tool_call_mode = if plain {
         render::ToolCallDisplayMode::Hidden
     } else {
-        render::ToolCallDisplayMode::from_config(&config.display.tool_calls)
+        render::ToolCallDisplayMode::from_expand(config.display.expand_tool_calls)
     };
     let readable_tool_names = config.display.readable_tool_names;
     let command_output_lines = config.display.command_output_lines;
@@ -671,9 +671,9 @@ pub(in crate::cli) async fn run_direct_repl(
         }
         if command.eq_ignore_ascii_case("/compact") && command_args_empty {
             let reasoning_mode =
-                render::ReasoningDisplayMode::from_config(&config.display.reasoning);
+                render::ReasoningDisplayMode::from_expand(config.display.expand_reasoning);
             let tool_call_mode =
-                render::ToolCallDisplayMode::from_config(&config.display.tool_calls);
+                render::ToolCallDisplayMode::from_expand(config.display.expand_tool_calls);
             let mut renderer = render::StreamRenderer::new(
                 reasoning_mode,
                 tool_call_mode,
@@ -681,7 +681,7 @@ pub(in crate::cli) async fn run_direct_repl(
                 config.display.readable_tool_names,
                 config.display.command_output_lines,
             );
-            renderer.keep_timeline_open = config.display.keep_timeline_open;
+            renderer.fold_timeline = config.display.fold_timeline;
             match agent
                 .compact_now(|event| handle_agent_event(&mut renderer, event))
                 .await
@@ -791,8 +791,10 @@ pub(in crate::cli) async fn run_direct_repl(
             agent.switch_lane(mode, registry);
         }
         agent.prepare_for_turn()?;
-        let reasoning_mode = render::ReasoningDisplayMode::from_config(&config.display.reasoning);
-        let tool_call_mode = render::ToolCallDisplayMode::from_config(&config.display.tool_calls);
+        let reasoning_mode =
+            render::ReasoningDisplayMode::from_expand(config.display.expand_reasoning);
+        let tool_call_mode =
+            render::ToolCallDisplayMode::from_expand(config.display.expand_tool_calls);
         let mut renderer = render::StreamRenderer::new(
             reasoning_mode,
             tool_call_mode,
@@ -800,7 +802,7 @@ pub(in crate::cli) async fn run_direct_repl(
             config.display.readable_tool_names,
             config.display.command_output_lines,
         );
-        renderer.keep_timeline_open = config.display.keep_timeline_open;
+        renderer.fold_timeline = config.display.fold_timeline;
         let control = AgentTurnControl::new(
             mode,
             build_tool_registry(

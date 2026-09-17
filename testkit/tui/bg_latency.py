@@ -119,7 +119,7 @@ def main():
                 events.append(
                     {
                         "at_ms": round((time.time() - started) * 1000),
-                        "tag": lines[seen][:6],
+                        "tag": lines[seen][:8],
                         "chars": len(lines[seen]),
                     }
                 )
@@ -141,7 +141,14 @@ def main():
             except Exception:
                 pass
 
-    thoughts = [event for event in events if event["tag"].startswith("[思考]")]
+    # `[思考+]` 也算：09-17 起同一段思考被时间闸切开时，后半截写成 `+` 标签
+    # （读那侧据此粘回去，不另起一行）。量的是「面板多久能看到新字」，两种
+    # 标签都是新字。
+    thoughts = [
+        event
+        for event in events
+        if event["tag"].startswith("[思考]") or event["tag"].startswith("[思考+]")
+    ]
     gaps = [
         thoughts[i]["at_ms"] - thoughts[i - 1]["at_ms"] for i in range(1, len(thoughts))
     ]
@@ -150,6 +157,9 @@ def main():
         "thought_chars_total": len(THOUGHT),
         "lines_landed": len(events),
         "thought_lines": len(thoughts),
+        "new_paragraph_lines": sum(
+            1 for event in thoughts if event["tag"].startswith("[思考]")
+        ),
         "first_thought_at_ms": thoughts[0]["at_ms"] if thoughts else None,
         "gaps_between_thought_lines_ms": gaps,
         "max_gap_ms": max(gaps) if gaps else None,

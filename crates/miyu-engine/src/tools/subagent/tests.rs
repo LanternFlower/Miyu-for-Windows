@@ -51,28 +51,52 @@ fn tool_result_carries_its_output_into_the_log() {
 /// `[正文] the` / `[正文] and`）。
 #[test]
 fn streamed_speech_is_batched_into_paragraphs() {
-    let mut buffer = String::new();
-    let mut since = None;
+    let mut speech = super::log::StreamBuffer::new("[正文]", "[正文+]");
     let mut lines = Vec::new();
     for chunk in ["Now ", "let ", "me ", "enumerate."] {
-        accumulate_stream(&mut buffer, &mut since, chunk, "[正文]", &mut lines);
+        accumulate_stream(&mut speech, chunk, &mut lines);
     }
     assert!(lines.is_empty(), "还没到段落就落盘了: {lines:?}");
-    flush_stream_buffer(&mut buffer, "[正文]", &mut lines);
+    flush_stream_buffer(&mut speech, &mut lines);
     assert_eq!(lines, vec!["[正文] Now let me enumerate.".to_string()]);
-    // 空行就是段落分隔，到了就落一条。
+    // 空行就是段落分隔，到了就落一条。段里的换行原样留着——读那侧按续行拼。
     let mut lines = Vec::new();
-    let mut since = None;
-    accumulate_stream(
-        &mut buffer,
-        &mut since,
-        "第一段\n\n第二段",
-        "[正文]",
-        &mut lines,
-    );
-    assert_eq!(lines, vec!["[正文] 第一段".to_string()]);
-    flush_stream_buffer(&mut buffer, "[正文]", &mut lines);
+    accumulate_stream(&mut speech, "第一段\n\n第二段", &mut lines);
+    assert_eq!(lines, vec!["[正文] 第一段\n\n".to_string()]);
+    flush_stream_buffer(&mut speech, &mut lines);
     assert_eq!(lines[1], "[正文] 第二段");
+}
+
+/// 一段被时间闸切开的话，后半截写成 `[正文+]`：读那侧据此**粘回去**，而不是
+/// 另起一行（用户 09-17：「浮层的正文现在是每个 token 都会换一次行」）。
+#[test]
+fn a_paragraph_cut_in_half_marks_the_second_piece_as_a_continuation() {
+    let mut speech = super::log::StreamBuffer::new("[正文]", "[正文+]");
+    let mut lines = Vec::new();
+    accumulate_stream(&mut speech, "the quick ", &mut lines);
+    // 攒够久了，这一截先落——切在 `quick ` 和 `brown` 中间。
+    speech.age(super::log::STREAM_FLUSH_INTERVAL);
+    accumulate_stream(&mut speech, "brown ", &mut lines);
+    accumulate_stream(&mut speech, "fox", &mut lines);
+    flush_stream_buffer(&mut speech, &mut lines);
+    // 两头的空白**不掐**：它们就是词边界，掐了就粘成 `the quick brownfox`。
+    assert_eq!(
+        lines,
+        vec![
+            "[正文] the quick brown ".to_string(),
+            "[正文+] fox".to_string(),
+        ]
+    );
+    // 读那侧照 `continues` 拼回去，要和模型说的一模一样。
+    let joined = lines
+        .iter()
+        .map(|line| {
+            line.strip_prefix("[正文+] ")
+                .or_else(|| line.strip_prefix("[正文] "))
+                .unwrap_or_default()
+        })
+        .collect::<String>();
+    assert_eq!(joined, "the quick brown fox");
 }
 
 /// 攒够久也要落一条——别让后台面板干等。
@@ -81,28 +105,27 @@ fn streamed_speech_is_batched_into_paragraphs() {
 /// 想一大段不带空行的时候，面板整整 **12.0 秒**不动一下。
 #[test]
 fn a_long_paragraph_still_lands_before_it_finishes() {
-    let mut buffer = String::new();
-    let mut since = None;
+    let mut thinking = super::log::StreamBuffer::new("[思考]", "[思考+]");
     let mut lines = Vec::new();
     // 刚起头的那一段不会一个 delta 一条：计时从这一段的第一块算起。
-    accumulate_stream(&mut buffer, &mut since, "想到", "[思考]", &mut lines);
+    accumulate_stream(&mut thinking, "想到", &mut lines);
     assert!(
         lines.is_empty(),
         "刚起头就落盘 = 每个 delta 一行: {lines:?}"
     );
     // 假装这一段已经攒够久了（真实调用里是模型慢慢吐出来的）。
-    since = since.map(|at| at - super::log::STREAM_FLUSH_INTERVAL);
-    accumulate_stream(&mut buffer, &mut since, "一半", "[思考]", &mut lines);
+    thinking.age(super::log::STREAM_FLUSH_INTERVAL);
+    accumulate_stream(&mut thinking, "一半", &mut lines);
     assert_eq!(
         lines,
         vec!["[思考] 想到一半".to_string()],
         "攒够久了还不落，面板就得干等"
     );
-    assert!(buffer.is_empty(), "落过之后缓冲要清干净");
+    assert!(thinking.is_empty(), "落过之后缓冲要清干净");
 
     // 落过之后重新计时：下一块不会立刻再落一条。
     let mut lines = Vec::new();
-    accumulate_stream(&mut buffer, &mut since, "接着想", "[思考]", &mut lines);
+    accumulate_stream(&mut thinking, "接着想", &mut lines);
     assert!(lines.is_empty(), "刚落过又落 = 每个 delta 一行: {lines:?}");
 }
 
@@ -264,6 +287,23 @@ fn every_marker_writes_a_tag_from_the_list() {
         other => panic!("{other} 是新标记，给它补个样例"),
     };
     let mut seen = std::collections::BTreeSet::new();
+    // 写日志有**两个入口**：逐 delta 的原始标记走 `readable_subagent_log_line_timed`
+    // （写 `+` 标签，一条是一截），攒成段落的走 `accumulate_stream`（写不带 `+`
+    // 的，一条是一行）。两个都得覆盖，否则清单里会剩下"没人写"的标签。
+    for (tag, continued) in [("[思考]", "[思考+]"), ("[正文]", "[正文+]")] {
+        let mut stream = super::log::StreamBuffer::new(tag, continued);
+        let mut lines = Vec::new();
+        super::log::accumulate_stream(&mut stream, "一段话", &mut lines);
+        super::log::flush_stream_buffer(&mut stream, &mut lines);
+        for line in &lines {
+            seen.insert(
+                *super::protocol::LOG_TAGS
+                    .iter()
+                    .find(|tag| line.starts_with(**tag))
+                    .unwrap_or_else(|| panic!("{line:?} 的标签不在 LOG_TAGS 里")),
+            );
+        }
+    }
     for marker in super::protocol::INNER_MARKERS {
         let message = format!("{marker}{}", payload(marker));
         let written = readable_subagent_log_line_timed(&message, Some(Duration::from_millis(400)));

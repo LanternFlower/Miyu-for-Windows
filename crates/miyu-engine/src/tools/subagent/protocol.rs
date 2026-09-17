@@ -30,7 +30,16 @@ use std::time::Duration;
 /// 个 tool。冻住一份不存在的格式，安全网就是假的，所以把清单摆在这儿，两边都对
 /// 着它（`subagent.rs` 与 `cli::tests::golden_panel` 各有一条测试钉着）。
 pub const LOG_TAGS: &[&str] = &[
-    "[提示]", "[思考]", "[正文]", "[工具]", "[结果]", "[输出]", "[准备]", "[统计]",
+    "[提示]",
+    "[思考]",
+    "[思考+]",
+    "[正文]",
+    "[正文+]",
+    "[工具]",
+    "[结果]",
+    "[输出]",
+    "[准备]",
+    "[统计]",
 ];
 
 /// 内层那次跑自己发的标记——**由发的那一侧定**（`subagent.rs` /
@@ -82,9 +91,21 @@ pub enum LogEvent<'a> {
     Thought {
         text: Cow<'a, str>,
         elapsed: Option<Duration>,
+        /// 这一截**接着上一条，中间不换行**（`[思考+]`，或者标记流里的逐 delta）。
+        /// 见 [`LogEvent::Speech`] 的那段说明。
+        continues: bool,
     },
     /// `[正文] 它说的话`。
-    Speech(Cow<'a, str>),
+    ///
+    /// `continues` 是这条记录里最要紧的一位：**一条记录不等于一行正文**。
+    ///
+    /// 有两条进料口，颗粒度差着几个数量级：日志那条是攒成段落才落一条
+    /// （`log::accumulate_stream`），`job.trace` 那条是**逐 delta 的原始标记**
+    /// ——一个词一条。两条都当成"一条 = 一行"的话，走标记流时正文就是一句一个
+    /// 台阶（用户 09-17：「子代理的浮层的正文现在是每个 token 都会换一次行」）。
+    ///
+    /// 所以换行与否由这一位说，不由记录边界说：`continues` 为真就粘回上一截。
+    Speech { text: Cow<'a, str>, continues: bool },
     /// `[工具] <工具 id>\t<中文名> · <主题>`。
     ToolCall(ToolLine<'a>),
     /// `[结果] <工具 id>\t<中文名> ok · 1.2s · <主题>`。正文与耗时用
@@ -143,18 +164,39 @@ impl<'a> ToolLine<'a> {
 /// 落盘，段里的换行原样写着（标题、表格行、列表项都是这么来的），丢掉就是整段缺
 /// 句子、表格只剩表头（用户实测截图）。
 pub fn parse_log_line(line: &str) -> LogEvent<'_> {
+    // 带 `+` 的先认：`[思考]` 是 `[思考+]` 的前缀。
+    if let Some(rest) = line.strip_prefix("[思考+]") {
+        let (text, elapsed) = split_thought_elapsed(rest);
+        return LogEvent::Thought {
+            text: Cow::Borrowed(text),
+            elapsed,
+            continues: true,
+        };
+    }
+    if let Some(rest) = line.strip_prefix("[正文+]") {
+        return LogEvent::Speech {
+            text: Cow::Borrowed(strip_separator(rest)),
+            continues: true,
+        };
+    }
     if let Some(rest) = line.strip_prefix("[思考]") {
         let (text, elapsed) = split_thought_elapsed(rest);
         return LogEvent::Thought {
             text: Cow::Borrowed(text),
             elapsed,
+            continues: false,
         };
     }
     if let Some(rest) = line.strip_prefix("[提示]") {
         return LogEvent::Prompt(Cow::Borrowed(rest.trim()));
     }
     if let Some(rest) = line.strip_prefix("[正文]") {
-        return LogEvent::Speech(Cow::Borrowed(rest.trim()));
+        // **只去掉标签后面那一个分隔空格**，别 trim：`[正文+]` 要粘回来，两头
+        // 的空白正是词边界（见 `log::accumulate_stream`）。
+        return LogEvent::Speech {
+            text: Cow::Borrowed(strip_separator(rest)),
+            continues: false,
+        };
     }
     if let Some(rest) = line.strip_prefix("[输出]") {
         return LogEvent::Output(Cow::Borrowed(rest.trim_end()));
@@ -203,16 +245,22 @@ pub fn from_marker(message: &str) -> Option<LogEvent<'static>> {
             text: Cow::Owned(phase.to_string()),
         }));
     }
+    // 标记流是**逐 delta** 的（`SubagentRunner::reasoning` / `content` 一个 delta
+    // 报一条），所以每一条都是一截、不是一行：`continues` 恒真，换行靠正文里
+    // 自带的 `\n`。原样带过去，不 trim——掐掉两头的空白，英文就会粘成
+    // `the quickbrown fox`。
     if let Some(text) = message.strip_prefix("__subagent_reasoning__") {
-        let text = text.trim();
         return (!text.is_empty()).then(|| LogEvent::Thought {
             text: Cow::Owned(text.to_string()),
             elapsed: None,
+            continues: true,
         });
     }
     if let Some(text) = message.strip_prefix("__subagent_content__") {
-        let text = text.trim();
-        return (!text.is_empty()).then(|| LogEvent::Speech(Cow::Owned(text.to_string())));
+        return (!text.is_empty()).then(|| LogEvent::Speech {
+            text: Cow::Owned(text.to_string()),
+            continues: true,
+        });
     }
     if let Some(json) = message.strip_prefix("__subtool_call__") {
         return Some(LogEvent::ToolCall(tool_line_of(json)));
@@ -300,13 +348,19 @@ fn tool_line_of(json: &str) -> ToolLine<'static> {
 
 /// `[思考] 1.2s\t正文`：桥把这段想了多久写在最前面，制表符隔开。老日志没有。
 fn split_thought_elapsed(rest: &str) -> (&str, Option<Duration>) {
-    let rest = rest.trim();
+    // 同 `[正文]`：正文那一截原样留着，只去掉标签后面那个分隔空格。
+    let rest = strip_separator(rest);
     if let Some((secs, text)) = rest.split_once('\t') {
-        if let Some(elapsed) = parse_seconds(secs) {
-            return (text.trim(), Some(elapsed));
+        if let Some(elapsed) = parse_seconds(secs.trim()) {
+            return (text, Some(elapsed));
         }
     }
     (rest, None)
+}
+
+/// 去掉标签和正文之间那一个分隔空格（只去一个）。
+fn strip_separator(rest: &str) -> &str {
+    rest.strip_prefix(' ').unwrap_or(rest)
 }
 
 /// 去掉结果正文里那个 ok/err：状态单独盖，留着会读成「运行命令 ok · … · ok」。
@@ -376,11 +430,39 @@ mod tests {
             LogEvent::Thought {
                 text: b("先列一下"),
                 elapsed: Some(Duration::from_secs_f64(1.2)),
+                continues: false,
             }
         );
         assert_eq!(
             parse_log_line("[正文] 空的。"),
-            LogEvent::Speech(b("空的。"))
+            LogEvent::Speech {
+                text: b("空的。"),
+                continues: false,
+            }
+        );
+        // 带 `+` 的是**一截**，不是一行：读那侧粘回上一条。
+        assert_eq!(
+            parse_log_line("[正文+] 接着说"),
+            LogEvent::Speech {
+                text: b("接着说"),
+                continues: true,
+            }
+        );
+        assert_eq!(
+            parse_log_line("[思考+] 接着想"),
+            LogEvent::Thought {
+                text: b("接着想"),
+                elapsed: None,
+                continues: true,
+            }
+        );
+        // 两头的空白留着：那是拼回去时的词边界。
+        assert_eq!(
+            parse_log_line("[正文+]  fox"),
+            LogEvent::Speech {
+                text: b(" fox"),
+                continues: true,
+            }
         );
         // 输出行只去尾巴不去头：标签后面那个空格**留着**，面板把它当正文的
         // 缩进用了十几个版本。去掉就是所有工具输出整体左移一格。
@@ -425,6 +507,7 @@ mod tests {
             LogEvent::Thought {
                 text: b("先想下一步"),
                 elapsed: None,
+                continues: false,
             }
         );
     }

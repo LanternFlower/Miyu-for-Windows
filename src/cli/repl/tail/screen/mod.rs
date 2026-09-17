@@ -143,6 +143,9 @@ pub(in crate::cli) struct Screen {
     body: Option<u16>,
     /// 已展开的块：id → 摊开后的内容（内部还可以再有块）。空表示全折叠。
     expanded: std::collections::HashMap<u64, expand::Body>,
+    /// 「默认开着」的块里已经替用户开过的那些。见 `expand::seed_open`——
+    /// 活动区每 tick 重写同样的标记，不记着的话用户收起来下一帧就被顶开。
+    open_seeded: std::collections::HashSet<u64>,
     /// 盖在正文上的详情面板（子代理）。开着时正文与活动区都不画。
     overlay: Option<overlay::Overlay>,
     /// 鼠标停在哪一块上。可交互的东西要看得出来「这里能点」。
@@ -256,6 +259,7 @@ impl Screen {
             overlay_spinner_started: None,
             body: None,
             expanded: std::collections::HashMap::new(),
+            open_seeded: std::collections::HashSet::new(),
             overlay: None,
             hover: None,
             input_rows: Vec::new(),
@@ -594,6 +598,7 @@ impl Screen {
         self.follow = true;
         self.floor = 0;
         self.expanded.clear();
+        self.open_seeded.clear();
         self.hover = None;
         self.selection = None;
         self.pending_copy = None;

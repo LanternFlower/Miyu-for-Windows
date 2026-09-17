@@ -9,10 +9,18 @@ use crate::config::*;
 pub struct DisplayConfig {
     #[serde(default = "default_display_language")]
     pub language: String,
-    #[serde(default = "default_reasoning_display")]
-    pub reasoning: String,
-    #[serde(default = "default_tool_call_display")]
-    pub tool_calls: String,
+    /// 思考那一步**出来就是展开的**吗。
+    ///
+    /// 09-17 之前这儿是 `reasoning: "hidden" | "summary" | "full"` 三档。三值
+    /// 枚举装着两件不相干的事（出不出现、展不展开），而且「完整」那一档在
+    /// 非全屏还顺手换了整条渲染路径——用户 09-17 拍板拆成布尔、隐藏档删掉：
+    /// 「是否展开思考内容 / 是否展开工具内容 / 是否缩起成 Worked for，这样更
+    /// 简洁」。思考以后要从时间线里搬出去，这三位之间不能有耦合。
+    #[serde(default)]
+    pub expand_reasoning: bool,
+    /// 工具那一步**出来就是展开的**吗。见 [`DisplayConfig::expand_reasoning`]。
+    #[serde(default)]
+    pub expand_tool_calls: bool,
     #[serde(default = "default_true")]
     pub readable_tool_names: bool,
     #[serde(default)]
@@ -23,10 +31,15 @@ pub struct DisplayConfig {
     /// 退到点开里;键名不改,改了用户设过的值会掉回默认。
     #[serde(default = "default_command_output_lines")]
     pub command_output_lines: usize,
-    /// 全屏 TUI 里不把过程收成 `Worked for …`,每一步就地留着——和 shell 无缝
-    /// 对话那条路一个样子。想一直看着它干了什么的人开这个(用户 todolist:21)。
-    #[serde(default)]
-    pub keep_timeline_open: bool,
+    /// 一段过程跑完收成一行 `Worked for …` 吗。关掉就每一步就地留着——和 shell
+    /// 无缝对话那条路一个样子（用户 todolist:21）。
+    ///
+    /// 它**只管收不收段**：步骤照样能点开、详情照样收在块里。09-17 之前它还
+    /// 顺手把那些步变成点不开、正文铺一地，那是 `commit_immediately` 一位管了
+    /// 三件事的副产品（用户：「即使不自动收起过程为 true，也不应该以 tag 行下
+    /// 预览的形式出现 tag 行的内容」）。
+    #[serde(default = "default_true")]
+    pub fold_timeline: bool,
     /// How many finished turns a reopened REPL redraws; 0 disables replay.
     #[serde(default = "default_repl_replay_turns")]
     pub repl_replay_turns: usize,
@@ -43,6 +56,13 @@ pub struct DisplayConfig {
 struct RawDisplayConfig {
     #[serde(default)]
     language: Option<String>,
+    #[serde(default)]
+    expand_reasoning: Option<bool>,
+    #[serde(default)]
+    expand_tool_calls: Option<bool>,
+    #[serde(default)]
+    fold_timeline: Option<bool>,
+    // —— 以下都是旧键，只读不写：读到就折算成上面那三位。——
     #[serde(default)]
     reasoning: Option<String>,
     #[serde(default)]
@@ -79,24 +99,34 @@ impl<'de> Deserialize<'de> for DisplayConfig {
         D: Deserializer<'de>,
     {
         let raw = RawDisplayConfig::deserialize(deserializer)?;
-        let reasoning = raw.reasoning.unwrap_or_else(|| {
+        // 旧的三值档折成「展不展开」：`full` = 展开，别的（含已删掉的 `hidden`）
+        // = 收起。用户 09-17 拍板删隐藏档，配过 hidden 的会被当成「显示 + 收起」。
+        let expand_reasoning = raw.expand_reasoning.unwrap_or_else(|| {
+            // 更老的 `show_reasoning = false` 说的是「隐藏」。隐藏档已删，
+            // 落到「显示 + 收起」。
             if raw.show_reasoning == Some(false) {
-                "hidden".to_string()
-            } else {
-                raw.reasoning_mode.unwrap_or_else(default_reasoning_display)
+                return false;
+            }
+            raw.reasoning
+                .or(raw.reasoning_mode)
+                .is_some_and(|legacy| legacy.trim().eq_ignore_ascii_case("full"))
+        });
+        let expand_tool_calls = raw.expand_tool_calls.unwrap_or_else(|| {
+            match raw.tool_calls {
+                Some(legacy) => legacy.trim().eq_ignore_ascii_case("full"),
+                // 更老的那一版只有一个「要不要详细」的开关。
+                None => raw.show_tool_details == Some(true),
             }
         });
-        let tool_calls = raw.tool_calls.unwrap_or_else(|| {
-            if raw.show_tool_details == Some(true) {
-                "full".to_string()
-            } else {
-                default_tool_call_display()
-            }
-        });
+        // `keep_timeline_open` 是反过来说的同一件事。
+        let fold_timeline = raw
+            .fold_timeline
+            .or_else(|| raw.keep_timeline_open.map(|keep| !keep))
+            .unwrap_or(true);
         Ok(Self {
             language: raw.language.unwrap_or_else(default_display_language),
-            reasoning,
-            tool_calls,
+            expand_reasoning,
+            expand_tool_calls,
             readable_tool_names: raw.readable_tool_names.unwrap_or_else(default_true),
             show_token_usage: raw.show_token_usage.unwrap_or(false),
             mixed_model_endpoint_display: raw.mixed_model_endpoint_display.unwrap_or_else(|| {
@@ -109,7 +139,7 @@ impl<'de> Deserialize<'de> for DisplayConfig {
             command_output_lines: raw
                 .command_output_lines
                 .unwrap_or_else(default_command_output_lines),
-            keep_timeline_open: raw.keep_timeline_open.unwrap_or(false),
+            fold_timeline,
             repl_replay_turns: raw
                 .repl_replay_turns
                 .unwrap_or_else(default_repl_replay_turns),
@@ -123,13 +153,13 @@ impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
             language: default_display_language(),
-            reasoning: default_reasoning_display(),
-            tool_calls: default_tool_call_display(),
+            expand_reasoning: false,
+            expand_tool_calls: false,
             readable_tool_names: default_true(),
             show_token_usage: false,
             mixed_model_endpoint_display: default_mixed_model_endpoint_display(),
             command_output_lines: default_command_output_lines(),
-            keep_timeline_open: false,
+            fold_timeline: true,
             repl_replay_turns: default_repl_replay_turns(),
             banner: true,
             extra: BTreeMap::new(),

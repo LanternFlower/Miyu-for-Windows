@@ -104,8 +104,10 @@ pub(crate) fn tool_output_lines(output: &str) -> Vec<String> {
 ///（跑完的命令留着的那几行输出，连线从中间穿过）。块的结束标记放在尾巴之后：
 /// 点开时展开内容把抬头和尾巴**一起**换掉——和跑着的时候一个规矩。
 pub(super) fn step_rows(step: &Step, id: Option<u64>) -> String {
+    // 起始标记带着「这一步默认开着吗」：`完整` 那一档的步出来就是展开态，
+    // 再点一次照样收得回去（用户 09-17）。见 `Step::open`。
     let mut row = match id {
-        Some(id) => format!("{}{}", blocks::begin_marker(id), step.line),
+        Some(id) => format!("{}{}", blocks::begin_marker_in(id, step.open), step.line),
         None => step.line.clone(),
     };
     for extra in &step.tail {

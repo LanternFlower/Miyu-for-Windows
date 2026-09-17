@@ -183,15 +183,23 @@ pub(super) fn steps_from_events<'a>(events: impl Iterator<Item = LogEvent<'a>>) 
     let mut steps: Vec<LogStep> = Vec::new();
     for event in events {
         match event {
-            LogEvent::Thought { text, elapsed } => {
-                // 连续的思考并成一条。桥那边是按自然段落盘的，一段一行——原样贴
-                // 出来一次思考会在面板里占十几个节点，那是把一段话排成了梯子
-                //（用户原话「思考每一行都有标」）。并成一条之后，抬头是最新那一段
-                // 的窥视，全文点开看。
+            LogEvent::Thought {
+                text,
+                elapsed,
+                continues,
+            } => {
+                // 连续的思考并成一条：原样贴出来一次思考会在面板里占十几个节点，
+                // 那是把一段话排成了梯子（用户原话「思考每一行都有标」）。全文攒
+                // 在 `head` 里，点开看。
+                //
+                // 接不接得上由 `continues` 说，**不由记录边界说**——标记流是逐
+                // delta 的，一条记录常常只有一个词。
                 match steps.last_mut() {
                     Some(last) if last.kind == StepKind::Thought => {
-                        last.body.push(last.head.clone());
-                        last.head = text.to_string();
+                        if !continues {
+                            last.head.push('\n');
+                        }
+                        last.head.push_str(&text);
                         if let Some(elapsed) = elapsed {
                             last.elapsed = Some(last.elapsed.unwrap_or_default() + elapsed);
                         }
@@ -234,7 +242,7 @@ pub(super) fn steps_from_events<'a>(events: impl Iterator<Item = LogEvent<'a>>) 
                     ..Default::default()
                 });
             }
-            LogEvent::Speech(text) => {
+            LogEvent::Speech { text, continues } => {
                 // 它开口说话了：**前面那一段过程收成一行**，和主线一个规矩
                 //（用户：可以把前面已经完成的 timeline 在浮层里缩成 Worked for）。
                 // 面板里一路平铺着几十步的话，真正的产出反而被埋在最底下。
@@ -242,7 +250,19 @@ pub(super) fn steps_from_events<'a>(events: impl Iterator<Item = LogEvent<'a>>) 
                     continue;
                 }
                 match steps.last_mut() {
-                    Some(last) if last.kind == StepKind::Speech => last.body.push(text.to_string()),
+                    // **一条记录不是一行正文。** 后台面板优先订 `job.trace` 里的
+                    // 原始标记流（阶段 4 那条路），而那条流是**逐 delta** 的：一
+                    // 条记录常常只有一个词。各占一行的话，正文就成了一句一个台阶
+                    //（用户 09-17：「子代理的浮层的正文现在是每个 token 都会换一
+                    // 次行」；同一个坑 `subagent/log.rs` 第 40 行还记着上一次，
+                    // 那次是日志那条路）。
+                    //
+                    // 所以换不换行只看 `continues`：真正的换行走它自己的记录
+                    // （日志里的 `[正文]`）或续行（`Continuation`）。
+                    Some(last) if last.kind == StepKind::Speech => match last.body.last_mut() {
+                        Some(tail) if continues => tail.push_str(&text),
+                        _ => last.body.push(text.to_string()),
+                    },
                     _ => {
                         collapse_log_segment(&mut steps);
                         steps.push(LogStep {
@@ -347,9 +367,14 @@ pub(super) fn steps_from_events<'a>(events: impl Iterator<Item = LogEvent<'a>>) 
                 // 正文段也一样：桥按自然段落盘，一段里的换行原样写着（标题、
                 // 表格行、列表项都是这么来的），丢掉就是整段缺句子、表格只剩
                 // 表头（用户实测截图）。
-                Some(last) if matches!(last.kind, StepKind::Thought | StepKind::Speech) => {
-                    last.body.push(line.to_string())
+                // 思考整段攒在 `head` 里（点开看的就是它），正文攒在 `body`
+                // 里（每一项是一行）。两处的"另起一行"因此写法不同，但意思
+                // 一样：`Speech` / `Thought` 事件是**粘**，续行是**换行**。
+                Some(last) if last.kind == StepKind::Thought => {
+                    last.head.push('\n');
+                    last.head.push_str(&line);
                 }
+                Some(last) if last.kind == StepKind::Speech => last.body.push(line.to_string()),
                 Some(_) => {}
                 None => steps.push(LogStep {
                     glyph: " ".to_string(),

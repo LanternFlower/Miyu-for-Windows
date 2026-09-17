@@ -661,7 +661,7 @@ fn responses_summary_uses_auto_and_full_uses_detailed() {
     let mut config = AppConfig::default();
     assert!(!reasoning_summary_is_detailed(&config));
 
-    config.display.reasoning = " FULL ".to_string();
+    config.display.expand_reasoning = true;
     assert!(reasoning_summary_is_detailed(&config));
 
     let provider = test_provider("openai", "https://api.openai.com/v1");

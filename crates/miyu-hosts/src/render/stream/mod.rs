@@ -87,7 +87,8 @@ pub struct StreamRenderer {
     pub(crate) command_display_lines: usize,
     /// 全屏里不把过程收成 `Worked for …`(用户 todolist:21)。只在能点开的面上
     /// 有意义:逐步落地的面本来就不收。
-    pub keep_timeline_open: bool,
+    /// 一段过程跑完收成一行 `Worked for …` 吗。见 `DisplayConfig::fold_timeline`。
+    pub fold_timeline: bool,
     pub(crate) command_display: Option<CommandLiveDisplay>,
     pub(crate) summary_line_active: bool,
     pub(crate) summary_lines_active: u16,
@@ -158,7 +159,7 @@ impl StreamRenderer {
             tool_seq: 0,
             readable_tool_names,
             command_display_lines,
-            keep_timeline_open: false,
+            fold_timeline: true,
             pending_after_timeline: Vec::new(),
             timeline_ends_after_tools: false,
             live_tool_blocks: BTreeMap::new(),

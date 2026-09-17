@@ -208,6 +208,60 @@ pub(in crate::cli) fn load_body(id: u64, cols: usize) -> Option<Body> {
     (!body.rows.is_empty()).then_some(body)
 }
 
+/// 「默认开着」的块第一次露面时替用户开一次。返回真表示视图变了。
+///
+/// `显示思考过程 / 显示工具调用信息 = 完整` 就落在这儿：那一档不再往抬头底下
+/// 挂一截预览（那是第四种形态，谁都没设计过），而是让**这一步本身出来就是展开
+/// 态**——再点一次照样收得回去（用户 09-17 原话）。
+///
+/// `seen` 记着已经替用户开过的 id，**只开一次**：活动区每 tick 把同样的标记重写
+/// 一遍，不记的话用户刚收起来下一帧就被顶开。
+///
+/// 嵌套也要走到：`Worked for …` 收缩行点开之后，里面那几步的档位照样算数，所以
+/// 每插进一层就重新扫一遍，直到没有新的为止。
+pub(in crate::cli) fn seed_open(
+    layer: &Layer,
+    expanded: &mut Expanded,
+    seen: &mut std::collections::HashSet<u64>,
+    cols: usize,
+) -> bool {
+    let mut changed = false;
+    // 每开一层都可能露出新的一层。层数是时间线的嵌套深度（正文 → 收缩行 →
+    // 步），给个上限免得哪天内容自引用转不出来。
+    for _ in 0..8 {
+        let mut pending = Vec::new();
+        collect_open(layer, expanded, seen, &mut pending);
+        if pending.is_empty() {
+            break;
+        }
+        for id in pending {
+            seen.insert(id);
+            if let Some(body) = load_body(id, cols) {
+                expanded.insert(id, body);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+/// 这一层（连同已经展开的内层）里还没开过的「默认开着」的块。
+fn collect_open(
+    layer: &Layer,
+    expanded: &Expanded,
+    seen: &std::collections::HashSet<u64>,
+    out: &mut Vec<u64>,
+) {
+    for block in layer.blocks() {
+        if block.open && !seen.contains(&block.id) && !out.contains(&block.id) {
+            out.push(block.id);
+        }
+        if let Some(body) = expanded.get(&block.id) {
+            collect_open(&Layer::Body(body), expanded, seen, out);
+        }
+    }
+}
+
 /// 在一份 `expanded` 表上开合一块。返回真表示视图变了。
 /// 正文和覆盖层用的是同一套，各自带自己的表。
 pub(in crate::cli) fn toggle_in(expanded: &mut Expanded, id: u64, cols: usize) -> bool {
@@ -385,5 +439,23 @@ impl Screen {
         let alive: std::collections::HashSet<u64> =
             self.term.blocks().iter().map(|block| block.id).collect();
         self.expanded.retain(|id, _| alive.contains(id));
+        // 「开过一次」的记号跟着块一起走：块都滚出缓冲了，再留着只是占内存。
+        self.open_seeded.retain(|id| alive.contains(id));
+    }
+
+    /// 缓冲里新落下来的「默认开着」的块，替用户开一次。见 [`seed_open`]。
+    pub(in crate::cli) fn seed_open_blocks(&mut self) -> bool {
+        let cols = usize::from(self.cols);
+        let Screen {
+            term,
+            expanded,
+            open_seeded,
+            ..
+        } = self;
+        if !seed_open(&Layer::Live(term), expanded, open_seeded, cols) {
+            return false;
+        }
+        self.invalidate();
+        true
     }
 }

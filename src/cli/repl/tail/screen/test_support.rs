@@ -20,6 +20,7 @@ impl Screen {
             overlay_spinner_started: None,
             body: None,
             expanded: std::collections::HashMap::new(),
+            open_seeded: std::collections::HashSet::new(),
             overlay: None,
             hover: None,
             input_rows: Vec::new(),

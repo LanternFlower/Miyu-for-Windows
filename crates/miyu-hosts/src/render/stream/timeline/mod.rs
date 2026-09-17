@@ -189,9 +189,22 @@ pub struct Step {
     /// 同一个 id——原来只有收成 `Worked for …` 时才登记，于是回合还没结束时已经
     /// 跑完的那几步一个都点不开（用户实测：diff 要等 AI 输出完才看得到）。
     block: Option<u64>,
-    /// 不点开也露在抬头底下的那几行（跑完的命令留着的输出尾巴，连线从它们中间
-    /// 穿过去）。块的结束标记放在它们之后：点开时展开内容把抬头和尾巴一起换掉。
+    /// 不点开也露在抬头底下的那几行。**只有命令那一步用**（用户 09-17 指名：
+    /// 抬头给 title、底下给命令）。块的结束标记放在它们之后：点开时展开内容
+    /// 把抬头和尾巴一起换掉。
+    ///
+    /// 它曾经还兼过第二份差事——「显示思考过程 / 显示工具调用信息 = 完整」时
+    /// 把详情挂在抬头底下当预览。那是**第四种形态**，谁都没设计过：那一行明明
+    /// 还能点，点开看到的又是几乎同一份内容（用户 09-17：「不应该以 tag 行下
+    /// 预览的形式出现 tag 行的内容」）。现在那一档走 [`Step::open`]。
     tail: Vec<String>,
+    /// 这一步出来就是**展开态**：块照常登记、照常能点（再点一次收回去），只是
+    /// 视图第一次见到它时先替用户开一次。`显示思考过程 / 显示工具调用信息 =
+    /// 完整` 落的就是这一位。
+    ///
+    /// 不能点开的面（shellhook、单次、管道）没有"展开态"可言：那儿这一位由
+    /// `body` 印不印在抬头底下来表达，见 `commit_static_steps`。
+    open: bool,
 }
 
 impl Step {
@@ -203,6 +216,7 @@ impl Step {
             overlay,
             block: None,
             tail: Vec::new(),
+            open: false,
         }
     }
 
@@ -219,6 +233,7 @@ impl Step {
             overlay: None,
             block,
             tail: Vec::new(),
+            open: false,
         }
     }
 
@@ -229,6 +244,15 @@ impl Step {
 
     pub fn set_block(&mut self, id: Option<u64>) {
         self.block = id;
+    }
+
+    /// 这一步出来就是展开态吗。见 [`Step::open`]。
+    pub fn set_open(&mut self, open: bool) {
+        self.open = open;
+    }
+
+    pub(crate) fn open(&self) -> bool {
+        self.open
     }
 
     pub fn kind(&self) -> StepKind {
@@ -247,6 +271,7 @@ impl Step {
             overlay: None,
             block: None,
             tail: Vec::new(),
+            open: false,
         }
     }
 }
@@ -499,17 +524,21 @@ impl StreamRenderer {
         blocks::enabled() || self.timeline_static()
     }
 
-    /// 静态时间线：不是全屏、但 stdout 是个终端（shellhook、单次 `miyu "…"`），
-    /// 而且工具是按摘要档显示的。
+    /// 静态时间线：不是全屏、但 stdout 是个终端（shellhook、单次 `miyu "…"`）。
     ///
     /// `live_summary` 就是「stdout 是终端」——管道里没有转轮也没有回翻，那儿
-    /// 还是老的一行摘要。`Full` 档把每个工具的参数和输出整块打出来，本来就
-    /// 不是给人扫一眼的，不改。
+    /// 还是老的一行摘要。
+    ///
+    /// **这里原来还挂着 `tool_call_mode == Summary`。** 那是渲染统一没收干净的
+    /// 尾巴：档位一调成「完整」，非全屏这条线整条时间线直接消失、退回旧卡片面，
+    /// 连带 `captures_reasoning()` 也变假——于是「显示思考过程」那个开关在这条
+    /// 路上一点用都没有（用户 09-17：「非全屏和全屏的路径不是已经统一了吗，
+    /// 为什么你还在分」）。
+    ///
+    /// 统一之后档位**只决定内容默认看不看得见**，不决定走哪条路：这条线上
+    /// 「完整」= 正文就地印在抬头底下，「摘要」= 只有抬头。
     pub fn timeline_static(&self) -> bool {
-        !blocks::enabled()
-            && self.live_summary
-            && !self.plain
-            && self.tool_call_mode == crate::render::ToolCallDisplayMode::Summary
+        !blocks::enabled() && self.live_summary && !self.plain
     }
 
     /// 工具跑完了：收成一步。详情是那个工具的完整块。
@@ -517,7 +546,13 @@ impl StreamRenderer {
         if self.tool_stats.is_empty() {
             return Ok(());
         }
-        let static_timeline = self.caps().detail_inline();
+        let caps = self.caps();
+        let static_timeline = caps.detail_inline();
+        // 「显示工具调用信息 = 完整」= 这一步的内容默认看得见。能点开的面上
+        // 是**出来就展开**（`Step::open`），点不开的面上是就地印在抬头底下。
+        // 两边都不再往抬头底下挂一截预览（用户 09-17）。
+        let full_details = self.tool_call_mode == crate::render::ToolCallDisplayMode::Full;
+        let open_by_default = full_details && caps.expandable;
         // 先收集再改：`ordered_tool_stats` 借着 `self`，循环里要往 `self.timeline`
         // 里写，借用检查过不去。
         let entries: Vec<PendingStep> = self
@@ -542,9 +577,10 @@ impl StreamRenderer {
                 // 点开却看不到工具到底吐了什么，收起来就等于丢了。
                 detail: if !stats.detail.is_empty() {
                     stats.detail.clone()
-                } else if static_timeline {
-                    // 静态版没有"点开"：主题那一行已经挂在抬头上了，统计那几行
-                    // 就地印出来只是把时间线撑长。
+                } else if static_timeline && !full_details {
+                    // 点不开的面 + 摘要档：主题那一行已经挂在抬头上了，统计那几行
+                    // 就地印出来只是把时间线撑长。完整档要的就是它们，所以只在
+                    // 摘要档丢。
                     Vec::new()
                 } else {
                     // 丢掉 `tool_block_lines` 的表头（`名字×1 err` 那行）：
@@ -630,7 +666,11 @@ impl StreamRenderer {
             };
             let mut step = Step::new(line, detail, overlay);
             step.kind = StepKind::Tool;
+            // 命令那一步抬头底下露的那几行命令（用户指名的行数）——这是唯一
+            // 一处尾巴，和档位无关。
             step.tail = tail;
+            // 子代理点开是覆盖层，默认开着没有意义（也没处开）。
+            step.open = open_by_default && overlay.is_none();
             self.timeline.steps.push(step);
         }
         self.tool_stats.clear();
@@ -670,16 +710,40 @@ impl StreamRenderer {
         }
         // 转轮先收掉：它那几行还留在屏上的话，新落的步骤会写在它们中间。
         self.stop_waiting()?;
+        // 能点开的面（全屏 + 「不自动收起过程」）走这儿时**照样挂块标记**：
+        // 「不自动收起」说的只是段末不写 `Worked for …`，不该顺手把每一步变成
+        // 点不开、正文铺一地（用户 09-17：「即使不自动收起过程为 true，也不
+        // 应该以 tag 行下预览的形式出现 tag 行的内容」）。
+        //
+        // 这一点我上一轮写反过：`caps()` 里那段注释还记着当时的证据（`s4-full-
+        // open.ansi` 只有 5 个块标记）。那不是设计，是 `commit_immediately` 一位
+        // 同时管了三件事的副产品。
+        let expandable = self.caps().expandable;
         let mut out = String::new();
         let prefix = rail_prefix();
-        for (offset, step) in self.timeline.steps[from..].iter().enumerate() {
-            if from + offset > 0 {
+        for offset in 0..self.timeline.steps.len() - from {
+            let index = from + offset;
+            if index > 0 {
                 out.push_str(&rail());
                 out.push('\n');
             }
+            if expandable {
+                let step = &self.timeline.steps[index];
+                let id = step.overlay.or(step.block).or_else(|| {
+                    (!step.body.is_empty()).then(|| blocks::register(step_detail(step)))?
+                });
+                if step.overlay.is_none() {
+                    self.timeline.steps[index].block = id;
+                }
+                out.push_str(&step_rows(&self.timeline.steps[index], id));
+                out.push('\n');
+                continue;
+            }
+            let step = &self.timeline.steps[index];
             out.push_str(&step.line);
             out.push('\n');
             // 正文紧贴抬头、每一行都从连线穿过，不空行——见 `rail_prefix`。
+            // 点不开的面上，「完整」那一档要看的内容就摆在这儿。
             for line in &step.body {
                 out.push_str(&prefix);
                 out.push_str(line);
@@ -712,9 +776,12 @@ impl StreamRenderer {
             );
         }
         let label = timed_label(&label, elapsed);
-        // 静态版没处点开，思考全文就不留了：抬头上的词元数和秒数说明"想过"，
-        // 想了什么本来也只是折叠起来备查的。
-        let detail = if self.caps().detail_inline() {
+        // 点不开的面 + 摘要档：思考全文就不留了——抬头上的词元数和秒数说明
+        // "想过"，想了什么本来也只是折叠起来备查的。完整档要的正是那份全文，
+        // 于是它就地印在抬头底下（`commit_static_steps`）。
+        let full_reasoning = self.reasoning_mode == ReasoningDisplayMode::Full;
+        let caps = self.caps();
+        let detail = if caps.detail_inline() && !full_reasoning {
             Vec::new()
         } else {
             wrap_detail(&self.reasoning_text)
@@ -722,21 +789,14 @@ impl StreamRenderer {
                 .map(|line| format!("{THOUGHT_BODY_STYLE}{line}\x1b[0m"))
                 .collect::<Vec<_>>()
         };
-        // 「显示思考过程 = 详细」就是**这一步的详情不用点**：全文摆在抬头底下，
-        // 连线从中间穿过去，和跑完的命令留输出尾巴是同一套词汇（用户
-        // todolist:11「把 timeline 的思考内容自动展开」）。摘要档照旧收在块里。
-        //
-        // 详情两边都留着：点开那一份仍然在（块的展开会把抬头和尾巴一起换掉），
-        // 段末收成 `Worked for …` 之后再点开也还看得到。
-        let tail = if self.reasoning_mode == ReasoningDisplayMode::Full {
-            detail.clone()
-        } else {
-            Vec::new()
-        };
+        // 「显示思考过程 = 完整」= 这一步的内容默认看得见。能点开的面上是
+        // **出来就是展开态**（再点一次收回去）；点不开的面上是就地印在抬头
+        // 底下。它曾经是往抬头底下挂一截预览——那一行明明还能点，点开看到的
+        // 又是几乎同一份内容（用户 09-17 拍掉了这种形态）。
         self.timeline.thoughts += 1;
         let mut step = Step::new(step_line(glyph_think(), &label), detail, None);
         step.kind = StepKind::Thought;
-        step.tail = tail;
+        step.open = full_reasoning && caps.expandable;
         self.timeline.steps.push(step);
         self.reasoning_text.clear();
         self.reasoning_tokens = 0;

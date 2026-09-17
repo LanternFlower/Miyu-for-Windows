@@ -32,9 +32,11 @@ enum Surface {
     Static,
     /// 全屏 TUI：可展开时间线 + `Worked for` 收缩。
     Full,
-    /// 全屏 + 「不自动收起」：能点开，但每一步就地落下去、段末不收
-    /// （用户 todolist:21）。
+    /// 全屏 + 关掉「收起成 Worked for」：每一步就地落下去、段末不收，**照样
+    /// 点得开**（用户 todolist:21 / 09-17）。
     FullOpen,
+    /// 全屏 + 两个「展开」开关都开着：每一步出来就是展开态。
+    FullExpanded,
 }
 
 impl Surface {
@@ -44,13 +46,23 @@ impl Surface {
             Surface::Static => "s3-static",
             Surface::Full => "s4-full",
             Surface::FullOpen => "s4-full-open",
+            Surface::FullExpanded => "s4-full-expanded",
         }
     }
 
     fn renderer(self) -> StreamRenderer {
+        let expanded = matches!(self, Surface::FullExpanded);
         let mut renderer = StreamRenderer::new(
-            ReasoningDisplayMode::Summary,
-            ToolCallDisplayMode::Summary,
+            if expanded {
+                ReasoningDisplayMode::Full
+            } else {
+                ReasoningDisplayMode::Summary
+            },
+            if expanded {
+                ToolCallDisplayMode::Full
+            } else {
+                ToolCallDisplayMode::Summary
+            },
             false,
             true,
             8,
@@ -60,7 +72,7 @@ impl Surface {
         // `live_summary` 出厂取 `stdout().is_terminal()`,`cargo test` 下是 false。
         // 三个 surface 的差别全在这一位与块开关上,显式摆出来比继承环境可靠。
         renderer.live_summary = !matches!(self, Surface::Pipe);
-        renderer.keep_timeline_open = matches!(self, Surface::FullOpen);
+        renderer.fold_timeline = !matches!(self, Surface::FullOpen);
         renderer
     }
 }
@@ -242,6 +254,8 @@ fn mask_volatile(raw: &str) -> String {
         (r"\d+\.\ds", "<N>s"),
         (r"<?\d+ms", "<N>ms"),
         // 块 id 是全局自增计数,随整个测试进程里谁先跑而变——它不是表现。
+        // 两种起始标记都要掩：`-open=` 是「出来就是展开态」那一档。
+        (r"miyu-block-open=\d+", "miyu-block-open=<ID>"),
         (r"miyu-block=\d+", "miyu-block=<ID>"),
         (r"\d+(\.\d+)? tok/s", "<N> tok/s"),
         (r"\d+ 词元", "<N> 词元"),
@@ -255,28 +269,30 @@ fn mask_volatile(raw: &str) -> String {
     out
 }
 
-/// 「不自动收起」那一档的步骤**点不开**——这一点靠人记了一轮，写反在提交信息里。
+/// 「不收起成 Worked for」**只管收不收段**：那些步照样挂块、照样点得开，详情
+/// 照样收在块后面。
 ///
-/// `caps().expandable` 为真说的是「这个面有登记处」，不等于「每一步都挂了块
-/// 标记」：走 `commit_static_steps` 落地的那些步不挂标记，详情直接印在抬头
-/// 底下（`surface.rs` 的 `caps()` 里记着原委）。两份 golden 的标记数差得很远，
-/// 这里把它钉成一条会红的断言，别再靠读注释。
+/// 09-17 之前它顺手把每一步变成点不开、正文铺一地（那份 golden 当时只有 5 个
+/// 块标记，`s4-full.ansi` 有 18 个）。用户原话：「即使不自动收起过程为 true，
+/// 也不应该以 tag 行下预览的形式出现 tag 行的内容」。这条断言是那个 bug 的
+/// 回归闸。
 #[test]
-fn keeping_the_timeline_open_prints_details_instead_of_hiding_them_behind_blocks() {
-    let folded = std::fs::read_to_string(golden_path("s4-full")).expect("读 s4-full");
+fn keeping_the_timeline_open_still_hides_details_behind_blocks() {
     let open = std::fs::read_to_string(golden_path("s4-full-open")).expect("读 s4-full-open");
-    let markers = |text: &str| text.matches("miyu-block=").count();
+    let markers = open.matches("miyu-block=").count();
     assert!(
-        markers(&open) * 2 < markers(&folded),
-        "不收起那一档的块标记不该和收起那一档相当（open={} folded={}）——\
-         真相当的话说明步骤又挂上标记了，`surface.rs` 里那段更正要跟着改",
-        markers(&open),
-        markers(&folded)
+        markers >= 10,
+        "不收段那一档的步骤又点不开了（只有 {markers} 个块标记）"
     );
-    // 详情就地印：收起那一档里 diff 只在块内容里，不收起那一档它在正文行上。
+    // 详情收在块里：编辑那一步的 diff 不该铺在正文行上。
     assert!(
-        open.contains("新的一行"),
-        "不收起那一档该把 diff 直接印出来"
+        !open.contains("新的一行"),
+        "diff 又铺在 tag 行底下了——那是被拍掉的第四种形态"
+    );
+    // 出厂档位是「收起」：两个展开开关都没开，一步都不该默认开着。
+    assert!(
+        !open.contains("miyu-block-open="),
+        "出厂档位不该有默认展开的步"
     );
 }
 
@@ -350,16 +366,44 @@ fn fullscreen_timeline_output_is_frozen() {
     });
 }
 
-/// 「不自动收起」开着时长什么样:段末没有 `Worked for`,每一步就地留着。
+/// 关掉「收起成 Worked for」时长什么样:段末没有 `Worked for`,每一步就地留着
+/// ——**而且照样点得开**。
+///
+/// 09-17 之前这一档还顺手把那些步变成点不开、正文铺一地（这份 golden 里当时
+/// 只有 5 个块标记，`s4-full.ansi` 有 18 个）。那不是设计，是 `commit_immediately`
+/// 一位管了三件事的副产品。用户原话：「即使不自动收起过程为 true，也不应该以
+/// tag 行下预览的形式出现 tag 行的内容」。
 #[test]
 fn fullscreen_with_the_timeline_kept_open_is_frozen() {
     with_blocks(|| {
         let actual = capture(Surface::FullOpen);
         assert!(
             !actual.contains("Worked for"),
-            "开着「不自动收起」还收了段: {actual:?}"
+            "关了「收起成 Worked for」还收了段: {actual:?}"
+        );
+        // 09-17 之前这里只有 **5** 个（常规步骤一个都不挂标记）。数字本身不重要，
+        // 重要的是「每一步都还点得开」——掉回个位数就是那个 bug 回来了。
+        let markers = actual.matches("miyu-block=").count();
+        assert!(
+            markers >= 10,
+            "不收段那一档的步骤点不开了（只有 {markers} 个块标记）"
         );
         assert_golden(Surface::FullOpen.name(), &actual);
+    });
+}
+
+/// 两个「展开」开关都开着时长什么样：每一步的起始标记是 `miyu-block-open=`
+/// ——出来就是展开态，再点一次收回去。**抬头底下不挂预览**（命令那一步露的
+/// 那几行命令除外，那是用户指名要的）。
+#[test]
+fn fullscreen_with_both_switches_expanded_is_frozen() {
+    with_blocks(|| {
+        let actual = capture(Surface::FullExpanded);
+        assert!(
+            actual.contains("miyu-block-open="),
+            "展开档一步都没默认开着: {actual:?}"
+        );
+        assert_golden(Surface::FullExpanded.name(), &actual);
     });
 }
 

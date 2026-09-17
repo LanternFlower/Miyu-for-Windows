@@ -872,11 +872,17 @@ pub(in crate::web) fn config_change_requires_interrupt(
     current.active_persona_scope() != next.active_persona_scope()
 }
 
+/// 「展开 / 收起」折成网页端认识的那两个词。
+fn expand_word(expand: bool) -> String {
+    if expand { "full" } else { "summary" }.to_string()
+}
+
 pub(in crate::web) fn web_display_config(config: &AppConfig) -> WebDisplayConfig {
     let mixed_model_endpoint_display = config.display.mixed_model_endpoint_display.clone();
     WebDisplayConfig {
-        reasoning: config.display.reasoning.clone(),
-        tool_calls: config.display.tool_calls.clone(),
+        // 网页端那份契约还是字符串（前端按 `full` 判展开），按布尔折出来。
+        reasoning: expand_word(config.display.expand_reasoning),
+        tool_calls: expand_word(config.display.expand_tool_calls),
         readable_tool_names: config.display.readable_tool_names,
         command_output_lines: config.display.command_output_lines,
         show_mixed_model_endpoint: config.active_provider_model_choices().len() > 1

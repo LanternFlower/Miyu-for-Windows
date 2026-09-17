@@ -8,12 +8,14 @@ fn reasoning_failover_visibility_only_follows_reasoning_display() {
     let mut config = AppConfig::default();
     assert_eq!(reasoning_visibility(&config), ReasoningVisibility::Summary);
 
-    config.display.reasoning = " full ".to_string();
+    config.display.expand_reasoning = true;
     assert_eq!(reasoning_visibility(&config), ReasoningVisibility::Full);
 
-    config.display.reasoning = "hidden".to_string();
-    config.display.tool_calls = "FULL".to_string();
-    assert_eq!(reasoning_visibility(&config), ReasoningVisibility::Hidden);
+    // 「展开工具内容」是另一位，碰不到思考这一边——用户 09-17 拆开三个开关
+    // 就是为了这件事（思考以后还要从时间线里搬出去）。
+    config.display.expand_reasoning = false;
+    config.display.expand_tool_calls = true;
+    assert_eq!(reasoning_visibility(&config), ReasoningVisibility::Summary);
 }
 
 #[test]

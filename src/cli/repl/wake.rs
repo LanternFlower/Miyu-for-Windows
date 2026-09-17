@@ -40,13 +40,13 @@ pub(in crate::cli) async fn follow_wake_run(
     };
 
     let mut renderer = render::StreamRenderer::new(
-        render::ReasoningDisplayMode::from_config(&config.display.reasoning),
-        render::ToolCallDisplayMode::from_config(&config.display.tool_calls),
+        render::ReasoningDisplayMode::from_expand(config.display.expand_reasoning),
+        render::ToolCallDisplayMode::from_expand(config.display.expand_tool_calls),
         false,
         config.display.readable_tool_names,
         config.display.command_output_lines,
     );
-    renderer.keep_timeline_open = config.display.keep_timeline_open;
+    renderer.fold_timeline = config.display.fold_timeline;
     renderer.use_external_cursor_control();
     renderer.use_buffered_output();
     live.external_output_active = false;

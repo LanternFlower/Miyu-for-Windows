@@ -17,9 +17,11 @@ fn peek_head(text: &str, max: usize) -> String {
 }
 
 /// 把攒着的那段思考结算成一步。
-/// `inline`：「显示思考过程 = 详细」——全文摆在抬头底下、连线穿过去，不用点开。
-/// 和主线那一步同一个规矩（用户 todolist:11「子代理浮层里的也要跟随这两个开关」）。
-fn flush_subagent_thought(log: &mut SubagentLog, inline: bool) {
+///
+/// `expand`：「展开思考内容」——这一步出来就是展开态，再点一次收回去。面板跟
+/// 主线那两个开关走（用户 todolist:11「子代理浮层里的也要跟随这两个开关」）。
+/// 它原来是把全文挂在抬头底下当预览，09-17 用户拍掉了那种形态。
+fn flush_subagent_thought(log: &mut SubagentLog, expand: bool) {
     let text = std::mem::take(&mut log.reasoning);
     let elapsed = log
         .reasoning_since
@@ -45,9 +47,7 @@ fn flush_subagent_thought(log: &mut SubagentLog, inline: bool) {
         None,
     );
     step.kind = StepKind::Thought;
-    if inline {
-        step.tail = body;
-    }
+    step.set_open(expand);
     log.steps.push(step);
     trim_subagent(log);
 }
@@ -88,8 +88,8 @@ fn segment_start(log: &SubagentLog) -> usize {
 ///
 /// 面板那一份还少了两样，合并之后一并补上：
 ///
-/// - **尾巴**：它拿 `step.line` 拼行，不走 `step_rows`，于是「显示思考过程 =
-///   详细」下露在抬头底下的那几行，一收段就没了。
+/// - **走 `step_rows`**：它原来拿 `step.line` 自己拼行，于是命令那一步抬头底下
+///   露着的几行、以及「出来就展开」那一位，一收段就都没了。
 /// - **块 id 复用**：它每次收段都现登记一个新 id，而主线那份接着用 live 区
 ///   那块——点开着的那一步收段之后仍然点开着。
 pub fn fold_block_lines(steps: &mut [Step]) -> Vec<String> {
@@ -292,10 +292,11 @@ fn subagent_lines(log: &mut SubagentLog) -> Vec<String> {
                 id
             }
         };
+        // 起始标记带着「这一步默认开着吗」——和主线 `step_rows` 同一条规矩。
         let line = match id.filter(|id| *id != 0) {
             Some(id) => format!(
                 "{}{}{}",
-                blocks::begin_marker(id),
+                blocks::begin_marker_in(id, step.open()),
                 step.line,
                 blocks::END_MARKER
             ),
@@ -471,14 +472,14 @@ impl StreamRenderer {
         let Some(phase) = miyu_engine::tools::preparing_phase(tool) else {
             return;
         };
-        let inline_thought = self.reasoning_mode == ReasoningDisplayMode::Full;
+        let expand_thought = self.reasoning_mode == ReasoningDisplayMode::Full;
         let log = self.subagent_logs.entry(name.to_string()).or_default();
         log.started.get_or_insert_with(Instant::now);
         // 参数开始流 = 这一段想完了、话也说完了：先按时序封掉，「准备xx」才排
         // 在它们后面。原来思考要等结果回来才结算，面板里「准备执行」一直压在
         // 「思考中」上头，思考的耗时还把工具跑的时间算了进去。
         seal_subagent_speech(log);
-        flush_subagent_thought(log, inline_thought);
+        flush_subagent_thought(log, expand_thought);
         if log.preparing.is_none() {
             log.preparing = Some((phase, tool_glyph(tool), Instant::now()));
         }
@@ -500,11 +501,11 @@ impl StreamRenderer {
         let peek = crate::render::tool_peek(tool, args)
             .filter(|subject| !subject.trim().is_empty())
             .map(|subject| crate::render::clip_to_display_width(&subject, 72));
-        let inline_thought = self.reasoning_mode == ReasoningDisplayMode::Full;
+        let expand_thought = self.reasoning_mode == ReasoningDisplayMode::Full;
         let log = self.subagent_logs.entry(name.to_string()).or_default();
         log.started.get_or_insert_with(Instant::now);
         seal_subagent_speech(log);
-        flush_subagent_thought(log, inline_thought);
+        flush_subagent_thought(log, expand_thought);
         log.preparing = None;
         log.running = Some((tool_glyph(tool), display.to_string(), peek, Instant::now()));
         log.tool_since = Some(Instant::now());
@@ -571,12 +572,12 @@ impl StreamRenderer {
             }
         }
         // 档位要在借走 `subagent_logs` 之前问：借用检查不让同时拿。
-        let inline_details = self.tool_call_mode == crate::render::ToolCallDisplayMode::Full;
-        let inline_thought = self.reasoning_mode == ReasoningDisplayMode::Full;
+        let expand_details = self.tool_call_mode == crate::render::ToolCallDisplayMode::Full;
+        let expand_thought = self.reasoning_mode == ReasoningDisplayMode::Full;
         let log = self.subagent_logs.entry(name.to_string()).or_default();
         log.started.get_or_insert_with(Instant::now);
         seal_subagent_speech(log);
-        flush_subagent_thought(log, inline_thought);
+        flush_subagent_thought(log, expand_thought);
         log.running = None;
         log.preparing = None;
         let glyph = if ok { tool_glyph(tool) } else { glyph_err() };
@@ -606,11 +607,9 @@ impl StreamRenderer {
             None,
         );
         step.kind = StepKind::Tool;
-        // 「显示工具调用信息 = 详细」：详情摆在抬头底下，不用点开——浮层跟着
-        // 主线那两个开关走（用户 todolist:11 最后一句）。
-        if inline_details {
-            step.tail = body;
-        }
+        // 「展开工具内容」：这一步出来就是展开态——浮层跟着主线那两个开关走
+        //（用户 todolist:11 最后一句）。
+        step.set_open(expand_details);
         log.steps.push(step);
         trim_subagent(log);
         self.publish_subagent(name);
@@ -724,11 +723,11 @@ impl StreamRenderer {
         if !self.timeline_enabled() || text.is_empty() {
             return;
         }
-        let inline_thought = self.reasoning_mode == ReasoningDisplayMode::Full;
+        let expand_thought = self.reasoning_mode == ReasoningDisplayMode::Full;
         let log = self.subagent_logs.entry(name.to_string()).or_default();
         log.started.get_or_insert_with(Instant::now);
         if log.speech.is_empty() {
-            flush_subagent_thought(log, inline_thought);
+            flush_subagent_thought(log, expand_thought);
             collapse_subagent_segment(log);
         }
         log.speech.push_str(text);
@@ -758,9 +757,9 @@ impl StreamRenderer {
         if !self.timeline_enabled() {
             return;
         }
-        let inline_thought = self.reasoning_mode == ReasoningDisplayMode::Full;
+        let expand_thought = self.reasoning_mode == ReasoningDisplayMode::Full;
         if let Some(log) = self.subagent_logs.get_mut(name) {
-            flush_subagent_thought(log, inline_thought);
+            flush_subagent_thought(log, expand_thought);
             // 跑完了就不再开那扇四行的窗——它已经收成主线上的一步了。
             log.finished = true;
         }

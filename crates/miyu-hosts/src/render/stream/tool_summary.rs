@@ -232,19 +232,17 @@ impl StreamRenderer {
             // 全屏：把工具**真实的输出**留下来。摘要那几行只说了「跑没跑成」，
             // 点开却什么都看不到的话，收起来就等于丢了。
             //
-            // 静态版没处点开：普通工具只留那一行，成败都不印输出——输出是给模型
-            // 看的，不是给人扫的；报错更多时候是一团裸 JSON，印出来只会丑
+            // 点不开的面 + 收起档：普通工具只留那一行，成败都不印输出——输出是
+            // 给模型看的，不是给人扫的；报错更多时候是一团裸 JSON，印出来只会丑
             //（用户拍板：除了命令，其他工具报错不需要报错信息）。
-            let detail = if self.caps().detail_inline() {
+            // 「展开工具内容」开着时那份输出就是要看的东西，于是留下来：能点开
+            // 的面上它是展开态的正文，点不开的面上它就地印在抬头底下。
+            let expand_tools = self.tool_call_mode == ToolCallDisplayMode::Full;
+            let detail = if self.caps().detail_inline() && !expand_tools {
                 None
             } else {
                 self.timeline_enabled().then(|| tool_output_lines(output))
             };
-            // 「显示工具调用信息 = 详细」= 这一步的输出不用点：摆在抬头底下，
-            // 连线从中间穿过去（和思考那一档、和命令留输出尾巴同一套词汇）。
-            let inline = (self.tool_call_mode == ToolCallDisplayMode::Full)
-                .then(|| detail.clone())
-                .flatten();
             let stats = self.tool_stats_entry(name);
             if ok {
                 stats.ok += 1;
@@ -259,11 +257,6 @@ impl StreamRenderer {
             if let Some(detail) = detail {
                 if stats.detail.is_empty() {
                     stats.detail = detail;
-                }
-            }
-            if let Some(inline) = inline {
-                if stats.tail.is_empty() {
-                    stats.tail = inline;
                 }
             }
             stats.progress = None;

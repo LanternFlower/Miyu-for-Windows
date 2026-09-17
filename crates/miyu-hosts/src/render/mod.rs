@@ -103,11 +103,14 @@ pub enum ReasoningDisplayMode {
 }
 
 impl ReasoningDisplayMode {
-    pub fn from_config(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "hidden" => Self::Hidden,
-            "full" => Self::Full,
-            _ => Self::Summary,
+    /// 配置里现在只有一位布尔：**出来是不是展开的**（用户 09-17 把三值档拆成
+    /// 布尔、删掉隐藏档）。`Hidden` 留在枚举里是给 `--plain` 用的——那条路上
+    /// 屏幕只该有正文，和用户的显示偏好无关。
+    pub fn from_expand(expand: bool) -> Self {
+        if expand {
+            Self::Full
+        } else {
+            Self::Summary
         }
     }
 }
@@ -120,11 +123,12 @@ pub enum ToolCallDisplayMode {
 }
 
 impl ToolCallDisplayMode {
-    pub fn from_config(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "hidden" => Self::Hidden,
-            "full" => Self::Full,
-            _ => Self::Summary,
+    /// 见 [`ReasoningDisplayMode::from_expand`]。
+    pub fn from_expand(expand: bool) -> Self {
+        if expand {
+            Self::Full
+        } else {
+            Self::Summary
         }
     }
 }

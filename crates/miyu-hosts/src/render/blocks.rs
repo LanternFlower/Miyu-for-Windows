@@ -185,6 +185,29 @@ pub fn begin_marker(id: u64) -> String {
     format!("\x1b]1337;miyu-block={id}\x07")
 }
 
+/// 「这一块默认是**开着**的」。
+///
+/// `显示思考过程 = 完整` / `显示工具调用信息 = 完整` 要的就是这个：那一步出来
+/// 就是展开态，不用点，再点一次才收回去（用户 09-17：「不用我点击他的 tag 行，
+/// 他出来就是展开的效果」）。
+///
+/// 它**不是**另一种块：登记处存的内容、点击的开合、嵌套全都一样，区别只在视图
+/// 第一次见到这个 id 时要不要先替它开一次。所以做成标记的一个变体，而不是给
+/// `Entry` 加状态——展开态本来就只活在视图那一侧（`screen::expand::Expanded`），
+/// 登记处存的是内容。
+pub fn begin_marker_open(id: u64) -> String {
+    format!("\x1b]1337;miyu-block-open={id}\x07")
+}
+
+/// 按「默认开着吗」挑一个起始标记。
+pub fn begin_marker_in(id: u64, open: bool) -> String {
+    if open {
+        begin_marker_open(id)
+    } else {
+        begin_marker(id)
+    }
+}
+
 pub const END_MARKER: &str = "\x1b]1337;miyu-block-end\x07";
 
 /// OSC 载荷 → 块 id。`Term` 解析时用。
@@ -192,14 +215,24 @@ pub fn parse_marker(payload: &str) -> Option<BlockMarker> {
     if payload == "miyu-block-end" {
         return Some(BlockMarker::End);
     }
+    if let Some(id) = payload.strip_prefix("miyu-block-open=") {
+        return id
+            .parse()
+            .ok()
+            .map(|id| BlockMarker::Begin { id, open: true });
+    }
     payload
         .strip_prefix("miyu-block=")
         .and_then(|id| id.parse().ok())
-        .map(BlockMarker::Begin)
+        .map(|id| BlockMarker::Begin { id, open: false })
 }
 
 pub enum BlockMarker {
-    Begin(u64),
+    Begin {
+        id: u64,
+        /// 视图第一次见到它时先替用户开一次。见 [`begin_marker_open`]。
+        open: bool,
+    },
     End,
 }
 

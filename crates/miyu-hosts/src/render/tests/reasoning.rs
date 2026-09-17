@@ -476,14 +476,19 @@ fn real_reasoning_mid_content_ends_the_line_before_the_spinner() {
 /// 先看一眼需求，再决定怎么下手。  好了。
 /// ```
 ///
-/// 现在它和摘要档走同一条路，差别只在**详情摆哪**：详细档全文摆在抬头底下，
-/// 连线穿过去；摘要档收在块里，点开才看。
+/// 现在它和收起档走同一条路，差别只在**这一步默认开着还是合着**：展开档那一步
+/// 出来就是展开态（块标记是 `miyu-block-open=`），再点一次收回去；收起档出来就
+/// 是合着的。
+///
+/// 它一度是「全文摆在抬头底下当预览」——那一行明明还能点，点开看到的又是几乎
+/// 同一份内容。用户 09-17 拍掉了那种形态：「不应该以 tag 行下预览的形式出现
+/// tag 行的内容」。
 #[test]
-fn detailed_reasoning_becomes_a_timeline_step_with_the_text_under_it() {
+fn expanded_reasoning_opens_its_step_instead_of_previewing_under_the_head() {
     use crate::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
     use miyu_core::llm::{ChatStreamChunk, ChatStreamKind};
 
-    fn run(mode: ReasoningDisplayMode) -> Vec<String> {
+    fn run(mode: ReasoningDisplayMode) -> String {
         let mut renderer = StreamRenderer::new(mode, ToolCallDisplayMode::Summary, false, true, 8);
         renderer.use_buffered_output();
         renderer.use_terminal_surface();
@@ -501,32 +506,34 @@ fn detailed_reasoning_becomes_a_timeline_step_with_the_text_under_it() {
         renderer
             .write_tool_call("read", r#"{"path":"/tmp/a"}"#)
             .unwrap();
-        String::from_utf8_lossy(&renderer.take_output_frame())
-            .split('\n')
-            .map(super::shared::strip_ansi_for_test)
-            .collect()
+        String::from_utf8_lossy(&renderer.take_output_frame()).into_owned()
     }
 
     super::timeline::with_blocks(|| {
-        let full = run(ReasoningDisplayMode::Full).join("\n");
+        let full = run(ReasoningDisplayMode::Full);
+        let full_text = super::shared::strip_ansi_for_test(&full);
         assert!(
-            full.contains(&t("thought", "已思考")),
-            "详细档没有落成时间线里的一步:\n{full}"
+            full_text.contains(&t("thought", "已思考")),
+            "展开档没有落成时间线里的一步:\n{full_text}"
         );
         assert!(
-            full.contains("│ 先看一眼需求，再决定怎么下手。"),
-            "思考全文没有摆在抬头底下、连线穿过去:\n{full}"
+            full.contains("miyu-block-open="),
+            "展开档那一步该出来就是展开态"
+        );
+        // 全文**不**再铺在抬头底下：它是那一块的内容，展开态里看到的就是它。
+        assert!(
+            !full_text.contains("│ 先看一眼需求，再决定怎么下手。"),
+            "还在往 tag 行底下挂预览:\n{full_text}"
         );
 
-        // 摘要档同一段过程也该有那一步，但全文**不**摆出来（收在块里点开才看）。
-        let summary = run(ReasoningDisplayMode::Summary).join("\n");
+        // 收起档同一段过程也该有那一步，只是出来是合着的。
+        let summary = run(ReasoningDisplayMode::Summary);
+        let summary_text = super::shared::strip_ansi_for_test(&summary);
         assert!(
-            summary.contains(&t("thought", "已思考")),
-            "摘要档丢了那一步:\n{summary}"
+            summary_text.contains(&t("thought", "已思考")),
+            "收起档丢了那一步:\n{summary_text}"
         );
-        assert!(
-            !summary.contains("│ 先看一眼需求，再决定怎么下手。"),
-            "摘要档不该把全文铺在抬头底下:\n{summary}"
-        );
+        assert!(!summary.contains("miyu-block-open="), "收起档不该默认展开");
+        assert!(summary.contains("miyu-block="), "收起档那一步总该点得开");
     });
 }

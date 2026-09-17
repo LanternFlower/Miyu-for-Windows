@@ -145,14 +145,6 @@ pub(crate) fn default_display_language() -> String {
     "auto".to_string()
 }
 
-pub(crate) fn default_reasoning_display() -> String {
-    "summary".to_string()
-}
-
-pub(crate) fn default_tool_call_display() -> String {
-    "summary".to_string()
-}
-
 pub(crate) fn default_command_output_lines() -> usize {
     8
 }

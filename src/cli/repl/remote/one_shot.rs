@@ -80,12 +80,12 @@ pub(in crate::cli) async fn try_run_remote_chat(
     let reasoning_mode = if show_reasoning == Some(false) {
         render::ReasoningDisplayMode::Hidden
     } else {
-        render::ReasoningDisplayMode::from_config(&config.display.reasoning)
+        render::ReasoningDisplayMode::from_expand(config.display.expand_reasoning)
     };
     let tool_call_mode = if plain {
         render::ToolCallDisplayMode::Hidden
     } else {
-        render::ToolCallDisplayMode::from_config(&config.display.tool_calls)
+        render::ToolCallDisplayMode::from_expand(config.display.expand_tool_calls)
     };
     let mut renderer = render::StreamRenderer::new(
         reasoning_mode,
@@ -94,7 +94,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
         config.display.readable_tool_names,
         config.display.command_output_lines,
     );
-    renderer.keep_timeline_open = config.display.keep_timeline_open;
+    renderer.fold_timeline = config.display.fold_timeline;
     let queue_state = Some(state_probe);
     if let Some(live) = live.as_deref_mut() {
         renderer.use_external_cursor_control();

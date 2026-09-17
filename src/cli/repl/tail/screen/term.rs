@@ -93,7 +93,8 @@ pub(in crate::cli) struct Term {
     /// 刚见到起始标记、还没等到第一个字符落下的块。起始行要等到真有字符
     /// 写出来才算——渲染器会先 `MoveUp` 擦掉旧的那几行再重画，标记发出来
     /// 那一刻光标还停在块的**下面**。
-    pending_block: Option<u64>,
+    /// 下一个字符落下时要开的块：id + 「默认开着吗」。
+    pending_block: Option<(u64, bool)>,
 }
 
 /// 一块可展开内容在缓冲里占的行。
@@ -102,6 +103,9 @@ pub(in crate::cli) struct BlockSpan {
     pub(in crate::cli) id: u64,
     pub(in crate::cli) start: usize,
     pub(in crate::cli) end: usize,
+    /// 视图第一次见到这一块时先替用户开一次（`显示思考过程 / 显示工具调用信息
+    /// = 完整` 那一档）。见 `render::blocks::begin_marker_open`。
+    pub(in crate::cli) open: bool,
 }
 
 impl Default for Term {
@@ -507,7 +511,7 @@ fn from_parts(parts: &[u16]) -> Option<Color> {
 
 impl Perform for Term {
     fn print(&mut self, character: char) {
-        if let Some(id) = self.pending_block.take() {
+        if let Some((id, open)) = self.pending_block.take() {
             let start = self.cursor_row();
             // 这一行（及其之后）要被重写了：原来记在那儿的块作废。
             // 活动区的实时那几行每一帧都是「上移 → 清行 → 重画」，不作废的话
@@ -517,6 +521,7 @@ impl Perform for Term {
                 id,
                 start,
                 end: start,
+                open,
             });
         }
         self.put(character);
@@ -584,8 +589,8 @@ impl Perform for Term {
                 .map(|value| String::from_utf8_lossy(value).into_owned())
                 .unwrap_or_default();
             match miyu_hosts::render::blocks::parse_marker(&payload) {
-                Some(miyu_hosts::render::blocks::BlockMarker::Begin(id)) => {
-                    self.pending_block = Some(id);
+                Some(miyu_hosts::render::blocks::BlockMarker::Begin { id, open }) => {
+                    self.pending_block = Some((id, open));
                 }
                 Some(miyu_hosts::render::blocks::BlockMarker::End) => self.close_block(),
                 None => {}

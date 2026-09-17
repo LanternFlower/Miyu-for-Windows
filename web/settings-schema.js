@@ -20,12 +20,6 @@
     { value: "all", label: "全部模式" },
   ];
 
-  const REASONING_CHOICES = [
-    { value: "summary", label: "摘要" },
-    { value: "full", label: "完整" },
-    { value: "hidden", label: "隐藏" },
-  ];
-
   const OVERFLOW_CHOICES = [
     { value: "compact", label: "摘要压缩" },
     { value: "pop", label: "丢弃最旧" },
@@ -185,18 +179,18 @@
           default: "auto",
         },
         {
-          path: "display.reasoning",
-          label: "显示思考过程",
-          kind: "select",
-          choices: REASONING_CHOICES,
-          default: "summary",
+          path: "display.expand_reasoning",
+          label: "展开思考内容",
+          hint: "开：思考那一步出来就是展开的，再点一次收回去；关：只有抬头，点开才看",
+          kind: "toggle",
+          default: false,
         },
         {
-          path: "display.tool_calls",
-          label: "显示工具调用信息",
-          kind: "select",
-          choices: REASONING_CHOICES,
-          default: "summary",
+          path: "display.expand_tool_calls",
+          label: "展开工具内容",
+          hint: "开：工具那一步出来就是展开的，再点一次收回去；关：只有抬头，点开才看",
+          kind: "toggle",
+          default: false,
         },
         {
           path: "display.readable_tool_names",
@@ -222,11 +216,11 @@
           default: "interactive",
         },
         {
-          path: "display.keep_timeline_open",
-          label: "不自动收起过程",
-          hint: "全屏里过程不收成 `Worked for`,每一步就地留着;仍然点得开",
+          path: "display.fold_timeline",
+          label: "过程收起成 Worked for",
+          hint: "关：每一步就地留着，不收成 `Worked for`；两种情况下步骤都点得开",
           kind: "toggle",
-          default: false,
+          default: true,
         },
         {
           path: "display.command_output_lines",

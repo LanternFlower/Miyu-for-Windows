@@ -89,7 +89,15 @@ fn registry_evicts_oldest_beyond_the_line_budget() {
 fn markers_parse_both_ways() {
     assert!(matches!(
         blocks::parse_marker("miyu-block=42"),
-        Some(blocks::BlockMarker::Begin(42))
+        Some(blocks::BlockMarker::Begin {
+            id: 42,
+            open: false
+        })
+    ));
+    // 「出来就是展开态」那一档走另一个载荷（`展开思考内容 / 展开工具内容`）。
+    assert!(matches!(
+        blocks::parse_marker("miyu-block-open=42"),
+        Some(blocks::BlockMarker::Begin { id: 42, open: true })
     ));
     assert!(matches!(
         blocks::parse_marker("miyu-block-end"),
@@ -147,6 +155,47 @@ fn expanding_pushes_later_rows_down() {
         assert_eq!(view_text(&screen, 3), "详情乙");
         // 块后面的行整体下移,不能被吃掉也不能重复
         assert_eq!(view_text(&screen, 4), "下");
+    });
+}
+
+/// 「展开思考内容 / 展开工具内容 = 开」落到字节流上就是 `miyu-block-open=`：
+/// 视图第一次见到就替用户开一次，**不用点**（用户 09-17：「不用我点击他的 tag
+/// 行，他出来就是展开的效果」）。
+///
+/// 再点一次照样收得回去，而且**不会被下一帧顶开**——活动区每 tick 把同样的标记
+/// 重写一遍，不记着"开过一次"的话用户根本收不起来。
+#[test]
+fn a_default_open_block_opens_itself_once_and_stays_where_the_user_put_it() {
+    with_blocks(|| {
+        let id = blocks::register(vec!["头".into(), "详情".into()]).expect("已开启");
+        let mut screen = Screen::detached(80, 24);
+        let row = format!(
+            "上\r\n{}折叠{}\r\n下\r\n",
+            blocks::begin_marker_open(id),
+            blocks::END_MARKER
+        );
+        screen.feed_for_test(row.as_bytes());
+        assert!(screen.seed_open_blocks(), "默认开着的块没被打开");
+        assert_eq!(view_text(&screen, 0), "上");
+        assert_eq!(view_text(&screen, 1), "头");
+        assert_eq!(view_text(&screen, 2), "详情");
+
+        // 用户收起来了。
+        assert!(screen.toggle_block(id));
+        assert_eq!(view_text(&screen, 1), "折叠");
+        // 同样的字节再来一帧：不许顶开。
+        screen.feed_for_test(row.as_bytes());
+        assert!(!screen.seed_open_blocks(), "收起来的块被下一帧顶开了");
+    });
+}
+
+/// 出厂档位（两个开关都关着）写的是普通标记：一步都不该自己开。
+#[test]
+fn a_plain_block_stays_collapsed() {
+    with_blocks(|| {
+        let (mut screen, _) = screen_with_one_block();
+        assert!(!screen.seed_open_blocks(), "普通块不该自己开");
+        assert_eq!(view_text(&screen, 1), "折叠");
     });
 }
 
@@ -946,6 +995,42 @@ fn a_trailing_stats_line_is_not_a_running_step() {
         assert!(
             !stats.contains(miyu_hosts::render::timeline::LIVE_SPINNER_CELL),
             "统计行挂了转轮: {stats:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+}
+
+/// `[正文+]` 是**一截**，不是一行：读日志时粘回上一条，不另起一行。
+///
+/// 后台面板优先订 `job.trace` 里的原始标记流，而那条流是**逐 delta** 的——一条
+/// 记录常常只有一个词。当成"一条 = 一行"的话，正文就是一句一个台阶
+///（用户 09-17：「子代理的浮层的正文现在是每个 token 都会换一次行」）。
+#[test]
+fn speech_continuation_records_are_glued_back_into_one_line() {
+    with_blocks(|| {
+        let dir = std::env::temp_dir().join(format!("miyu-log-speech-glue-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建目录");
+        let path = dir.join("job.log");
+        // 逐 delta 落下来的四条：两头的空白就是词边界，拼回去要一字不差。
+        std::fs::write(
+            &path,
+            "[正文] The quick \n[正文+] brown \n[正文+] fox jumps.\n[正文] Next paragraph.\n",
+        )
+        .expect("写日志");
+        let mut screen = Screen::detached(100, 40);
+        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
+        let rows = screen.overlay_rows();
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("The quick brown fox jumps.")),
+            "逐 delta 的正文没粘回一行: {rows:?}"
+        );
+        // 不带 `+` 的那条才是新的一行。
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.contains("fox jumps.Next paragraph.")),
+            "不带 `+` 的那条不该粘上去: {rows:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     });

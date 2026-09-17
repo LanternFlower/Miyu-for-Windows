@@ -166,14 +166,12 @@ pub enum ProgressMode {
 
 impl ProgressMode {
     pub fn from_config(config: &miyu_base::config::AppConfig) -> Self {
-        Self::from_value(&config.display.tool_calls)
-    }
-
-    fn from_value(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "hidden" => Self::Hidden,
-            "full" => Self::Full,
-            _ => Self::Summary,
+        // 配置里只剩「工具内容展不展开」一位（用户 09-17 删掉隐藏档）。
+        // `Hidden` 还留着是给网页端那条默认收起的路用的。
+        if config.display.expand_tool_calls {
+            Self::Full
+        } else {
+            Self::Summary
         }
     }
 }
