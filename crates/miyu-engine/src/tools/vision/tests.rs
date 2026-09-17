@@ -48,6 +48,88 @@ mod batch_tests {
 }
 
 #[cfg(test)]
+mod inline_batch_tests {
+    use super::*;
+
+    fn item(source: &str) -> miyu_core::state::TurnInlineMedia {
+        miyu_core::state::TurnInlineMedia {
+            call_id: String::new(),
+            seq: 0,
+            kind: miyu_core::state::INLINE_MEDIA_KIND_IMAGE.to_string(),
+            mime: "image/png".to_string(),
+            source: source.to_string(),
+            data: Some(vec![1, 2, 3]),
+        }
+    }
+
+    /// 批里两张各自内联寄存、一张旁路转述、一张出错:输出必须是**一条** inline
+    /// JSON——媒体两张按序、`analyses` 记另外两张——逐张的寄存要被取走(不泄漏)。
+    ///
+    /// 退回修复前:输出是 `[Image 1] …\n{"mode":"inline"…}` 的拼接文本,
+    /// `take_from_output` 一张都取不到,逐张寄存的 ref 永远留在表里。
+    #[tokio::test]
+    async fn vision_batch_merges_per_target_inline_deposits_into_one() {
+        let deposits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let targets = vec![
+            "a.png".to_string(),
+            "b.mp4".to_string(),
+            "c.png".to_string(),
+            "d.png".to_string(),
+        ];
+        let output = run_vision_batch(targets, None, |sub| {
+            let deposits = deposits.clone();
+            Box::pin(async move {
+                let image = sub["image"].as_str().unwrap().to_string();
+                match image.as_str() {
+                    "a.png" | "c.png" => {
+                        let output = inline::deposit(vec![item(&image)]);
+                        deposits.lock().unwrap().push(output.clone());
+                        Ok(output)
+                    }
+                    "b.mp4" => Ok("a red square then a blue one".to_string()),
+                    _ => bail!("boom"),
+                }
+            })
+        })
+        .await
+        .unwrap();
+        assert!(inline::inline_reference(&output).is_some(), "{output}");
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["media"].as_array().unwrap().len(), 2);
+        let analyses = value["analyses"].as_array().unwrap();
+        assert_eq!(analyses.len(), 2, "{output}");
+        assert_eq!(analyses[0]["image"], "b.mp4");
+        assert_eq!(analyses[0]["analysis"], "a red square then a blue one");
+        assert_eq!(analyses[1]["image"], "d.png");
+        assert!(analyses[1]["error"].as_str().unwrap().contains("boom"));
+        let items = inline::take_from_output(&output);
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.source.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a.png", "c.png"]
+        );
+        // 逐张的寄存已被合并取走,凭旧 ref 什么都拿不到。
+        for deposit in deposits.lock().unwrap().iter() {
+            assert!(inline::take_from_output(deposit).is_empty());
+        }
+    }
+
+    /// 没有任何内联时,输出仍是原来的分节文本,一个字节不变。
+    #[tokio::test]
+    async fn vision_batch_without_inline_keeps_plain_sections() {
+        let output = run_vision_batch(vec!["x.png".to_string()], None, |sub| {
+            Box::pin(async move { Ok(format!("desc of {}", sub["image"].as_str().unwrap())) })
+        })
+        .await
+        .unwrap();
+        assert_eq!(output, "[Image 1] x.png\ndesc of x.png");
+        assert!(inline::inline_reference(&output).is_none());
+    }
+}
+
+#[cfg(test)]
 mod video_route_tests {
     use super::*;
 
@@ -355,6 +437,68 @@ mod tests {
             .contains("context image ID is not available"));
         assert_eq!(calls.load(Ordering::Acquire), 2);
     }
+    /// QQ 线一条消息带两张图、模型一次 `images` 全交:两张各自寄存的内联媒体要
+    /// 合成一次寄存,而且整批只计一次 vision_analyze 调用。
+    ///
+    /// 退回修复前:输出是拼接文本,`take_from_output` 取不到图;`calls` 记 2。
+    #[tokio::test]
+    async fn scoped_batch_attaches_every_image_and_counts_one_call() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let mut config = AppConfig::default();
+        let provider = config
+            .providers
+            .iter_mut()
+            .find(|provider| !provider.is_builtin_cli_provider())
+            .unwrap();
+        provider.model_modalities.insert(
+            provider.default_model.clone(),
+            vec!["text".to_string(), "image".to_string()],
+        );
+        let mut targets = Vec::new();
+        for name in ["a.png", "b.png"] {
+            let path = temp.path().join(name);
+            image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255]))
+                .save(&path)
+                .unwrap();
+            targets.push(path.canonicalize().unwrap());
+        }
+        let state = Arc::new(ScopedVisionState {
+            allowed_paths: targets.clone(),
+            context_images: HashMap::new(),
+            context_files: HashMap::new(),
+            platform_context: None,
+            allow_general_access: false,
+            resolve_lock: tokio::sync::Mutex::new(()),
+            resolved: Mutex::new(HashMap::new()),
+            resolved_files: Mutex::new(HashMap::new()),
+            content_images: Mutex::new(HashMap::new()),
+            analyses: Mutex::new(HashMap::new()),
+            calls: AtomicUsize::new(0),
+            fetches: AtomicUsize::new(0),
+            total_bytes: AtomicUsize::new(0),
+        });
+        let wanted = targets
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>();
+        let output =
+            analyze_scoped_image(json!({ "images": wanted }), config, paths, state.clone())
+                .await
+                .unwrap();
+        assert!(inline::inline_reference(&output).is_some(), "{output}");
+        assert!(!output.contains("base64"));
+        let items = inline::take_from_output(&output);
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.source.as_str())
+                .collect::<Vec<_>>(),
+            wanted
+        );
+        assert_eq!(state.calls.load(Ordering::Acquire), 1);
+    }
+
     #[test]
     fn inline_short_circuit_only_when_the_text_pool_can_see() {
         let temp = tempfile::tempdir().unwrap();

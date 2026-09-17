@@ -21,6 +21,13 @@ static PENDING: LazyLock<Mutex<HashMap<String, Vec<TurnInlineMedia>>>> =
 
 /// 寄存一批媒体,返回工具结果文本。`items` 的 `call_id`/`seq` 由取走方补。
 pub fn deposit(items: Vec<TurnInlineMedia>) -> String {
+    deposit_with(items, Vec::new())
+}
+
+/// 批量的形态:除了附上的媒体,还带 `analyses`——走旁路转述或出错的那些目标
+/// (`{"image","analysis"}` / `{"image","error"}`)。`analyses` 为空时输出与
+/// [`deposit`] 逐字节相同。
+pub fn deposit_with(items: Vec<TurnInlineMedia>, analyses: Vec<Value>) -> String {
     let reference = miyu_base::random_id::random_id("vis", 12);
     let media: Vec<Value> = items
         .iter()
@@ -33,13 +40,25 @@ pub fn deposit(items: Vec<TurnInlineMedia>) -> String {
         })
         .collect();
     PENDING.lock().unwrap().insert(reference.clone(), items);
-    json!({
+    let mut output = json!({
         "ok": true,
         "mode": INLINE_MODE,
         "ref": reference,
         "media": media,
-    })
-    .to_string()
+    });
+    if !analyses.is_empty() {
+        output["analyses"] = Value::Array(analyses);
+    }
+    output.to_string()
+}
+
+/// 凭 `ref` 取走寄存的媒体(取走即删)。批量收口时用它把逐张的寄存合并成一次。
+pub fn take(reference: &str) -> Vec<TurnInlineMedia> {
+    PENDING
+        .lock()
+        .unwrap()
+        .remove(reference)
+        .unwrap_or_default()
 }
 
 /// 从工具结果里认出 inline 标记并取走寄存的媒体。不是 inline 结果、或
@@ -48,11 +67,7 @@ pub fn take_from_output(output: &str) -> Vec<TurnInlineMedia> {
     let Some(reference) = inline_reference(output) else {
         return Vec::new();
     };
-    PENDING
-        .lock()
-        .unwrap()
-        .remove(&reference)
-        .unwrap_or_default()
+    take(&reference)
 }
 
 pub fn inline_reference(output: &str) -> Option<String> {

@@ -85,7 +85,16 @@ const VISION_BATCH_CONCURRENCY: usize = 4;
 
 type VisionJob = std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send>>;
 
-/// 每个目标合成单图参数交给 `make_job`,保序有界并发,汇总为分节文本。
+/// 每个目标合成单图参数交给 `make_job`,保序有界并发,汇总。
+///
+/// 子任务各自可能把媒体**内联寄存**(当前模型自己能看):那种返回值是一条
+/// `mode: inline` 的 JSON,而回合循环认内联只认「整个工具输出就是那一条
+/// JSON」。以前这里把它们当纯文本拼成 `[Image N] …` 分节,解析必败——寄存的
+/// 图整批没人取,主模型一张都看不到,回执里却写着 inline(09-17 用户报的
+/// 「多图时不用模型自己的多模态能力」);寄存表里的字节也永远留着。现在收口时
+/// 按 ref 把逐张的寄存取出来合成**一次**寄存:`media` 是附上的图,`analyses`
+/// 是走旁路转述/出错的目标。没有任何内联时仍是原来的分节文本。
+///
 /// 单张失败不掀整批,该节记 ERROR(纯文本输出=按成功处理,错误信息模型
 /// 自己看得懂)。
 async fn run_vision_batch(
@@ -108,32 +117,33 @@ async fn run_vision_batch(
         .buffered(VISION_BATCH_CONCURRENCY)
         .collect()
         .await;
-    let sections = targets
-        .iter()
-        .zip(results)
-        .enumerate()
-        .map(|(index, (target, result))| match result {
-            Ok(analysis) => format!(
-                "[Image {}] {}
-{}",
-                index + 1,
-                target,
-                analysis.trim()
-            ),
-            Err(error) => format!(
-                "[Image {}] {}
-ERROR: {:#}",
-                index + 1,
-                target,
-                error
-            ),
-        })
-        .collect::<Vec<_>>();
-    Ok(sections.join(
-        "
-
-",
-    ))
+    let mut media = Vec::new();
+    let mut sections = Vec::with_capacity(targets.len());
+    let mut analyses = Vec::with_capacity(targets.len());
+    for (index, (target, result)) in targets.iter().zip(results).enumerate() {
+        match result {
+            Ok(analysis) => {
+                if let Some(reference) = inline::inline_reference(&analysis) {
+                    let items = inline::take(&reference);
+                    if !items.is_empty() {
+                        media.extend(items);
+                        continue;
+                    }
+                }
+                let analysis = analysis.trim();
+                sections.push(format!("[Image {}] {target}\n{analysis}", index + 1));
+                analyses.push(json!({ "image": target, "analysis": analysis }));
+            }
+            Err(error) => {
+                sections.push(format!("[Image {}] {target}\nERROR: {error:#}", index + 1));
+                analyses.push(json!({ "image": target, "error": format!("{error:#}") }));
+            }
+        }
+    }
+    if media.is_empty() {
+        return Ok(sections.join("\n\n"));
+    }
+    Ok(inline::deposit_with(media, analyses))
 }
 
 async fn analyze_image(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<String> {
@@ -364,6 +374,12 @@ async fn analyze_scoped_image(
     paths: MiyuPaths,
     state: Arc<ScopedVisionState>,
 ) -> Result<String> {
+    // 限额按**工具调用**计,不按图:以前批量里每张都记一次,一条消息发 7 张图
+    // 第 7 张就撞上 6 次上限(09-17 用户拍板改掉)。历史图的拉取次数与总字节
+    // 另有各自的限额,不受这里影响。
+    if state.calls.fetch_add(1, Ordering::AcqRel) >= MAX_SCOPED_VISION_CALLS {
+        bail!("vision_analyze call limit reached for the current platform turn")
+    }
     if let Some(targets) = batch_targets(&args) {
         let prompt = args.get("prompt").cloned();
         return run_vision_batch(targets, prompt, |sub| {
@@ -390,9 +406,6 @@ async fn analyze_scoped_image_one(
         .trim();
     if image.is_empty() {
         bail!("image (or images) is required")
-    }
-    if state.calls.fetch_add(1, Ordering::AcqRel) >= MAX_SCOPED_VISION_CALLS {
-        bail!("vision_analyze call limit reached for the current platform turn")
     }
     let prompt = args
         .get("prompt")
