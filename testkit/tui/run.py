@@ -39,7 +39,8 @@ except ImportError:
     raise SystemExit(2)
 
 ROOT = Path(__file__).resolve().parents[2]
-BIN = ROOT / "target" / "debug" / "miyu"
+# MIYU_BIN 指定别的二进制（A/B 对比修前修后用）。
+BIN = Path(os.environ.get("MIYU_BIN", ROOT / "target" / "debug" / "miyu"))
 SMOKE = ROOT / "testkit" / "repl-smoke"
 
 HOME = Path(os.environ.get("MIYU_HOME", "/tmp/miyu-tui-smoke/home"))

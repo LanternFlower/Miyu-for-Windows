@@ -17,5 +17,7 @@ mod slash_commands;
 mod static_timeline;
 mod tui_ansi;
 mod tui_blocks;
+mod tui_perf;
+mod tui_scroll;
 mod variant_menu;
 mod wait_spinner_cursor;

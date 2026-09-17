@@ -76,10 +76,10 @@ fn expand_under_keeps_the_summary_as_the_handle() {
 #[test]
 fn registry_evicts_oldest_beyond_the_line_budget() {
     with_blocks(|| {
-        let first = blocks::register(vec!["x".to_string(); 3_000]).expect("已开启");
+        let first = blocks::register(vec!["x".to_string(); 9_000]).expect("已开启");
         assert!(blocks::get(first).is_some());
-        // 再塞一块把总行数顶过 4000 行,最老的那块要被让出来。
-        let second = blocks::register(vec!["y".to_string(); 3_000]).expect("已开启");
+        // 再塞一块把总行数顶过上限(16000 行),最老的那块要被让出来。
+        let second = blocks::register(vec!["y".to_string(); 9_000]).expect("已开启");
         assert!(blocks::get(second).is_some());
         assert!(blocks::get(first).is_none());
     });

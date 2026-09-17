@@ -6,7 +6,7 @@ impl Screen {
     /// 这一屏幕行画出来取决于什么：哪一行、那一行的第几版、以及它这一帧的
     /// 装饰（悬浮／选区）。三样都没变，画出来必然一模一样。
     fn row_key(&self, index: usize) -> (usize, u64, u64) {
-        let stamp = self.term.row_stamp(index);
+        let stamp = self.row_source_stamp(index);
         let mut decoration = 0u64;
         if let Some(hovered) = self.hovered() {
             if self.block_at(index).map(|(id, _)| id) == Some(hovered) {
@@ -114,7 +114,9 @@ impl Screen {
     ///
     /// 活动区自己不画——`render_repl_input_with_footer` 会 `MoveTo` 到这个
     /// 行号再打，和 inline 下一模一样。
-    pub(in crate::cli) fn paint(&mut self, tail_height: u16) -> Result<u16> {
+    /// `paint` 的前半段：对块版本、替用户开「默认开着」的块、算正文高与滚动
+    /// 位置。不写终端——帧成本量尺和测试也走它。返回正文高。
+    pub(in crate::cli) fn prepare_frame(&mut self, tail_height: u16) -> u16 {
         // Streaming and overlay frames also own toast expiry. The idle input
         // loop may not run again until a long reply has finished.
         self.expire_toast();
@@ -131,18 +133,36 @@ impl Screen {
             self.cols.saturating_sub(4).max(20),
             body.saturating_sub(1).max(4),
         )));
-        let total = self.content_rows();
         let max = self.follow_target();
         if self.follow {
             self.scroll = max;
         } else {
+            // 按键那一刻算的「底」用的是上一帧的正文高，这一帧的底可能更近：视口
+            // 被夹到底了就是到底了，跟随得跟着扶正。原来只夹 `scroll` 不动
+            // `follow`，于是「屏幕上在底部、状态上不跟随」成了个不动点——之后
+            // 的输出视口再也不跟，直到下一次提交（用户 09-17：「AI 接下来的所有
+            // 输出都会刷新在整个屏幕上；中断后重新触发回复才恢复」）。
             self.scroll = self.scroll.min(max);
+            self.follow = self.scroll >= max;
         }
+        body
+    }
+
+    /// 视口里的一行画成 ANSI（不写终端）：视图行 → 展开底色 → 悬浮提亮 → 选区反显。
+    pub(in crate::cli) fn frame_line(&self, index: usize) -> String {
+        let row = self.expansion_paint(index, self.view_row(index));
+        let spans = self.highlight(index, self.hover_paint(index, row));
+        spans_to_ansi(&spans)
+    }
+
+    pub(in crate::cli) fn paint(&mut self, tail_height: u16) -> Result<u16> {
+        let body = self.prepare_frame(tail_height);
         if self.suspended {
             return Ok(body);
         }
 
         if std::env::var_os("MIYU_SCREEN_TRACE").is_some() {
+            let total = self.content_rows();
             let note = format!(
                 "{} paint body={body} total={total} scroll={} follow={} lines={} cursor={} clear={} susp={}\n",
                 std::time::SystemTime::now()
@@ -175,9 +195,6 @@ impl Screen {
             self.painted.resize(usize::from(body), String::new());
         }
         self.row_keys.resize(usize::from(body), None);
-        // 展开着东西的时候不走这条快路：展开内容来自登记处，会被边跑边灌，
-        // 没有"这一行的版本号"可言。
-        let cacheable = self.expanded.is_empty();
 
         let mut stdout = std::io::stdout();
         if std::env::var_os("MIYU_SCREEN_TRACE").is_some() {
@@ -231,13 +248,14 @@ impl Screen {
                     // 这一行和上一帧一模一样就直接跳过——流式输出时真正变的只有
                     // 最后一两行，其余三十几行每帧重排一遍纯属白干（也正是拖选
                     // 发涩的来源）。
-                    let key = cacheable.then(|| self.row_key(index));
-                    if key.is_some() && self.row_keys.get(slot).copied().flatten() == key {
+                    // 展开着东西也照样缓存：展开出来的行拿块的内容版本当版本号
+                    //（`row_source_stamp`）。原来一展开就整个不缓存，视口里三十几行
+                    // 每帧全部重排。
+                    let key = Some(self.row_key(index));
+                    if self.row_keys.get(slot).copied().flatten() == key {
                         continue;
                     }
-                    let row = self.expansion_paint(index, self.view_row(index));
-                    let spans = self.highlight(index, self.hover_paint(index, row));
-                    let line = spans_to_ansi(&spans);
+                    let line = self.frame_line(index);
                     if let Some(slot) = self.row_keys.get_mut(slot) {
                         *slot = key;
                     }

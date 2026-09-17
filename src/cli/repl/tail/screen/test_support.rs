@@ -20,6 +20,9 @@ impl Screen {
             overlay_spinner_started: None,
             body: None,
             expanded: std::collections::HashMap::new(),
+            expanded_gen: 0,
+            view_index: std::cell::RefCell::new(None),
+            seed_stamp: None,
             open_seeded: std::collections::HashSet::new(),
             display_expand: (false, false),
             display_fold: true,
@@ -43,5 +46,30 @@ impl Screen {
     /// 测试入口：走的是和实况**同一条**路（含图形分流、行数封顶）。
     pub(in crate::cli) fn feed_for_test(&mut self, bytes: &[u8]) {
         self.feed(bytes);
+    }
+
+    /// 把「下一帧整屏重画」那一位拿走（测试用：模拟画过一帧）。
+    pub(in crate::cli) fn take_force_for_test(&mut self) -> bool {
+        std::mem::replace(&mut self.force, false)
+    }
+
+    /// 下一帧会不会整屏重画（测试用）。
+    pub(in crate::cli) fn repaint_pending(&self) -> bool {
+        self.force
+    }
+
+    /// 视口顶端落在视图第几行（量尺用）。
+    pub(in crate::cli) fn scroll_for_test(&self) -> usize {
+        self.scroll
+    }
+
+    /// 展开表里有几块（量尺用）。
+    pub(in crate::cli) fn expanded_count(&self) -> usize {
+        self.expanded.len()
+    }
+
+    /// 缓冲里有几块（量尺用）。
+    pub(in crate::cli) fn block_count(&self) -> usize {
+        self.term.blocks().len()
     }
 }

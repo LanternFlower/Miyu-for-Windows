@@ -16,7 +16,12 @@ use std::sync::Mutex;
 ///
 /// 按行而不是按块计数：一块可能是一行摘要，也可能是上百行命令输出，按块限
 /// 根本限不住。
-const MAX_LINES: usize = 4_000;
+///
+/// 09-17 从 4000 抬到 16000：一份编辑步的 diff 就有两三千行（本机会话库实测最
+/// 大 3084 行），4000 的额度一落地就占掉四分之三，之后每次登记都在淘汰别人——
+/// 自动展开的思考块静默收起、正在跑的块停更（BUG-07 初诊 §E）。一行按百来字节
+/// 算，16000 行也就一两兆，比"点开的东西莫名消失"划算。
+const MAX_LINES: usize = 16_000;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -168,6 +173,16 @@ pub fn is_overlay(id: u64) -> bool {
         .ok()
         .and_then(|map| map.get(&id).map(|entry| entry.overlay))
         .unwrap_or(false)
+}
+
+/// 一批块的内容版本号，一把锁问完。不在登记处的给 0（和 [`version`] 一致）。
+pub fn versions(ids: &[u64]) -> Vec<u64> {
+    let Ok(map) = registry().lock() else {
+        return vec![0; ids.len()];
+    };
+    ids.iter()
+        .map(|id| map.get(id).map(|entry| entry.version).unwrap_or(0))
+        .collect()
 }
 
 /// 内容版本号。覆盖层开着时用它判断要不要重画。

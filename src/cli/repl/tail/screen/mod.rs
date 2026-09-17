@@ -143,6 +143,12 @@ pub(in crate::cli) struct Screen {
     body: Option<u16>,
     /// 已展开的块：id → 摊开后的内容（内部还可以再有块）。空表示全折叠。
     expanded: std::collections::HashMap<u64, expand::Body>,
+    /// `expanded` 每变一次 +1。视图索引（`expand::ViewIndex`）靠它知道该重算。
+    expanded_gen: u64,
+    /// 顶层视图索引的缓存。见 `expand::ViewIndex`——它只在缓冲或展开表变了才重算。
+    view_index: std::cell::RefCell<Option<expand::ViewIndex>>,
+    /// 上一次替用户开「默认开着」的块时缓冲/展开表长什么样。没变就不用再扫。
+    seed_stamp: Option<expand::ViewStamp>,
     /// 「默认开着」的块里已经替用户开过的那些。见 `expand::seed_open`——
     /// 活动区每 tick 重写同样的标记，不记着的话用户收起来下一帧就被顶开。
     open_seeded: std::collections::HashSet<u64>,
@@ -270,6 +276,9 @@ impl Screen {
             overlay_spinner_started: None,
             body: None,
             expanded: std::collections::HashMap::new(),
+            expanded_gen: 0,
+            view_index: std::cell::RefCell::new(None),
+            seed_stamp: None,
             open_seeded: std::collections::HashSet::new(),
             display_expand: (false, false),
             display_fold: true,
@@ -428,9 +437,15 @@ impl Screen {
         } else {
             self.scroll.saturating_add(delta as usize)
         };
-        self.scroll = next.min(max);
+        let next = next.min(max);
         // 自己滚回底部就恢复跟随，不用另设一个「回底」键。
-        self.follow = self.scroll >= max;
+        self.follow = next >= max;
+        // 没动就不重画：到底之后再按 PgDn，原来每按一次都整屏重写一遍（用户
+        // 09-17：「已经到页的底部了，pagedown 还是会有动画效果」）。
+        if next == self.scroll {
+            return;
+        }
+        self.scroll = next;
         self.invalidate();
     }
 
@@ -612,6 +627,7 @@ impl Screen {
         self.follow = true;
         self.floor = 0;
         self.expanded.clear();
+        self.expanded_gen = self.expanded_gen.wrapping_add(1);
         self.open_seeded.clear();
         self.hover = None;
         self.selection = None;

@@ -336,19 +336,189 @@ fn layer_in_expansion(layer: &Layer, expanded: &Expanded, index: usize) -> bool 
     false
 }
 
+/// 缓冲和展开表的一个「版本戳」：这两样没变，视图索引就还是对的。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::cli) struct ViewStamp {
+    lines: usize,
+    blocks: usize,
+    last_block: (u64, usize, usize),
+    expanded_gen: u64,
+}
+
+/// 顶层视图索引：缓冲里每一块在视图里落在哪儿、展开后占几行。
+///
+/// 展开着东西的时候，视图行 ↔ 缓冲行的换算原来是**每一行**把缓冲里全部块走一遍
+/// （取行 / 命中 / 判底色三条路各走一遍，每遇到一个展开块再把它的子树重算一次
+/// 高）。一屏三十几行 × 三遍 × 几百上千块，每帧上万次哈希查找——长会话里一帧
+/// 从几十微秒涨到几十毫秒，手感就是"内容多了之后巨卡"（量尺 `tests::tui_perf`：
+/// 500 个展开块时 27ms/帧，debug 档）。这张表只在缓冲或展开表变了才重算，之后每
+/// 一行只做一次二分。
+pub(in crate::cli) struct ViewIndex {
+    entries: Vec<ViewBlock>,
+    /// 全部展开块撑出来的行数之和。
+    extra: usize,
+    stamp: ViewStamp,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ViewBlock {
+    id: u64,
+    /// 缓冲里的起止行。
+    start: usize,
+    end: usize,
+    /// 在视图里从第几行开始（= `start` + 前面的块撑出来的行数）。
+    view_start: usize,
+    /// 视图里占几行：合着就是 `end - start`，开着是摊开后的总高。
+    height: usize,
+    /// 到这一块（含）为止，展开一共撑出来多少行。
+    offset_after: usize,
+    expanded: bool,
+}
+
+/// 一个视图行落在哪儿。
+enum Located {
+    /// 就是缓冲的第几行（块外，或合着的块里）。
+    Raw(usize),
+    /// 在某个展开块摊开的内容里：块 id + 那一块在视图里的起始行。
+    Inside { id: u64, view_start: usize },
+}
+
+impl ViewIndex {
+    fn build(term: &Term, expanded: &Expanded, stamp: ViewStamp) -> Self {
+        let mut entries = Vec::with_capacity(term.blocks().len());
+        let mut offset = 0usize;
+        for block in term.blocks() {
+            let collapsed = block.end.saturating_sub(block.start);
+            let view_start = block.start.saturating_add(offset);
+            let (height, is_expanded) = match expanded.get(&block.id) {
+                Some(body) => (layer_len(&Layer::Body(body), expanded), true),
+                None => (collapsed, false),
+            };
+            if is_expanded {
+                offset = offset.saturating_add(height).saturating_sub(collapsed);
+            }
+            entries.push(ViewBlock {
+                id: block.id,
+                start: block.start,
+                end: block.end,
+                view_start,
+                height,
+                offset_after: offset,
+                expanded: is_expanded,
+            });
+        }
+        Self {
+            entries,
+            extra: offset,
+            stamp,
+        }
+    }
+
+    /// 最后一个从 `index` 或它之前开始的块。
+    fn entry_at(&self, index: usize) -> Option<&ViewBlock> {
+        let found = self
+            .entries
+            .partition_point(|entry| entry.view_start <= index);
+        self.entries.get(found.checked_sub(1)?)
+    }
+
+    fn locate(&self, index: usize) -> Located {
+        let Some(entry) = self.entry_at(index) else {
+            return Located::Raw(index);
+        };
+        if entry.expanded && index < entry.view_start.saturating_add(entry.height) {
+            return Located::Inside {
+                id: entry.id,
+                view_start: entry.view_start,
+            };
+        }
+        Located::Raw(index.saturating_sub(entry.offset_after))
+    }
+
+    /// 缓冲行 → 视图行：加上它前面所有展开块撑出来的行。
+    fn view_of(&self, buffer_row: usize) -> usize {
+        let found = self
+            .entries
+            .partition_point(|entry| entry.start < buffer_row);
+        let offset = found
+            .checked_sub(1)
+            .map(|index| self.entries[index].offset_after)
+            .unwrap_or(0);
+        buffer_row.saturating_add(offset)
+    }
+}
+
 impl Screen {
     /// 这一视图行是不是展开出来的内容。
     pub(in crate::cli) fn in_expansion(&self, index: usize) -> bool {
-        layer_in_expansion(&self.layer(), &self.expanded, index)
+        if self.expanded.is_empty() {
+            return false;
+        }
+        self.with_index(|view| {
+            let Some(entry) = view.entry_at(index) else {
+                return false;
+            };
+            if !entry.expanded || index >= entry.view_start.saturating_add(entry.height) {
+                return false;
+            }
+            let Some(body) = self.expanded.get(&entry.id) else {
+                return false;
+            };
+            // 只有**叶子块**画底（见 `layer_in_expansion`）。
+            if has_children(body) {
+                return layer_in_expansion(
+                    &Layer::Body(body),
+                    &self.expanded,
+                    index - entry.view_start,
+                );
+            }
+            true
+        })
     }
 
     fn layer(&self) -> Layer<'_> {
         Layer::Live(&self.term)
     }
 
+    fn view_stamp(&self) -> ViewStamp {
+        let blocks = self.term.blocks();
+        ViewStamp {
+            lines: self.term.line_count(),
+            blocks: blocks.len(),
+            last_block: blocks
+                .last()
+                .map(|block| (block.id, block.start, block.end))
+                .unwrap_or_default(),
+            expanded_gen: self.expanded_gen,
+        }
+    }
+
+    /// 拿着当前的视图索引干点事。索引过期（缓冲长了、展开表变了）就先重算。
+    fn with_index<R>(&self, f: impl FnOnce(&ViewIndex) -> R) -> R {
+        let stamp = self.view_stamp();
+        {
+            let cached = self.view_index.borrow();
+            if let Some(view) = cached.as_ref().filter(|view| view.stamp == stamp) {
+                return f(view);
+            }
+        }
+        let built = ViewIndex::build(&self.term, &self.expanded, stamp);
+        let result = f(&built);
+        *self.view_index.borrow_mut() = Some(built);
+        result
+    }
+
+    /// 展开表变了：索引作废。所有改 `expanded` 的地方都要过这儿。
+    fn note_expanded_changed(&mut self) {
+        self.expanded_gen = self.expanded_gen.wrapping_add(1);
+    }
+
     /// 视图一共多少行。
     pub(in crate::cli) fn view_len(&self) -> usize {
-        layer_len(&self.layer(), &self.expanded)
+        if self.expanded.is_empty() {
+            return self.term.filled_rows();
+        }
+        self.term.filled_rows() + self.with_index(|view| view.extra)
     }
 
     /// 缓冲行 → 视图行。只对块**之外**的行有意义（块内的行折叠时压根不存在）。
@@ -356,30 +526,69 @@ impl Screen {
         if self.expanded.is_empty() {
             return buffer_row;
         }
-        let mut offset = 0usize;
-        for block in self.term.blocks() {
-            if block.start >= buffer_row {
-                break;
-            }
-            let Some(body) = self.expanded.get(&block.id) else {
-                continue;
-            };
-            let collapsed = block.end.saturating_sub(block.start);
-            offset = offset
-                .saturating_add(layer_len(&Layer::Body(body), &self.expanded))
-                .saturating_sub(collapsed);
-        }
-        buffer_row.saturating_add(offset)
+        self.with_index(|view| view.view_of(buffer_row))
     }
 
     /// 取视图里的一行。
     pub(in crate::cli) fn view_row(&self, index: usize) -> Vec<AnsiSpan> {
-        layer_row(&self.layer(), &self.expanded, index)
+        if self.expanded.is_empty() {
+            return self.term.row_spans(index);
+        }
+        self.with_index(|view| match view.locate(index) {
+            Located::Raw(row) => self.term.row_spans(row),
+            Located::Inside { id, view_start } => match self.expanded.get(&id) {
+                Some(body) => layer_row(&Layer::Body(body), &self.expanded, index - view_start),
+                None => Vec::new(),
+            },
+        })
+    }
+
+    /// 这一视图行的内容来自哪儿、第几版——行级缓存的键。
+    ///
+    /// 块外的行是缓冲行的版本号；展开出来的行是那一块的 id + 内容版本 + 块内行号
+    ///（内容还在长的块每次重取都换版本，见 `refresh_expanded`）。原来展开着东西
+    /// 就整个不缓存，视口里三十几行每帧全部重排。
+    pub(in crate::cli) fn row_source_stamp(&self, index: usize) -> u64 {
+        if self.expanded.is_empty() {
+            return self.term.row_stamp(index);
+        }
+        self.with_index(|view| match view.locate(index) {
+            Located::Raw(row) => (row as u64) << 32 | (self.term.row_stamp(row) & 0xffff_ffff),
+            Located::Inside { id, view_start } => {
+                let version = self.expanded.get(&id).map(|body| body.version).unwrap_or(0);
+                (1u64 << 63)
+                    | ((id & 0xffff) << 46)
+                    | ((version & 0x3fff) << 32)
+                    | ((index - view_start) as u64 & 0xffff_ffff)
+            }
+        })
     }
 
     /// 视图行落在哪一块里（最内层）。返回块 id 和它在视图里的起始行。
     pub(in crate::cli) fn block_at(&self, index: usize) -> Option<(u64, usize)> {
-        layer_hit(&self.layer(), &self.expanded, index)
+        if self.expanded.is_empty() {
+            return layer_hit(&self.layer(), &self.expanded, index);
+        }
+        self.with_index(|view| {
+            let entry = view.entry_at(index)?;
+            if index >= entry.view_start.saturating_add(entry.height) {
+                return None;
+            }
+            if !entry.expanded {
+                return Some((entry.id, entry.view_start));
+            }
+            let body = self.expanded.get(&entry.id)?;
+            let inner = Layer::Body(body);
+            // 先问内层：点在嵌套块上就收那一个。
+            if let Some(hit) = layer_hit(&inner, &self.expanded, index - entry.view_start) {
+                return Some((hit.0, entry.view_start.saturating_add(hit.1)));
+            }
+            // 表头永远可点；里面没有别的块时整片都算这一块（含空行）。
+            if index == entry.view_start || !has_children(body) {
+                return Some((entry.id, entry.view_start));
+            }
+            None
+        })
     }
 
     /// 展开 / 收起。返回真表示视图变了，得重画。
@@ -394,6 +603,7 @@ impl Screen {
         // 顶到视口下面去，看着像"一展开正文就没了"。不在底部时才钉住原位。
         let following = self.following();
         if self.expanded.remove(&id).is_some() {
+            self.note_expanded_changed();
             self.restore_follow(following);
             self.invalidate();
             return true;
@@ -402,6 +612,7 @@ impl Screen {
             return false;
         };
         self.expanded.insert(id, body);
+        self.note_expanded_changed();
         self.restore_follow(following);
         self.invalidate();
         true
@@ -410,10 +621,20 @@ impl Screen {
     /// 展开着的块如果内容变了就重取。正在想的那一步点开之后要能**继续**流，
     /// 不然点开的一瞬间就定格了。
     pub(in crate::cli) fn refresh_expanded(&mut self) -> bool {
-        let stale: Vec<u64> = self
-            .expanded
+        if self.expanded.is_empty() {
+            return false;
+        }
+        // 一把锁问完所有版本号：几百个展开块每帧各拿一次登记处的锁不值当。
+        let ids: Vec<u64> = self.expanded.keys().copied().collect();
+        let versions = miyu_hosts::render::blocks::versions(&ids);
+        let stale: Vec<u64> = ids
             .iter()
-            .filter(|(id, body)| miyu_hosts::render::blocks::version(**id) != body.version)
+            .zip(versions)
+            .filter(|(id, version)| {
+                self.expanded
+                    .get(id)
+                    .is_some_and(|body| body.version != *version)
+            })
             .map(|(id, _)| *id)
             .collect();
         if stale.is_empty() {
@@ -430,7 +651,10 @@ impl Screen {
                 }
             }
         }
-        self.invalidate();
+        // 不整屏重画：行缓存认得展开出来的行是哪一块的第几版（`row_source_stamp`），
+        // 变了的那几行自己会重画。原来这儿每次都 `invalidate()`，而正在想的那一块
+        // 每帧都在长——「展开思考内容」开着时整屏每帧重写（BUG-07 初诊 §6）。
+        self.note_expanded_changed();
         true
     }
 
@@ -438,13 +662,23 @@ impl Screen {
     pub(in crate::cli) fn prune_expanded(&mut self) {
         let alive: std::collections::HashSet<u64> =
             self.term.blocks().iter().map(|block| block.id).collect();
+        let before = self.expanded.len();
         self.expanded.retain(|id, _| alive.contains(id));
+        if self.expanded.len() != before {
+            self.note_expanded_changed();
+        }
         // 「开过一次」的记号跟着块一起走：块都滚出缓冲了，再留着只是占内存。
         self.open_seeded.retain(|id| alive.contains(id));
     }
 
     /// 缓冲里新落下来的「默认开着」的块，替用户开一次。见 [`seed_open`]。
     pub(in crate::cli) fn seed_open_blocks(&mut self) -> bool {
+        // 缓冲和展开表都没动过，就没有新的块要替用户开——每帧把全部块扫一遍是
+        // 白干（扫的那一遍和视图索引一样贵）。
+        let stamp = self.view_stamp();
+        if self.seed_stamp == Some(stamp) {
+            return false;
+        }
         let cols = usize::from(self.cols);
         let Screen {
             term,
@@ -453,9 +687,121 @@ impl Screen {
             ..
         } = self;
         if !seed_open(&Layer::Live(term), expanded, open_seeded, cols) {
+            self.seed_stamp = Some(stamp);
             return false;
         }
-        self.invalidate();
+        self.note_expanded_changed();
+        // 开了新块，戳变了；记新戳，下一帧才不会再扫一遍。
+        self.seed_stamp = Some(self.view_stamp());
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! 视图索引和老的逐块遍历算法逐行等价——索引是它的缓存，不是另一套规矩。
+    use super::*;
+    use miyu_hosts::render::blocks;
+
+    fn markers(id: u64, open: bool, text: &str) -> String {
+        format!(
+            "{}{text}{}",
+            blocks::begin_marker_in(id, open),
+            blocks::END_MARKER
+        )
+    }
+
+    /// 老算法（当时的实现原样留着，只在测试里用）：顶层也逐块遍历。
+    fn old_view_of(term: &Term, expanded: &Expanded, buffer_row: usize) -> usize {
+        let mut offset = 0usize;
+        for block in term.blocks() {
+            if block.start >= buffer_row {
+                break;
+            }
+            let Some(body) = expanded.get(&block.id) else {
+                continue;
+            };
+            let collapsed = block.end.saturating_sub(block.start);
+            offset = offset
+                .saturating_add(layer_len(&Layer::Body(body), expanded))
+                .saturating_sub(collapsed);
+        }
+        buffer_row.saturating_add(offset)
+    }
+
+    #[test]
+    fn the_view_index_matches_the_block_walk_row_for_row() {
+        blocks::set_enabled(true);
+        let mut screen = Screen::detached(80, 20);
+        // 三种块：默认开着的思考步、合着的工具步、里面还嵌着两步的收缩行。
+        let inner_a =
+            blocks::register(vec!["  内层甲第一行".into(), "  内层甲第二行".into()]).unwrap();
+        let inner_b = blocks::register(vec!["  内层乙".into()]).unwrap();
+        let fold = blocks::register(vec![
+            "  ⌄ Worked for 1s".into(),
+            markers(inner_a, true, "  ✳ 内层甲"),
+            "  │".into(),
+            markers(inner_b, false, "  $ 内层乙"),
+            String::new(),
+        ])
+        .unwrap();
+        for i in 0..12 {
+            let thought =
+                blocks::register((0..3).map(|k| format!("    想 {i}-{k}")).collect()).unwrap();
+            let tool = blocks::register(vec![format!("    命令输出 {i}")]).unwrap();
+            let text = format!(
+                "{}\r\n  │\r\n{}\r\n正文 {i}\r\n{}\r\n\r\n",
+                markers(thought, i % 2 == 0, &format!("  ✳ 已思考 {i}")),
+                markers(tool, false, &format!("  $ 运行命令 {i}")),
+                markers(fold, false, "  › Worked for 1s · 2 tools"),
+            );
+            screen.feed_for_test(text.as_bytes());
+        }
+        // 替用户开默认开着的；再手点开几块（含收缩行，它里面还有默认开着的一层）。
+        screen.seed_open_blocks();
+        assert!(screen.toggle_block(fold));
+        let some_tool = screen.term.blocks()[1].id;
+        assert!(screen.toggle_block(some_tool));
+        assert!(!screen.expanded.is_empty(), "什么都没展开，测的就不是索引");
+
+        let layer = Layer::Live(&screen.term);
+        let total = layer_len(&layer, &screen.expanded);
+        assert_eq!(screen.view_len(), total, "视图总行数不等");
+        for index in 0..total + 3 {
+            assert_eq!(
+                screen.view_row(index),
+                layer_row(&layer, &screen.expanded, index),
+                "第 {index} 行内容不等"
+            );
+            assert_eq!(
+                screen.block_at(index),
+                layer_hit(&layer, &screen.expanded, index),
+                "第 {index} 行命中不等"
+            );
+            assert_eq!(
+                screen.in_expansion(index),
+                layer_in_expansion(&layer, &screen.expanded, index),
+                "第 {index} 行是否在展开区里不等"
+            );
+        }
+        for buffer_row in 0..screen.term.line_count() + 2 {
+            assert_eq!(
+                screen.view_of(buffer_row),
+                old_view_of(&screen.term, &screen.expanded, buffer_row),
+                "缓冲行 {buffer_row} 的视图行不等"
+            );
+        }
+        // 收起一块之后索引要跟着变（不是拿着旧表）。
+        assert!(screen.toggle_block(fold));
+        let layer = Layer::Live(&screen.term);
+        let total = layer_len(&layer, &screen.expanded);
+        assert_eq!(screen.view_len(), total);
+        for index in 0..total {
+            assert_eq!(
+                screen.view_row(index),
+                layer_row(&layer, &screen.expanded, index)
+            );
+        }
+        blocks::set_enabled(false);
     }
 }
