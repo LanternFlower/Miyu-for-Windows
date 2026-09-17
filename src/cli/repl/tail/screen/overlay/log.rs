@@ -497,6 +497,14 @@ pub(super) fn steps_from_events<'a>(
     steps
 }
 
+/// 同 [`with_elapsed`]，但秒数是现成的（跑着的那一步自己掐的表）。
+pub(super) fn with_elapsed_text(head: &str, secs: &str) -> String {
+    match head.split_once(" · ") {
+        Some((name, rest)) => format!("{name} · {secs} · {rest}"),
+        None => format!("{head} · {secs}"),
+    }
+}
+
 /// 把耗时插进抬头：`运行命令 · ls` → `运行命令 · 1.2s · ls`（名字后面、窥视前面，
 /// 和主线一个次序）。
 fn with_elapsed(head: &str, elapsed: std::time::Duration) -> String {
@@ -580,6 +588,41 @@ mod tests {
         ];
         let steps = steps_from_events(markers.iter().filter_map(|m| from_marker(m)), true);
         assert_eq!(steps.len(), 1, "准备执行攒了一堆: {steps:?}");
+    }
+
+    /// 工具那一步的耗时也从标记流里来。
+    ///
+    /// 标记流里原来一点时间戳都没有（掐表的是写日志那一侧），于是订标记流的面板
+    /// 上每个工具都是光秃秃的 `运行命令 · 看看输出`。现在发的那一侧在结果里带上
+    /// `ms`，抬头拼成 `运行命令 · 1.2s · 看看输出`——名字后面、窥视前面，和主线
+    /// 一个次序（用户 09-17 点名的形状：`运行命令 · <计时> · <short_title>`）。
+    #[test]
+    fn a_tool_step_carries_its_elapsed_from_the_marker_stream() {
+        let args = serde_json::json!({"command": "ls", "title": "看看输出"}).to_string();
+        let result = serde_json::json!({
+            "name": "run_command",
+            "display": "运行命令",
+            "args": args,
+            "ok": true,
+            "ms": 1_234,
+            "output": "total 0",
+        })
+        .to_string();
+        let steps = steps_from_events(
+            std::iter::once(format!("__subtool_result__{result}")).filter_map(|m| from_marker(&m)),
+            true,
+        );
+        assert_eq!(steps.len(), 1, "{steps:#?}");
+        assert_eq!(
+            steps[0].elapsed,
+            Some(std::time::Duration::from_secs_f64(1.2)),
+            "耗时没带过来: {steps:#?}"
+        );
+        assert!(
+            steps[0].head.starts_with("运行命令 · 1.2s · 看看输出"),
+            "抬头次序不对: {:?}",
+            steps[0].head
+        );
     }
 
     /// 命令那一步：抬头给 **title**，命令全文归正文。

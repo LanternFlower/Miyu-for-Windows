@@ -496,9 +496,13 @@ fn job_panel_merges_a_call_with_its_result() {
             !rows.iter().any(|row| row.contains(" · ok")),
             "ok 盖到抬头上了: {rows:?}"
         );
+        // 跑完的那一步不该还挂着转轮。（`· 运行中` 那三个字 09-17 去掉了：
+        // 主线从来不写，左边距上转着的点阵已经把「它在跑」说清楚了。）
         assert!(
-            !rows.iter().any(|row| row.contains("运行中")),
-            "有结果的那一步还标着运行中: {rows:?}"
+            !rows
+                .iter()
+                .any(|row| row.contains(miyu_hosts::render::timeline::LIVE_SPINNER_CELL)),
+            "有结果的那一步还挂着转轮: {rows:?}"
         );
         // 抬头按主线的说法写 `已思考 · 1.2s`，**不带窥视**（§6.3 第 1 项，用户
         // 09-17 拍板取前台）。所以这儿认「已思考」，不认原文。
@@ -1169,6 +1173,48 @@ fn the_job_panel_follows_the_fold_switch() {
             rows.iter().any(|row| row.contains("已思考")),
             "不收段那几步该就地留着: {rows:?}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+}
+
+/// 命令那一步：抬头底下露的那几行要**在块里面**。
+///
+/// 面板原来自己拼 `begin_marker + line + END`、尾巴另发一项，尾巴因此落在块
+/// 外面：点开时展开内容只换掉抬头那一行，命令于是出现两遍；收成 `Worked for`
+/// 再点开时尾巴干脆没了（用户 09-17 逐条报的 1/2/3）。改成走主线那份
+/// `step_rows`——「一步占哪几行」只该有一个实现。
+#[test]
+fn the_command_preview_lives_inside_the_clickable_block() {
+    with_blocks(|| {
+        let dir = std::env::temp_dir().join(format!("miyu-log-cmdtail-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建目录");
+        let path = dir.join("job.log");
+        // 日志那条路没有参数，露不出尾巴——这条要的是**标记流**那条路。
+        let args =
+            serde_json::json!({ "command": "echo 甲; echo 乙", "title": "看看" }).to_string();
+        let call = serde_json::json!({
+            "name": "run_command",
+            "display": "运行命令",
+            "args": args,
+        })
+        .to_string();
+        std::fs::write(&path, "[提示] 去看看\n").expect("写日志");
+        let mut screen = Screen::detached(100, 40);
+        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
+        screen.overlay_feed_markers_for_test(&[format!("__subtool_call__{call}")]);
+
+        let rows = screen.overlay_rows();
+        let shown = rows.iter().filter(|row| row.contains("echo 甲")).count();
+        assert_eq!(shown, 1, "命令该露一遍: {rows:?}");
+        let head = rows
+            .iter()
+            .position(|row| row.contains("看看"))
+            .unwrap_or_else(|| panic!("没有那一步: {rows:?}"));
+        // 点开：展开内容把抬头**和尾巴一起**换掉，不该冒出第二份命令。
+        assert!(screen.overlay_toggle(head), "点不开");
+        let rows = screen.overlay_rows();
+        let shown = rows.iter().filter(|row| row.contains("echo 甲")).count();
+        assert_eq!(shown, 1, "点开之后命令出现了两遍: {rows:?}");
         let _ = std::fs::remove_dir_all(&dir);
     });
 }

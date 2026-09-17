@@ -191,6 +191,12 @@ pub struct SubagentProgress {
     /// 掐表的地方只能在**发的这一侧**：它是唯一知道"这一段什么时候开始、什么
     /// 时候结束"的人。
     reasoning_since: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+    /// 这次内层工具调用是什么时候发出去的。结果回来时算耗时写进那条标记里。
+    ///
+    /// 同 [`Self::reasoning_since`]：标记流里没有时间戳。写日志那一侧原来是自己
+    /// 掐表的（`log.rs` 的 `last_call`），订标记流的面板于是一个工具的耗时都
+    /// 看不到——抬头上只剩 `运行命令 · 看看输出`，没有 `· 1.2s`。
+    tool_since: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 impl SubagentProgress {
@@ -200,6 +206,7 @@ impl SubagentProgress {
             tool_mode,
             enabled,
             reasoning_since: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            tool_since: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -307,6 +314,9 @@ impl SubagentProgress {
             return;
         }
         self.seal_reasoning();
+        if let Ok(mut since) = self.tool_since.lock() {
+            *since = Some(std::time::Instant::now());
+        }
         self.progress.report(format!(
             "__subtool_call__{}",
             json!({
@@ -340,6 +350,13 @@ impl SubagentProgress {
         }
         // 同 `reasoning`：Summary 档也发，全屏 TUI 的子代理面板要靠它。
         // 输出截断——这是给人看一眼的，不是把 IPC 当日志管道。
+        // 耗时跟着结果一起报：标记流里没有时间戳，读那侧只能靠这个数。
+        let millis = self
+            .tool_since
+            .lock()
+            .ok()
+            .and_then(|mut since| since.take())
+            .map(|at| at.elapsed().as_millis());
         self.progress.report(format!(
             "__subtool_result__{}",
             json!({
@@ -347,6 +364,7 @@ impl SubagentProgress {
                 "display": readable_tool_name(name),
                 "args": args,
                 "ok": ok,
+                "ms": millis,
                 "output": clip_detail(output),
             })
         ));

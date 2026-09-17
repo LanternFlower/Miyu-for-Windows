@@ -345,6 +345,16 @@ pub(crate) fn tool_line_text(json: &str) -> String {
     if let Some(ok) = value.get("ok").and_then(serde_json::Value::as_bool) {
         out.push_str(if ok { " ok" } else { " err" });
     }
+    // 这一步跑了多久。**由发的那一侧掐表**（`SubagentProgress::tool_end`）——
+    // 标记流里没有时间戳，读那侧只能靠这个数；写日志那一侧原来自己用 `last_call`
+    // 掐，订标记流的面板于是一个工具的耗时都看不到。次序和主线一样：名字（和
+    // ok/err）之后、窥视之前。
+    if let Some(millis) = value.get("ms").and_then(serde_json::Value::as_u64) {
+        out.push_str(" · ");
+        out.push_str(&miyu_base::durations::format_seconds(
+            Duration::from_millis(millis),
+        ));
+    }
     if let Some(args) = value.get("args").and_then(serde_json::Value::as_str) {
         let args = args.trim();
         if !args.is_empty() {

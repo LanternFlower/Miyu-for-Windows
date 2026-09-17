@@ -264,8 +264,15 @@ impl CommandLiveDisplay {
     ///（用户实测：命令展开后没有流式输出，展开内容居然是窥视行）。
     pub(crate) fn live_detail(&self, width: usize) -> Vec<String> {
         let mut lines = Vec::new();
+        // 命令那几行跟着抬头一起暗——和露在抬头底下那份同一个色（用户 09-17：
+        // 「展开之后的命令部分的颜色你没改」）。输出本来就是暗的，命令比输出还
+        // 亮的话，一整块里最显眼的是"我让它跑了什么"，而不是"它吐了什么"。
         for line in self.command.lines() {
-            lines.extend(wrap_plain_text(line, width));
+            lines.extend(
+                wrap_plain_text(line, width)
+                    .into_iter()
+                    .map(|line| format!("\x1b[2m{line}\x1b[0m")),
+            );
         }
         if self.show_output {
             let logical = self.output.logical_lines();

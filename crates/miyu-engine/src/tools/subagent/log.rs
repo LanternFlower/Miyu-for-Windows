@@ -251,6 +251,14 @@ pub(super) fn flush_stream_buffer(stream: &mut StreamBuffer, lines: &mut Vec<Str
     // 别的事件插进来了：这一段到此为止，下次是新的一行。
     stream.continued = false;
 }
+/// 这条结果标记自己带着耗时吗（09-17 起发的那一侧会带）。
+fn has_millis(json: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(json.trim())
+        .ok()
+        .and_then(|value| value.get("ms").and_then(serde_json::Value::as_u64))
+        .is_some()
+}
+
 /// 内层工具事件压成一句人话。原样贴 JSON 的话日志里全是转义引号。
 ///
 /// 拼法在 `protocol` 里，和「标记直接解成事件」那条路共用同一份——两处各拼一遍
@@ -270,6 +278,10 @@ fn subtool_result_lines(json: &str, elapsed: Option<Duration>) -> String {
     // 耗时紧跟在 ok/err 后面：`运行命令 ok · 1.2s · ls`。面板去掉 ok 之后就是
     // 主线那一行的样子（名字 · 秒数 · 窥视）。
     // 再短也写：一段里几个快工具加起来才够得上一个 Worked for。
+    //
+    // **标记自己带了 `ms` 就别再加一遍**：09-17 起掐表的是发标记那一侧（那样订
+    // 标记流的面板也有耗时），这儿那份 `last_call` 只给老 daemon 的标记兜底。
+    let elapsed = elapsed.filter(|_| !has_millis(json));
     if let Some(elapsed) = elapsed {
         let secs = miyu_base::durations::format_seconds(elapsed);
         for status in [" ok", " err"] {

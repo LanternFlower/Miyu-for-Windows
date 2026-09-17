@@ -113,6 +113,12 @@ pub(in crate::cli) struct Overlay {
     display_fold: bool,
     /// `命令显示行数`。同上。
     display_command_lines: usize,
+    /// 正在跑的那一步是从什么时候开始的（抬头上那个计时）。
+    ///
+    /// 标记流和流水账里都没有时间戳，跑完那一步的耗时是结果行带回来的；**跑着
+    /// 的时候没人给**，于是面板上那一行一直没有计时，而主线是有的（主线自己
+    /// 掐表）。这儿照主线的办法自己掐：抬头变了就重新计时。
+    running_since: Option<(String, std::time::Instant)>,
     /// 鼠标停在面板里哪一块上。可点的东西要看得出来「这里能点」——正文那侧
     /// 一直有（`Screen::hover`），面板这侧原来整个没有：`Moved` 和别的鼠标事件
     /// 一起被吞掉了（用户 09-17：「浮层的 tag 行没有悬浮变色的效果」）。
@@ -157,6 +163,7 @@ impl Overlay {
             display_expand: (false, false),
             display_fold: true,
             display_command_lines: 8,
+            running_since: None,
             hover: None,
             selection: None,
             scroll: 0,
@@ -195,6 +202,7 @@ impl Overlay {
             display_expand,
             display_fold,
             display_command_lines,
+            running_since: None,
             hover: None,
             selection: None,
             scroll: 0,
@@ -392,19 +400,30 @@ impl Overlay {
                 ));
                 continue;
             }
+            // 跑着的那一步自己掐表：抬头上要有 `· 1.2s`，和主线一个样子。
+            let live = step.running.then(|| {
+                let key = step.head.clone();
+                match &self.running_since {
+                    Some((seen, at)) if *seen == key => at.elapsed(),
+                    _ => {
+                        let now = std::time::Instant::now();
+                        self.running_since = Some((key, now));
+                        std::time::Duration::ZERO
+                    }
+                }
+            });
             let block = self.step_blocks.get(index).copied().filter(|id| *id != 0);
-            let step = self.to_step(index, step, head_width, block);
+            let step = self.to_step(index, step, head_width, block, live);
             self.remember_block(index, step.block_id());
-            let tail = step.tail().to_vec();
-            let row = match step.block_id() {
-                Some(id) => format!(
-                    "{}{}{}",
-                    blocks::begin_marker_in(id, step.open()),
-                    step.line(),
-                    blocks::END_MARKER
-                ),
-                None => step.line().to_string(),
-            };
+            // **走 `step_rows`，别手拼**。它是主线那份「一步占哪几行」的唯一
+            // 实现：抬头、底下露着的那几行、块的起止，都在它里面。
+            //
+            // 这儿原来是自己拼 `begin_marker + line + END`，尾巴另发一个
+            // `PanelEntry::Tail`——**尾巴因此落在块外面**，于是：点开时展开内容
+            // 只换掉抬头那一行，尾巴还留在底下，命令出现两遍；而收成
+            // `Worked for` 再点开时尾巴干脆没了（用户 09-17 逐条报的 1/2/3）。
+            // 用户那句话是对的：同一个东西不该有两份拼法。
+            let row = miyu_hosts::render::timeline::step_rows(&step, step.block_id());
             // 「提示词」那一行是抬头，不是时间线的一步：它和第一步之间不连线、
             // 空一行——连着画的话，思考那一步和提示词看着是一条线上的两步，收缩
             // 时就像被提示词绑住了（用户原话）。
@@ -413,11 +432,41 @@ impl Overlay {
             } else {
                 entries.push(miyu_hosts::render::timeline::PanelEntry::Step(row));
             }
-            if !tail.is_empty() {
-                entries.push(miyu_hosts::render::timeline::PanelEntry::Tail(tail));
-            }
         }
         miyu_hosts::render::timeline::thread_panel(entries)
+    }
+
+    /// 给一步穿上「档位」那几样：默认展开态、抬头底下露的那几行。
+    ///
+    /// **只有这一处**：可见的那几步和收缩行里的那几步都过它。原来收缩行那份是
+    /// 另起一行 `Step::panel(...)` 就完事，于是收起来再点开，命令预览就没了
+    ///（用户 09-17 第 3 条）。
+    fn dress_step(&self, step: &mut miyu_hosts::render::timeline::Step, log: &LogStep) {
+        // 「展开思考内容 / 展开工具内容」在这块面板上也算数：出来就是展开态。
+        step.set_open(match log.kind {
+            StepKind::Thought => self.display_expand.0,
+            StepKind::Tool => self.display_expand.1,
+            _ => false,
+        });
+        // 命令那一步抬头底下露几行**命令**——和主线一个样子（抬头给 title、
+        // 正文给命令）。露几行由用户的「命令显示行数」说了算；整段暗色，它是
+        // 附注不是正文（用户 09-17：「tag 行是暗色，而命令预览是正常文字颜色，
+        // 这不合理」）。
+        if self.display_command_lines == 0 {
+            return;
+        }
+        let Some(command) = log.command_tail() else {
+            return;
+        };
+        let width = miyu_hosts::render::timeline::panel_detail_width();
+        step.set_tail(
+            command
+                .lines()
+                .flat_map(|line| miyu_hosts::render::wrap_display_text(line, width))
+                .take(self.display_command_lines)
+                .map(|line| format!("\x1b[2m{line}\x1b[0m"))
+                .collect(),
+        );
     }
 
     /// 第 `index` 步用的是哪一块——**按位置记**，不挂块的那些用 `0` 占位。
@@ -450,43 +499,16 @@ impl Overlay {
         log: &LogStep,
         head_width: usize,
         block: Option<u64>,
+        live: Option<std::time::Duration>,
     ) -> miyu_hosts::render::timeline::Step {
-        // ok 不上抬头：主线和前台面板都不写 ok，跑砸了靠红色和打叉说话。
-        // 日志末尾那个还没有结果的调用例外：标出它正在跑，不然看着像卡住了。
-        let status = if log.status.is_none() && log.running {
-            format!(" · {}", miyu_base::i18n::text("running", "运行中"))
-        } else {
-            String::new()
-        };
-        let line = self.step_line(log, head_width, &status);
+        let line = self.step_line(log, head_width, live);
         let body = if log.inner.is_empty() {
             log_detail_body(log)
         } else {
             self.fold_body(index, &log.inner, head_width)
         };
         let mut step = miyu_hosts::render::timeline::Step::panel(log.kind, line, body, block);
-        // 「展开思考内容 / 展开工具内容」在这块面板上也算数：出来就是展开态。
-        step.set_open(match log.kind {
-            StepKind::Thought => self.display_expand.0,
-            StepKind::Tool => self.display_expand.1,
-            _ => false,
-        });
-        // 命令那一步抬头底下露几行**命令**——和主线一个样子（抬头给 title、
-        // 正文给命令）。露几行由用户的「命令显示行数」说了算；整段暗色，它是
-        // 附注不是正文（用户 09-17：「tag 行是暗色，而命令预览是正常文字颜色，
-        // 这不合理」）。
-        if self.display_command_lines > 0 {
-            if let Some(command) = log.command_tail() {
-                let width = miyu_hosts::render::timeline::panel_detail_width();
-                let rows: Vec<String> = command
-                    .lines()
-                    .flat_map(|line| miyu_hosts::render::wrap_display_text(line, width))
-                    .take(self.display_command_lines)
-                    .map(|line| format!("\x1b[2m{line}\x1b[0m"))
-                    .collect();
-                step.set_tail(rows);
-            }
-        }
+        self.dress_step(&mut step, log);
         // 这一步自己那块：按位置复用，内容每帧重灌（日志还在长）。
         let detail = miyu_hosts::render::timeline::step_detail_lines(&step);
         let id = match block {
@@ -501,7 +523,12 @@ impl Overlay {
     }
 
     /// 这一步那一行长什么样。
-    fn step_line(&self, log: &LogStep, head_width: usize, status: &str) -> String {
+    fn step_line(
+        &self,
+        log: &LogStep,
+        head_width: usize,
+        live: Option<std::time::Duration>,
+    ) -> String {
         // 收缩行合着的时候是 `›`，点开才翻成 `⌄`（和主线那条一样）。
         // 按 `kind` 认，不比图标：比图标那条路已经让装工具那一步出现过两遍
         //（`load_tools` 的图标和「差事」撞了）。
@@ -528,7 +555,14 @@ impl Overlay {
             }
             head
         } else {
-            log.head.clone()
+            // 跑着的那一步把计时插进去：`运行命令 · 1.2s · 看看输出`——名字后面、
+            // 窥视前面，和主线一个次序（用户 09-17 点名的那个形状）。原来这儿
+            // 是在末尾缀一句 `· 运行中`，而主线从来不写那三个字：左边距上转着
+            // 的点阵已经把「它在跑」说清楚了。
+            match live.and_then(miyu_hosts::render::timeline::reported_seconds) {
+                Some(secs) => with_elapsed_text(&log.head, &secs),
+                None => log.head.clone(),
+            }
         };
         // 加减行数单独上色（绿加红减），和主线、前台浮层一个样子。它是从文本里
         // 摘出来的（见 `LogStep::diff`），所以要自己留出宽度再接回去——先裁剩下
@@ -552,13 +586,9 @@ impl Overlay {
         }
         // 正在跑／正在准备的那一行左边距上转着点阵，和主线一样。
         if log.running || log.preparing {
-            miyu_hosts::render::timeline::panel_live_step_line(glyph, &format!("{head}{status}"))
+            miyu_hosts::render::timeline::panel_live_step_line(glyph, &head)
         } else {
-            miyu_hosts::render::timeline::panel_step_line(
-                glyph,
-                &format!("{head}{status}"),
-                log.status == Some("err"),
-            )
+            miyu_hosts::render::timeline::panel_step_line(glyph, &head, log.status == Some("err"))
         }
     }
 
@@ -577,13 +607,16 @@ impl Overlay {
             .iter()
             .enumerate()
             .map(|(child_index, log)| {
-                let line = self.step_line(log, head_width, "");
-                miyu_hosts::render::timeline::Step::panel(
+                let line = self.step_line(log, head_width, None);
+                let mut step = miyu_hosts::render::timeline::Step::panel(
                     log.kind,
                     line,
                     log_detail_body(log),
                     self.fold_blocks.get(&(fold_index, child_index)).copied(),
-                )
+                );
+                // 收起来的那几步和可见的那几步是同一种东西：档位一样要穿。
+                self.dress_step(&mut step, log);
+                step
             })
             .collect();
         let rows = miyu_hosts::render::timeline::fold_block_lines(&mut children);
@@ -593,6 +626,19 @@ impl Overlay {
             }
         }
         rows
+    }
+
+    /// 一串原始进度标记 → 面板内容。和 `reload_file` 里订标记流那一支同一条路。
+    #[cfg(test)]
+    pub(super) fn render_from_markers(&mut self, markers: &[String]) {
+        let events = markers
+            .iter()
+            .filter_map(|marker| miyu_engine::tools::subagent::protocol::from_marker(marker));
+        let steps = log::steps_from_events(events, self.display_fold);
+        let lines = self.render_steps(steps);
+        self.body = parse_body(&lines, self.cols);
+        super::expand::reload_expanded(&mut self.expanded, self.cols);
+        self.seed_open();
     }
 
     /// 不管节流，立刻按当前档位重排一次（`/config` 改完那一下）。

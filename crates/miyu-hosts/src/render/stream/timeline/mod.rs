@@ -37,7 +37,7 @@ mod subagent;
 
 // 后台子代理面板（根包 `cli::repl::tail::screen::overlay`）要按名字用这几样：
 // 它和前台面板**共用**排版、收缩、点开的规则，取数的地方不同，长相不该不同。
-pub use glyphs::{fold_open_lines, step_detail_lines};
+pub use glyphs::{fold_open_lines, step_detail_lines, step_rows};
 pub use subagent::{fold_block_lines, thread_panel, PanelEntry};
 
 use super::{question_answer_text, StreamRenderer};
@@ -48,7 +48,7 @@ use crate::render::{prompt_glyph, THOUGHT_BODY_STYLE};
 use std::time::{Duration, Instant};
 
 // 搬走的帮手按老路径再导出：调用方写的还是 `timeline::…`（09-16 拆分）。
-use glyphs::{step_detail, step_rows};
+use glyphs::step_detail;
 pub(crate) use glyphs::{tool_glyph, tool_output_lines};
 use live::indented_body;
 pub(crate) use live::undecorate;
