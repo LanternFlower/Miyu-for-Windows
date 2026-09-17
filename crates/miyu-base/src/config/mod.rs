@@ -126,6 +126,12 @@ pub struct AppConfig {
     /// `miyu init` 不碰它：脚本化初始化不等于人已经设置过。
     #[serde(default)]
     pub oobe_done: bool,
+    /// 终端集成车道（shellhook / 裸 `miyu "…"` 落进去的那条会话）跑在哪个模式：
+    /// `"normal"`（默认）| `"dev"`。模式钉在会话的人格上（dev 人格 = 开发模式），
+    /// 所以 daemon 按它给「终端集成会话」换人格并把车道指针指过去
+    /// （`web::sessions::apply_terminal_session_mode`），启动和重载配置时各对一次。
+    #[serde(default = "default_terminal_session_mode")]
+    pub terminal_session_mode: String,
     /// Tiered model pools. The pre-09-05 key `subagent_tiers` stays readable.
     #[serde(
         default,
@@ -377,6 +383,7 @@ impl Default for AppConfig {
             system_prompt_file: Some("system-prompt.md".to_string()),
             system_prompt: None,
             oobe_done: false,
+            terminal_session_mode: default_terminal_session_mode(),
             model_tiers: ModelTiersConfig::default(),
             platforms: PlatformsConfig::default(),
             voice: VoiceConfig::default(),

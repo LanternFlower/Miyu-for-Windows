@@ -1041,3 +1041,65 @@ fn allow_read_opens_reads_without_touching_the_write_side() {
     assert_eq!(open.root, root);
     assert_eq!(open.home, Some(root));
 }
+
+/// 「终端集成会话默认模式」：终端车道 = `current_session` 指针。dev 就把「终端集成
+/// 会话」换到 dev 人格并把指针指过去（回合模式跟着变成开发），normal 换回来；指针
+/// 停在别的普通会话上也要被拉回来；归了别的人格的终端会话不抢，退到自举一条。
+#[test]
+fn terminal_session_mode_flips_the_terminal_session_and_points_the_lane_at_it() {
+    use crate::web::sessions::{apply_terminal_session_mode, turn_mode_for_session};
+    use miyu_base::config::{AppConfig, PersonaLane};
+    use miyu_core::state::{DEFAULT_SESSION_ID as TERMINAL, DEV_PERSONA};
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_paths(temp.path());
+    let store = miyu_core::state::StateStore::new(&paths).unwrap();
+    store.init_files().unwrap();
+    let mut config = AppConfig::default();
+    let persona = config.active_persona_scope();
+    store.adopt_sessions_for_persona(&persona).unwrap();
+    let persona_of = |id: &str| store.session_record(id).unwrap().unwrap().persona;
+
+    // 默认 normal：指针在终端集成会话上，普通模式，什么都不动。
+    apply_terminal_session_mode(&config, &store).unwrap();
+    assert_eq!(&*store.session_id(), TERMINAL);
+    assert_eq!(
+        turn_mode_for_session(&store, TERMINAL, PersonaLane::Dev),
+        PersonaLane::Active,
+        "默认是普通模式（客户端要 dev 也不给）"
+    );
+
+    // 指针停在另一条普通会话上（换人格会这样），配置改 dev：终端集成会话换到
+    // dev 人格，指针拉回来。
+    let side = store
+        .create_session(&persona, "side", "user", None)
+        .unwrap();
+    store.switch_session(&side.session_id).unwrap();
+    config.terminal_session_mode = "dev".into();
+    apply_terminal_session_mode(&config, &store).unwrap();
+    assert_eq!(persona_of(TERMINAL), DEV_PERSONA);
+    assert_eq!(&*store.session_id(), TERMINAL, "车道指针指回终端集成会话");
+    assert_eq!(persona_of(&side.session_id), persona, "别的会话不动");
+    assert_eq!(
+        turn_mode_for_session(&store, TERMINAL, PersonaLane::Active),
+        PersonaLane::Dev
+    );
+    // 再对一次（daemon 重启）：dev 人格的终端会话不能被当「不可用」撵走。
+    apply_terminal_session_mode(&config, &store).unwrap();
+    assert_eq!(&*store.session_id(), TERMINAL);
+    assert_eq!(persona_of(TERMINAL), DEV_PERSONA);
+
+    // 改回 normal：换回激活人格，指针还在它上面。
+    config.terminal_session_mode = "normal".into();
+    apply_terminal_session_mode(&config, &store).unwrap();
+    assert_eq!(persona_of(TERMINAL), persona);
+    assert_eq!(&*store.session_id(), TERMINAL);
+
+    // 终端集成会话归了别的人格：不抢，dev 车道自举一条 dev 人格的会话。
+    store.set_session_persona(TERMINAL, "someone-else").unwrap();
+    config.terminal_session_mode = "dev".into();
+    apply_terminal_session_mode(&config, &store).unwrap();
+    assert_eq!(persona_of(TERMINAL), "someone-else");
+    let lane = store.session_id();
+    assert_ne!(&*lane, TERMINAL);
+    assert_eq!(persona_of(&lane), DEV_PERSONA);
+}

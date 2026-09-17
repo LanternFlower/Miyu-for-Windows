@@ -215,6 +215,12 @@ pub(in crate::web) async fn actor_loop(
                     reset_conversation,
                 );
                 if result.is_ok() {
+                    // 「终端集成会话默认模式」改了就当场换人格，下一轮生效。
+                    if let Err(error) =
+                        crate::web::sessions::apply_terminal_session_mode(&config, &state_store)
+                    {
+                        tracing::warn!(error = %error, "terminal session mode not applied");
+                    }
                     resource_cache.lock().unwrap().clear();
                     turn_engine.set(if agent.is_some() {
                         TurnEngineState::READY

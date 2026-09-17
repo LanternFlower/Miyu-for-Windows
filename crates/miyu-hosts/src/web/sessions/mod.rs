@@ -293,6 +293,48 @@ pub(in crate::web) fn session_overview_json(
 /// session.
 /// 会话模式创建时定死:dev 人格(DEV_PERSONA)会话永远 Dev,其余永远
 /// Normal——客户端传什么都不构成中途切换路径。
+/// 「终端集成会话默认模式」（`config.terminal_session_mode`）。
+///
+/// 终端集成车道 = `current_session` 指针指着的那条会话（shellhook / 裸 `miyu "…"`
+/// 落进去的地方），**不是**固定的 `default`——换人格会把指针挪到新人格名下的会话
+/// 上。模式钉在会话人格上，所以这个开关做两件事：
+/// 1. 「终端集成会话」（`DEFAULT_SESSION_ID`）本身在 激活人格 ↔ dev 之间掰：dev 就
+///    挂到保留人格 dev，normal 就换回激活人格。归别的人格（有历史）的不抢。
+/// 2. 指针指着的会话不是这条车道该有的模式时，指到「终端集成会话」上；它也用不了
+///    （归了别的人格）就退到原来的自举——车道人格名下最近的会话，没有就新建。
+///
+/// 第一版只掰 `default` 不动指针，用户实测「改了没生效」：指针停在另一条普通会话
+/// 上，shell 提示符敲的话进的是那条（09-18）。daemon 启动和重载配置各对一次；
+/// 启动时它顶替了原来按激活人格的 `ensure_local_current_session`——那一步会把
+/// dev 人格的终端会话当「不可用」从指针上撵走。
+pub(in crate::web) fn apply_terminal_session_mode(
+    config: &AppConfig,
+    store: &StateStore,
+) -> Result<()> {
+    let active = config.active_persona_scope();
+    let dev = miyu_core::state::DEV_PERSONA;
+    let lane = if config.terminal_session_is_dev() {
+        dev.to_string()
+    } else {
+        active.clone()
+    };
+    let terminal = miyu_core::state::DEFAULT_SESSION_ID;
+    if let Some(record) = store.session_record(terminal)? {
+        let ours = record.persona == active || record.persona == dev;
+        if ours && record.persona != lane {
+            store.set_session_persona(terminal, &lane)?;
+        }
+    }
+    let current = store.session_id();
+    if is_available_local_session(store, &current, &lane)? {
+        return Ok(());
+    }
+    if is_available_local_session(store, terminal, &lane)? {
+        return store.switch_session(terminal);
+    }
+    ensure_local_current_session(store, &lane)
+}
+
 pub(in crate::web) fn turn_mode_for_session(
     store: &StateStore,
     session_id: &str,

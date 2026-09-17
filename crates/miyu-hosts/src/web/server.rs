@@ -17,7 +17,9 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
     state_store.init_files()?;
     let persona = config.active_persona_scope();
     state_store.adopt_sessions_for_persona(&persona)?;
-    ensure_local_current_session(&state_store, &persona)?;
+    // 终端集成车道按配置跑普通/开发模式：掰终端集成会话的人格 + 校正指针。
+    // 指针缺失/指向不可用会话时的自举也在里面（原来的 ensure_local_current_session）。
+    sessions::apply_terminal_session_mode(&config, &state_store)?;
     // Subagent audit sessions are kept for a week, cleaned at startup and
     // then daily while the daemon runs. One-shot `ask` sessions delete
     // themselves as their turn ends, so the hour-old survivors swept here are

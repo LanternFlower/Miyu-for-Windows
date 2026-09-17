@@ -10,6 +10,13 @@
 use crate::config::*;
 
 impl AppConfig {
+    /// 终端集成会话要跑开发模式吗（`terminal_session_mode == "dev"`）。
+    pub fn terminal_session_is_dev(&self) -> bool {
+        self.terminal_session_mode
+            .trim()
+            .eq_ignore_ascii_case("dev")
+    }
+
     pub fn display_language_hint(paths: &MiyuPaths) -> Option<String> {
         let raw = std::fs::read_to_string(&paths.config_file).ok()?;
         let stripped = json_comments::StripComments::new(raw.as_bytes());
@@ -292,6 +299,15 @@ impl AppConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if !matches!(
+            self.terminal_session_mode
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "normal" | "dev"
+        ) {
+            bail!("terminal_session_mode must be 'normal' or 'dev'");
+        }
         if crate::i18n::UiLanguage::parse(&self.display.language).is_none() {
             bail!(
                 "{}",

@@ -255,6 +255,17 @@
           unit: "轮",
           default: 3,
         },
+        {
+          path: "terminal_session_mode",
+          label: "终端集成会话默认模式",
+          hint: "shell 无缝对话 / 单次命令那条会话跑普通还是开发模式;改完重载配置即生效",
+          kind: "select",
+          choices: [
+            { value: "normal", label: "普通" },
+            { value: "dev", label: "开发" },
+          ],
+          default: "normal",
+        },
       ],
     },
     {

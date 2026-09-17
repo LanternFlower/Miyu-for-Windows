@@ -122,6 +122,16 @@ pub(in crate::cli) async fn run_chat_with_images(
 
 /// 程序驱动的文本模式回合:会话已由 `turn_request` 定好,带附图与覆盖,
 /// 只走 daemon(没有 daemon 就报错,不退回进程内直连)。
+/// 阅后即焚会话建在哪个人格名下：车道是开发模式就建成 dev 会话（模式钉在会话
+/// 人格上，daemon 不看客户端传的 mode），否则 None = 普通。「终端集成会话默认模式」
+/// 设成 dev 时裸 `miyu "…"` 也跟着走靠的就是这一下。
+fn ephemeral_mode(mode: PersonaLane) -> Option<&'static str> {
+    match mode {
+        PersonaLane::Dev => Some("dev"),
+        PersonaLane::Active => None,
+    }
+}
+
 pub(in crate::cli) async fn run_chat_with_images_and_options(
     paths: &MiyuPaths,
     message: String,
@@ -134,7 +144,9 @@ pub(in crate::cli) async fn run_chat_with_images_and_options(
     let session_override = match session {
         TurnSession::Current => None,
         TurnSession::Explicit(session_id) => Some(session_id),
-        TurnSession::Ephemeral => Some(create_ephemeral_session(paths, None).await?),
+        TurnSession::Ephemeral => {
+            Some(create_ephemeral_session(paths, ephemeral_mode(mode)).await?)
+        }
     };
     match try_run_remote_chat(
         paths,
@@ -175,7 +187,9 @@ pub(in crate::cli) async fn run_chat_with_options(
         let session_override = match &session {
             TurnSession::Current => None,
             TurnSession::Explicit(session_id) => Some(session_id.clone()),
-            TurnSession::Ephemeral => Some(create_ephemeral_session(paths, None).await?),
+            TurnSession::Ephemeral => {
+                Some(create_ephemeral_session(paths, ephemeral_mode(mode)).await?)
+            }
         };
         // Not `?`-through: the throwaway session has to be torn down on the
         // failure path too, otherwise a cancelled turn leaves it behind.

@@ -189,7 +189,9 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
             }
         }
     };
-    let mode = PersonaLane::Active;
+    // 终端集成会话那条车道按配置选模式（daemon 侧按会话人格强制，这里只管
+    // 直连路和 IPC 里那个遗留字段）。
+    let mode = terminal_lane_mode(&paths);
 
     if cli.shell_intercept {
         let shell_name = cli.shell.as_deref().unwrap_or("fish");
@@ -447,6 +449,14 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                 run_one_shot(&paths, root_turn, message, root_stdin, plain, mode).await
             }
         }
+    }
+}
+
+/// 「终端集成会话默认模式」：单次 / shellhook 那条路的模式。
+fn terminal_lane_mode(paths: &MiyuPaths) -> PersonaLane {
+    match AppConfig::load_or_default(paths) {
+        Ok(config) if config.terminal_session_is_dev() => PersonaLane::Dev,
+        _ => PersonaLane::Active,
     }
 }
 

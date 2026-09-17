@@ -464,6 +464,11 @@ pub(crate) fn default_codex_idle_timeout_seconds() -> u64 {
     300
 }
 
+/// 终端集成会话默认跑普通模式。
+pub(crate) fn default_terminal_session_mode() -> String {
+    "normal".to_string()
+}
+
 pub(crate) fn bool_is_true(value: &bool) -> bool {
     *value
 }

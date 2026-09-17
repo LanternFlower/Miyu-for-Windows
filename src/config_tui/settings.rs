@@ -114,13 +114,23 @@ pub(in crate::config_tui) fn edit_settings(
             ),
             config.display.fold_timeline,
         ),
+        Field::new(
+            t("Terminal session default mode", "终端集成会话默认模式"),
+            if config.terminal_session_is_dev() {
+                "dev"
+            } else {
+                "normal"
+            }
+            .to_string(),
+        )
+        .choices(&["normal", "dev"]),
     ];
     // The read-back below is by index, so an insert in the middle silently
     // writes every later value into the wrong setting. This catches that in
     // debug builds; new fields go on the end.
     debug_assert_eq!(
         fields.len(),
-        17,
+        18,
         "global settings fields changed: update the positional read-back below"
     );
     run_form_without_buttons(stdout, t(" GLOBAL SETTINGS ", " 全局设置 "), &mut fields)?;
@@ -155,6 +165,12 @@ pub(in crate::config_tui) fn edit_settings(
         .min(MAX_REPL_REPLAY_TURNS);
     config.tools.block_dangerous_commands = parse_bool_field(&fields[15].value)?;
     config.display.fold_timeline = parse_bool_field(&fields[16].value)?;
+    config.terminal_session_mode = if fields[17].value.trim().eq_ignore_ascii_case("dev") {
+        "dev"
+    } else {
+        "normal"
+    }
+    .to_string();
     Ok(())
 }
 
