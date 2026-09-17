@@ -1000,6 +1000,67 @@ fn a_trailing_stats_line_is_not_a_running_step() {
     });
 }
 
+/// 一份「正文在前、工具在后」的流水账。**一行一条写，别用字符串续行**——
+/// rustfmt 会把续行的缩进拼进字符串里，`[正文]` 前面多出十几个空格就认不出标签，
+/// 整条日志会静静地退化成「一堆无标签续行」。
+const LOG_WITH_SPEECH_FIRST: &[&str] = &[
+    "[提示] 去看看那个目录",
+    "[正文] 我先看一眼再说。",
+    "[工具] run_command\t运行命令 · ls",
+    "[结果] run_command\t运行命令 ok · 0.3s · ls",
+    "[输出] total 0",
+];
+
+/// 子代理**开过口之后**，后面那几步点开还得留得住。
+///
+/// 块 id 是按位置记的（`step_blocks[i]`），而正文段不挂块——它一度直接
+/// `continue`，于是那张表的长度停在正文段那一格，后面每一步都记不进去。每帧
+/// `to_step` 因此拿不到旧 id，`blocks::register` 现发一个新的，展开表按 id 记，
+/// 下一帧就对不上了：**点开一瞬间自己合上**（用户 09-17 实测截图）。
+#[test]
+fn a_step_after_the_subagent_speaks_stays_open_across_refreshes() {
+    with_blocks(|| {
+        let dir =
+            std::env::temp_dir().join(format!("miyu-log-after-speech-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建目录");
+        let path = dir.join("job.log");
+        let write = |extra: &[&str]| {
+            let mut lines = LOG_WITH_SPEECH_FIRST.to_vec();
+            lines.extend_from_slice(extra);
+            std::fs::write(&path, lines.join("\n") + "\n").expect("写日志");
+        };
+        write(&[]);
+        let mut screen = Screen::detached(100, 40);
+        assert!(screen.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
+        let row = screen
+            .overlay_rows()
+            .iter()
+            .position(|row| row.contains("运行命令"))
+            .unwrap_or_else(|| panic!("没有工具那一步: {:#?}", screen.overlay_rows()));
+        assert!(screen.overlay_toggle(row), "点不开");
+        assert!(
+            screen
+                .overlay_rows()
+                .iter()
+                .any(|row| row.contains("total 0")),
+            "没展开: {:?}",
+            screen.overlay_rows()
+        );
+
+        // 日志又长了一行，面板重读一遍——展开的那一块不该跟着没。
+        // 面板重读有 150ms 的节流，睡过它。
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        write(&["[思考] 空的，那就不用往下翻了。"]);
+        screen.overlay_refresh();
+        let rows = screen.overlay_rows();
+        assert!(
+            rows.iter().any(|row| row.contains("total 0")),
+            "刷新之后自己合上了（块 id 每帧在换）: {rows:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+}
+
 /// `[正文+]` 是**一截**，不是一行：读日志时粘回上一条，不另起一行。
 ///
 /// 后台面板优先订 `job.trace` 里的原始标记流，而那条流是**逐 delta** 的——一条

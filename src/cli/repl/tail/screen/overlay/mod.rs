@@ -343,6 +343,8 @@ impl Overlay {
         for (index, step) in steps.iter().enumerate() {
             // 正文不是"一步"：没有抬头、不挂块、也不连线，整段照排。
             if step.kind == StepKind::Speech {
+                // 不挂块也要**占住这一格**。见 `remember_block` 那段原委。
+                self.remember_block(index, None);
                 // 过一遍 markdown 再折行——和前台面板、主线正文一个样子。
                 entries.push(miyu_hosts::render::timeline::PanelEntry::Text(
                     miyu_hosts::render::timeline::render_speech_lines(
@@ -352,14 +354,9 @@ impl Overlay {
                 ));
                 continue;
             }
-            let block = self.step_blocks.get(index).copied();
+            let block = self.step_blocks.get(index).copied().filter(|id| *id != 0);
             let step = self.to_step(index, step, head_width, block);
-            // 块 id 按位置复用：日志是只增的，第 i 步永远是第 i 步。
-            if let Some(id) = step.block_id() {
-                if self.step_blocks.len() == index {
-                    self.step_blocks.push(id);
-                }
-            }
+            self.remember_block(index, step.block_id());
             let row = match step.block_id() {
                 Some(id) => format!(
                     "{}{}{}",
@@ -379,6 +376,24 @@ impl Overlay {
             }
         }
         miyu_hosts::render::timeline::thread_panel(entries)
+    }
+
+    /// 第 `index` 步用的是哪一块——**按位置记**，不挂块的那些用 `0` 占位。
+    ///
+    /// 占位这件事一度漏了：正文段（`Speech`）不挂块就直接 `continue`，于是
+    /// `step_blocks.len()` 停在它那一格，后面每一步的 `len() == index` 都不成立、
+    /// 一个都记不住。表现出来是**点开一下，下一帧自己就合上了**——每帧
+    /// `to_step` 拿不到旧 id，`blocks::register` 现发一个新的，而展开表是按 id
+    /// 记的（用户 09-17 实测：「存在的 tag 行我点击之后它展开了一瞬间又会自己
+    /// 收起来」）。顺带还把登记处当垃圾场用：每帧几十块，4000 行的上限几秒
+    /// 就把别人的块挤掉。
+    fn remember_block(&mut self, index: usize, id: Option<u64>) {
+        while self.step_blocks.len() < index {
+            self.step_blocks.push(0);
+        }
+        if self.step_blocks.len() == index {
+            self.step_blocks.push(id.unwrap_or(0));
+        }
     }
 
     /// 一条日志步 → 一个渲染用的 `Step`：抬头按面板宽度拼好，正文折好上色。
