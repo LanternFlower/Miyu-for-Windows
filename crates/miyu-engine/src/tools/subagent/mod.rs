@@ -12,6 +12,9 @@ use std::time::Duration;
 
 mod audit;
 mod log;
+/// 过程协议（标签清单、行解析、标记解析）。格式由**写的这一侧**定，读的那一侧
+/// （后台面板）对着同一份。
+pub mod protocol;
 
 use self::audit::*;
 use self::log::*;

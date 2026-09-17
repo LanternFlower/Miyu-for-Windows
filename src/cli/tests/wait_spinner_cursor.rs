@@ -168,7 +168,7 @@ fn a_settled_tool_card_leaves_exactly_one_blank_before_what_follows() {
         10,
     );
     renderer.use_buffered_output();
-    renderer.live_summary = true;
+    renderer.use_terminal_surface();
 
     // 先有一段正文(真实回合里工具前后都夹着正文),再跑一个非命令工具。
     renderer
@@ -220,9 +220,9 @@ fn a_settled_command_card_leaves_exactly_one_blank_before_what_follows() {
             10,
         );
         renderer.use_buffered_output();
-        // 测试里 stdout 不是终端,`live_summary` 默认为假 → 实时块根本不画,
-        // 量到的是静态路径。用户看到的是实时那条,必须显式打开。
-        renderer.live_summary = true;
+        // 测试里 stdout 不是终端 → 出厂选的是管道那一面,实时块根本不画,
+        // 量到的是静态路径。用户看到的是实时那条,必须显式选。
+        renderer.use_terminal_surface();
         renderer
             .write_chunk(ChatStreamChunk {
                 kind: ChatStreamKind::Content,
@@ -275,7 +275,7 @@ fn back_to_back_command_cards_leave_exactly_one_blank() {
             10,
         );
         renderer.use_buffered_output();
-        renderer.live_summary = true;
+        renderer.use_terminal_surface();
 
         // 超宽命令与超宽输出:真实终端里这些会折行,而清除按记录的宽度换算
         // 物理行数(`rendered_physical_rows`)。短行永远试不出折行相关的错位,

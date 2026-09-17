@@ -18,6 +18,7 @@ use crossterm::{
     terminal::{Clear, ClearType},
 };
 use miyu_hosts::render::blocks;
+use miyu_hosts::render::timeline::StepKind;
 use std::io::Write;
 
 mod log;
@@ -203,6 +204,20 @@ impl Overlay {
     }
 
     fn reload_file(&mut self, force: bool) {
+        // 面板开着就告诉轮询线程「我在看这个任务」，它顺带把原始标记流拉回来。
+        // 标记流不受日志那道「按自然段落盘」的闸限制——实测那道闸能让面板整整
+        // 12 秒不动（`testkit/tui/bg_latency.py`）。
+        let traced = self.job_id.clone().and_then(|job_id| {
+            let feed = crate::cli::repl::jobs::feed()?;
+            *feed.trace_job.lock().ok()? = Some(job_id.clone());
+            let trace = feed.trace.lock().ok()?;
+            match trace.as_ref() {
+                Some((id, markers, _)) if *id == job_id && !markers.is_empty() => {
+                    Some(markers.clone())
+                }
+                _ => None,
+            }
+        });
         let Source::File {
             path,
             size,
@@ -217,13 +232,29 @@ impl Overlay {
         let current = std::fs::metadata(&*path)
             .map(|meta| meta.len())
             .unwrap_or(0);
-        if !force && current == *size {
+        // 标记流在手时不看文件大小：日志半天不动，标记流可能已经走了好几步。
+        if !force && traced.is_none() && current == *size {
             return;
         }
         *size = current;
         *last_reload = Some(std::time::Instant::now());
-        let text = read_tail(path, LOG_TAIL_BYTES);
-        let lines = self.render_log(&text);
+        let lines = match traced {
+            // 有标记流就走它（路 B）。攒步照旧无状态重算——省的是「等段落」那份
+            // 延迟，不是重算那点开销。
+            Some(markers) => {
+                let events = markers.iter().filter_map(|marker| {
+                    miyu_engine::tools::subagent::protocol::from_marker(marker)
+                });
+                let steps = log::steps_from_events(events);
+                self.render_steps(steps)
+            }
+            // 退路（路 A）：daemon 重启后内存里的 trace 就没了，老任务也只有日志;
+            // 后台**命令**任务从来不走标记流。
+            None => {
+                let text = read_tail(path, LOG_TAIL_BYTES);
+                self.render_log(&text)
+            }
+        };
         self.body = parse_body(&lines, self.cols);
         // 展开着的那几块留着，只是把内容换成新的——同 `refresh` 里那条注释：
         // 一刷新就整张清掉的话，刚点开的东西立刻自己缩回去。
@@ -238,10 +269,6 @@ impl Overlay {
     /// 另一个 id、当场合上。
     fn render_log(&mut self, text: &str) -> Vec<String> {
         let indent = "  ";
-        let rail = miyu_hosts::render::timeline::panel_rail();
-        // 抬头能占多宽：和前台那种面板同一把尺（`panel_step_line` 自己还会再
-        // 裁一刀兜底）。再扣掉图标那一格和尾巴上的 ` · ok`。
-        let head_width = miyu_hosts::render::timeline::panel_step_width_for_head().max(12);
         // 后台**命令**的日志就是一堆输出行，没有"步"可言——按时间线排会变成
         // 每行一个节点、行行之间一条连线，那是把日志排成了梯子。原样折行就好。
         if !text.lines().any(|line| {
@@ -278,182 +305,179 @@ impl Overlay {
                 }))
                 .collect();
         }
-        let steps = log_steps(text);
+        self.render_steps(log_steps(text))
+    }
+
+    /// 把已经攒好的那几步排成行。两条进料口（读日志 / 订标记流）共用。
+    fn render_steps(&mut self, steps: Vec<LogStep>) -> Vec<String> {
+        let indent = "  ";
+        let head_width = miyu_hosts::render::timeline::panel_step_width_for_head().max(12);
         if steps.len() < self.step_blocks.len() {
             // 日志被从头截断过（只读末尾那一段），位置对不上了，重来一轮。
             self.step_blocks.clear();
         }
-        let mut out: Vec<String> = Vec::new();
-        // 「提示词」那一行是抬头，不是时间线的一步：它和第一步之间不连线、空一行
-        // ——连着画的话，思考那一步和提示词看着是一条线上的两步，收缩时就像被
-        // 提示词绑住了（用户原话）。
-        // 连线只连**相邻的两步**。步和正文之间、提示词和第一步之间都是空一行：
-        // 收缩行底下紧跟着它产出的那段话（和主线「Worked for → 正文」一个次序），
-        // 正文之后的下一步另起一段。原来正文之后也画连线，看着像收缩行属于上面
-        // 那段话（用户实测：正文和 timeline 反了）。
-        #[derive(Clone, Copy, PartialEq)]
-        enum Previous {
-            None,
-            Prompt,
-            Speech,
-            Step,
-        }
-        let mut previous = Previous::None;
+        // 「步与步之间怎么空行」的规矩**只有一份**，在 `thread_panel` 里（前台那块
+        // 面板也用它）。这儿只负责把每一步变成一个 `PanelEntry`——取数的地方不同，
+        // 长相不该不同（用户原话：后台子代理和前台子代理应该是一回事啊）。
+        //
+        // 原来这儿另有一份四状态的 `Previous` 状态机，和那边三状态的那份做的是
+        // 同一件事（报告 §2.2 项 D）。合并之后 golden 逐字节不变。
+        let mut entries: Vec<miyu_hosts::render::timeline::PanelEntry> = Vec::new();
         for (index, step) in steps.iter().enumerate() {
             // 正文不是"一步"：没有抬头、不挂块、也不连线，整段照排。
-            if step.speech {
-                if previous != Previous::None {
-                    out.push(String::new());
-                }
-                previous = Previous::Speech;
+            if step.kind == StepKind::Speech {
                 // 过一遍 markdown 再折行——和前台面板、主线正文一个样子。
-                out.extend(
+                entries.push(miyu_hosts::render::timeline::PanelEntry::Text(
                     miyu_hosts::render::timeline::render_speech_lines(
                         &step.body.join("\n"),
                         self.cols.saturating_sub(indent.len()),
-                    )
-                    .into_iter()
-                    .map(|piece| format!("{indent}{piece}")),
-                );
+                    ),
+                ));
                 continue;
             }
-            match previous {
-                Previous::Step => out.push(rail.clone()),
-                Previous::Prompt | Previous::Speech => out.push(String::new()),
-                Previous::None => {}
+            let block = self.step_blocks.get(index).copied();
+            let step = self.to_step(index, step, head_width, block);
+            // 块 id 按位置复用：日志是只增的，第 i 步永远是第 i 步。
+            if let Some(id) = step.block_id() {
+                if self.step_blocks.len() == index {
+                    self.step_blocks.push(id);
+                }
             }
-            previous = if step.glyph == PROMPT_GLYPH {
-                Previous::Prompt
-            } else {
-                Previous::Step
-            };
-            // 抬头一律暗色，绿色留给展开之后的思考正文——和主线那边一个规矩。
-            // 反过来（抬头绿、正文白）看着像把手比内容还重要，而这一行本来就
-            // 只是个把手（用户实测：浮层里思考行和思考展开内容的颜色反了）。
-            let _ = step.green;
-            // ok 不上抬头：主线和前台面板都不写 ok，跑砸了靠红色和打叉说话。
-            // 日志末尾那个还没有结果的调用例外：标出它正在跑，不然看着像卡住了。
-            let status = if step.status.is_none() && step.running {
-                format!(" · {}", miyu_base::i18n::text("running", "运行中"))
-            } else {
-                String::new()
-            };
-            // 收缩行合着的时候是 `›`，点开才翻成 `⌄`（和主线那条一样）。
-            let glyph = if step.glyph == SUMMARY_GLYPH {
-                miyu_hosts::render::timeline::fold_glyph_closed()
-            } else {
-                step.glyph.as_str()
-            };
-            // 想的那一步按主线的说法写：`已思考  <窥视>`。面板里光甩一句原文
-            // 出来，看不出那是"在想"还是工具吐的东西。
-            let head = if step.thinking {
-                // 窥视取**末尾**：想到哪儿了比想过什么更有用，而且它每刷新一次
-                // 就往前走一点，正好是「它还活着」的指示。取开头的话，一整段
-                // 思考落下来之后这一行就再也不动了（用户实测：思考的窥视刷新
-                // 似乎不太对）。
-                format!(
+            let row = match step.block_id() {
+                Some(id) => format!(
                     "{}{}{}",
-                    miyu_base::i18n::text("thought", "已思考"),
-                    miyu_hosts::render::timeline::PEEK_SEP,
-                    miyu_hosts::render::timeline::peek_tail(&step.head, head_width)
-                )
-            } else {
-                step.head.clone()
-            };
-            let head = miyu_hosts::render::clip_to_display_width(&head, head_width);
-            // 前台那种面板（走事件）和这种（读日志）用的是**同一份**排版代码：
-            // 取数的地方不同，长相不该不同（用户原话：后台子代理和前台子代理
-            // 应该是一回事啊，为什么感觉你做出来两个浮层）。
-            // 正在跑／正在准备的那一行左边距上转着点阵，和主线一样。
-            let line = if step.running || step.preparing {
-                miyu_hosts::render::timeline::panel_live_step_line(
-                    glyph,
-                    &format!("{head}{status}"),
-                )
-            } else {
-                miyu_hosts::render::timeline::panel_step_line(
-                    glyph,
-                    &format!("{head}{status}"),
-                    step.status == Some("err"),
-                )
-            };
-            let detail = if step.inner.is_empty() {
-                log_step_detail(&line, step)
-            } else {
-                self.fold_detail(index, &line, step)
-            };
-            let id = match self.step_blocks.get(index) {
-                Some(id) => {
-                    blocks::update(*id, String::new(), detail);
-                    Some(*id)
-                }
-                None => {
-                    let id = blocks::register(detail);
-                    if let Some(id) = id {
-                        self.step_blocks.push(id);
-                    }
-                    id
-                }
-            };
-            match id {
-                Some(id) => out.push(format!(
-                    "{}{line}{}",
                     blocks::begin_marker(id),
+                    step.line(),
                     blocks::END_MARKER
-                )),
-                None => out.push(line),
+                ),
+                None => step.line().to_string(),
+            };
+            // 「提示词」那一行是抬头，不是时间线的一步：它和第一步之间不连线、
+            // 空一行——连着画的话，思考那一步和提示词看着是一条线上的两步，收缩
+            // 时就像被提示词绑住了（用户原话）。
+            if step.kind() == StepKind::Prompt {
+                entries.push(miyu_hosts::render::timeline::PanelEntry::Header(row));
+            } else {
+                entries.push(miyu_hosts::render::timeline::PanelEntry::Step(row));
             }
         }
-        out
+        miyu_hosts::render::timeline::thread_panel(entries)
+    }
+
+    /// 一条日志步 → 一个渲染用的 `Step`：抬头按面板宽度拼好，正文折好上色。
+    ///
+    /// 「什么时候渲染」是这两块面板**唯一**剩下的差别：前台攒步时就渲染好，后台
+    /// 每帧重解析、在这儿渲染。渲染完之后落进的是同一个 `Step`，后面排版、收缩、
+    /// 点开的规则就都共用了（`thread_panel` / `fold_block_lines` /
+    /// `step_detail_lines`）。
+    fn to_step(
+        &mut self,
+        index: usize,
+        log: &LogStep,
+        head_width: usize,
+        block: Option<u64>,
+    ) -> miyu_hosts::render::timeline::Step {
+        // ok 不上抬头：主线和前台面板都不写 ok，跑砸了靠红色和打叉说话。
+        // 日志末尾那个还没有结果的调用例外：标出它正在跑，不然看着像卡住了。
+        let status = if log.status.is_none() && log.running {
+            format!(" · {}", miyu_base::i18n::text("running", "运行中"))
+        } else {
+            String::new()
+        };
+        let line = self.step_line(log, head_width, &status);
+        let body = if log.inner.is_empty() {
+            log_detail_body(log)
+        } else {
+            self.fold_body(index, &log.inner, head_width)
+        };
+        let mut step = miyu_hosts::render::timeline::Step::panel(log.kind, line, body, block);
+        // 这一步自己那块：按位置复用，内容每帧重灌（日志还在长）。
+        let detail = miyu_hosts::render::timeline::step_detail_lines(&step);
+        let id = match block {
+            Some(id) => {
+                blocks::update(id, String::new(), detail);
+                Some(id)
+            }
+            None => blocks::register(detail),
+        };
+        step.set_block(id);
+        step
+    }
+
+    /// 这一步那一行长什么样。
+    fn step_line(&self, log: &LogStep, head_width: usize, status: &str) -> String {
+        // 收缩行合着的时候是 `›`，点开才翻成 `⌄`（和主线那条一样）。
+        // 按 `kind` 认，不比图标：比图标那条路已经让装工具那一步出现过两遍
+        //（`load_tools` 的图标和「差事」撞了）。
+        let glyph = if log.kind == StepKind::Fold {
+            miyu_hosts::render::timeline::fold_glyph_closed()
+        } else {
+            log.glyph.as_str()
+        };
+        // 想的那一步按主线的说法写：`已思考 · 1.2s`。面板里光甩一句原文出来，
+        // 看不出那是"在想"还是工具吐的东西。
+        //
+        // **§6.3 第 1 项，用户 09-17 拍板：两边都不带窥视，取前台那份。** 在此
+        // 之前这儿有两种写法互相打架：可见的那几行不带耗时、带窥视；收缩里的那
+        // 几步带耗时、也带窥视（那份构造在合并步模型时成了死代码，耗时因此从
+        // 折叠里一起丢了，而 `#![allow(dead_code)]` 把警告盖住了）。现在一种。
+        let head = if log.kind == StepKind::Thought {
+            let mut head = miyu_base::i18n::text("thought", "已思考").to_string();
+            if let Some(secs) = log
+                .elapsed
+                .and_then(miyu_hosts::render::timeline::reported_seconds)
+            {
+                head.push_str(" · ");
+                head.push_str(&secs);
+            }
+            head
+        } else {
+            log.head.clone()
+        };
+        let head = miyu_hosts::render::clip_to_display_width(&head, head_width);
+        // 正在跑／正在准备的那一行左边距上转着点阵，和主线一样。
+        if log.running || log.preparing {
+            miyu_hosts::render::timeline::panel_live_step_line(glyph, &format!("{head}{status}"))
+        } else {
+            miyu_hosts::render::timeline::panel_step_line(
+                glyph,
+                &format!("{head}{status}"),
+                log.status == Some("err"),
+            )
+        }
     }
 
     /// 收缩行点开是什么样：收起来的那几步串成时间线，每一步各自登记成块，
     /// 再点开才是它的正文。块 id 按 `(收缩行位置, 步位置)` 复用，刷新不换 id。
-    fn fold_detail(&mut self, fold_index: usize, line: &str, fold: &LogStep) -> Vec<String> {
-        let head_width = miyu_hosts::render::timeline::panel_step_width_for_head().max(12);
-        let mut rows: Vec<String> = Vec::new();
-        for (inner_index, step) in fold.inner.iter().enumerate() {
-            if inner_index > 0 {
-                rows.push(miyu_hosts::render::timeline::panel_rail());
+    ///
+    /// 串行与登记的规则与主线、前台面板共用（`fold_block_lines`）——那三份原来
+    /// 逐行相同地各写了一遍（报告 §2.1 第 4 条）。
+    fn fold_body(
+        &mut self,
+        fold_index: usize,
+        inner: &[LogStep],
+        head_width: usize,
+    ) -> Vec<String> {
+        let mut children: Vec<miyu_hosts::render::timeline::Step> = inner
+            .iter()
+            .enumerate()
+            .map(|(child_index, log)| {
+                let line = self.step_line(log, head_width, "");
+                miyu_hosts::render::timeline::Step::panel(
+                    log.kind,
+                    line,
+                    log_detail_body(log),
+                    self.fold_blocks.get(&(fold_index, child_index)).copied(),
+                )
+            })
+            .collect();
+        let rows = miyu_hosts::render::timeline::fold_block_lines(&mut children);
+        for (child_index, child) in children.iter().enumerate() {
+            if let Some(id) = child.block_id() {
+                self.fold_blocks.insert((fold_index, child_index), id);
             }
-            let head = step_head(step, head_width);
-            let head = miyu_hosts::render::clip_to_display_width(&head, head_width);
-            let inner_line = miyu_hosts::render::timeline::panel_step_line(
-                &step.glyph,
-                &head,
-                step.status == Some("err"),
-            );
-            let detail = log_step_detail(&inner_line, step);
-            let id = match self.fold_blocks.get(&(fold_index, inner_index)).copied() {
-                Some(id) => {
-                    blocks::update(id, String::new(), detail);
-                    Some(id)
-                }
-                None => {
-                    let id = blocks::register(detail);
-                    if let Some(id) = id {
-                        self.fold_blocks.insert((fold_index, inner_index), id);
-                    }
-                    id
-                }
-            };
-            rows.push(match id {
-                Some(id) => format!(
-                    "{}{inner_line}{}",
-                    blocks::begin_marker(id),
-                    blocks::END_MARKER
-                ),
-                None => inner_line,
-            });
         }
-        // 收缩行点开是时间线：抬头（`›` 翻成 `⌄`）、连线、各步同一列，不缩进
-        // ——和主线那份一个样子。
-        let mut detail = Vec::with_capacity(rows.len() + 3);
-        detail.push(miyu_hosts::render::timeline::fold_line_open(line));
-        detail.push(miyu_hosts::render::timeline::panel_rail());
-        detail.extend(rows);
-        detail.push(String::new());
-        detail
+        rows
     }
 
     /// 内容有变就重取。

@@ -128,6 +128,20 @@ pub(in crate::cli) struct SharedJobsFeed {
     /// were rendered live (their DB report must not print again).
     pub(in crate::cli) followed_runs: std::sync::Mutex<std::collections::HashSet<String>>,
     pub(in crate::cli) rendered_turns: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// 后台子代理面板**正开着**哪个任务。有值这条轮询就顺带拉它的原始标记流。
+    pub(in crate::cli) trace_job: std::sync::Mutex<Option<String>>,
+    /// 拉回来的那份：`(job_id, 全部标记, 游标)`。面板每帧读它，攒步照旧是无状态
+    /// 重算——比 150ms 重读整份日志便宜，而且不受「按自然段落盘」那道闸的限制。
+    pub(in crate::cli) trace: std::sync::Mutex<Option<(String, Vec<String>, u64)>>,
+}
+
+/// 这个 REPL 进程里那一条。后台面板要读 `trace`，而它拿不到 `SharedJobsFeed` 的
+/// 引用（`Screen` 不持有它）——与其把引用一路穿下去，不如让轮询线程把自己登记
+/// 在这儿。一个 REPL 进程只有一条。
+static FEED: std::sync::OnceLock<std::sync::Arc<SharedJobsFeed>> = std::sync::OnceLock::new();
+
+pub(in crate::cli) fn feed() -> Option<&'static std::sync::Arc<SharedJobsFeed>> {
+    FEED.get()
 }
 
 /// 两个去重集合的容量兜底。常开 REPL 的后台唤醒一直发生,集合只增不减;
@@ -225,6 +239,7 @@ impl JobsFeed {
 /// costs microseconds either way.
 pub(in crate::cli) fn spawn_jobs_poll_thread(paths: MiyuPaths) -> std::sync::Arc<SharedJobsFeed> {
     let shared = std::sync::Arc::new(SharedJobsFeed::default());
+    let _ = FEED.set(shared.clone());
     let feed = shared.clone();
     std::thread::spawn(move || {
         let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
@@ -285,17 +300,91 @@ pub(in crate::cli) fn spawn_jobs_poll_thread(paths: MiyuPaths) -> std::sync::Arc
                     }
                 }
             }
-            std::thread::sleep(std::time::Duration::from_secs(1));
+            // 面板开着的时候按 150ms 跟标记流：整份任务总览一秒一次就够，但面板
+            // 要的是「它还活着」的手感。拉不到就什么都不动，面板自己退回读日志。
+            for _ in 0..TRACE_TICKS_PER_POLL {
+                let want = { feed.trace_job.lock().unwrap().clone() };
+                if let Some(job_id) = want {
+                    let after = {
+                        let trace = feed.trace.lock().unwrap();
+                        match trace.as_ref() {
+                            Some((id, _, cursor)) if *id == job_id => *cursor,
+                            _ => 0,
+                        }
+                    };
+                    if let Ok((markers, cursor, reset)) =
+                        runtime.block_on(fetch_job_trace(&paths, &job_id, after))
+                    {
+                        let mut slot = feed.trace.lock().unwrap();
+                        match slot.as_mut() {
+                            // 接着上次那份往后攒。`reset` = 缓冲把中间挤掉了／任务
+                            // 已经不在 daemon 里，这份得从头算。
+                            Some((id, seen, at)) if *id == job_id && !reset => {
+                                seen.extend(markers);
+                                *at = cursor;
+                            }
+                            _ => *slot = Some((job_id.clone(), markers, cursor)),
+                        }
+                    }
+                }
+                std::thread::sleep(TRACE_TICK);
+            }
         }
     });
     shared
 }
+
+/// 面板跟标记流的节奏。和原来重读日志那个间隔一样——换的是「读什么」，不是
+/// 「多久读一次」。
+const TRACE_TICK: std::time::Duration = std::time::Duration::from_millis(150);
+/// 一轮总览（1s）里跟几次标记流。
+const TRACE_TICKS_PER_POLL: usize = 7;
 
 pub(in crate::cli) type JobsOverviewSnapshot = (
     Vec<miyu_engine::tools::jobs::JobOverview>,
     Option<String>,
     Vec<(String, String, String)>,
 );
+
+/// 后台子代理的原始进度标记，从绝对序号 `after` 之后取。
+///
+/// 返回 `(标记, 新游标, 要不要重新攒)`。`reset` 为真有两种情形：环形缓冲把 `after`
+/// 挤掉了，或者这个任务在 daemon 里已经不在了（跑完清掉、daemon 重启过）——两种
+/// 都得让面板退回读日志那条路。
+pub(in crate::cli) async fn fetch_job_trace(
+    paths: &MiyuPaths,
+    job_id: &str,
+    after: u64,
+) -> Result<(Vec<String>, u64, bool)> {
+    let mut stream = ipc::connect(&paths.ipc_socket()).await?;
+    ipc::send(
+        &mut stream,
+        &IpcRequest::new(IpcCommand::JobTrace {
+            job_id: job_id.to_string(),
+            after,
+        }),
+    )
+    .await?;
+    match ipc::receive::<IpcFrame>(&mut stream).await? {
+        Some(IpcFrame::AdminResult { data, .. }) => Ok((
+            data.get("markers")
+                .and_then(serde_json::Value::as_array)
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(|row| row.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            data.get("cursor")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(after),
+            data.get("reset")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+        )),
+        other => anyhow::bail!("unexpected frame for job trace: {other:?}"),
+    }
+}
 
 pub(in crate::cli) async fn fetch_jobs_overview(paths: &MiyuPaths) -> Result<JobsOverviewSnapshot> {
     let mut stream = ipc::connect(&paths.ipc_socket()).await?;

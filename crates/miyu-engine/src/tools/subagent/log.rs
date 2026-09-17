@@ -42,6 +42,9 @@ pub(super) fn spawn_subagent_log_bridge(
         // 攒成段落，遇到别的事件或段落够长了才落盘。
         let mut thinking = String::new();
         let mut speech = String::new();
+        // 这一段攒了多久：攒够 `STREAM_FLUSH_INTERVAL` 就落一条，别让面板干等。
+        let mut thinking_flush: Option<std::time::Instant> = None;
+        let mut speech_flush: Option<std::time::Instant> = None;
         // 上一次内层调用是什么时候发出的：结果回来时算耗时写进 `[结果]`。
         // 流水账里没有时间戳，面板那边"这一步花了多久""这一段 Worked for 多久"
         // 只能靠这个（用户实测：后台面板的收缩行没有 Worked for）。
@@ -71,10 +74,16 @@ pub(super) fn spawn_subagent_log_bridge(
                 if thinking.is_empty() && thinking_since.is_none() {
                     thinking_since = Some(std::time::Instant::now());
                 }
-                accumulate_stream(&mut thinking, text, "[思考]", &mut lines);
+                accumulate_stream(
+                    &mut thinking,
+                    &mut thinking_flush,
+                    text,
+                    "[思考]",
+                    &mut lines,
+                );
             } else if let Some(text) = message.strip_prefix("__subagent_content__") {
                 flush_stream_buffer(&mut thinking, "[思考]", &mut lines);
-                accumulate_stream(&mut speech, text, "[正文]", &mut lines);
+                accumulate_stream(&mut speech, &mut speech_flush, text, "[正文]", &mut lines);
             } else {
                 flush_stream_buffer(&mut thinking, "[思考]", &mut lines);
                 flush_stream_buffer(&mut speech, "[正文]", &mut lines);
@@ -144,24 +153,50 @@ fn stamp_thought_lines(lines: &mut [String], thinking_since: &mut Option<std::ti
     }
 }
 
-/// 把一小段流式文本攒进缓冲，攒够一个自然段（空行）或够长了就落一条。
+/// 一直不出现空行时，最多攒这么久就落一条。
+///
+/// 原来只有 600 字符这一道闸。**实测（`testkit/tui/bg_latency.py`）：模型想一大段
+/// 不带空行的时候，后台面板会整整 12.0 秒不动一下**——
+///
+/// ```text
+///   2419 ms  [思考]  20 字符
+///  14464 ms  [思考] 612 字符   ← 中间 12.0 秒，面板上什么都没有
+/// ```
+///
+/// 渲染统一那份报告（§6.1）把这笔账记在「150ms 文件轮询」上，据此提出加一条 IPC
+/// 直接订事件流。实测说明**主项不是轮询，是这道 600 字符的闸**：轮询最多耽误
+/// 150ms，而这道闸耽误了 12 秒。
+///
+/// 加一道时间闸就够——面板把连续的思考并成一步、抬头取最新那一段当窥视，所以
+/// 「落得更碎」正好是「它还活着」那个指示要的东西。
+pub(super) const STREAM_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// 把一小段流式文本攒进缓冲，攒够一个自然段（空行）、够长了、或者攒够久了就落
+/// 一条。
 pub(super) fn accumulate_stream(
     buffer: &mut String,
+    since: &mut Option<std::time::Instant>,
     text: &str,
     tag: &str,
     lines: &mut Vec<String>,
 ) {
+    if buffer.is_empty() {
+        *since = Some(std::time::Instant::now());
+    }
     buffer.push_str(text);
     while let Some(index) = buffer.find("\n\n") {
         let chunk: String = buffer.drain(..index + 2).collect();
         if !chunk.trim().is_empty() {
             lines.push(format!("{tag} {}", chunk.trim()));
         }
+        *since = Some(std::time::Instant::now());
     }
-    // 一直不出现空行的话也不能无限攒下去。
-    if buffer.chars().count() > 600 {
+    // 一直不出现空行的话也不能无限攒下去——攒够长、或者攒够久，都得落。
+    let stale = since.is_some_and(|at| at.elapsed() >= STREAM_FLUSH_INTERVAL);
+    if !buffer.trim().is_empty() && (buffer.chars().count() > 600 || stale) {
         lines.push(format!("{tag} {}", buffer.trim()));
         buffer.clear();
+        *since = None;
     }
 }
 
@@ -174,36 +209,12 @@ pub(super) fn flush_stream_buffer(buffer: &mut String, tag: &str, lines: &mut Ve
     lines.push(format!("{tag} {}", buffer.trim()));
     buffer.clear();
 }
-
 /// 内层工具事件压成一句人话。原样贴 JSON 的话日志里全是转义引号。
+///
+/// 拼法在 `protocol` 里，和「标记直接解成事件」那条路共用同一份——两处各拼一遍
+/// 的话，同一次调用在两条路上的抬头会慢慢长得不一样。
 fn subtool_summary(json: &str) -> String {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(json.trim()) else {
-        return json.trim().to_string();
-    };
-    let name = value
-        .get("name")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("?");
-    // 前面带上工具 id（制表符分隔）：面板那边要按 id 挑图标，光有中文名挑不出来
-    // ——所有工具就只能共用一个齿轮了。读日志的人看不到它（渲染时会切掉）。
-    let mut out = format!("{name}\t{}", crate::tools::readable_tool_name(name));
-    if let Some(ok) = value.get("ok").and_then(serde_json::Value::as_bool) {
-        out.push_str(if ok { " ok" } else { " err" });
-    }
-    if let Some(args) = value.get("args").and_then(serde_json::Value::as_str) {
-        let args = args.trim();
-        if !args.is_empty() {
-            // 先按工具自己的规矩摘一句主题（命令文本、检索词、路径……），摘不
-            // 出来就把参数的值串起来，**不**原样甩 JSON——`{"action": "info",
-            // "package_name": "zzq"}` 在面板里读起来是一团括号引号（用户实测：
-            // 浮层的参数窥视是裸 JSON）。什么都摘不出来就不带主题。
-            if let Some(subject) = crate::tools::tool_peek(name, args) {
-                out.push_str(" · ");
-                out.push_str(&miyu_base::terminal::clip_to_display_width(&subject, 200));
-            }
-        }
-    }
-    out
+    super::protocol::tool_line_text(json)
 }
 
 /// 结果事件摊成 `[结果]` + 若干 `[输出]`。

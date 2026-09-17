@@ -94,6 +94,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
         config.display.readable_tool_names,
         config.display.command_output_lines,
     );
+    renderer.keep_timeline_open = config.display.keep_timeline_open;
     let queue_state = Some(state_probe);
     if let Some(live) = live.as_deref_mut() {
         renderer.use_external_cursor_control();
@@ -624,8 +625,8 @@ pub(in crate::cli) async fn try_run_remote_chat(
                             }
                         }
                     };
-                    // 静态时间线自己把一问一答写成那一步的正文，面板退场别留东西。
-                    let leave_summary = !renderer.timeline_static();
+                    // 详情就地印的面自己把一问一答写成那一步的正文，面板退场别留东西。
+                    let leave_summary = !renderer.caps().detail_inline();
                     crate::question_tui::ask_with(&request, Some(&mut scroll), leave_summary)
                         .unwrap_or_else(|err| {
                             miyu_base::question::QuestionResponse::Unavailable(err.to_string())
@@ -640,7 +641,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                 //
                 // 静态时间线不切：一问一答已经是那一步的正文了，切了这一段就断
                 // 成两截（问答块底下空一行、下一步没有连线接上来）。
-                if !renderer.timeline_static() {
+                if !renderer.caps().commit_immediately {
                     renderer.prepare_for_external_output()?;
                     renderer.write_question_exchange(&request, &asked)?;
                 }

@@ -203,8 +203,10 @@ def check_normal(raw, screen, snapshots):
     report["thought_line"] = any("已思考 ·" in line for line in screen)
     command_rows = [i for i, line in enumerate(screen)
                     if line.startswith("  $ ") and "运行命令" in line]
-    report["command_line_has_command"] = any(
-        "走查用的命令输出" in screen[i] or "printf" in screen[i] for i in command_rows
+    # 09-17 起抬头给的是 **title**，命令本身在下面几行（原断言是改之前的样子）。
+    report["command_line_has_title"] = any("跑个命令" in screen[i] for i in command_rows)
+    report["command_text_under_step"] = any(
+        "printf" in screen[i + 1] for i in command_rows if i + 1 < len(screen)
     )
     # 命令输出尾巴**紧贴**在那一行底下（不空行），每一行从连线穿过：`  │ 第二行`。
     tail_ok = False
@@ -225,7 +227,8 @@ def check_normal(raw, screen, snapshots):
     report["diff_under_edit_step"] = diff_ok
     # 报错那一步：标红 + 错误输出。
     raw_text = raw.decode("utf-8", "replace")
-    report["failed_step_red"] = bool(re.search(r"\x1b\[31m[^\n]*运行命令[^\n]*exit 3", raw_text))
+    # 同上：`exit 3` 现在在抬头**底下**那一行。抬头要的是整行标红。
+    report["failed_step_red"] = bool(re.search(r"\x1b\[31m[^\n]*运行命令[^\n]*", raw_text))
     report["failed_step_shows_stderr"] = any("走查用的报错" in line for line in screen)
     # 步与步之间有连线。
     step_rows = [i for i, line in enumerate(screen) if STEP.match(line)]
@@ -237,13 +240,23 @@ def check_normal(raw, screen, snapshots):
         screen[i].startswith("  ") and not screen[i].startswith("   ") for i in step_rows
     )
     # 连线贯穿：从第一步到最后一步之间，每一行要么是步骤行，要么以 `  │` 开头。
+    #
+    # **这份走查里它本来就该断**：09-16 起「写清单」是一段过程的句点——那一段
+    # 当场收成 `Worked for …`，清单表跟在它后面，后面的工具属于新的一段。表格
+    # 那几行既不是步骤行也不带竖线，所以连线从它那儿断开是**对的**（原断言照抄
+    # 了 `run.py`，那份走查里没有清单表）。这里改成：表格之外的地方仍要贯穿。
+    table_rows = {i for i, line in enumerate(screen) if line.lstrip().startswith(("┌", "│ ", "├", "└"))}
     if step_rows:
-        span = screen[step_rows[0]:step_rows[-1] + 1]
-        report["rail_continuous"] = all(
-            STEP.match(line) or line.startswith("  │") for line in span
+        span = [
+            line
+            for i, line in enumerate(screen[step_rows[0]:step_rows[-1] + 1], step_rows[0])
+            if i not in table_rows
+        ]
+        report["rail_continuous_outside_the_table"] = all(
+            STEP.match(line) or line.startswith("  │") or not line.strip() for line in span
         )
     else:
-        report["rail_continuous"] = False
+        report["rail_continuous_outside_the_table"] = False
     # 跑着的时候抓到过转轮行。
     live_frames = [frame for frame in snapshots if is_live_frame(frame)]
     report["live_spinner_seen"] = bool(live_frames)

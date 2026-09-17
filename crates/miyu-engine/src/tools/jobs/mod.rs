@@ -86,6 +86,10 @@ struct JobEntry {
     /// 刷新后据它回放子过程时间线(#9:刷新丢内容)。封顶保存最近若干条,进程内、
     /// daemon 重启即清(那时任务多半也没了)。命令任务用日志文件回看,不走这。
     trace: Vec<String>,
+    /// 环形缓冲从头挤掉过多少条。`trace[i]` 的**绝对序号**是 `trace_dropped + i`
+    /// ——订阅方拿它判断「我上次读到的位置还在不在缓冲里」：不在就得整份重来，
+    /// 不然中间那几条会静静消失、面板少一段过程。
+    trace_dropped: u64,
     /// 状态行上那串量（子代理烧了多少词元）。命令类任务没有这个概念。
     metric: Option<String>,
     /// 同一个量的**数字**形态，给会话累计用。
@@ -206,6 +210,7 @@ pub fn publish_job_progress(job_id: &str, message: &str) {
             if job.trace.len() > MAX_TRACE {
                 let overflow = job.trace.len() - MAX_TRACE;
                 job.trace.drain(0..overflow);
+                job.trace_dropped += overflow as u64;
             }
         }
     }
@@ -222,6 +227,63 @@ pub fn job_trace(job_id: &str) -> Vec<String> {
         .get(job_id)
         .map(|job| job.trace.clone())
         .unwrap_or_default()
+}
+
+/// 只给测试用：立一个空任务，好往它的 trace 里塞标记。
+#[cfg(test)]
+pub(crate) fn register_test_job(label: &str) -> String {
+    let job_id = next_job_id();
+    let entry = JobEntry {
+        job_id: job_id.clone(),
+        title: label.to_string(),
+        command: String::new(),
+        workspace: PathBuf::new(),
+        session_id: None,
+        origin_tty: None,
+        platform_sender: None,
+        // 种类和游标算术无关；`Subagent` 那一支要一个 `AbortHandle`，测试里犯不上造。
+        kind: JobKind::Command { pid: 0 },
+        started_wall: SystemTime::now(),
+        started: Instant::now(),
+        // **立成「已完成」**：`shutdown_all` 只管 `Running` 的，而它对 Command 类
+        // 任务发 `killpg(pid, …)`——pid 0 是「我自己那一组」，一个假任务就能让
+        // 随后任何调用 `shutdown_all` 的测试把整个测试进程杀掉（`exit=137`，还
+        // 随测试顺序时好时坏）。`signal_process_group` 那边也加了 0 的守卫。
+        finished: Some(Instant::now()),
+        log_path: PathBuf::new(),
+        state: JobState::Exited { code: Some(0) },
+        trace: Vec::new(),
+        trace_dropped: 0,
+        metric: None,
+        metric_tokens: None,
+    };
+    jobs().lock().unwrap().insert(job_id.clone(), entry);
+    job_id
+}
+
+/// 只给测试用：假装环形缓冲已经从头挤掉过这么多条。
+#[cfg(test)]
+pub(crate) fn force_trace_dropped_for_test(job_id: &str, dropped: u64) {
+    if let Some(job) = jobs().lock().unwrap().get_mut(job_id) {
+        job.trace_dropped = dropped;
+    }
+}
+
+/// 从绝对序号 `after` 之后的那几条标记，外加**新的游标**。
+///
+/// 终端的后台子代理面板据它逐条跟（`Command::JobTrace`），不再 150ms 重读整份
+/// 日志。返回的 `reset` 为真表示 `after` 已经被环形缓冲挤掉了——订阅方得从这份
+/// （已经是缓冲里最早的那一段）重新攒，而不是接在旧的后面。
+pub fn job_trace_after(job_id: &str, after: u64) -> Option<(Vec<String>, u64, bool)> {
+    let jobs = jobs().lock().unwrap();
+    let job = jobs.get(job_id)?;
+    let base = job.trace_dropped;
+    let end = base + job.trace.len() as u64;
+    // 要的位置比缓冲最早那条还靠前：中间丢过东西，只能整份重来。
+    let reset = after < base;
+    let from = if reset { 0 } else { (after - base) as usize };
+    let from = from.min(job.trace.len());
+    Some((job.trace[from..].to_vec(), end, reset))
 }
 
 /// 某后台任务归属的会话 id(事件按它做归属过滤:成员只收到自己那份)。
@@ -450,6 +512,7 @@ pub async fn spawn_background(
         log_path: log_path.clone(),
         state: JobState::Running,
         trace: Vec::new(),
+        trace_dropped: 0,
         metric: None,
         metric_tokens: None,
     };
@@ -553,6 +616,7 @@ where
         log_path: log_path.clone(),
         state: JobState::Running,
         trace: Vec::new(),
+        trace_dropped: 0,
         metric: None,
         metric_tokens: None,
     };

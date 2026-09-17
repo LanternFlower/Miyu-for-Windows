@@ -1,4 +1,6 @@
-/target/
+# 不带尾斜杠：worktree 里 target 往往是指向主检出的符号链接（共享构建缓存），
+# `/target/` 只匹配目录，那个链接会漏进索引。
+/target
 /out/distribution/
 /.idea/
 /.vscode/

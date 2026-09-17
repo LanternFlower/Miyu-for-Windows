@@ -40,10 +40,10 @@ mod registry;
 mod relay_tests;
 mod scripts;
 mod skills;
-mod subagent;
-pub(crate) use subagent::{
-    is_subagent_marker, peek_subagent_trace, record_subagent_trace, take_subagent_trace,
-};
+pub mod subagent;
+/// 渲染层要认它:认不出的子代理标记不能原样打到屏幕上(hosts 那边的兜底分支)。
+pub use subagent::is_subagent_marker;
+pub(crate) use subagent::{peek_subagent_trace, record_subagent_trace, take_subagent_trace};
 pub mod subagent_runner;
 mod todowrite;
 pub(crate) mod voice_chat;

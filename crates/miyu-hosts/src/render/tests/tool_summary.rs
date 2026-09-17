@@ -1014,3 +1014,236 @@ fn tool_peek_spells_out_arguments_instead_of_raw_json() {
     assert_eq!(args_peek("{}"), None);
     assert_eq!(args_peek("not json"), None);
 }
+
+/// 屏幕上永远不该出现一个**机器标记**。
+///
+/// `write_tool_progress` 末尾有个兜底分支：认不出的进度按人话原样打出来
+/// （`进度 子代理: …`）。子代理的标记掉进去就是把 JSON 甩到用户脸上——
+/// `__subagent_brief__` 真的这么漏过：它只在 Full 档发，而 `display.tool_calls
+/// = full` 的终端用户正好两头都是 Full，于是屏幕上出现
+///
+/// ```text
+/// 进度 子代理: __subagent_brief__{"description":"查目录","prompt":"去看看…"}
+/// ```
+///
+/// 逐个点名 `INNER_MARKERS` + `DETACH_MARKER`，不是只钉漏过的那一个：这类 bug
+/// 的成因是「发的那侧加了个标记，读的那侧没跟上」，钉单个等于等下一个来。
+#[test]
+fn the_screen_never_shows_a_raw_marker() {
+    use crate::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
+    let payload = |marker: &str| match marker {
+        "__subagent_brief__" => r#"{"description":"查目录","prompt":"去看看"}"#.to_string(),
+        "__subtool_call__" => r#"{"name":"run_command","args":"{}"}"#.to_string(),
+        "__subtool_result__" => r#"{"name":"run_command","args":"{}","ok":true}"#.to_string(),
+        "__subtool_preparing__" => "run_command".to_string(),
+        _ => "随便点什么".to_string(),
+    };
+    // 两个档次都走一遍：Full 那条会往 stdout 直写，Summary 那条会把它记成工具的
+    // 进度行（再从状态行渗出来）。
+    for mode in [ToolCallDisplayMode::Full, ToolCallDisplayMode::Summary] {
+        for marker in miyu_engine::tools::subagent::protocol::all_markers() {
+            let mut renderer =
+                StreamRenderer::new(ReasoningDisplayMode::Summary, mode, false, true, 8);
+            renderer.use_buffered_output();
+            renderer
+                .write_tool_call("subagent", r#"{"description":"查目录"}"#)
+                .unwrap();
+            renderer
+                .write_tool_progress("subagent", &format!("{marker}{}", payload(marker)))
+                .unwrap();
+            let text = String::from_utf8_lossy(&renderer.take_output_frame()).into_owned();
+            assert!(
+                !text.contains(marker),
+                "{marker} 在 {mode:?} 档原样漏到屏幕上了: {text}"
+            );
+        }
+    }
+}
+
+/// 「显示工具调用信息 = 详细」在全屏下走时间线，不再打旧卡片（todolist:11 下半条）。
+///
+/// 全屏 + 详细档原来是个谁都没设计过的混合态：命令走时间线、别的工具打
+/// 「`工具 x` / `参数 …` / `结果 x ok` / `输出 …`」的老卡片，两种版式在同一屏上
+/// 叠着，而且那些工具**根本不进时间线**——`Worked for` 数不到它们（报告 §1.1 的
+/// S5；用户 todolist:11「用的是旧版本的 inline」）。
+///
+/// 现在有时间线就收进去，档位只决定**详情摆哪**。
+#[test]
+fn detailed_tool_calls_become_timeline_steps_in_fullscreen() {
+    use crate::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
+
+    fn run(mode: ToolCallDisplayMode) -> String {
+        let mut renderer = StreamRenderer::new(ReasoningDisplayMode::Summary, mode, false, true, 8);
+        renderer.use_buffered_output();
+        renderer.use_terminal_surface();
+        renderer
+            .write_tool_call("read", r#"{"path":"/tmp/a.txt"}"#)
+            .unwrap();
+        renderer
+            .write_tool_result("read", true, "第一行\n第二行")
+            .unwrap();
+        // 再起一个工具让这一段继续：上一步于是留在 live 区里连同它的内容重画。
+        renderer
+            .write_tool_call("glob", r#"{"pattern":"*.rs"}"#)
+            .unwrap();
+        let frame = String::from_utf8_lossy(&renderer.take_output_frame()).into_owned();
+        frame
+            .split('\n')
+            .map(super::shared::strip_ansi_for_test)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    super::timeline::with_blocks(|| {
+        let full = run(ToolCallDisplayMode::Full);
+        assert!(
+            !full.contains(&format!("{} ", t("args", "参数"))),
+            "详细档还在打旧卡片:\n{full}"
+        );
+        assert!(
+            full.contains(&crate::render::readable_tool_name("read")),
+            "详细档那一步没进时间线:\n{full}"
+        );
+        assert!(
+            full.contains("│ 第一行"),
+            "详细档该把工具输出摆在那一步底下:\n{full}"
+        );
+
+        // 摘要档同一段过程也有那一步，但输出**不**铺出来（收在块里点开才看）。
+        let summary = run(ToolCallDisplayMode::Summary);
+        assert!(
+            summary.contains(&crate::render::readable_tool_name("read")),
+            "摘要档丢了那一步:\n{summary}"
+        );
+        assert!(
+            !summary.contains("│ 第一行"),
+            "摘要档不该把输出铺在抬头底下:\n{summary}"
+        );
+    });
+}
+
+/// 子代理浮层也跟着那两个开关走（todolist:11 最后一句的前台那半）。
+///
+/// 浮层原来只看「有没有时间线」，不看 `显示思考过程` / `显示工具调用信息` ——
+/// 主线那一步的详情按档位摆，浮层里同一件事却永远收着。现在详细档下浮层里的
+/// 思考全文与工具详情同样摆在各自抬头底下。
+///
+/// 后台那块浮层（从日志攒步）还没跟上：它手上没有配置入口（报告 §2.4），
+/// 要等两个组装器合一。
+#[test]
+fn the_subagent_panel_follows_the_two_display_switches() {
+    use crate::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
+
+    fn panel(reasoning: ReasoningDisplayMode, tools: ToolCallDisplayMode) -> String {
+        let mut renderer = StreamRenderer::new(reasoning, tools, false, true, 8);
+        renderer.use_buffered_output();
+        renderer.use_terminal_surface();
+        renderer
+            .write_tool_call("subagent", r#"{"description":"查目录"}"#)
+            .unwrap();
+        renderer.subagent_thought("subagent", "先列一下再决定");
+        renderer.subagent_tool(
+            "subagent",
+            "read",
+            "读取文件",
+            r#"{"path":"/tmp/a.txt"}"#,
+            true,
+            "第一行",
+        );
+        // 浮层内容登记在块里，取出来看。
+        let id = renderer
+            .subagent_overlay_id("subagent")
+            .expect("浮层没登记");
+        crate::render::blocks::get(id)
+            .expect("浮层是空的")
+            .into_iter()
+            .map(|line| super::shared::strip_ansi_for_test(&line))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    super::timeline::with_blocks(|| {
+        let detailed = panel(ReasoningDisplayMode::Full, ToolCallDisplayMode::Full);
+        assert!(
+            detailed.contains("先列一下再决定"),
+            "详细档下浮层该把思考全文摆出来:\n{detailed}"
+        );
+        assert!(
+            detailed.contains("第一行"),
+            "详细档下浮层该把工具详情摆出来:\n{detailed}"
+        );
+
+        let summary = panel(ReasoningDisplayMode::Summary, ToolCallDisplayMode::Summary);
+        // 摘要档下抬头还在，但正文收在各自的块里，不铺在浮层那几行上。
+        assert!(
+            summary.contains(&t("thought", "已思考")),
+            "摘要档下浮层丢了思考那一步:\n{summary}"
+        );
+        assert!(
+            !summary.contains("第一行"),
+            "摘要档下浮层不该把工具详情铺出来:\n{summary}"
+        );
+    });
+}
+
+/// 浮层收段之后，露在抬头底下的那几行不该丢。
+///
+/// 面板那份收缩原来拿 `step.line` 拼行、不走 `step_rows`——于是「显示思考过程 =
+/// 详细」下摆在抬头底下的思考全文，一收段就没了（子代理开口说话就会收段，所以
+/// 这条路每次都走）。主线那份从来不丢，因为它走 `step_rows`。
+///
+/// 两份合成 `fold_block_lines` 之后，这件事由同一条规则管。
+#[test]
+fn folding_the_panel_keeps_what_was_showing_under_the_head() {
+    use crate::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
+    super::timeline::with_blocks(|| {
+        let mut renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Full,
+            ToolCallDisplayMode::Full,
+            false,
+            true,
+            8,
+        );
+        renderer.use_buffered_output();
+        renderer.use_terminal_surface();
+        renderer
+            .write_tool_call("subagent", r#"{"description":"查目录"}"#)
+            .unwrap();
+        renderer.subagent_thought("subagent", "先列一下再决定");
+        renderer.subagent_tool(
+            "subagent",
+            "read",
+            "读取文件",
+            r#"{"path":"/tmp/a.txt"}"#,
+            true,
+            "第一行",
+        );
+        // 它开口说话 = 前面那一段收成 `Worked for …`。
+        renderer.subagent_content("subagent", "里面是空的。");
+        let id = renderer
+            .subagent_overlay_id("subagent")
+            .expect("浮层没登记");
+        let rows = crate::render::blocks::get(id).expect("浮层是空的");
+        // 收缩行自己是一块：点开它才是那几步。顺着标记找进去。
+        let fold_row = rows
+            .iter()
+            .find(|row| row.contains("1 thought"))
+            .unwrap_or_else(|| panic!("这一段没收起来，测的就不是收段:\n{rows:#?}"));
+        let marker = fold_row
+            .split("miyu-block=")
+            .nth(1)
+            .and_then(|rest| rest.split('\u{7}').next())
+            .and_then(|digits| digits.parse::<u64>().ok())
+            .unwrap_or_else(|| panic!("收缩行没挂块，点不开:\n{fold_row:?}"));
+        let inside = crate::render::blocks::get(marker)
+            .expect("收缩行点开是空的")
+            .into_iter()
+            .map(|line| super::shared::strip_ansi_for_test(&line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            inside.contains("先列一下再决定"),
+            "收段之后露在抬头底下的思考全文丢了:\n{inside}"
+        );
+    });
+}

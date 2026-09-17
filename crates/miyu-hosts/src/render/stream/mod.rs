@@ -8,10 +8,10 @@
 //! （`longest_sent_meme_prefix_suffix`），不能等看完整段。
 
 mod reasoning_phase;
+pub(crate) mod surface;
 pub mod timeline;
 mod tool_summary;
 
-use crate::render::blocks;
 use crate::render::*;
 
 pub(crate) fn rendered_physical_rows(widths: &[usize], terminal_width: usize) -> u16 {
@@ -85,10 +85,16 @@ pub struct StreamRenderer {
     /// 语义 09-17 从「输出行数」改成「命令行数」,但键名不动:改了的话用户
     /// 已经设过的值会掉回默认。
     pub(crate) command_display_lines: usize,
+    /// 全屏里不把过程收成 `Worked for …`(用户 todolist:21)。只在能点开的面上
+    /// 有意义:逐步落地的面本来就不收。
+    pub keep_timeline_open: bool,
     pub(crate) command_display: Option<CommandLiveDisplay>,
     pub(crate) summary_line_active: bool,
     pub(crate) summary_lines_active: u16,
     pub(crate) last_tool_summary: String,
+    /// 目的地是不是一个有活动区的终端。**只该由 `use_terminal_surface` /
+    /// `use_piped_surface` 设**——选面要说出面的名字，别拿这个字段名冒充。
+    /// （拆 crate 之后它对外仍是 `pub`：跨 crate 的夹具还在直接读写。）
     pub live_summary: bool,
     pub wait_spinner: Option<WaitSpinner>,
     pub(crate) last_tick: Option<std::time::Instant>,
@@ -152,6 +158,7 @@ impl StreamRenderer {
             tool_seq: 0,
             readable_tool_names,
             command_display_lines,
+            keep_timeline_open: false,
             pending_after_timeline: Vec::new(),
             timeline_ends_after_tools: false,
             live_tool_blocks: BTreeMap::new(),
@@ -183,6 +190,25 @@ impl StreamRenderer {
 
     pub fn use_buffered_output(&mut self) {
         self.output = RenderOutput::Buffered(Vec::new());
+    }
+
+    /// 字节最终落进一个**真终端**（有活动区、有转轮、能回翻），哪怕本进程的
+    /// stdout 不是。
+    ///
+    /// `live_summary` 出厂取 `stdout().is_terminal()`——那问的是「我的 stdout 是
+    /// 不是终端」。回写这条路上两者分家：daemon 的 stdout 是管道，目的地却是
+    /// shellhook 那个 tty（`web/actor/job_wake.rs`）；测试夹具把帧收进缓冲，量的
+    /// 却是「用户看到的那一条」。这些地方过去各自把字段掰成 `true`，等于拿一个
+    /// 字段名冒充 surface 选择（`docs/plan/2026-09-17-render-unification.md`
+    /// §5 第 2 条）。
+    pub fn use_terminal_surface(&mut self) {
+        self.live_summary = true;
+    }
+
+    /// 反过来：字节进管道，没有活动区（surface S1，老的一行摘要）。非终端环境
+    /// 里出厂就是这个值，显式写出来是为了让用例说清自己在量哪一面。
+    pub fn use_piped_surface(&mut self) {
+        self.live_summary = false;
     }
 
     pub fn take_output_frame(&mut self) -> Vec<u8> {
@@ -231,9 +257,7 @@ impl StreamRenderer {
         {
             return Ok(());
         }
-        if self.reasoning_mode == ReasoningDisplayMode::Summary
-            && chunk.kind == ChatStreamKind::Reasoning
-        {
+        if self.captures_reasoning() && chunk.kind == ChatStreamKind::Reasoning {
             // 真·交错思考:正文行还开着就先收行,转轮画在自己的行上,
             // 不然 MoveToColumn(0)+清行会抹掉半行正文。
             if self.mode == Some(ChatStreamKind::Content) {
@@ -257,6 +281,8 @@ impl StreamRenderer {
             }
             self.switch_mode(chunk.kind)?;
         }
+        // 能力位要在借走 `self.output` 之前问:借用检查不让同时拿。
+        let expandable = self.caps().expandable;
         let stdout = &mut self.output;
         if chunk.kind == ChatStreamKind::Reasoning {
             write_full_reasoning_chunk(stdout, &text)?;
@@ -267,7 +293,7 @@ impl StreamRenderer {
             // 全屏：正文也缩进两格，和时间线、用户消息共用一条装订边。
             // `push` 只吐**整行**（半行留在它自己的缓冲里），所以这里逐行加
             // 前缀不会把一行切成两半。
-            let rendered = if blocks::enabled() {
+            let rendered = if expandable {
                 timeline::indent_body(&rendered)
             } else {
                 rendered
@@ -320,10 +346,12 @@ impl StreamRenderer {
 
     pub fn write_system_message(&mut self, message: &str) -> Result<()> {
         self.prepare_for_external_output()?;
+        // 能力位要在借走 `self.output` 之前问:借用检查不让同时拿。
+        let expandable = self.caps().expandable;
         let stdout = &mut self.output;
         // 全屏：系统提示和时间线里的通知一个样子——暗色、带图标、退两格，
         // 不是贴着第 0 列的一行灰字。
-        if blocks::enabled() {
+        if expandable {
             let line = timeline::indent_body(&format!(
                 "\x1b[2m{} {message}\x1b[0m\n",
                 timeline::glyph_notice()
@@ -346,7 +374,7 @@ impl StreamRenderer {
         // 全屏：摘要先攒着，压完收成一块点开看。整段灰字流到正文里，几十行
         // 摘要把对话冲散了（用户：压缩上下文没有任何输出吗——inline 那套灰字在
         // 全屏下本来就该折起来）。
-        if blocks::enabled() {
+        if self.caps().expandable {
             self.compact_text.push_str(&chunk.text);
             return Ok(());
         }
@@ -360,7 +388,7 @@ impl StreamRenderer {
     }
 
     pub fn finish_compact(&mut self) -> Result<()> {
-        if blocks::enabled() {
+        if self.caps().expandable {
             let summary = std::mem::take(&mut self.compact_text);
             timeline::write_compact_summary(
                 &mut self.output,
@@ -398,11 +426,13 @@ impl StreamRenderer {
         }
         self.end_subagent_stream_line()?;
         if self.mode == Some(ChatStreamKind::Content) && !self.plain {
+            // 能力位要在借走 `self.output` 之前问:借用检查不让同时拿。
+            let expandable = self.caps().expandable;
             let stdout = &mut self.output;
             let pending = self.sent_meme_filter.finish();
             if !pending.is_empty() {
                 let rendered = self.markdown.push(&pending);
-                let rendered = if blocks::enabled() {
+                let rendered = if expandable {
                     timeline::indent_body(&rendered)
                 } else {
                     rendered
@@ -410,7 +440,7 @@ impl StreamRenderer {
                 write!(stdout, "{rendered}")?;
             }
             let rendered = self.markdown.flush();
-            let rendered = if blocks::enabled() {
+            let rendered = if expandable {
                 timeline::indent_body(&rendered)
             } else {
                 rendered
@@ -421,7 +451,7 @@ impl StreamRenderer {
         if self.mode == Some(ChatStreamKind::Reasoning) {
             execute!(self.output, ResetColor)?;
         }
-        if stream_needs_terminating_newline(self.mode, self.reasoning_mode) {
+        if stream_needs_terminating_newline(self.mode, self.captures_reasoning()) {
             writeln!(self.output)?;
         }
         self.finalize_reasoning_summary()?;
@@ -473,9 +503,7 @@ impl StreamRenderer {
     }
 
     pub(crate) fn end_active_stream_line(&mut self) -> Result<()> {
-        if self.reasoning_mode == ReasoningDisplayMode::Summary
-            && self.mode == Some(ChatStreamKind::Reasoning)
-        {
+        if self.captures_reasoning() && self.mode == Some(ChatStreamKind::Reasoning) {
             self.mode = None;
             return Ok(());
         }
@@ -483,9 +511,11 @@ impl StreamRenderer {
         if was_reasoning {
             execute!(self.output, ResetColor)?;
         } else if self.mode == Some(ChatStreamKind::Content) && !self.plain {
+            // 能力位要在借走 `self.output` 之前问:借用检查不让同时拿。
+            let expandable = self.caps().expandable;
             let stdout = &mut self.output;
             let rendered = self.markdown.flush();
-            let rendered = if blocks::enabled() {
+            let rendered = if expandable {
                 timeline::indent_body(&rendered)
             } else {
                 rendered
@@ -544,17 +574,31 @@ impl StreamRenderer {
         self.clear_summary_lines()
     }
 
-    /// 回合收尾时命令还在跑：把它此刻的样子记到统计上，随后
-    /// `finalize_tools_summary` 会把它收成一步（没跑完 = 已中断，红色打叉）。
-    fn interrupt_command_display(&mut self, mut display: CommandLiveDisplay) {
+    /// 命令那一步的两份内容:抬头底下露着的几行、点开看到的全部。
+    ///
+    /// 详情就地印的面(没处点开)把命令那几行当成它能给的全部;能点开的面把命令
+    /// 留在抬头底下、把命令加输出收进块里。这一手原来在两处逐字重复
+    /// (`interrupt_command_display` 与 `write_tool_result`),改一处忘一处的经典
+    /// 形状。
+    fn command_step_parts(
+        &self,
+        display: &mut CommandLiveDisplay,
+        ok: bool,
+    ) -> (Vec<String>, Vec<String>) {
         let width = timeline::detail_width();
-        display.set_result(false);
-        let rows = display.command_rows(width, self.command_display_lines, true);
-        let (detail, tail) = if self.timeline_static() {
+        let rows = display.command_rows(width, self.command_display_lines, !ok);
+        if self.caps().detail_inline() {
             (rows, Vec::new())
         } else {
             (display.timeline_detail(width), rows)
-        };
+        }
+    }
+
+    /// 回合收尾时命令还在跑：把它此刻的样子记到统计上，随后
+    /// `finalize_tools_summary` 会把它收成一步（没跑完 = 已中断，红色打叉）。
+    fn interrupt_command_display(&mut self, mut display: CommandLiveDisplay) {
+        display.set_result(false);
+        let (detail, tail) = self.command_step_parts(&mut display, false);
         // 命令工具在统计里叫什么名字（`run_command` / `Bash`）由事件决定，
         // 找那个还没跑完的就是它。
         let name = self
@@ -571,13 +615,46 @@ impl StreamRenderer {
     }
 }
 
+/// 「已回答 N 个问题」+ 每题一行「标题：答案」——**只出文字**，折行、裁宽、
+/// 配色由各自的面去做。
+///
+/// 同一份内容有两个长相：静态时间线把它当那一步的正文（折行、跟着连线穿过去），
+/// 全屏写成一块独立竖条（裁到面宽）。两边原来各抄了一遍措辞，靠人眼对齐——改一
+/// 处忘一处就是两边说法不一样，而这两条路同一台机器上都会走到。
+pub(crate) fn question_answer_text(
+    request: &miyu_base::question::QuestionRequest,
+    answers: &[Vec<String>],
+) -> (String, Vec<String>) {
+    let heading = format!(
+        "{} {} {}",
+        t("Answered", "已回答"),
+        request.questions.len(),
+        t("questions", "个问题")
+    );
+    let lines = request
+        .questions
+        .iter()
+        .zip(answers)
+        .map(|(prompt, selected)| {
+            format!(
+                "{}：{}",
+                prompt.header.trim(),
+                selected.join("、").replace('\n', " ")
+            )
+        })
+        .collect();
+    (heading, lines)
+}
+
+/// 收尾要不要补一个换行：只有**真往屏上流过字**的那条路要。
+///
+/// `captures_reasoning` 为真时思考一个字都没打到屏上（它进了时间线那一步），
+/// 补换行就是凭空多一行。
 pub(crate) fn stream_needs_terminating_newline(
     mode: Option<ChatStreamKind>,
-    reasoning_mode: ReasoningDisplayMode,
+    captures_reasoning: bool,
 ) -> bool {
-    mode.is_some()
-        && !(mode == Some(ChatStreamKind::Reasoning)
-            && reasoning_mode == ReasoningDisplayMode::Summary)
+    mode.is_some() && !(mode == Some(ChatStreamKind::Reasoning) && captures_reasoning)
 }
 
 #[derive(Default)]

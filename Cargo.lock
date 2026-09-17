@@ -2446,6 +2446,7 @@ dependencies = [
  "clap",
  "crossterm 0.28.1",
  "directories",
+ "fancy-regex 0.17.0",
  "flate2",
  "fuzzy-matcher",
  "image",

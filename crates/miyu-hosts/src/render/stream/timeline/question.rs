@@ -66,24 +66,12 @@ impl StreamRenderer {
         //   │ 今晚的打算：只是测工具（推荐）
         //   │
         // ```
-        let body = if self.timeline_static() {
+        let body = if self.caps().detail_inline() {
             match response {
                 QuestionResponse::Answered(answers) => {
-                    let mut lines = vec![
-                        String::new(),
-                        format!(
-                            "\x1b[2m{} {} {}\x1b[0m",
-                            t("Answered", "已回答"),
-                            request.questions.len(),
-                            t("questions", "个问题")
-                        ),
-                    ];
-                    for (prompt, selected) in request.questions.iter().zip(answers) {
-                        let line = format!(
-                            "{}：{}",
-                            prompt.header.trim(),
-                            selected.join("、").replace('\n', " ")
-                        );
+                    let (heading, answered) = question_answer_text(request, answers);
+                    let mut lines = vec![String::new(), format!("\x1b[2m{heading}\x1b[0m")];
+                    for line in answered {
                         lines.extend(
                             wrap_detail(&line)
                                 .into_iter()
@@ -99,7 +87,7 @@ impl StreamRenderer {
         } else {
             body
         };
-        self.timeline.steps.push(Step::new(
+        let mut step = Step::new(
             if answered {
                 step_line(glyph, &label)
             } else {
@@ -107,7 +95,10 @@ impl StreamRenderer {
             },
             body,
             None,
-        ));
+        );
+        // 问用户也算这一轮做过的一件事——`timeline.tools` 上面刚 +1 过。
+        step.kind = StepKind::Tool;
+        self.timeline.steps.push(step);
         self.settle_new_steps()
     }
 
@@ -125,7 +116,7 @@ impl StreamRenderer {
         use std::io::Write as _;
         // 只有全屏需要：面板是盖上去的，退场就没了。普通终端里提问面板自己
         // 会把「已回答」那几行留在原地，再写一遍就是两份。
-        if !blocks::enabled() {
+        if !self.caps().expandable {
             return Ok(());
         }
         // 取消/关闭没产生任何**内容**：它只是"这一下没成"。往正文里逐题写一遍
@@ -139,20 +130,10 @@ impl StreamRenderer {
         let width = crate::render::command_terminal_width()
             .saturating_sub(indent.len() + 3)
             .max(20);
+        let (heading, answered) = question_answer_text(request, answers);
         let stdout = &mut self.output;
-        writeln!(
-            stdout,
-            "{indent}{bar} \x1b[2m\x1b[90m{} {} {}\x1b[0m",
-            t("Answered", "已回答"),
-            request.questions.len(),
-            t("questions", "个问题")
-        )?;
-        for (prompt, selected) in request.questions.iter().zip(answers) {
-            let line = format!(
-                "{}：{}",
-                prompt.header.trim(),
-                selected.join("、").replace('\n', " ")
-            );
+        writeln!(stdout, "{indent}{bar} \x1b[2m\x1b[90m{heading}\x1b[0m")?;
+        for line in answered {
             writeln!(
                 stdout,
                 "{indent}{bar} \x1b[2m\x1b[90m{}\x1b[0m",

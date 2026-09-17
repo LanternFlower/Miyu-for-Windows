@@ -119,17 +119,30 @@ pub(super) fn step_rows(step: &Step, id: Option<u64>) -> String {
     row
 }
 
-pub(super) fn step_detail(step: &Step) -> Vec<String> {
-    let mut detail = Vec::with_capacity(step.body.len() + 3);
-    if step.fold {
-        // 收缩行点开是时间线：抬头（`›` 翻成 `⌄`）、连线、各步同一列，不缩进
-        // 不铺底（用户拿主线那份对比：「这个才是正确的」）。
-        detail.push(fold_line_open(&step.line));
-        detail.push(rail());
-        detail.extend(step.body.iter().cloned());
-        detail.push(String::new());
-        return detail;
+/// 这一步点开之后是什么样。三处共用（主线、两块面板）。
+pub fn step_detail_lines(step: &Step) -> Vec<String> {
+    step_detail(step)
+}
+
+/// 收缩行点开是什么样：抬头（`›` 翻成 `⌄`）、连线、各步同一列，不缩进不铺底
+///（用户拿主线那份对比：「这个才是正确的」）。
+///
+/// 主线、前台面板、**后台面板**三处都这么拼——后台那份在
+/// `cli::repl::tail::screen::overlay` 里，逐行相同。
+pub fn fold_open_lines(line: &str, rows: Vec<String>) -> Vec<String> {
+    let mut detail = Vec::with_capacity(rows.len() + 3);
+    detail.push(fold_line_open(line));
+    detail.push(rail());
+    detail.extend(rows);
+    detail.push(String::new());
+    detail
+}
+
+pub(crate) fn step_detail(step: &Step) -> Vec<String> {
+    if step.kind == StepKind::Fold {
+        return fold_open_lines(&step.line, step.body.clone());
     }
+    let mut detail = Vec::with_capacity(step.body.len() + 2);
     detail.push(step.line.clone());
     detail.extend(indented_body(&step.body));
     detail

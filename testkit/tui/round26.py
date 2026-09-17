@@ -153,7 +153,12 @@ def scenario_live_clicks(report):
         screen = wait_screen(
             master, sink,
             lambda s: any(
-                is_running_row(l, "运行命令") and i + 1 < len(s) and s[i + 1].startswith("  │") and "out-one" in s[i + 1]
+                # 09-17 起跑着的那一行底下露的是**命令本身**（抬头给 title），
+                # 不是输出——原断言找的是 `out-one`，那是改之前的样子。
+                is_running_row(l, "运行命令")
+                and i + 1 < len(s)
+                and s[i + 1].startswith("  │")
+                and "printf" in s[i + 1]
                 for i, l in enumerate(s)
             ),
             8.0,
@@ -194,10 +199,13 @@ def scenario_live_clicks(report):
             return
         row = next(i for i, l in enumerate(screen) if "编辑文件" in l)
         save("live-edit", screen)
-        # 命令跑完之后它的输出还留在抬头底下（连线穿过），不用点开
-        #（用户：完成后保留区域）。上面已经把展开收回去了，这几行是尾巴不是展开。
+        # 命令跑完之后抬头底下还留着东西（连线穿过），不用点开（用户：完成后保留
+        # 区域）。上面已经把展开收回去了，这几行是尾巴不是展开。
+        #
+        # 09-17 起留的是**命令本身**,不是输出(抬头给 title,跑了什么比吐了什么
+        # 要紧,输出退到点开里)——原断言找的是 `out-two`,那是改之前的样子。
         report["r26_06_finished_command_keeps_tail"] = any(
-            l.startswith("  │") and "out-two" in l for l in screen
+            l.startswith("  │") and "printf" in l for l in screen
         )
         h.click(master, sink, 5, row, quiet=0.3, timeout=1.0)
         opened = h.render(bytes(sink))

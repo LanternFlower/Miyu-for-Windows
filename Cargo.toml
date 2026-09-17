@@ -61,6 +61,8 @@ default = []
 voice = ["miyu-engine/voice"]
 
 [dev-dependencies]
+# 后台面板的 golden 要把块 id 打掩码（它是全局自增计数，不是表现）。
+fancy-regex = { workspace = true }
 miyu-base = { path = "crates/miyu-base", features = ["testkit"] }
 miyu-core = { path = "crates/miyu-core", features = ["testkit"] }
 miyu-engine = { path = "crates/miyu-engine", features = ["testkit"] }

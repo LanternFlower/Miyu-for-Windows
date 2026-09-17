@@ -35,14 +35,26 @@ pub(crate) fn next_job_id() -> String {
     }
 }
 
+/// 给一个后台任务的整个进程组发信号。
+///
+/// **pid 0 必须挡住**：`killpg(0, sig)` 在 POSIX 里的意思是「我自己那一组」——
+/// 真任务不会是 0，可一个写错的测试夹具就够了：我给 `JobEntry` 造了个
+/// `Command { pid: 0 }` 的假任务，随后哪个测试走到 `shutdown_all`，它就把整个
+/// 测试进程连着调用它的 shell 一起 `SIGKILL`（表现是 `exit=137`，还随测试顺序
+/// 时好时坏）。同理 `process_alive(0)`：`kill(0, 0)` 恒真，会让上面那一层以为
+/// 进程还活着、接着补一刀 SIGKILL。
 pub(crate) fn signal_process_group(pid: u32, signal: i32) {
+    if pid == 0 {
+        debug_assert!(false, "pid 0 = 自己那一组，不该走到这儿");
+        return;
+    }
     unsafe {
         libc::killpg(pid as i32, signal);
     }
 }
 
 pub(crate) fn process_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
+    pid != 0 && unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
 /// Kill process groups recorded by predecessors that are no longer alive.

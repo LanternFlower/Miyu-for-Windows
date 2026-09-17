@@ -148,6 +148,7 @@ pub(super) fn session_replay_frame(
             config.display.readable_tool_names,
             config.display.command_output_lines,
         );
+        renderer.keep_timeline_open = config.display.keep_timeline_open;
         renderer.use_external_cursor_control();
         renderer.use_buffered_output();
         // 流水账里带着思考就按它的位置放，别再用 `assistant_reasoning` 那一列

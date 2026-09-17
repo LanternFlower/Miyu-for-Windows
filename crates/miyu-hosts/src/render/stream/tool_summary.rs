@@ -55,13 +55,7 @@ impl StreamRenderer {
             // 面板的第一步：交给它的差事。派出去这一刻是唯一还看得见它的地方。
             self.subagent_prompt(name, arguments);
         }
-        if self.tool_call_mode == ToolCallDisplayMode::Full {
-            let display_name = self.display_tool_name(name);
-            let stdout = &mut self.output;
-            writeln!(stdout, "{} {}", t("tool", "工具"), display_name)?;
-            write_tool_payload(stdout, t("args", "参数"), arguments)?;
-            stdout.flush()?;
-        } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
+        if self.captures_tools() {
             let stats = self.tool_stats_entry(name);
             stats.calls += 1;
             stats.subject = tool_subject(name, arguments);
@@ -70,8 +64,32 @@ impl StreamRenderer {
             // 收缩行就成了光秃秃的 `1 tool · 1 err`（用户实测）。
             stats.started_at.get_or_insert_with(std::time::Instant::now);
             self.ensure_tool_waiting_phase()?;
+        } else if self.tool_call_mode == ToolCallDisplayMode::Full {
+            let display_name = self.display_tool_name(name);
+            let stdout = &mut self.output;
+            writeln!(stdout, "{} {}", t("tool", "工具"), display_name)?;
+            write_tool_payload(stdout, t("args", "参数"), arguments)?;
+            stdout.flush()?;
         }
         Ok(())
+    }
+
+    /// 工具要不要**收进时间线那一步**，而不是打成旧卡片直接上屏。
+    ///
+    /// 和 `captures_reasoning` 同一个道理：`Full` 那一档原来一律走
+    /// 「`工具 x` / `参数 …` / `结果 x ok` / `输出 …`」的老卡片，**绕过时间线**
+    /// ——于是全屏 + `显示工具调用信息 = 详细` 是个谁都没设计过的混合态：命令走
+    /// 时间线、别的工具打卡片，两种版式在同一屏上叠着（报告 §1.1 的 S5，用户
+    /// todolist:11「用的是旧版本的 inline」）。
+    ///
+    /// 有时间线就收进去，档位只决定**详情摆哪**：详细档把工具输出摆在那一步
+    /// 底下，摘要档收在块里点开才看。没有时间线的面（管道、真·inline）照旧。
+    pub(crate) fn captures_tools(&self) -> bool {
+        match self.tool_call_mode {
+            ToolCallDisplayMode::Hidden => false,
+            ToolCallDisplayMode::Summary => true,
+            ToolCallDisplayMode::Full => self.timeline_enabled(),
+        }
     }
 
     pub fn write_tool_preparing(&mut self, name: &str, batch: bool) -> Result<()> {
@@ -127,7 +145,6 @@ impl StreamRenderer {
         let elapsed = self.finish_subagent_timer(name);
         if is_command_tool(name) {
             if self.timeline_enabled() {
-                let width = super::timeline::detail_width();
                 // `ok` 说的是"工具本身有没有出错"。命令退出码非零时工具照样是
                 // Ok 的——只看 `ok` 的话，一条 `exit 3` 的命令在时间线上和跑成了
                 // 长得一模一样。退出码才是用户眼里的"跑失败了"。
@@ -136,22 +153,14 @@ impl StreamRenderer {
                         .is_none_or(|result| result.success);
                 // 全屏：完整命令 + 完整输出，点开才看。静态版没处点开，就地
                 // 抬头底下印**命令本身**,不是输出(用户 09-17 裁定:跑了什么
-                // 要紧,输出退到点开里)。静态时间线没处点开,那几行就是它能给的
-                // 全部;全屏则是抬头底下留着几行、点开才是命令加输出。
-                let static_timeline = self.timeline_static();
-                let preview_rows = self.command_display_lines;
-                let (detail, tail) = self.command_display.take().map_or_else(
-                    || (Vec::new(), Vec::new()),
-                    |mut display| {
+                // 要紧,输出退到点开里)。两份内容怎么分,见 `command_step_parts`。
+                let (detail, tail) = match self.command_display.take() {
+                    Some(mut display) => {
                         display.set_result(ok);
-                        let rows = display.command_rows(width, preview_rows, !ok);
-                        if static_timeline {
-                            (rows, Vec::new())
-                        } else {
-                            (display.timeline_detail(width), rows)
-                        }
-                    },
-                );
+                        self.command_step_parts(&mut display, ok)
+                    }
+                    None => (Vec::new(), Vec::new()),
+                };
                 let stats = self.tool_stats_entry(name);
                 if ok {
                     stats.ok += 1;
@@ -219,32 +228,23 @@ impl StreamRenderer {
                 return Ok(());
             }
         }
-        if self.tool_call_mode == ToolCallDisplayMode::Full {
-            self.release_transient_output()?;
-            let display_name = self.display_tool_name(name);
-            let stdout = &mut self.output;
-            writeln!(
-                stdout,
-                "{} {} {}",
-                t("result", "结果"),
-                display_name,
-                tool_result_status(status, elapsed)
-            )?;
-            write_tool_payload(stdout, t("output", "输出"), output)?;
-            stdout.flush()?;
-            self.tool_stats.remove(name);
-        } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
+        if self.captures_tools() {
             // 全屏：把工具**真实的输出**留下来。摘要那几行只说了「跑没跑成」，
             // 点开却什么都看不到的话，收起来就等于丢了。
             //
             // 静态版没处点开：普通工具只留那一行，成败都不印输出——输出是给模型
             // 看的，不是给人扫的；报错更多时候是一团裸 JSON，印出来只会丑
             //（用户拍板：除了命令，其他工具报错不需要报错信息）。
-            let detail = if self.timeline_static() {
+            let detail = if self.caps().detail_inline() {
                 None
             } else {
                 self.timeline_enabled().then(|| tool_output_lines(output))
             };
+            // 「显示工具调用信息 = 详细」= 这一步的输出不用点：摆在抬头底下，
+            // 连线从中间穿过去（和思考那一档、和命令留输出尾巴同一套词汇）。
+            let inline = (self.tool_call_mode == ToolCallDisplayMode::Full)
+                .then(|| detail.clone())
+                .flatten();
             let stats = self.tool_stats_entry(name);
             if ok {
                 stats.ok += 1;
@@ -261,8 +261,27 @@ impl StreamRenderer {
                     stats.detail = detail;
                 }
             }
+            if let Some(inline) = inline {
+                if stats.tail.is_empty() {
+                    stats.tail = inline;
+                }
+            }
             stats.progress = None;
             self.settle_tool_batch()?;
+        } else if self.tool_call_mode == ToolCallDisplayMode::Full {
+            self.release_transient_output()?;
+            let display_name = self.display_tool_name(name);
+            let stdout = &mut self.output;
+            writeln!(
+                stdout,
+                "{} {} {}",
+                t("result", "结果"),
+                display_name,
+                tool_result_status(status, elapsed)
+            )?;
+            write_tool_payload(stdout, t("output", "输出"), output)?;
+            stdout.flush()?;
+            self.tool_stats.remove(name);
         }
         Ok(())
     }
@@ -362,33 +381,33 @@ impl StreamRenderer {
             return Ok(());
         }
         if let Some(text) = message.strip_prefix("__subagent_detach__") {
-            if self.tool_call_mode == ToolCallDisplayMode::Full {
-                self.release_transient_output()?;
-                let display_name = self.display_tool_name(name);
-                let stdout = &mut self.output;
-                writeln!(stdout, "{} {}: {text}", t("progress", "进度"), display_name)?;
-                stdout.flush()?;
-            } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
+            if self.captures_tools() {
                 // Lands as the block's `↳` subject line, not the final `✓`
                 // stats line — detach is a fact about the call, not a result.
                 let stats = self.tool_stats_entry(name);
                 stats.subject = Some(text.to_string());
                 stats.detached = true;
                 self.update_tool_summary_display()?;
+            } else if self.tool_call_mode == ToolCallDisplayMode::Full {
+                self.release_transient_output()?;
+                let display_name = self.display_tool_name(name);
+                let stdout = &mut self.output;
+                writeln!(stdout, "{} {}: {text}", t("progress", "进度"), display_name)?;
+                stdout.flush()?;
             }
             return Ok(());
         }
         if let Some(text) = message.strip_prefix(miyu_engine::tools::TOOL_SUMMARY_PREFIX) {
-            if self.tool_call_mode == ToolCallDisplayMode::Full {
+            if self.captures_tools() {
+                self.tool_stats_entry(name).final_progress = Some(text.to_string());
+                self.update_tool_summary_display()?;
+            } else if self.tool_call_mode == ToolCallDisplayMode::Full {
                 self.release_transient_output()?;
                 let stdout = &mut self.output;
                 for line in text.lines() {
                     writeln!(stdout, "{line}")?;
                 }
                 stdout.flush()?;
-            } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
-                self.tool_stats_entry(name).final_progress = Some(text.to_string());
-                self.update_tool_summary_display()?;
             }
             return Ok(());
         }
@@ -410,7 +429,7 @@ impl StreamRenderer {
             }
             // Full 档不打：这条一秒来好几次，打出来就是刷屏。跑完那次
             // `__subagent_stats__` 照旧会留一行。
-            if self.tool_call_mode == ToolCallDisplayMode::Summary {
+            if self.captures_tools() {
                 self.tool_stats_entry(name).final_progress = Some(text.to_string());
                 self.update_tool_summary_display()?;
             }
@@ -421,15 +440,15 @@ impl StreamRenderer {
                 // 跑完那一次只有人话，短标沿用中途量报记下的那份。
                 self.subagent_stats(name, text, None);
             }
-            if self.tool_call_mode == ToolCallDisplayMode::Full {
+            if self.captures_tools() {
+                self.tool_stats_entry(name).final_progress = Some(text.to_string());
+                self.update_tool_summary_display()?;
+            } else if self.tool_call_mode == ToolCallDisplayMode::Full {
                 self.release_transient_output()?;
                 let display_name = self.display_tool_name(name);
                 let stdout = &mut self.output;
                 writeln!(stdout, "{} {}: {text}", t("progress", "进度"), display_name)?;
                 stdout.flush()?;
-            } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
-                self.tool_stats_entry(name).final_progress = Some(text.to_string());
-                self.update_tool_summary_display()?;
             }
             return Ok(());
         }
@@ -553,7 +572,22 @@ impl StreamRenderer {
         if is_silent_tool(name) {
             return Ok(());
         }
-        if self.tool_call_mode == ToolCallDisplayMode::Full {
+        // 认不出的**子代理标记**一律咽掉：下面那个兜底分支是给人话进度用的，
+        // 机器标记掉进去就是原样打到屏幕上——`__subagent_brief__` 已经这么漏过
+        // 一次（`display.tool_calls = full` 的终端用户看到
+        // `进度 子代理: __subagent_brief__{"description":…}`）。它只在 Full 档发，
+        // 而前台早就从工具参数建好那一行了（`write_tool_call` → `subagent_prompt`），
+        // 这条是给没有参数的后台面板用的，终端这边跳过才对。
+        //
+        // 咽掉而不是逐个认领：标记的词汇表在 `tools::subagent::protocol::MARKERS`，
+        // 将来加一个新的，最坏情况是面板少显示点东西，而不是把 JSON 甩到用户脸上。
+        if miyu_engine::tools::is_subagent_marker(message) {
+            return Ok(());
+        }
+        if self.captures_tools() {
+            self.tool_stats_entry(name).progress = Some(message.to_string());
+            self.update_tool_summary_display()?;
+        } else if self.tool_call_mode == ToolCallDisplayMode::Full {
             self.release_transient_output()?;
             let display_name = self.display_tool_name(name);
             let stdout = &mut self.output;
@@ -564,9 +598,6 @@ impl StreamRenderer {
                 display_name
             )?;
             stdout.flush()?;
-        } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
-            self.tool_stats_entry(name).progress = Some(message.to_string());
-            self.update_tool_summary_display()?;
         }
         Ok(())
     }
@@ -621,7 +652,7 @@ impl StreamRenderer {
             }
             // 展开的那份是每个工具各自的完整块（表头 + 主题 + 进度）——摘要那
             // 一行把它们压成了「工具×3 ok:3」，点开才看得到分别干了什么。
-            let detail = if crate::render::blocks::enabled() {
+            let detail = if self.caps().expandable {
                 self.ordered_tool_stats()
                     .into_iter()
                     .flat_map(|(name, stats)| self.tool_block_lines(name, stats, false))

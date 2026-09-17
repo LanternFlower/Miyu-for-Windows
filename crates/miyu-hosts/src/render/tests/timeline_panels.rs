@@ -110,6 +110,10 @@ fn a_quick_tool_step_does_not_report_zero_seconds() {
             .find(|line| line.contains("miyu 转轮"))
             .expect("没有那一步");
         assert!(!step.contains("0.0s"), "报了个 0.0s: {step:?}");
+        // 09-17 起不到一秒报毫秒：`0.0s` 那种没信息量的读数不该出现，但这一步
+        // 确实花了时间，该有个真数字（原来是「什么都不报」，同一段代码两次跑
+        // 时有时无，写不出稳定快照）。
+        assert!(step.contains("ms"), "快步骤该报毫秒: {step:?}");
     });
 }
 
@@ -162,13 +166,13 @@ fn live_subagent_panels_tick_between_events() {
         let before = crate::render::blocks::get(id)
             .unwrap_or_default()
             .join("\n");
-        assert!(before.contains("0.0s"), "刚开始不是 0.0s: {before:?}");
+        assert!(before.contains("ms"), "刚开始该是毫秒读数: {before:?}");
         std::thread::sleep(Duration::from_millis(250));
         renderer.refresh_subagent_panels();
         let after = crate::render::blocks::get(id)
             .unwrap_or_default()
             .join("\n");
-        assert!(!after.contains("0.0s"), "重灌之后秒数没走: {after:?}");
+        assert!(after.contains("ms"), "重灌之后秒数没走: {after:?}");
     });
 }
 

@@ -11,8 +11,11 @@ use std::time::Duration;
 
 #[test]
 fn seconds_change_precision_with_magnitude() {
-    // 亚秒关心的是「快不快」,给一位小数
-    assert_eq!(format_seconds(Duration::from_millis(340)), "0.3s");
+    // 不到一秒报毫秒:`0.3s` 这种读数把「快不快」压没了,`340ms` 才是真数字
+    // (用户 09-17)。
+    assert_eq!(format_seconds(Duration::from_millis(340)), "340ms");
+    assert_eq!(format_seconds(Duration::from_micros(400)), "<1ms");
+    // 一秒起按秒,给一位小数
     assert_eq!(format_seconds(Duration::from_millis(2_450)), "2.5s");
     // 十秒以上小数没意义
     assert_eq!(format_seconds(Duration::from_millis(12_400)), "12s");
@@ -43,7 +46,7 @@ fn summary_omits_zero_counts() {
                 errors: 0,
             }
         ),
-        "Worked for 0.4s · 1 thought"
+        "Worked for 400ms · 1 thought"
     );
 }
 
@@ -517,6 +520,11 @@ fn the_live_thinking_row_in_a_panel_is_clickable() {
 /// 一回事（用户指名要 CoreOS 那个圆里嵌核的标）。
 #[test]
 fn checking_the_machine_gets_the_core_glyph() {
+    // 这条钉的是 **Nerd Font 那张表**；`MIYU_TUI_ASCII=1` 下所有工具本来就统一
+    // 退到 `⚙`（`timeline.rs`「没有 Nerd Font 的时候别凑」），拿它去比是两把尺。
+    if std::env::var_os("MIYU_TUI_ASCII").is_some() {
+        return;
+    }
     let core = crate::render::tool_glyph_for("check_os_info");
     assert_eq!(core, "\u{f305}", "系统信息的图标不对");
     assert_ne!(
@@ -703,6 +711,11 @@ fn a_subagent_panel_folds_its_steps_once_it_starts_talking() {
 /// 后台任务工具用清单图标，和 todo 清单分得开。
 #[test]
 fn the_background_jobs_tool_gets_the_list_glyph() {
+    // 这条钉的是 **Nerd Font 那张表**；`MIYU_TUI_ASCII=1` 下所有工具本来就统一
+    // 退到 `⚙`（`timeline.rs`「没有 Nerd Font 的时候别凑」），拿它去比是两把尺。
+    if std::env::var_os("MIYU_TUI_ASCII").is_some() {
+        return;
+    }
     assert_eq!(crate::render::tool_glyph_for("job"), "\u{f0572}");
     assert_ne!(
         crate::render::tool_glyph_for("job"),

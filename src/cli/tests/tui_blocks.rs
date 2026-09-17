@@ -6,7 +6,7 @@
 use miyu_hosts::render::blocks;
 
 /// 测试之间共用同一个进程级开关，串行跑免得互相掀桌子。
-fn with_blocks<T>(body: impl FnOnce() -> T) -> T {
+pub(super) fn with_blocks<T>(body: impl FnOnce() -> T) -> T {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = LOCK
         .lock()
@@ -451,9 +451,15 @@ fn job_panel_merges_a_call_with_its_result() {
             !rows.iter().any(|row| row.contains("运行中")),
             "有结果的那一步还标着运行中: {rows:?}"
         );
+        // 抬头按主线的说法写 `已思考 · 1.2s`，**不带窥视**（§6.3 第 1 项，用户
+        // 09-17 拍板取前台）。所以这儿认「已思考」，不认原文。
         assert!(
-            rows.iter().any(|row| row.contains("先看一眼")),
+            rows.iter().any(|row| row.contains("已思考")),
             "思考那一步没了: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.contains("先看一眼")),
+            "已结算的思考不该再带窥视: {rows:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     });
@@ -559,9 +565,10 @@ fn job_panel_paints_thinking_body_green_not_its_handle() {
         let mut screen = Screen::detached(80, 24);
         assert!(screen.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
         let rows = screen.overlay_rows();
+        // 抬头不带窥视了（§6.3 第 1 项），按「已思考」定位。原文在展开里。
         let row = rows
             .iter()
-            .position(|row| row.contains("先看一眼再说"))
+            .position(|row| row.contains("已思考"))
             .expect("没有思考那一步");
         let head = &screen.overlay_rows_ansi()[row];
         assert!(!head.contains("38;5;10"), "思考那一行还是绿的: {head:?}");
@@ -870,7 +877,8 @@ fn a_log_fold_opens_into_a_timeline_and_the_running_step_spins() {
         let column = |line: &str| line.chars().take_while(|c| *c == ' ').count();
         let head_col = column(&opened[fold]);
         assert_eq!(opened[fold + 1].trim(), "│", "抬头底下不是连线: {opened:?}");
-        for needle in ["先想想", "· ls", "1.2s · pwd"] {
+        // 「已思考」而不是窥视原文（§6.3 第 1 项）。
+        for needle in ["已思考", "· ls", "1.2s · pwd"] {
             let row = opened
                 .iter()
                 .find(|row| row.contains(needle))

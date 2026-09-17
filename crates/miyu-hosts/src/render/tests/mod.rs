@@ -5,11 +5,13 @@
 
 mod command;
 mod command_step;
+mod golden;
 mod markdown;
 mod math;
 mod patch;
 mod reasoning;
 mod shared;
+mod surface;
 mod table;
 mod timeline;
 mod timeline_panels;

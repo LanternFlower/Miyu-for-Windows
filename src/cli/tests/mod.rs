@@ -6,6 +6,7 @@ mod cli_args;
 mod daemon_log;
 mod footer_tail;
 mod footer_width;
+mod golden_panel;
 mod hangup;
 mod input_editing;
 mod lobby_layout;

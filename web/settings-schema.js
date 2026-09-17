@@ -222,6 +222,13 @@
           default: "interactive",
         },
         {
+          path: "display.keep_timeline_open",
+          label: "不自动收起过程",
+          hint: "全屏里过程不收成 `Worked for`,每一步就地留着;仍然点得开",
+          kind: "toggle",
+          default: false,
+        },
+        {
           path: "display.command_output_lines",
           label: "命令显示行数",
           hint: "命令那一步抬头底下露几行命令本身,0 = 不露;输出点开才看",

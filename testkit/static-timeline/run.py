@@ -201,8 +201,11 @@ def check_normal(raw, screen, snapshots):
     report["thought_line"] = any("已思考 ·" in line for line in screen)
     command_rows = [i for i, line in enumerate(screen)
                     if line.startswith("  $ ") and "运行命令" in line]
-    report["command_line_has_command"] = any(
-        "走查用的命令输出" in screen[i] or "printf" in screen[i] for i in command_rows
+    # 09-17 起抬头给的是 **title**（「这条命令来干嘛的」），命令本身在下面几行。
+    # 原来这儿断言的是「命令文本在抬头上」——那是改之前的样子，一直红着。
+    report["command_line_has_title"] = any("跑个命令" in screen[i] for i in command_rows)
+    report["command_text_under_step"] = any(
+        "printf" in screen[i + 1] for i in command_rows if i + 1 < len(screen)
     )
     # 命令输出尾巴**紧贴**在那一行底下（不空行），每一行从连线穿过：`  │ 第二行`。
     tail_ok = False
@@ -223,7 +226,11 @@ def check_normal(raw, screen, snapshots):
     report["diff_under_edit_step"] = diff_ok
     # 报错那一步：标红 + 错误输出。
     raw_text = raw.decode("utf-8", "replace")
-    report["failed_step_red"] = bool(re.search(r"\x1b\[31m[^\n]*运行命令[^\n]*exit 3", raw_text))
+    # 同上：`exit 3` 现在在抬头**底下**那一行，不在抬头上。抬头要的是整行标红。
+    report["failed_step_red"] = bool(re.search(r"\x1b\[31m[^\n]*运行命令[^\n]*", raw_text))
+    report["failed_command_under_step"] = any(
+        "exit 3" in line for line in screen
+    )
     report["failed_step_shows_stderr"] = any("走查用的报错" in line for line in screen)
     # 步与步之间有连线。
     step_rows = [i for i, line in enumerate(screen) if STEP.match(line)]

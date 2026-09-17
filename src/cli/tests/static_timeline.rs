@@ -1,4 +1,6 @@
-//! 静态时间线：shellhook／单次 CLI 那种「stdout 是终端、但不是全屏」的形态。
+//! 静态时间线（面 S3）：目的地是终端、但不是全屏的那个面。宿主有 shellhook、
+//! 单次 `miyu "…"`、inline REPL、唤醒跟进、daemon 回写——**同一个面**，清单见
+//! `render::stream::surface`。
 //!
 //! 长相照着全屏的时间线来，只是没处点开：每一步跑完当场落进 scrollback，
 //! diff 和命令输出的尾巴就地印在那一步底下，没有 `Worked for …` 收缩行。
@@ -13,8 +15,8 @@ use miyu_core::llm::{ChatStreamChunk, ChatStreamKind};
 use miyu_engine::tools::CommandOutputStream;
 use miyu_hosts::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
 
-/// 测试里 stdout 不是终端，`live_summary` 默认为假；shellhook 真跑起来时它是
-/// 真的，得显式打开才走到静态时间线这条路。
+/// 测试里 stdout 不是终端，出厂按「stdout 是不是终端」选的是管道那一面；
+/// shellhook 真跑起来时目的地是终端，得显式选才走到静态时间线这条路。
 fn static_renderer() -> StreamRenderer {
     let mut renderer = StreamRenderer::new(
         ReasoningDisplayMode::Summary,
@@ -25,7 +27,7 @@ fn static_renderer() -> StreamRenderer {
     );
     renderer.use_external_cursor_control();
     renderer.use_buffered_output();
-    renderer.live_summary = true;
+    renderer.use_terminal_surface();
     assert!(renderer.timeline_static(), "该走静态时间线");
     renderer
 }
@@ -476,7 +478,7 @@ fn piped_output_keeps_the_plain_summary() {
         4,
     );
     renderer.use_buffered_output();
-    renderer.live_summary = false;
+    renderer.use_piped_surface();
     assert!(!renderer.timeline_enabled());
     renderer
         .write_tool_call("web_search", r#"{"query":"x"}"#)

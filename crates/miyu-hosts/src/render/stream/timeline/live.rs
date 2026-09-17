@@ -272,7 +272,7 @@ impl StreamRenderer {
     /// 开了"（用户实测）。
     pub(crate) fn refresh_live_block(&mut self) {
         // 静态版没有块：登记了也没人点。
-        if !blocks::enabled() {
+        if !self.caps().expandable {
             return;
         }
         if !self.reasoning_text.trim().is_empty() || self.tool_stats.is_empty() {
@@ -360,7 +360,7 @@ impl StreamRenderer {
             // 不加的话点开之后正文贴着第 0 列，比它的抬头还靠左。
             lines.extend(
                 wrap_detail(&self.reasoning_text).into_iter().map(|line| {
-                    format!("\x1b[2m\x1b[38;5;10m{indent}{DETAIL_INDENT}{line}\x1b[0m")
+                    format!("{THOUGHT_BODY_STYLE}{indent}{DETAIL_INDENT}{line}\x1b[0m")
                 }),
             );
             lines.push(String::new());

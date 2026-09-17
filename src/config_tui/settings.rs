@@ -102,13 +102,17 @@ pub(in crate::config_tui) fn edit_settings(
             t("Block dangerous commands", "高危命令拦截"),
             config.tools.block_dangerous_commands,
         ),
+        Field::boolean(
+            t("Keep the timeline open", "不自动收起过程"),
+            config.display.keep_timeline_open,
+        ),
     ];
     // The read-back below is by index, so an insert in the middle silently
     // writes every later value into the wrong setting. This catches that in
     // debug builds; new fields go on the end.
     debug_assert_eq!(
         fields.len(),
-        15,
+        16,
         "global settings fields changed: update the positional read-back below"
     );
     run_form_without_buttons(stdout, t(" GLOBAL SETTINGS ", " 全局设置 "), &mut fields)?;
@@ -137,6 +141,7 @@ pub(in crate::config_tui) fn edit_settings(
         .parse::<usize>()?
         .min(MAX_REPL_REPLAY_TURNS);
     config.tools.block_dangerous_commands = parse_bool_field(&fields[14].value)?;
+    config.display.keep_timeline_open = parse_bool_field(&fields[15].value)?;
     Ok(())
 }
 

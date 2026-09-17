@@ -37,19 +37,24 @@ fn external_cursor_control_suppresses_renderer_visibility_changes() {
     assert!(renderer.cursor_hidden);
 }
 
+/// 参数从「哪一档」换成了「这一档到底往屏上流没流字」（`captures_reasoning`）：
+/// 全屏下 `Full` 也收进时间线，看档位就答错了。
 #[test]
 fn pending_summary_reasoning_does_not_add_a_leading_newline_on_finish() {
+    // 收进时间线了：一个字都没打到屏上，补换行就是凭空多一行。
     assert!(!stream_needs_terminating_newline(
         Some(ChatStreamKind::Reasoning),
-        ReasoningDisplayMode::Summary,
+        true,
     ));
+    // 直接往屏上流的那条路（没有时间线的面）：收尾要补。
     assert!(stream_needs_terminating_newline(
         Some(ChatStreamKind::Reasoning),
-        ReasoningDisplayMode::Full,
+        false,
     ));
+    // 正文与思考怎么显示无关。
     assert!(stream_needs_terminating_newline(
         Some(ChatStreamKind::Content),
-        ReasoningDisplayMode::Summary,
+        true,
     ));
 }
 
@@ -459,4 +464,69 @@ fn real_reasoning_mid_content_ends_the_line_before_the_spinner() {
         "推理文本到来时正文行应先被收掉,实得:{plain:?}"
     );
     assert_eq!(renderer.mode, Some(ChatStreamKind::Reasoning));
+}
+
+/// 「显示思考过程 = 详细」在全屏下走时间线，不再绕过它直接打屏。
+///
+/// 原来那一档走的是 `write_full_reasoning_chunk`——把思考正文原样流到屏上，
+/// **没有连线、没有那一步**，`Worked for` 也数不到它（用户 todolist:11「不是把
+/// timeline 的思考内容自动展开，而是用的旧版本的 inline」）。实测那时的输出是
+///
+/// ```text
+/// 先看一眼需求，再决定怎么下手。  好了。
+/// ```
+///
+/// 现在它和摘要档走同一条路，差别只在**详情摆哪**：详细档全文摆在抬头底下，
+/// 连线穿过去；摘要档收在块里，点开才看。
+#[test]
+fn detailed_reasoning_becomes_a_timeline_step_with_the_text_under_it() {
+    use crate::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
+    use miyu_core::llm::{ChatStreamChunk, ChatStreamKind};
+
+    fn run(mode: ReasoningDisplayMode) -> Vec<String> {
+        let mut renderer = StreamRenderer::new(mode, ToolCallDisplayMode::Summary, false, true, 8);
+        renderer.use_buffered_output();
+        renderer.use_terminal_surface();
+        for text in ["先看一眼需求，", "再决定怎么下手。"] {
+            renderer
+                .write_chunk(ChatStreamChunk {
+                    kind: ChatStreamKind::Reasoning,
+                    text: text.to_string(),
+                })
+                .unwrap();
+        }
+        // 起一个工具让这一段继续：思考那一步于是留在 live 区里，连同它底下
+        // 露出来的内容一起重画（段末收成 `Worked for …` 之后就要点开才看得到，
+        // 那是另一件事）。
+        renderer
+            .write_tool_call("read", r#"{"path":"/tmp/a"}"#)
+            .unwrap();
+        String::from_utf8_lossy(&renderer.take_output_frame())
+            .split('\n')
+            .map(super::shared::strip_ansi_for_test)
+            .collect()
+    }
+
+    super::timeline::with_blocks(|| {
+        let full = run(ReasoningDisplayMode::Full).join("\n");
+        assert!(
+            full.contains(&t("thought", "已思考")),
+            "详细档没有落成时间线里的一步:\n{full}"
+        );
+        assert!(
+            full.contains("│ 先看一眼需求，再决定怎么下手。"),
+            "思考全文没有摆在抬头底下、连线穿过去:\n{full}"
+        );
+
+        // 摘要档同一段过程也该有那一步，但全文**不**摆出来（收在块里点开才看）。
+        let summary = run(ReasoningDisplayMode::Summary).join("\n");
+        assert!(
+            summary.contains(&t("thought", "已思考")),
+            "摘要档丢了那一步:\n{summary}"
+        );
+        assert!(
+            !summary.contains("│ 先看一眼需求，再决定怎么下手。"),
+            "摘要档不该把全文铺在抬头底下:\n{summary}"
+        );
+    });
 }

@@ -23,6 +23,10 @@ pub struct DisplayConfig {
     /// 退到点开里;键名不改,改了用户设过的值会掉回默认。
     #[serde(default = "default_command_output_lines")]
     pub command_output_lines: usize,
+    /// 全屏 TUI 里不把过程收成 `Worked for …`,每一步就地留着——和 shell 无缝
+    /// 对话那条路一个样子。想一直看着它干了什么的人开这个(用户 todolist:21)。
+    #[serde(default)]
+    pub keep_timeline_open: bool,
     /// How many finished turns a reopened REPL redraws; 0 disables replay.
     #[serde(default = "default_repl_replay_turns")]
     pub repl_replay_turns: usize,
@@ -59,6 +63,8 @@ struct RawDisplayConfig {
     mixed_model_endpoint_display: Option<String>,
     #[serde(default)]
     command_output_lines: Option<usize>,
+    #[serde(default)]
+    keep_timeline_open: Option<bool>,
     #[serde(default)]
     repl_replay_turns: Option<usize>,
     #[serde(default)]
@@ -103,6 +109,7 @@ impl<'de> Deserialize<'de> for DisplayConfig {
             command_output_lines: raw
                 .command_output_lines
                 .unwrap_or_else(default_command_output_lines),
+            keep_timeline_open: raw.keep_timeline_open.unwrap_or(false),
             repl_replay_turns: raw
                 .repl_replay_turns
                 .unwrap_or_else(default_repl_replay_turns),
@@ -122,6 +129,7 @@ impl Default for DisplayConfig {
             show_token_usage: false,
             mixed_model_endpoint_display: default_mixed_model_endpoint_display(),
             command_output_lines: default_command_output_lines(),
+            keep_timeline_open: false,
             repl_replay_turns: default_repl_replay_turns(),
             banner: true,
             extra: BTreeMap::new(),

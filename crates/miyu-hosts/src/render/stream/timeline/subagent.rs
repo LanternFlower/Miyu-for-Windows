@@ -9,7 +9,6 @@ const SUBAGENT_LOG_STEPS: usize = 400;
 
 /// 「差事」那一步的图标（文档）。与后台任务面板里那条同一个，见
 /// `cli::repl::tail::screen::overlay::PROMPT_GLYPH`。
-const PROMPT_GLYPH: &str = "\u{f4a5}";
 
 /// 一段话的开头，给抬头用。
 fn peek_head(text: &str, max: usize) -> String {
@@ -18,7 +17,9 @@ fn peek_head(text: &str, max: usize) -> String {
 }
 
 /// 把攒着的那段思考结算成一步。
-fn flush_subagent_thought(log: &mut SubagentLog) {
+/// `inline`：「显示思考过程 = 详细」——全文摆在抬头底下、连线穿过去，不用点开。
+/// 和主线那一步同一个规矩（用户 todolist:11「子代理浮层里的也要跟随这两个开关」）。
+fn flush_subagent_thought(log: &mut SubagentLog, inline: bool) {
     let text = std::mem::take(&mut log.reasoning);
     let elapsed = log
         .reasoning_since
@@ -30,19 +31,24 @@ fn flush_subagent_thought(log: &mut SubagentLog) {
     }
     let body = wrap_detail(&text)
         .into_iter()
-        .map(|line| format!("\x1b[2m\x1b[38;5;10m{line}\x1b[0m"))
+        .map(|line| format!("{THOUGHT_BODY_STYLE}{line}\x1b[0m"))
         .collect::<Vec<_>>();
     log.segment.thoughts += 1;
     log.segment.note_start_since(elapsed);
-    log.steps.push(Step::new(
+    let mut step = Step::new(
         step_line_in(
             glyph_think(),
             &timed_label(t("thought", "已思考"), elapsed),
             panel_step_width(),
         ),
-        body,
+        body.clone(),
         None,
-    ));
+    );
+    step.kind = StepKind::Thought;
+    if inline {
+        step.tail = body;
+    }
+    log.steps.push(step);
     trim_subagent(log);
 }
 
@@ -68,9 +74,54 @@ fn seal_subagent_speech(log: &mut SubagentLog) {
 fn segment_start(log: &SubagentLog) -> usize {
     log.steps
         .iter()
-        .rposition(|step| step.speech)
+        .rposition(|step| step.kind == StepKind::Speech)
         .map(|index| index + 1)
         .unwrap_or(usize::from(log.has_prompt))
+}
+
+/// 收起来的那几步长什么样：各自包成块、用连线串起来。
+///
+/// 主线的 `cut_timeline` 和面板的 `collapse_subagent_segment` 原来各写一份
+/// （报告 §2.1 第 4 条数出「`Worked for` 收缩有三份实现」）。两份的规则本来就是
+/// 同一条——**块 id 优先取它自己的**（子代理挂它那块流水账、live 区登记过的那块
+/// 接着用），没有就现登记一个；正文为空的那些不登记。
+///
+/// 面板那一份还少了两样，合并之后一并补上：
+///
+/// - **尾巴**：它拿 `step.line` 拼行，不走 `step_rows`，于是「显示思考过程 =
+///   详细」下露在抬头底下的那几行，一收段就没了。
+/// - **块 id 复用**：它每次收段都现登记一个新 id，而主线那份接着用 live 区
+///   那块——点开着的那一步收段之后仍然点开着。
+pub fn fold_block_lines(steps: &mut [Step]) -> Vec<String> {
+    thread(steps.iter_mut().map(|step| {
+        // 正文为空、也不是子代理：没什么可点开的，不占登记处。
+        if step.overlay.is_none() && step.body.is_empty() {
+            return step_rows(step, None);
+        }
+        // 展开这一步时**头行留着**：它是把手，再点一次才收得回去；
+        // 正文缩进到竖线右边，和折叠态对得上列。
+        let target = match step.overlay {
+            // 子代理直接挂它那块流水账：点开是覆盖层。
+            Some(id) => Some(id),
+            // live 区里用的那块，收缩之后还是它：点开着的保持点开。**内容要重灌**
+            // ——后台面板每帧重解析，这一步的正文可能又长了一截；主线那边内容不
+            // 再变，重灌是同一份，代价只有一次版本号自增。
+            None => match step.block {
+                Some(id) => {
+                    blocks::update(id, String::new(), step_detail(step));
+                    Some(id)
+                }
+                None => {
+                    let id = blocks::register(step_detail(step));
+                    // 记回去：调用方要拿它按位置复用（后台面板每帧重解析，不复用
+                    // 的话用户点开的那一块下一帧就换 id、当场合上）。
+                    step.block = id;
+                    id
+                }
+            },
+        };
+        step_rows(step, target)
+    }))
 }
 
 /// 把面板里已经走完的那几步收成一行 `⌄ Worked for …`，点开还是那几步。
@@ -93,18 +144,9 @@ fn collapse_subagent_segment(log: &mut SubagentLog) {
     let collapsed: Vec<Step> = log.steps.drain(from..).collect();
     // 收起来的每一步**还是块**：点开收缩行看到的是时间线，时间线里每一步再点开
     // 才是它的正文。原来只把抬头串起来，工具输出、思考全文在收缩那一刻就没了
-    //（用户实测：浮层中的收缩行为异常，会丢失内容）。这些步已经跑完，内容不会
-    // 再变，登记一次就够。
-    let body: Vec<String> = thread(collapsed.into_iter().map(|step| {
-        let line = step.line.clone();
-        if step.body.is_empty() {
-            return line;
-        }
-        match blocks::register(step_detail(&step)) {
-            Some(id) => format!("{}{line}{}", blocks::begin_marker(id), blocks::END_MARKER),
-            None => line,
-        }
-    }));
+    //（用户实测：浮层中的收缩行为异常，会丢失内容）。规则与主线共用一份。
+    let mut collapsed = collapsed;
+    let body = fold_block_lines(&mut collapsed);
     log.step_blocks.truncate(from);
     // 收缩行点开是时间线（`fold`）：抬头、连线、各步同一列，不再当正文缩进。
     let mut fold = Step::new(
@@ -112,7 +154,7 @@ fn collapse_subagent_segment(log: &mut SubagentLog) {
         body,
         None,
     );
-    fold.fold = true;
+    fold.kind = StepKind::Fold;
     log.steps.push(fold);
     log.segment = Timeline::default();
 }
@@ -157,14 +199,20 @@ fn subagent_title(log: &SubagentLog, display: &str) -> String {
 /// 的，这里漏了。
 /// 面板里的一项：一步（要连线、可点开）、一段它说的话（整段照排），或者最前面
 /// 那行「提示词」抬头（可点开，但不在时间线上：和第一步之间不连线、空一行）。
-enum PanelEntry {
+pub enum PanelEntry {
     Step(String),
     Text(Vec<String>),
     Header(String),
+    /// 露在上一步抬头底下的那几行（详细档的思考全文、工具详情）。
+    Tail(Vec<String>),
 }
 
 /// 把面板里的各项排成行：步与步之间连线，正文段上下各空一行、不连线。
-fn thread_panel(entries: Vec<PanelEntry>) -> Vec<String> {
+///
+/// **两块子代理面板共用它**：前台从事件攒步、后台从日志行攒步，取数的地方不同，
+/// 「步与步之间怎么空行」这套规矩不该有两份（报告 §2.2 项 D——它原来确实是两份
+/// 状态机，后台那份叫 `Previous`，四个状态；这份三个）。
+pub fn thread_panel(entries: Vec<PanelEntry>) -> Vec<String> {
     let indent = indent();
     let mut lines = Vec::new();
     let mut previous_was_step = false;
@@ -188,10 +236,20 @@ fn thread_panel(entries: Vec<PanelEntry>) -> Vec<String> {
                 previous_was_text = false;
             }
             PanelEntry::Text(body) => {
-                lines.push(String::new());
+                // 开头那一项不用先空一行：面板顶上凭空一行空白，看着像内容掉了
+                //（后台那份状态机一直是这么做的，合并时取它）。
+                if !lines.is_empty() {
+                    lines.push(String::new());
+                }
                 lines.extend(body.into_iter().map(|line| format!("{indent}{line}")));
                 previous_was_step = false;
                 previous_was_text = true;
+            }
+            // 不点开也露在上一步抬头底下的那几行，连线从中间穿过去——和主线
+            // `step_rows` 一个样子。它跟着上一步走，所以前面不另起连线。
+            PanelEntry::Tail(body) => {
+                let prefix = rail_prefix();
+                lines.extend(body.into_iter().map(|line| format!("{prefix}{line}")));
             }
         }
     }
@@ -205,12 +263,15 @@ fn subagent_lines(log: &mut SubagentLog) -> Vec<String> {
     }
     let mut entries = Vec::with_capacity(log.steps.len() + 2);
     for (index, step) in log.steps.iter().enumerate() {
-        if step.speech {
+        if step.kind == StepKind::Speech {
             entries.push(PanelEntry::Text(step.body.clone()));
             continue;
         }
         if step.body.is_empty() {
             entries.push(PanelEntry::Step(step.line.clone()));
+            if !step.tail.is_empty() {
+                entries.push(PanelEntry::Tail(step.tail.clone()));
+            }
             continue;
         }
         let detail = step_detail(step);
@@ -245,6 +306,9 @@ fn subagent_lines(log: &mut SubagentLog) -> Vec<String> {
             entries.push(PanelEntry::Header(line));
         } else {
             entries.push(PanelEntry::Step(line));
+        }
+        if !step.tail.is_empty() {
+            entries.push(PanelEntry::Tail(step.tail.clone()));
         }
     }
     // 正在跑的内层工具 / 正在流参数的那一个，各露一行——和主线的 live 区一个
@@ -285,7 +349,7 @@ fn subagent_lines(log: &mut SubagentLog) -> Vec<String> {
                 let indent = indent();
                 let mut lines = vec![line.clone(), String::new()];
                 lines.extend(wrap_detail(&log.reasoning).into_iter().map(|piece| {
-                    format!("\x1b[2m\x1b[38;5;10m{indent}{DETAIL_INDENT}{piece}\x1b[0m")
+                    format!("{THOUGHT_BODY_STYLE}{indent}{DETAIL_INDENT}{piece}\x1b[0m")
                 }));
                 lines.push(String::new());
                 lines
@@ -374,7 +438,7 @@ impl StreamRenderer {
             return Some(peek_tail(&log.speech, width));
         }
         let last = log.steps.last()?;
-        if last.speech {
+        if last.kind == StepKind::Speech {
             return Some(peek_tail(&last.body.join(" "), width));
         }
         // 步那一行自带缩进和颜色，窥视要的是干净的一句话。
@@ -407,13 +471,14 @@ impl StreamRenderer {
         let Some(phase) = miyu_engine::tools::preparing_phase(tool) else {
             return;
         };
+        let inline_thought = self.reasoning_mode == ReasoningDisplayMode::Full;
         let log = self.subagent_logs.entry(name.to_string()).or_default();
         log.started.get_or_insert_with(Instant::now);
         // 参数开始流 = 这一段想完了、话也说完了：先按时序封掉，「准备xx」才排
         // 在它们后面。原来思考要等结果回来才结算，面板里「准备执行」一直压在
         // 「思考中」上头，思考的耗时还把工具跑的时间算了进去。
         seal_subagent_speech(log);
-        flush_subagent_thought(log);
+        flush_subagent_thought(log, inline_thought);
         if log.preparing.is_none() {
             log.preparing = Some((phase, tool_glyph(tool), Instant::now()));
         }
@@ -435,10 +500,11 @@ impl StreamRenderer {
         let peek = crate::render::tool_peek(tool, args)
             .filter(|subject| !subject.trim().is_empty())
             .map(|subject| crate::render::clip_to_display_width(&subject, 72));
+        let inline_thought = self.reasoning_mode == ReasoningDisplayMode::Full;
         let log = self.subagent_logs.entry(name.to_string()).or_default();
         log.started.get_or_insert_with(Instant::now);
         seal_subagent_speech(log);
-        flush_subagent_thought(log);
+        flush_subagent_thought(log, inline_thought);
         log.preparing = None;
         log.running = Some((tool_glyph(tool), display.to_string(), peek, Instant::now()));
         log.tool_since = Some(Instant::now());
@@ -504,10 +570,13 @@ impl StreamRenderer {
                 body.extend(output);
             }
         }
+        // 档位要在借走 `subagent_logs` 之前问：借用检查不让同时拿。
+        let inline_details = self.tool_call_mode == crate::render::ToolCallDisplayMode::Full;
+        let inline_thought = self.reasoning_mode == ReasoningDisplayMode::Full;
         let log = self.subagent_logs.entry(name.to_string()).or_default();
         log.started.get_or_insert_with(Instant::now);
         seal_subagent_speech(log);
-        flush_subagent_thought(log);
+        flush_subagent_thought(log, inline_thought);
         log.running = None;
         log.preparing = None;
         let glyph = if ok { tool_glyph(tool) } else { glyph_err() };
@@ -527,15 +596,22 @@ impl StreamRenderer {
             log.segment.errors += 1;
         }
         log.segment.note_start_since(elapsed_of_step);
-        log.steps.push(Step::new(
+        let mut step = Step::new(
             if failed {
                 step_line_failed_in(glyph, &label, panel_step_width())
             } else {
                 step_line_in(glyph, &label, panel_step_width())
             },
-            body,
+            body.clone(),
             None,
-        ));
+        );
+        step.kind = StepKind::Tool;
+        // 「显示工具调用信息 = 详细」：详情摆在抬头底下，不用点开——浮层跟着
+        // 主线那两个开关走（用户 todolist:11 最后一句）。
+        if inline_details {
+            step.tail = body;
+        }
+        log.steps.push(step);
         trim_subagent(log);
         self.publish_subagent(name);
     }
@@ -545,7 +621,7 @@ impl StreamRenderer {
     /// 那一刻（用户实测：浮层里 `准备执行 · 0.0s` 不动）。十分之一秒灌一次够了，
     /// 秒数就是这个精度。
     pub(crate) fn refresh_subagent_panels(&mut self) {
-        if !blocks::enabled() {
+        if !self.caps().expandable {
             return;
         }
         let now = Instant::now();
@@ -629,14 +705,13 @@ impl StreamRenderer {
         );
         // 插在最前面 → 后面每一步的位置都往后挪了一格，块表按位置对齐，重来一轮。
         log.step_blocks.clear();
-        log.steps.insert(
-            0,
-            Step::new(
-                step_line_in(PROMPT_GLYPH, &head, panel_step_width()),
-                body,
-                None,
-            ),
+        let mut prompt = Step::new(
+            step_line_in(prompt_glyph(), &head, panel_step_width()),
+            body,
+            None,
         );
+        prompt.kind = StepKind::Prompt;
+        log.steps.insert(0, prompt);
         self.publish_subagent(name);
     }
 
@@ -649,10 +724,11 @@ impl StreamRenderer {
         if !self.timeline_enabled() || text.is_empty() {
             return;
         }
+        let inline_thought = self.reasoning_mode == ReasoningDisplayMode::Full;
         let log = self.subagent_logs.entry(name.to_string()).or_default();
         log.started.get_or_insert_with(Instant::now);
         if log.speech.is_empty() {
-            flush_subagent_thought(log);
+            flush_subagent_thought(log, inline_thought);
             collapse_subagent_segment(log);
         }
         log.speech.push_str(text);
@@ -682,8 +758,9 @@ impl StreamRenderer {
         if !self.timeline_enabled() {
             return;
         }
+        let inline_thought = self.reasoning_mode == ReasoningDisplayMode::Full;
         if let Some(log) = self.subagent_logs.get_mut(name) {
-            flush_subagent_thought(log);
+            flush_subagent_thought(log, inline_thought);
             // 跑完了就不再开那扇四行的窗——它已经收成主线上的一步了。
             log.finished = true;
         }

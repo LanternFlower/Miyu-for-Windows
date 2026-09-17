@@ -52,19 +52,58 @@ fn tool_result_carries_its_output_into_the_log() {
 #[test]
 fn streamed_speech_is_batched_into_paragraphs() {
     let mut buffer = String::new();
+    let mut since = None;
     let mut lines = Vec::new();
     for chunk in ["Now ", "let ", "me ", "enumerate."] {
-        accumulate_stream(&mut buffer, chunk, "[正文]", &mut lines);
+        accumulate_stream(&mut buffer, &mut since, chunk, "[正文]", &mut lines);
     }
     assert!(lines.is_empty(), "还没到段落就落盘了: {lines:?}");
     flush_stream_buffer(&mut buffer, "[正文]", &mut lines);
     assert_eq!(lines, vec!["[正文] Now let me enumerate.".to_string()]);
     // 空行就是段落分隔，到了就落一条。
     let mut lines = Vec::new();
-    accumulate_stream(&mut buffer, "第一段\n\n第二段", "[正文]", &mut lines);
+    let mut since = None;
+    accumulate_stream(
+        &mut buffer,
+        &mut since,
+        "第一段\n\n第二段",
+        "[正文]",
+        &mut lines,
+    );
     assert_eq!(lines, vec!["[正文] 第一段".to_string()]);
     flush_stream_buffer(&mut buffer, "[正文]", &mut lines);
     assert_eq!(lines[1], "[正文] 第二段");
+}
+
+/// 攒够久也要落一条——别让后台面板干等。
+///
+/// 原来只有「空行」和「600 字符」两道闸。实测（`testkit/tui/bg_latency.py`）模型
+/// 想一大段不带空行的时候，面板整整 **12.0 秒**不动一下。
+#[test]
+fn a_long_paragraph_still_lands_before_it_finishes() {
+    let mut buffer = String::new();
+    let mut since = None;
+    let mut lines = Vec::new();
+    // 刚起头的那一段不会一个 delta 一条：计时从这一段的第一块算起。
+    accumulate_stream(&mut buffer, &mut since, "想到", "[思考]", &mut lines);
+    assert!(
+        lines.is_empty(),
+        "刚起头就落盘 = 每个 delta 一行: {lines:?}"
+    );
+    // 假装这一段已经攒够久了（真实调用里是模型慢慢吐出来的）。
+    since = since.map(|at| at - super::log::STREAM_FLUSH_INTERVAL);
+    accumulate_stream(&mut buffer, &mut since, "一半", "[思考]", &mut lines);
+    assert_eq!(
+        lines,
+        vec!["[思考] 想到一半".to_string()],
+        "攒够久了还不落，面板就得干等"
+    );
+    assert!(buffer.is_empty(), "落过之后缓冲要清干净");
+
+    // 落过之后重新计时：下一块不会立刻再落一条。
+    let mut lines = Vec::new();
+    accumulate_stream(&mut buffer, &mut since, "接着想", "[思考]", &mut lines);
+    assert!(lines.is_empty(), "刚落过又落 = 每个 delta 一行: {lines:?}");
 }
 
 /// 工具吐的原始输出要洗干净再进流水账。
@@ -194,4 +233,64 @@ async fn background_scope_is_carried_across_the_spawn() {
     .await;
     assert_eq!(bare, (None, None), "裸 spawn 本就看不见回合作用域");
     assert_eq!(restored, (Some(workspace), Some(session)));
+}
+
+/// 写日志这一侧只会写 `LOG_TAGS` 里的标签——清单与实际输出对得上。
+///
+/// 读的那一侧按标签分支，认不出的行会掉进「无标签续行」。所以这张清单不能
+/// 靠人记：把每一种标记喂进去，看它吐出来的每一行到底挂着什么标签。
+#[test]
+fn every_marker_writes_a_tag_from_the_list() {
+    let result = serde_json::json!({
+        "name": "run_command",
+        "args": "{}",
+        "ok": true,
+        "output": "total 0",
+    })
+    .to_string();
+    let call = serde_json::json!({"name": "run_command", "args": "{}"}).to_string();
+    let brief = serde_json::json!({"prompt": "去看看那个目录里有什么"}).to_string();
+    // 逐个点名 `INNER_MARKERS`：手写一份标记清单本身就是漂移的来源，这里对
+    // 着协议那一份走——将来加了新标记而这边没给样例，`payload` 当场 panic。
+    let payload = |marker: &str| match marker {
+        "__subagent_brief__" => brief.clone(),
+        "__subagent_reasoning__" => "先列一下".to_string(),
+        "__subagent_content__" => "里面是空的。".to_string(),
+        "__subagent_metric__" => "工具调用 3 次".to_string(),
+        "__subagent_stats__" => "词元 1234".to_string(),
+        "__subtool_preparing__" => "run_command".to_string(),
+        "__subtool_call__" => call.clone(),
+        "__subtool_result__" => result.clone(),
+        other => panic!("{other} 是新标记，给它补个样例"),
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    for marker in super::protocol::INNER_MARKERS {
+        let message = format!("{marker}{}", payload(marker));
+        let written = readable_subagent_log_line_timed(&message, Some(Duration::from_millis(400)));
+        // 中途的量报**故意**不进流水账：每调一次工具记一条的话，面板的时间线
+        // 会被这些节点撑满（跑完那次的 `__subagent_stats__` 照旧留一行）。
+        if *marker == "__subagent_metric__" {
+            assert!(written.is_empty(), "中途量报不该进流水账: {written:?}");
+            continue;
+        }
+        assert!(!written.is_empty(), "{marker} 什么都没写");
+        assert!(
+            !written.contains(marker),
+            "{marker} 没被认出来，原样写进流水账了: {written:?}"
+        );
+        for line in written.lines() {
+            let tag = super::protocol::LOG_TAGS
+                .iter()
+                .find(|tag| line.starts_with(**tag))
+                .unwrap_or_else(|| panic!("{line:?} 的标签不在 LOG_TAGS 里（{marker}）"));
+            seen.insert(*tag);
+        }
+    }
+    // 反过来也要对上：清单里挂着一个谁都不写的标签，等于给读的那一侧留了一条
+    // 死分支，手写样本时还会照着它造出不存在的格式。
+    let missing: Vec<_> = super::protocol::LOG_TAGS
+        .iter()
+        .filter(|tag| !seen.contains(**tag))
+        .collect();
+    assert!(missing.is_empty(), "清单里这些标签没人写: {missing:?}");
 }

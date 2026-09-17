@@ -329,8 +329,8 @@ pub(in crate::web) fn origin_tty_writer(
         setup.readable_tool_names,
         setup.command_output_lines,
     );
-    // 静态时间线要它为真。构造时它按「stdout 是不是终端」定——daemon 的不是。
-    renderer.live_summary = true;
+    // daemon 的 stdout 是管道，可这些字节要进 shellhook 那个 tty——选的是那一面。
+    renderer.use_terminal_surface();
     renderer.use_external_cursor_control();
     renderer.use_buffered_output();
     fn flush(renderer: &mut crate::render::StreamRenderer, tty: &mut std::fs::File) -> bool {

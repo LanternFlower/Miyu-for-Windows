@@ -46,6 +46,7 @@ pub(in crate::cli) async fn follow_wake_run(
         config.display.readable_tool_names,
         config.display.command_output_lines,
     );
+    renderer.keep_timeline_open = config.display.keep_timeline_open;
     renderer.use_external_cursor_control();
     renderer.use_buffered_output();
     live.external_output_active = false;

@@ -6,7 +6,7 @@ mod link;
 mod markdown;
 pub(crate) mod math;
 mod patch;
-mod stream;
+pub(crate) mod stream;
 mod style;
 mod table;
 mod tool_display;

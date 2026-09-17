@@ -39,6 +39,30 @@ impl StreamRenderer {
         }
     }
 
+    /// 思考要不要**收进时间线那一步**，而不是直接打在屏上。
+    ///
+    /// 出厂时只有 `Summary` 这么做；`Full` 走 `write_full_reasoning_chunk` 直接
+    /// 打——在全屏下那是**绕过时间线**：没有连线、没有那一步，`Worked for` 也
+    /// 数不到它（用户 todolist:11「不是把 timeline 的思考内容自动展开，而是用的
+    /// 旧版本的 inline」）。实测那一档的输出是
+    ///
+    /// ```text
+    /// 先看一眼需求，再决定怎么下手。  好了。
+    /// ```
+    ///
+    /// 全屏下 `Full` 与 `Summary` 的差别只该在**详情摆哪**（见
+    /// `timeline_push_thought`：`Full` 把全文摆在抬头底下，连线穿过去；`Summary`
+    /// 收在块里点开才看），不该在「走哪条路」。
+    ///
+    /// 没有时间线的那些面（管道、旧卡片档）照旧：那儿本来就只能直接打。
+    pub(crate) fn captures_reasoning(&self) -> bool {
+        match self.reasoning_mode {
+            ReasoningDisplayMode::Summary => true,
+            ReasoningDisplayMode::Full => self.timeline_enabled(),
+            ReasoningDisplayMode::Hidden => false,
+        }
+    }
+
     pub fn start_reasoning_phase(&mut self, received_at: std::time::Instant) -> Result<()> {
         self.preparing_question_started_at = None;
         self.tool_preparing = None;
@@ -50,7 +74,7 @@ impl StreamRenderer {
         if self.mode == Some(ChatStreamKind::Content) {
             self.end_active_stream_line()?;
         }
-        if self.reasoning_mode == ReasoningDisplayMode::Summary {
+        if self.captures_reasoning() {
             self.reasoning_started_at = Some(received_at);
             self.reasoning_elapsed = None;
             self.reasoning_title = None;
@@ -80,21 +104,22 @@ impl StreamRenderer {
                 format_reasoning_elapsed(started_at.elapsed())
             );
         }
+        if self.captures_reasoning() {
+            return if self.reasoning_title.is_some() || !self.reasoning_text.is_empty() {
+                self.reasoning_live_text()
+            } else {
+                self.reasoning_elapsed_text()
+            };
+        }
         match self.reasoning_mode {
-            ReasoningDisplayMode::Summary => {
-                if self.reasoning_title.is_some() || !self.reasoning_text.is_empty() {
-                    self.reasoning_live_text()
-                } else {
-                    self.reasoning_elapsed_text()
-                }
-            }
-            ReasoningDisplayMode::Full => String::new(),
+            // 直接打在屏上的那一档：正在流的字自己就是画面，转轮不另说一句。
+            ReasoningDisplayMode::Summary | ReasoningDisplayMode::Full => String::new(),
             ReasoningDisplayMode::Hidden => t("thinking", "思考").to_string(),
         }
     }
 
     pub fn write_reasoning_title(&mut self, title: &str) -> Result<()> {
-        if self.reasoning_mode != ReasoningDisplayMode::Summary || self.plain {
+        if !self.captures_reasoning() || self.plain {
             return Ok(());
         }
         let title = redact_sensitive_inline(&sanitize_terminal_text(title));
@@ -107,7 +132,7 @@ impl StreamRenderer {
     }
 
     pub fn start_reasoning_part(&mut self, received_at: std::time::Instant) -> Result<()> {
-        if self.reasoning_mode != ReasoningDisplayMode::Summary {
+        if !self.captures_reasoning() {
             return Ok(());
         }
         let has_pending_summary = self.reasoning_title.is_some() || !self.reasoning_text.is_empty();
@@ -138,7 +163,7 @@ impl StreamRenderer {
     }
 
     pub fn finish_reasoning_part(&mut self, received_at: std::time::Instant) -> Result<()> {
-        if self.reasoning_mode != ReasoningDisplayMode::Summary {
+        if !self.captures_reasoning() {
             return Ok(());
         }
         if self.reasoning_title.is_some() || !self.reasoning_text.is_empty() {
@@ -151,7 +176,7 @@ impl StreamRenderer {
     }
 
     pub fn reset_reasoning_phase(&mut self, received_at: std::time::Instant) -> Result<()> {
-        if self.reasoning_mode != ReasoningDisplayMode::Summary {
+        if !self.captures_reasoning() {
             return Ok(());
         }
         self.stop_waiting()?;
@@ -201,7 +226,7 @@ impl StreamRenderer {
             {
                 let (header, sub) = self.tool_summary_live();
                 self.set_tool_waiting_phase(&header, sub.as_deref());
-            } else if self.reasoning_mode == ReasoningDisplayMode::Summary
+            } else if self.captures_reasoning()
                 && self.reasoning_started_at.is_some()
                 && self.wait_spinner.is_some()
             {
@@ -230,7 +255,7 @@ impl StreamRenderer {
         if self.timeline_enabled() && self.reasoning_mode != ReasoningDisplayMode::Hidden {
             return self.timeline_push_thought();
         }
-        if self.reasoning_mode == ReasoningDisplayMode::Summary
+        if self.captures_reasoning()
             && (self.reasoning_title.is_some() || !self.reasoning_text.is_empty())
         {
             self.stop_waiting()?;

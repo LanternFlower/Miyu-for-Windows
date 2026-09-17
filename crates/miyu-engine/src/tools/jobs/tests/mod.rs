@@ -3,3 +3,4 @@
 mod lifecycle;
 mod output;
 mod shared;
+mod trace;

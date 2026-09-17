@@ -103,6 +103,20 @@ pub(in crate::web) async fn handle_ipc_connection(
             ipc::send(&mut stream, &IpcFrame::Ack).await?;
             let _ = state.shutdown_tx.send(());
         }
+        IpcCommand::JobTrace { job_id, after } => {
+            // 任务没了（跑完清掉、或 daemon 重启过）：回空 + `reset`，让面板退回
+            // 读日志那条路。
+            let (markers, cursor, reset) = tools::jobs::job_trace_after(&job_id, after)
+                .unwrap_or_else(|| (Vec::new(), 0, true));
+            ipc::send(
+                &mut stream,
+                &IpcFrame::AdminResult {
+                    state: session_state(&state.manager, &state.state_store)?,
+                    data: json!({ "markers": markers, "cursor": cursor, "reset": reset }),
+                },
+            )
+            .await?;
+        }
         IpcCommand::JobsOverview => {
             let wake_runs = {
                 let manager = state.manager.lock().unwrap();

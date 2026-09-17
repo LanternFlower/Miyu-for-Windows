@@ -681,6 +681,7 @@ pub(in crate::cli) async fn run_direct_repl(
                 config.display.readable_tool_names,
                 config.display.command_output_lines,
             );
+            renderer.keep_timeline_open = config.display.keep_timeline_open;
             match agent
                 .compact_now(|event| handle_agent_event(&mut renderer, event))
                 .await
@@ -799,6 +800,7 @@ pub(in crate::cli) async fn run_direct_repl(
             config.display.readable_tool_names,
             config.display.command_output_lines,
         );
+        renderer.keep_timeline_open = config.display.keep_timeline_open;
         let control = AgentTurnControl::new(
             mode,
             build_tool_registry(

@@ -27,15 +27,24 @@
 //! 正在跑的那一行；也不写 `Worked for …` 收缩行——点不开的把手只是一行废话。
 //!
 //! 只有 stdout 不是终端（管道）时才还是老的一行摘要。
+//!
+//! 一共几个面、各自谁在用，见 [`super::surface`] 的表。
 
 mod glyphs;
 mod live;
 mod question;
 mod subagent;
 
-use super::StreamRenderer;
+// 后台子代理面板（根包 `cli::repl::tail::screen::overlay`）要按名字用这几样：
+// 它和前台面板**共用**排版、收缩、点开的规则，取数的地方不同，长相不该不同。
+pub use glyphs::{fold_open_lines, step_detail_lines};
+pub use subagent::{fold_block_lines, thread_panel, PanelEntry};
+
+use super::{question_answer_text, StreamRenderer};
 use crate::render::blocks;
 use crate::render::t;
+use crate::render::ReasoningDisplayMode;
+use crate::render::{prompt_glyph, THOUGHT_BODY_STYLE};
 use std::time::{Duration, Instant};
 
 // 搬走的帮手按老路径再导出：调用方写的还是 `timeline::…`（09-16 拆分）。
@@ -76,13 +85,13 @@ fn rail_prefix() -> String {
 ///
 /// 装不了 Nerd Font 的话设 `MIYU_TUI_ASCII=1` 退回通用符号——图标好看不该是
 /// 用不了的理由。
-fn nerd() -> bool {
+pub fn nerd() -> bool {
     static NERD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *NERD.get_or_init(|| std::env::var_os("MIYU_TUI_ASCII").is_none())
 }
 
 /// 认不出的工具。芯片——没归到哪一类，那就是"有个东西在跑"。
-fn glyph_tool() -> &'static str {
+pub fn glyph_tool() -> &'static str {
     if nerd() {
         "\u{f4bc}"
     } else {
@@ -91,7 +100,7 @@ fn glyph_tool() -> &'static str {
 }
 
 /// 出错。**错比「是什么工具」更要紧**，所以它盖过按类型挑的图标。
-fn glyph_err() -> &'static str {
+pub fn glyph_err() -> &'static str {
     if nerd() {
         "\u{f00d}"
     } else {
@@ -112,7 +121,7 @@ pub fn glyph_notice() -> &'static str {
 ///
 /// （一度以为截图里那个方框是缺字、把它换掉了，其实那**就是**原子那个字形。
 /// 这台机器的字体里 MDI 段是全的，别再改。）
-fn glyph_think() -> &'static str {
+pub fn glyph_think() -> &'static str {
     if nerd() {
         "\u{f0768}"
     } else {
@@ -138,7 +147,40 @@ struct PendingStep {
 }
 
 /// 一步：折叠时的那一行，加上点开能看到的正文。
-pub(crate) struct Step {
+
+/// 这一步**是什么**——由事件决定，不是看图标猜、也不是靠两个布尔编码。
+///
+/// **主线、前台面板、后台面板三处共用这一个枚举。** 之前它有两份:这边是
+/// `speech: bool` + `fold: bool`(两个布尔编码三种互斥状态,「都为真」在类型上
+/// 合法),后台面板那边是另一个同名枚举。后台那份的来历是个真 bug:那儿原来拿
+/// **图标**判类型,而 `load_tools` 的图标和「差事」撞了,于是装工具那一步在面板里
+/// 出现两遍、输出还丢了。
+///
+/// 两块面板的模型要合一,得先说同一种话(报告 §6 阶段 3)。
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub enum StepKind {
+    /// 没打标签的裸行（后台流水账里认不出前缀的那些）。
+    #[default]
+    Plain,
+    /// 交给子代理的差事。钉在最前面，不参与收缩。
+    Prompt,
+    /// 想的那一段。
+    Thought,
+    /// 一次工具调用。后台面板里**只有它**认领 `[结果]` 与 `[输出]`。
+    Tool,
+    /// 它说的一段正文：没有抬头，也不连线，`body` 就是整段话。按时序占位，
+    /// 后面再想再动手也排不到它前头。
+    Speech,
+    /// 后台流水账里的 `[统计]`。不是工具调用：没有结果行，也不该被当成
+    /// 「末尾那个还没回来的调用」挂上转轮。
+    Stats,
+    /// 收缩行：`body` 是收起来的那几步（各自已经是整行、带缩进、连好线），点开时
+    /// 不再缩进——和主线 `Worked for …` 展开成时间线一个样子。
+    Fold,
+}
+
+pub struct Step {
+    kind: StepKind,
     line: String,
     body: Vec<String>,
     /// 子代理：点开是覆盖层而不是就地展开，用的是它自己那块流水账的 id。
@@ -147,38 +189,63 @@ pub(crate) struct Step {
     /// 同一个 id——原来只有收成 `Worked for …` 时才登记，于是回合还没结束时已经
     /// 跑完的那几步一个都点不开（用户实测：diff 要等 AI 输出完才看得到）。
     block: Option<u64>,
-    /// 这一步是它说的一段正文（子代理面板里），不是动作：没有抬头，也不连线，
-    /// `body` 就是整段话。按时序占位，后面再想再动手也排不到它前头。
-    speech: bool,
-    /// 收缩行：`body` 是收起来的那几步（各自已经是整行、带缩进、连好线），点开时
-    /// 不再缩进——和主线 `Worked for …` 展开成时间线一个样子。
-    fold: bool,
     /// 不点开也露在抬头底下的那几行（跑完的命令留着的输出尾巴，连线从它们中间
     /// 穿过去）。块的结束标记放在它们之后：点开时展开内容把抬头和尾巴一起换掉。
     tail: Vec<String>,
 }
 
 impl Step {
-    fn new(line: String, body: Vec<String>, overlay: Option<u64>) -> Self {
+    pub(crate) fn new(line: String, body: Vec<String>, overlay: Option<u64>) -> Self {
         Self {
+            kind: StepKind::Plain,
             line,
             body,
             overlay,
             block: None,
-            speech: false,
-            fold: false,
             tail: Vec::new(),
         }
     }
 
-    fn speech(body: Vec<String>) -> Self {
+    /// 从**已经渲染好的**抬头与正文造一步。后台面板用它：那边的抬头要按面板
+    /// 宽度裁、正文要按面板宽度折，渲染时机和前台不同，但落进来的形状该是同一个。
+    ///
+    /// `block` 是这一步以前用过的块 id（按位置复用）——后台每帧重解析，不带着它
+    /// 的话用户点开的那一块下一帧就换了 id、当场合上。
+    pub fn panel(kind: StepKind, line: String, body: Vec<String>, block: Option<u64>) -> Self {
         Self {
+            kind,
+            line,
+            body,
+            overlay: None,
+            block,
+            tail: Vec::new(),
+        }
+    }
+
+    /// 这一步登记到了哪一块（造完之后才知道，见 `fold_block_lines`）。
+    pub fn block_id(&self) -> Option<u64> {
+        self.block
+    }
+
+    pub fn set_block(&mut self, id: Option<u64>) {
+        self.block = id;
+    }
+
+    pub fn kind(&self) -> StepKind {
+        self.kind
+    }
+
+    pub fn line(&self) -> &str {
+        &self.line
+    }
+
+    pub(crate) fn speech(body: Vec<String>) -> Self {
+        Self {
+            kind: StepKind::Speech,
             line: String::new(),
             body,
             overlay: None,
             block: None,
-            speech: true,
-            fold: false,
             tail: Vec::new(),
         }
     }
@@ -193,9 +260,12 @@ pub(crate) fn timed_label(head: &str, elapsed: Duration) -> String {
     }
 }
 
-/// 值得报出来的耗时：至少十分之一秒。
+/// 一步花了多久。始终报，不到一秒报毫秒（用户 09-17：加上 ms 的读秒，而不是仅 s）。
+///
+/// 原来对不到十分之一秒的耗时**什么都不报**，于是同一段代码两次跑可能一次带耗时
+/// 一次不带——写快照时它是结构性的不确定，掩码救不了；读起来也像「这步没花时间」。
 pub fn reported_seconds(elapsed: Duration) -> Option<String> {
-    (elapsed.as_millis() >= 100).then(|| format_seconds(elapsed))
+    Some(crate::render::format_reasoning_elapsed(elapsed))
 }
 
 /// 面板里「正在进行」那一行左边距上的转轮占位格。
@@ -447,7 +517,7 @@ impl StreamRenderer {
         if self.tool_stats.is_empty() {
             return Ok(());
         }
-        let static_timeline = self.timeline_static();
+        let static_timeline = self.caps().detail_inline();
         // 先收集再改：`ordered_tool_stats` 借着 `self`，循环里要往 `self.timeline`
         // 里写，借用检查过不去。
         let entries: Vec<PendingStep> = self
@@ -559,6 +629,7 @@ impl StreamRenderer {
                 step_line(glyph, &label)
             };
             let mut step = Step::new(line, detail, overlay);
+            step.kind = StepKind::Tool;
             step.tail = tail;
             self.timeline.steps.push(step);
         }
@@ -575,7 +646,7 @@ impl StreamRenderer {
     /// 刚收进来的那几步：全屏下登记成块（live 区里就能点开），静态版直接落进
     /// scrollback。
     fn settle_new_steps(&mut self) -> anyhow::Result<()> {
-        if self.timeline_static() {
+        if self.caps().commit_immediately {
             return self.commit_static_steps();
         }
         for step in &mut self.timeline.steps {
@@ -643,18 +714,30 @@ impl StreamRenderer {
         let label = timed_label(&label, elapsed);
         // 静态版没处点开，思考全文就不留了：抬头上的词元数和秒数说明"想过"，
         // 想了什么本来也只是折叠起来备查的。
-        let detail = if self.timeline_static() {
+        let detail = if self.caps().detail_inline() {
             Vec::new()
         } else {
             wrap_detail(&self.reasoning_text)
                 .into_iter()
-                .map(|line| format!("\x1b[2m\x1b[38;5;10m{line}\x1b[0m"))
+                .map(|line| format!("{THOUGHT_BODY_STYLE}{line}\x1b[0m"))
                 .collect::<Vec<_>>()
         };
+        // 「显示思考过程 = 详细」就是**这一步的详情不用点**：全文摆在抬头底下，
+        // 连线从中间穿过去，和跑完的命令留输出尾巴是同一套词汇（用户
+        // todolist:11「把 timeline 的思考内容自动展开」）。摘要档照旧收在块里。
+        //
+        // 详情两边都留着：点开那一份仍然在（块的展开会把抬头和尾巴一起换掉），
+        // 段末收成 `Worked for …` 之后再点开也还看得到。
+        let tail = if self.reasoning_mode == ReasoningDisplayMode::Full {
+            detail.clone()
+        } else {
+            Vec::new()
+        };
         self.timeline.thoughts += 1;
-        self.timeline
-            .steps
-            .push(Step::new(step_line(glyph_think(), &label), detail, None));
+        let mut step = Step::new(step_line(glyph_think(), &label), detail, None);
+        step.kind = StepKind::Thought;
+        step.tail = tail;
+        self.timeline.steps.push(step);
         self.reasoning_text.clear();
         self.reasoning_tokens = 0;
         self.reasoning_title = None;
@@ -720,7 +803,8 @@ impl StreamRenderer {
         // live 区先收掉：不收的话它那几行留在屏上，摘要会接在它们下面，
         // 于是「收缩」看起来根本没发生。
         self.stop_waiting()?;
-        if self.timeline_static() {
+        // 逐步落地的面没有收缩行(用它而不是 `!fold`:后者在管道面下与旧条件不等价)。
+        if self.caps().commit_immediately {
             // 静态版：步骤早就一步一步落下去了，这里只是这一段到此为止——
             // 空一行和后面的正文分开。没有 `Worked for …`：点不开的把手只是
             // 一行废话。

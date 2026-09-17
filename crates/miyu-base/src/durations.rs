@@ -2,8 +2,24 @@
 
 use std::time::Duration;
 
-/// `0.3s` / `12s` / `1m 05s`。
+/// 不到一秒的读数：`<1ms` / `340ms`。
+///
+/// 原来这一档一律打成 `0.0s`（没信息量），上层再靠「不到十分之一秒就什么都不报」
+/// 绕开它——代价是同一段代码两次跑时有时无，写不出稳定的快照。
+pub fn format_sub_second(elapsed: Duration) -> String {
+    if elapsed < Duration::from_millis(1) {
+        "<1ms".to_string()
+    } else {
+        format!("{}ms", elapsed.as_millis())
+    }
+}
+
+/// `340ms` / `0.3s` / `12s` / `1m 05s`。
 pub fn format_seconds(elapsed: Duration) -> String {
+    // 不到一秒报毫秒：见 `format_sub_second`。
+    if elapsed < Duration::from_secs(1) {
+        return format_sub_second(elapsed);
+    }
     let secs = elapsed.as_secs_f64();
     if secs < 10.0 {
         format!("{secs:.1}s")
