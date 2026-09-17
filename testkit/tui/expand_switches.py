@@ -18,6 +18,7 @@
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -29,6 +30,8 @@ import round26 as r  # noqa: E402
 THINK_BODY = "先想一句"
 THOUGHT_HEAD = "已思考"
 FOLD_HEAD = "Worked for"
+# 「正在想」那一段正文里的记号：命令之后那一段思考，逐块流出来的那份。
+THINK_LIVE = "折叠时看不到"
 
 STUB = {
     "STUB_REASONING": "1",
@@ -55,6 +58,21 @@ def ask(master, sink):
     os.write(master, b"\r")
     h.settle(master, sink, quiet=1.2, timeout=40)
     return h.render(bytes(sink))
+
+
+def follow_while(master, sink, alive, wanted, seconds=4):
+    """跟着帧走，直到看见 `wanted`；`alive` 从屏上消失就停（那一步已经过去了）。"""
+    deadline = time.time() + seconds
+    best = h.render(bytes(sink))
+    while time.time() < deadline:
+        h.settle(master, sink, quiet=0.15, timeout=1)
+        rows = h.render(bytes(sink))
+        if not any(alive in line for line in rows):
+            break
+        best = rows
+        if any(wanted in line for line in rows):
+            break
+    return best
 
 
 def screen_after(master, sink, quiet=0.6, timeout=8):
@@ -196,9 +214,99 @@ def scenario_no_fold(report):
         r.stop(tui, daemon, stub)
 
 
+def scenario_live_is_expanded_too(report):
+    """**还在想 / 还在跑**的时候就该是展开的，不是想完了才展开。
+
+    用户 09-17 实测：「思考的展开是思考完成才展开，思考完成之前还是单行窥视的
+    状态；运行命令工具运行中是渲染 tag 行下预览，运行完成才展开」。根因是 live
+    区那几行用的是不带档位的起始标记——一步的大半辈子都在 live 区里。
+    """
+    stub, daemon, tui, master, sink = r.start(
+        # 慢一点，好在"还在想""还在跑"的那几帧上做断言。
+        dict(STUB, STUB_CHUNK_SLEEP="0.3", STUB_TOOL_COMMAND="sleep 2; printf 'out\\n'"),
+        config_extra=display(expand_reasoning=True, expand_tool_calls=True),
+    )
+    try:
+        os.write(master, h.PROMPT.encode())
+        h.drain_until(master, sink, h.PROMPT, 3.0)
+        os.write(master, b"\r")
+        # 等到「思考中」那一行出现**并且**它底下已经有正文——这两件事该在同一帧。
+        # 先看跑着的命令那一行。
+        screen = r.wait_screen(
+            master,
+            sink,
+            lambda rows: any("运行命令" in line for line in rows),
+            timeout=30,
+        )
+        report["live_command_row_seen"] = screen is not None
+        if screen is None:
+            return
+        screen = follow_while(master, sink, "运行命令", "sleep 2", seconds=3)
+        r.save("expand-live-command", screen)
+        # 展开态下命令那一步露的是**缩进的**正文，不是 `│ ` 那条预览尾巴。
+        report["live_command_is_expanded"] = any(
+            line.startswith("    sleep 2") for line in screen
+        )
+        # 再看命令之后那一段思考（这一段是逐块流出来的，看得见"正在想"）。
+        screen = r.wait_screen(
+            master,
+            sink,
+            lambda rows: any("思考中" in line for line in rows),
+            timeout=30,
+        )
+        report["live_thinking_row_seen"] = screen is not None
+        if screen is None:
+            return
+        # 刚冒头那一帧一个字都还没来，那一块根本没登记（没内容可展开）。
+        # 再跟几帧，要求「思考中」还在——只在它还活着的那几帧上断言。
+        screen = follow_while(master, sink, "思考中", THINK_LIVE, seconds=6)
+        r.save("expand-live-thinking", screen)
+        report["live_thinking_is_expanded"] = any(THINK_LIVE in line for line in screen)
+    finally:
+        r.stop(tui, daemon, stub)
+
+
+def scenario_config_applies_next_turn(report):
+    """`/config` 改完，**下一轮**就生效，不用重开 TUI。"""
+    stub, daemon, tui, master, sink = r.start(
+        STUB, config_extra=display(expand_reasoning=False, fold_timeline=False)
+    )
+    path = h.HOME / "config" / "config.jsonc"
+    try:
+        screen = ask(master, sink)
+        report["before_config_is_collapsed"] = not any(
+            THINK_BODY in line for line in screen
+        )
+        # 主菜单第 9 项是「全局参数设置」，表里第 8 项是「展开思考内容」，
+        # 选「启用」，再回主菜单选「保存并退出」。
+        os.write(master, b"/config")
+        h.drain_until(master, sink, "/config", 3.0)
+        os.write(master, b"\r")
+        h.settle(master, sink, quiet=0.8, timeout=15)
+        for keys in ["\x1b[B" * 8, "\r", "\x1b[B" * 7, "\r", "\x1b[A", "\r",
+                     "\x1b", "\x1b[B" * 2, "\r"]:
+            os.write(master, keys.encode("latin1"))
+            h.settle(master, sink, quiet=0.4, timeout=10)
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        report["config_tui_saved_it"] = saved.get("display", {}).get("expand_reasoning") is True
+        os.write(master, "再来一句".encode())
+        h.drain_until(master, sink, "再来一句", 5.0)
+        os.write(master, b"\r")
+        screen = screen_after(master, sink, quiet=1.5, timeout=40)
+        r.save("expand-after-config", screen)
+        # 第二轮只有一段思考，用它那份正文当记号。
+        report["takes_effect_on_the_next_turn"] = any(
+            "折叠时看不到" in line for line in screen
+        )
+    finally:
+        r.stop(tui, daemon, stub)
+
+
 def main():
     report = {}
     for scenario in (
+        scenario_live_is_expanded_too,
+        scenario_config_applies_next_turn,
         scenario_expanded,
         scenario_expanded_survives_the_fold,
         scenario_collapsed,

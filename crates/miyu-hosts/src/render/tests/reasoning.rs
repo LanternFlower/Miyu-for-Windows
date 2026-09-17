@@ -476,6 +476,51 @@ fn real_reasoning_mid_content_ends_the_line_before_the_spinner() {
 /// 先看一眼需求，再决定怎么下手。  好了。
 /// ```
 ///
+/// **正在想**的那一行也算这一步：一步的大半辈子是在 live 区里度过的。只给落
+/// 下来的那一份的话，用户看到的是「想完了才展开」（用户 09-17 实测原话：「思考
+/// 的展开是思考完成才展开，思考完成之前还是单行窥视的状态」）。
+#[test]
+fn the_live_thinking_row_is_expanded_too() {
+    use crate::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
+    use miyu_core::llm::{ChatStreamChunk, ChatStreamKind};
+
+    fn run(mode: ReasoningDisplayMode) -> String {
+        let mut renderer = StreamRenderer::new(mode, ToolCallDisplayMode::Summary, false, true, 8);
+        renderer.use_external_cursor_control();
+        renderer.use_buffered_output();
+        renderer.use_terminal_surface();
+        renderer
+            .start_reasoning_phase(std::time::Instant::now())
+            .unwrap();
+        renderer
+            .write_chunk(ChatStreamChunk {
+                kind: ChatStreamKind::Reasoning,
+                text: "还在想，这一段正文只在展开之后才看得到。".to_string(),
+            })
+            .unwrap();
+        // 转轮走一帧：live 区那几行就是这一帧写出去的。
+        renderer.last_tick = None;
+        renderer.tick_spinner().unwrap();
+        String::from_utf8_lossy(&renderer.take_output_frame()).into_owned()
+    }
+
+    super::timeline::with_blocks(|| {
+        // 转轮只在「字节落进真终端」时才转（`WaitSpinner::supported`），而
+        // live 区那几行是转轮那一帧写出去的。测试里靠宽度覆盖告诉它这一点。
+        crate::render::set_cols_override(100);
+        let full = run(ReasoningDisplayMode::Full);
+        assert!(
+            full.contains("miyu-block-open="),
+            "还在想的那一行没带「默认开着」: {full:?}"
+        );
+        assert!(
+            !run(ReasoningDisplayMode::Summary).contains("miyu-block-open="),
+            "收起档不该默认展开"
+        );
+        crate::render::set_cols_override(0);
+    });
+}
+
 /// 现在它和收起档走同一条路，差别只在**这一步默认开着还是合着**：展开档那一步
 /// 出来就是展开态（块标记是 `miyu-block-open=`），再点一次收回去；收起档出来就
 /// 是合着的。
@@ -510,6 +555,9 @@ fn expanded_reasoning_opens_its_step_instead_of_previewing_under_the_head() {
     }
 
     super::timeline::with_blocks(|| {
+        // 转轮只在「字节落进真终端」时才转（`WaitSpinner::supported`），而
+        // live 区那几行是转轮那一帧写出去的。测试里靠宽度覆盖告诉它这一点。
+        crate::render::set_cols_override(100);
         let full = run(ReasoningDisplayMode::Full);
         let full_text = super::shared::strip_ansi_for_test(&full);
         assert!(

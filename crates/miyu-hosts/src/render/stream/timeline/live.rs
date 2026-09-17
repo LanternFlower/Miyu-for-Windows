@@ -215,7 +215,13 @@ impl StreamRenderer {
             .map(|step| step_rows(step, step.overlay.or(step.block)))
             .collect();
         let current_is_empty = current.is_empty();
-        for LiveRow { line, target, tail } in current {
+        for LiveRow {
+            line,
+            target,
+            tail,
+            open,
+        } in current
+        {
             // 正在跑的这一步**不带 logo**：点阵转轮会落在那一列上，跑完了
             // 收进 `steps` 时才换回静态图标。
             //
@@ -223,14 +229,14 @@ impl StreamRenderer {
             // 不必等它结束。标记不占显示宽度，转轮那边照常裁剪。
             // 跑着的是子代理时，点开该进**它的面板**，不是就地展开一段窥视——
             // 那条线还在长，就地展开的行数每秒都在变。
-            let (open, close) = match target {
-                Some(id) => (blocks::begin_marker(id), blocks::END_MARKER),
+            let (begin, close) = match target {
+                Some(id) => (blocks::begin_marker_in(id, open), blocks::END_MARKER),
                 None => (String::new(), ""),
             };
             // 转轮落在**左边距**那一列（第 0 列），logo 留在自己那一列——
             // 原来转轮顶掉 logo 的位置，跑完再换回来，一行两副面孔。
             //（用户：左边不是有一个边距吗，`<转轮><logo><抬头>` 就不用替代 logo 了。）
-            let mut row = format!("{}{open}{line}", crate::render::wait_spinner::BLOCK_MARKER);
+            let mut row = format!("{}{begin}{line}", crate::render::wait_spinner::BLOCK_MARKER);
             // 底下跟着的几行（跑着的命令此刻的输出）和这一行是同一项：连线从
             // 它们中间穿过去。块的结束标记放在最后一行之后——点开的时候展开
             // 内容把抬头和这几行**一起**换掉（用户：如果展开命令的话就替换掉
@@ -390,10 +396,12 @@ impl StreamRenderer {
         // 顺序即优先级：准备态 → 正在跑的工具 → 正在想。准备态排最前，
         // 因为它一定会被后面两者之一替换掉，本来就是个占位。
         let current: Vec<LiveRow> = if let Some((glyph, prepare)) = self.timeline_preparing_line() {
+            // 准备态还没有内容可展开（参数才刚开始流），不替用户开。
             vec![LiveRow {
                 line: format!("{glyph} {prepare}"),
                 target: self.live_block,
                 tail: Vec::new(),
+                open: false,
             }]
         } else if !self.tool_stats.is_empty() {
             self.timeline_running_tool_lines()
@@ -407,6 +415,9 @@ impl StreamRenderer {
                 ),
                 target: self.live_block,
                 tail: Vec::new(),
+                // 「展开思考内容」开着时，**正在想**的这一步也是展开的：
+                // 点开看到的是它想到哪儿了（`live_block_lines` 每帧重灌）。
+                open: self.reasoning_mode == ReasoningDisplayMode::Full,
             }]
         } else {
             Vec::new()
@@ -444,12 +455,14 @@ impl StreamRenderer {
     /// 原来是把第一个拿出来、后面缀个 `+2`。并行派三个子代理时屏幕上就只有一行
     /// 在转，看着像"只能跑一个"——而它们确实在同时跑（用户问的就是这个）。
     pub(crate) fn timeline_running_tool_lines(&self) -> Vec<LiveRow> {
+        let expand_tools = self.tool_call_mode == crate::render::ToolCallDisplayMode::Full;
         let ordered = self.ordered_tool_stats();
         if ordered.is_empty() {
             return vec![LiveRow {
                 line: format!("{} {}", glyph_tool(), t("running", "运行中")),
                 target: self.live_block,
                 tail: Vec::new(),
+                open: expand_tools,
             }];
         }
         ordered
@@ -515,7 +528,14 @@ impl StreamRenderer {
                 } else {
                     Vec::new()
                 };
-                LiveRow { line, target, tail }
+                // 「展开工具内容」开着时，跑着的这一步也该是展开的——点开看到的
+                // 是它此刻的完整命令与输出（`live_tool_lines` 每帧重灌）。
+                LiveRow {
+                    line,
+                    target,
+                    tail,
+                    open: expand_tools,
+                }
             })
             .collect()
     }

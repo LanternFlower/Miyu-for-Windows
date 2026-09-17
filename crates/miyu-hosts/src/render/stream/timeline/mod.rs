@@ -314,6 +314,11 @@ pub(crate) struct LiveRow {
     pub(crate) target: Option<u64>,
     /// 这一行底下跟着露出来的几行（静态时间线里跑着的命令露出来的输出尾巴）。
     pub(crate) tail: Vec<String>,
+    /// 出来就是展开态。见 [`Step::open`]——**这一行也要这一位**：
+    /// 「展开」说的是「这一步的内容默认看得见」，而一步的大半辈子是在 live 区里
+    /// 度过的。只给落下来的那一份的话，用户看到的是「想完了才展开、跑完了才展开」
+    ///（用户 09-17 实测原话）。
+    pub(crate) open: bool,
 }
 
 /// 收缩行的图标。和主线那条 `⌄ Worked for …` 一个样子。
