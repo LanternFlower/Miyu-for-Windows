@@ -48,6 +48,44 @@ fn allow_read_flag_is_taken_from_either_end() {
     );
 }
 
+/// 候选不随「打全」消失：`/sessio` 有、`/session` 也有，在打参数时也有。
+/// 以前打全那一刻候选没了，看着像自己把命令打错了（用户实测）。
+#[test]
+fn suggestions_survive_a_fully_typed_command() {
+    assert_eq!(repl_command_suggestions("/sessio"), vec!["/session"]);
+    assert_eq!(repl_command_suggestions("/session"), vec!["/session"]);
+    assert_eq!(repl_command_suggestions("/session "), vec!["/session"]);
+    assert_eq!(repl_command_suggestions("/session 3"), vec!["/session"]);
+    assert_eq!(repl_command_suggestions("/variant high"), vec!["/variant"]);
+    // 打了参数就不再按前缀筛：`/sessio 3` 什么都不是。
+    assert!(repl_command_suggestions("/sessio 3").is_empty());
+    // Tab 不碰已经在打参数的行，否则展开会把参数抹掉。
+    assert_eq!(complete_repl_command("/session 3"), None);
+    assert_eq!(complete_repl_command("/session"), Some("/session"));
+}
+
+/// 全屏候选面板：打全了照样在，并带上参数提示；别名那一行注明等于哪条正名。
+#[test]
+fn command_hint_panel_keeps_showing_a_fully_typed_command() {
+    let lines = command_hint_lines("/session", 80);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("/session [name|index]"), "{lines:?}");
+    let lines = command_hint_lines("/session 3", 80);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("/session [name|index]"), "{lines:?}");
+    // 没打全时不带参数提示，和以前一样只列名字。
+    let lines = command_hint_lines("/sessio", 80);
+    assert!(lines[0].starts_with("/session  "), "{lines:?}");
+    let lines = command_hint_lines("/var", 80);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("/variant"), "{lines:?}");
+    assert!(lines[0].contains("= /effort"), "{lines:?}");
+    // 无参数的命令打全了不带空的参数提示。
+    let lines = command_hint_lines("/usage", 80);
+    assert!(lines[0].starts_with("/usage  "), "{lines:?}");
+    assert!(command_hint_lines("/sessio 3", 80).is_empty());
+}
+
 #[test]
 fn command_suggestions_are_prefixed_and_truncated() {
     let suggestions = repl_command_suggestions("/");

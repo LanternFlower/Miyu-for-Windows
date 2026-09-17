@@ -1,14 +1,36 @@
 //! 思考变体（variant）菜单。
 
 // 被测的东西散在 cli::mod 与 repl 的兄弟模块里，这里全都要够到。
+use crate::cli::repl::editor::*;
 use crate::cli::repl::width::*;
 use crate::cli::*;
+/// 正名 `/effort`（codex / Claude Code 的叫法）；`/variant`（opencode 的叫法）是
+/// 别名，打哪个都到同一条命令。
 #[test]
-fn variant_is_a_repl_command_with_arguments() {
-    assert!(repl_commands().contains(&"/variant"));
-    assert_eq!(split_repl_command("/variant high"), ("/variant", "high"));
+fn effort_is_a_repl_command_and_variant_is_its_alias() {
+    assert!(repl_commands().contains(&"/effort"));
+    assert!(!repl_commands().contains(&"/variant"));
+    assert!(is_repl_command("/variant"));
+    assert!(is_repl_command("/EFFORT"));
+    assert!(names_repl_command("/Variant", ReplSlashCommand::Effort));
+    assert!(!names_repl_command("/variant", ReplSlashCommand::Models));
+    assert!(matches!(
+        parse_repl_input("/variant high"),
+        ReplInput::Slash(ReplSlashCommand::Effort, "high")
+    ));
+    assert!(matches!(
+        parse_repl_input("/effort high"),
+        ReplInput::Slash(ReplSlashCommand::Effort, "high")
+    ));
+    assert_eq!(split_repl_command("/effort high"), ("/effort", "high"));
     assert_eq!(split_repl_command("/reset all"), ("/reset", "all"));
+    // Tab 补的是用户正在打的那个词：/var → /variant，/eff → /effort。
     assert_eq!(complete_repl_command("/var"), Some("/variant"));
+    assert_eq!(complete_repl_command("/eff"), Some("/effort"));
+    // 打 `/` 列全表时只出正名，别名不另占一行。
+    let all = repl_command_suggestions("/");
+    assert!(all.contains(&"/effort"));
+    assert!(!all.contains(&"/variant"));
 }
 
 #[test]

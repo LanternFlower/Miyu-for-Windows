@@ -112,6 +112,8 @@ pub enum Command {
     Reload,
     Models(ModelsArgs),
     ListModels,
+    /// 正名 `effort`（codex / Claude Code 的叫法），`variant`（opencode 的叫法）是别名。
+    #[command(name = "effort", alias = "variant")]
     Variant(VariantArgs),
     FishInit,
     BashInit,

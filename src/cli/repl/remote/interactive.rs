@@ -330,7 +330,7 @@ impl RemoteRepl {
                     ReplSlashCommand::Persona => self.cmd_persona(command_args).await?,
                     ReplSlashCommand::Models => self.cmd_models(command_args).await?,
                     ReplSlashCommand::Config => self.cmd_config().await?,
-                    ReplSlashCommand::Variant => self.cmd_variant(command_args).await?,
+                    ReplSlashCommand::Effort => self.cmd_effort(command_args).await?,
                     ReplSlashCommand::Undo => self.cmd_undo().await?,
                     ReplSlashCommand::Pop => self.cmd_pop(command_args).await?,
                     ReplSlashCommand::Compact => self.cmd_compact().await?,

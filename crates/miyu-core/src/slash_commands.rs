@@ -48,7 +48,7 @@ pub enum ReplSlashCommand {
     Persona,
     Usage,
     Config,
-    Variant,
+    Effort,
     Undo,
     Pop,
     Compact,
@@ -66,6 +66,10 @@ pub enum ReplSlashCommand {
 
 pub struct ReplCommandSpec {
     pub name: &'static str,
+    /// 别名：打这些名字和打 `name` 一样。`/variant` 是 opencode 的叫法，`/effort`
+    /// 是 codex / Claude Code 的叫法，两边都认。候选面板、Tab 补全、回车执行都认
+    /// 别名；`/help` 与打 `/` 列全表时只出正名，别名在正名那一行后面注一句。
+    pub aliases: &'static [&'static str],
     pub command: ReplSlashCommand,
     /// Argument hint rendered in /help, e.g. "[count]"; empty when the
     /// command takes no arguments (enforced at dispatch).
@@ -88,6 +92,39 @@ impl ReplCommandSpec {
             self.help_en
         }
     }
+
+    /// 这个名字（正名或别名）指的是不是它。大小写不敏感。
+    pub fn answers_to(&self, name: &str) -> bool {
+        self.name.eq_ignore_ascii_case(name)
+            || self
+                .aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(name))
+    }
+
+    /// 以 `prefix` 开头的第一个名字：正名优先，正名不中再看别名。打 `/` 列全表
+    /// 时每条只出正名；打 `/var` 时正名 `/effort` 不中、别名 `/variant` 中，
+    /// 候选就是 `/variant`——Tab 补的是用户正在打的那个词。
+    fn suggestion_for(&self, prefix: &str) -> Option<&'static str> {
+        std::iter::once(self.name)
+            .chain(self.aliases.iter().copied())
+            .find(|candidate| starts_with_ignore_ascii_case(candidate, prefix))
+    }
+
+    /// 用户打的是哪个名字：打的是别名就还它别名，否则正名。
+    fn typed_name(&self, name: &str) -> &'static str {
+        self.aliases
+            .iter()
+            .copied()
+            .find(|alias| alias.eq_ignore_ascii_case(name))
+            .unwrap_or(self.name)
+    }
+}
+
+fn starts_with_ignore_ascii_case(candidate: &str, prefix: &str) -> bool {
+    candidate.len() >= prefix.len()
+        && candidate.is_char_boundary(prefix.len())
+        && candidate[..prefix.len()].eq_ignore_ascii_case(prefix)
 }
 
 /// WebUI 输入框认得的命令。CLI 认得全部，两边同源于 `REPL_COMMAND_TABLE`。
@@ -100,6 +137,7 @@ pub fn web_commands() -> Vec<&'static ReplCommandSpec> {
 pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     ReplCommandSpec {
         name: "/new",
+        aliases: &[],
         command: ReplSlashCommand::New,
         arg_hint: "[name]",
         help_en: "create a new session and switch to it",
@@ -108,6 +146,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/session",
+        aliases: &[],
         command: ReplSlashCommand::Session,
         arg_hint: "[name|index]",
         help_en: "list sessions, or switch to one (Ctrl+D deletes in the picker)",
@@ -116,6 +155,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/rename",
+        aliases: &[],
         command: ReplSlashCommand::Rename,
         arg_hint: "<name>",
         help_en: "rename the current session",
@@ -124,6 +164,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/delete",
+        aliases: &[],
         command: ReplSlashCommand::Delete,
         arg_hint: "[name|index]",
         help_en: "delete a session (current by default)",
@@ -132,6 +173,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/sandbox",
+        aliases: &[],
         command: ReplSlashCommand::Sandbox,
         arg_hint: "[path [--allow-read]|clear]",
         help_en: "confine this session to a directory (Landlock); `--allow-read` locks writes only, no arg shows, `clear` unbinds",
@@ -142,6 +184,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/models",
+        aliases: &[],
         command: ReplSlashCommand::Models,
         arg_hint: "[index|provider/model|default]",
         help_en: "switch this session's model",
@@ -150,6 +193,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/persona",
+        aliases: &[],
         command: ReplSlashCommand::Persona,
         arg_hint: "[name]",
         help_en: "switch the active persona",
@@ -158,6 +202,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/usage",
+        aliases: &[],
         command: ReplSlashCommand::Usage,
         arg_hint: "",
         help_en: "show token usage details",
@@ -166,6 +211,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/config",
+        aliases: &[],
         command: ReplSlashCommand::Config,
         arg_hint: "",
         help_en: "open configuration UI",
@@ -173,8 +219,9 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
         web: false,
     },
     ReplCommandSpec {
-        name: "/variant",
-        command: ReplSlashCommand::Variant,
+        name: "/effort",
+        aliases: &["/variant"],
+        command: ReplSlashCommand::Effort,
         arg_hint: "[name]",
         help_en: "view or switch thinking level",
         help_zh: "查看或切换思考档位",
@@ -182,6 +229,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/undo",
+        aliases: &[],
         command: ReplSlashCommand::Undo,
         arg_hint: "",
         help_en: "undo the last turn or context compaction",
@@ -190,6 +238,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/pop",
+        aliases: &[],
         command: ReplSlashCommand::Pop,
         arg_hint: "[count]",
         help_en: "pop selected turns or the oldest count from active context",
@@ -199,6 +248,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/compact",
+        aliases: &[],
         command: ReplSlashCommand::Compact,
         arg_hint: "",
         help_en: "compact current conversation context now",
@@ -207,6 +257,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/stt",
+        aliases: &[],
         command: ReplSlashCommand::Stt,
         arg_hint: "",
         help_en:
@@ -216,6 +267,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/goal",
+        aliases: &[],
         command: ReplSlashCommand::Goal,
         arg_hint: "[目标|edit <新目标>|pause|resume|clear]",
         help_en: "give the session a long task and let it keep working on it by itself",
@@ -224,6 +276,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/reset",
+        aliases: &[],
         command: ReplSlashCommand::Reset,
         arg_hint: "",
         help_en: "start this conversation over",
@@ -232,6 +285,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/reset-memory",
+        aliases: &[],
         command: ReplSlashCommand::ResetMemory,
         arg_hint: "",
         help_en: "erase the long-term memory this conversation produced",
@@ -240,6 +294,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/reset-all-memory",
+        aliases: &[],
         command: ReplSlashCommand::ResetAllMemory,
         arg_hint: "",
         help_en: "erase this mode's entire long-term memory",
@@ -248,6 +303,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/wipe",
+        aliases: &[],
         command: ReplSlashCommand::Wipe,
         arg_hint: "",
         help_en: "erase memory, every conversation and group contexts (skills and scripts stay)",
@@ -256,6 +312,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/history",
+        aliases: &[],
         command: ReplSlashCommand::History,
         arg_hint: "",
         help_en: "show recent conversation history",
@@ -264,6 +321,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/clear",
+        aliases: &[],
         command: ReplSlashCommand::Clear,
         arg_hint: "",
         help_en: "clear the screen",
@@ -272,6 +330,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/help",
+        aliases: &[],
         command: ReplSlashCommand::Help,
         arg_hint: "",
         help_en: "show this help",
@@ -280,6 +339,7 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
     },
     ReplCommandSpec {
         name: "/exit",
+        aliases: &[],
         command: ReplSlashCommand::Exit,
         arg_hint: "",
         help_en: "leave REPL",
@@ -307,17 +367,34 @@ pub fn repl_commands() -> Vec<&'static str> {
     REPL_COMMAND_TABLE.iter().map(|spec| spec.name).collect()
 }
 
+/// 输入框的候选命令名。
+///
+/// 还在打命令名（没出现空白）：按前缀筛，正名与别名都算，每条命令最多出一个名字。
+/// 命令名后面已经有空白（在打参数，或刚敲了个空格）：只认打全的那一条——候选
+/// 不再随着「打全」而消失。以前 `/sessio` 有候选、补上 `n` 反而没了，像是打错了
+/// 一样（用户实测）；现在打全了它还在，在打参数时也还在。
 pub fn repl_command_suggestions(input: &str) -> Vec<&'static str> {
     if !input.starts_with('/') {
         return Vec::new();
     }
-    repl_commands()
-        .into_iter()
-        .filter(|command| command.starts_with(input))
+    if input.contains(char::is_whitespace) {
+        let (name, _) = split_repl_command(input);
+        return repl_command_spec_for_name(name)
+            .map(|spec| vec![spec.typed_name(name)])
+            .unwrap_or_default();
+    }
+    REPL_COMMAND_TABLE
+        .iter()
+        .filter_map(|spec| spec.suggestion_for(input))
         .collect()
 }
 
+/// Tab 补全：唯一候选才展开。已经在打参数的行不动——候选那时只是「这条命令
+/// 打全了」的确认，展开会把参数抹掉。
 pub fn complete_repl_command(input: &str) -> Option<&'static str> {
+    if input.contains(char::is_whitespace) {
+        return None;
+    }
     let suggestions = repl_command_suggestions(input);
     if suggestions.len() == 1 {
         suggestions.first().copied()
@@ -326,10 +403,19 @@ pub fn complete_repl_command(input: &str) -> Option<&'static str> {
     }
 }
 
-/// 命令表里有没有这个**完整**名字。执行前的唯一判定入口——直连道的 if 链和
-/// 泄漏守门都问它，不再走前缀展开（理由见 `parse_repl_input`）。
+/// 按**完整**名字（正名或别名）找命令。
+pub fn repl_command_spec_for_name(name: &str) -> Option<&'static ReplCommandSpec> {
+    REPL_COMMAND_TABLE.iter().find(|spec| spec.answers_to(name))
+}
+
+/// `name` 是不是 `command` 的名字（正名或别名）。直连道的 if 链用它，别名知识
+/// 只留在命令表一处。
+pub fn names_repl_command(name: &str, command: ReplSlashCommand) -> bool {
+    repl_command_spec_for_name(name).is_some_and(|spec| spec.command == command)
+}
+
+/// 命令表里有没有这个**完整**名字（正名或别名）。执行前的唯一判定入口——直连道
+/// 的 if 链和泄漏守门都问它，不再走前缀展开（理由见 `parse_repl_input`）。
 pub fn is_repl_command(name: &str) -> bool {
-    REPL_COMMAND_TABLE
-        .iter()
-        .any(|spec| spec.name.eq_ignore_ascii_case(name))
+    repl_command_spec_for_name(name).is_some()
 }

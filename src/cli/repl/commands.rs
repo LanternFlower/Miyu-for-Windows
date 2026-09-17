@@ -29,9 +29,19 @@ pub(in crate::cli) fn repl_help_text() -> String {
         } else {
             format!("{} {}", spec.name, spec.arg_hint)
         };
+        let alias_note = if spec.aliases.is_empty() {
+            String::new()
+        } else {
+            let aliases = spec.aliases.join(" ");
+            if is_zh() {
+                format!("（别名 {aliases}）")
+            } else {
+                format!(" (alias: {aliases})")
+            }
+        };
         let _ = writeln!(
             out,
-            "  {invocation:<width$}  {}",
+            "  {invocation:<width$}  {}{alias_note}",
             t(spec.help_en, spec.help_zh)
         );
     }
@@ -96,28 +106,47 @@ pub(in crate::cli) fn print_repl_help() {
 pub(in crate::cli) fn command_hint_lines(input: &str, cols: usize) -> Vec<String> {
     let input = input.trim_start();
     let suggestions = miyu_core::slash_commands::repl_command_suggestions(input);
-    // 只剩一条且已经打全了就别挡着了。
-    if suggestions.is_empty() || (suggestions.len() == 1 && suggestions[0] == input) {
+    if suggestions.is_empty() {
         return Vec::new();
     }
-    let width = cols.saturating_sub(10).max(20);
-    let name_col = suggestions
-        .iter()
-        .map(|name| name.len())
-        .max()
-        .unwrap_or(0)
-        .min(20);
-    suggestions
+    // 打全了不撤面板：以前「只剩一条且已经打全」就把面板收掉，可 `/sessio` 有、
+    // `/session` 反而没了，像打错了一样（用户实测）。打全的那条把参数提示也带上，
+    // 顺手告诉你后面能接什么；在打参数的时候它也留着。
+    let typed = input.split_whitespace().next().unwrap_or(input);
+    let entries = suggestions
         .iter()
         .take(4)
         .map(|name| {
-            let help = REPL_COMMAND_TABLE
-                .iter()
-                .find(|spec| spec.name == *name)
-                .map(|spec| t(spec.help_en, spec.help_zh))
-                .unwrap_or("");
-            let pad = " ".repeat(name_col.saturating_sub(name.len()));
-            truncate_visible_width(&format!("{name}{pad}  \x1b[2m{help}\x1b[0m"), width)
+            let spec = repl_command_spec_for_name(name);
+            let label = match spec {
+                Some(spec) if name.eq_ignore_ascii_case(typed) && !spec.arg_hint.is_empty() => {
+                    format!("{name} {}", spec.arg_hint)
+                }
+                _ => name.to_string(),
+            };
+            let help = spec.map(|spec| spec.help()).unwrap_or("");
+            // 打的是别名：说明它等于哪条正名，免得两个名字像两条命令。
+            let help = match spec {
+                Some(spec) if !spec.name.eq_ignore_ascii_case(name) => {
+                    format!("= {} · {help}", spec.name)
+                }
+                _ => help.to_string(),
+            };
+            (label, help)
+        })
+        .collect::<Vec<_>>();
+    let width = cols.saturating_sub(10).max(20);
+    let name_col = entries
+        .iter()
+        .map(|(label, _)| label.len())
+        .max()
+        .unwrap_or(0)
+        .min(20);
+    entries
+        .iter()
+        .map(|(label, help)| {
+            let pad = " ".repeat(name_col.saturating_sub(label.len()));
+            truncate_visible_width(&format!("{label}{pad}  \x1b[2m{help}\x1b[0m"), width)
         })
         .collect()
 }

@@ -1,4 +1,4 @@
-//! 远端 REPL 的帮助 / 听写 / 历史 / 清屏 / 用量与配置类斜杠命令(/persona /models /config /variant)。09-17 从 `run_remote_repl` 抽出。
+//! 远端 REPL 的帮助 / 听写 / 历史 / 清屏 / 用量与配置类斜杠命令(/persona /models /config /effort)。09-17 从 `run_remote_repl` 抽出。
 
 use super::interactive::{LoopStep, RemoteRepl};
 use crate::cli::repl::tail::*;
@@ -225,27 +225,34 @@ impl RemoteRepl {
         Ok(LoopStep::Continue)
     }
 
-    pub(super) async fn cmd_variant(&mut self, command_args: &str) -> Result<LoopStep> {
+    pub(super) async fn cmd_effort(&mut self, command_args: &str) -> Result<LoopStep> {
         if !miyu_base::models_cache::is_loaded() {
             repl_note(
                 &mut self.live_repl,
                 &format!(
                     "{}\n",
                     t(
-                        "model metadata is still loading; try /variant again shortly",
-                        "模型元数据仍在加载，请稍后重试 /variant"
+                        "model metadata is still loading; try /effort again shortly",
+                        "模型元数据仍在加载，请稍后重试 /effort"
                     )
                 ),
             )?;
             return Ok(LoopStep::Continue);
         }
         let selected = command_args.trim();
-        let mut client = OpenAiCompatibleClient::from_config(&self.config, &self.paths)?;
+        // 档位跟着**这个会话正在用的模型**走，不是全局文本模型：会话用 /models
+        // 钉了别的模型时，以前这里拿全局配置建 client，列出来的是全局那个模型的
+        // 档位——全局模型只有 default 就只剩一个 default，怎么切都切不到会话模型
+        // 的档位上（用户实测）。footer 与 /models 早就按会话作用域取配置，这里对齐。
+        // 存盘按「供应商 + 模型」记，daemon 下一轮按会话模型回读，改完就生效。
+        let session_config =
+            footer_config_for_session(&self.paths, &self.config, &self.active_session_id);
+        let mut client = OpenAiCompatibleClient::from_config(&session_config, &self.paths)?;
         match execute_variant(
             &self.paths,
             &mut client,
             (!selected.is_empty()).then_some(selected),
-            "/variant",
+            "/effort",
         )? {
             VariantOutcome::Updated => {
                 let Some((_, _)) =

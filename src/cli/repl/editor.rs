@@ -546,8 +546,7 @@ pub(in crate::cli) fn parse_repl_input(input: &str) -> ReplInput<'_> {
         return ReplInput::Chat;
     }
     let (name, args) = split_repl_command(input);
-    let lowered = name.to_ascii_lowercase();
-    match REPL_COMMAND_TABLE.iter().find(|spec| spec.name == lowered) {
+    match repl_command_spec_for_name(name) {
         Some(spec) => ReplInput::Slash(spec.command, args),
         None => ReplInput::Chat,
     }

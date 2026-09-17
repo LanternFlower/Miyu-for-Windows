@@ -448,8 +448,8 @@ pub(in crate::cli) fn run_variant(paths: &MiyuPaths, args: VariantArgs) -> Resul
         bail!(
             "{}",
             t(
-                "interactive variant selection requires a terminal; use `miyu variant <name>`",
-                "交互 variant 选择需要终端；请使用 `miyu variant <名称>`",
+                "interactive thinking-level selection requires a terminal; use `miyu effort <name>`",
+                "交互选择思考档位需要终端；请使用 `miyu effort <名称>`",
             )
         );
     }
@@ -462,9 +462,13 @@ pub(in crate::cli) fn run_variant(paths: &MiyuPaths, args: VariantArgs) -> Resul
         })?;
     }
 
-    let config = AppConfig::load_or_default(paths)?;
+    let mut config = AppConfig::load_or_default(paths)?;
+    // 与 `miyu models` 同一个作用域：终端集成会话钉了自己的模型时，档位列的
+    // 是那个模型的，不是全局文本模型的。
+    let store = StateStore::new(paths)?;
+    apply_session_model_override(&store, &mut config);
     let mut client = OpenAiCompatibleClient::from_config(&config, paths)?;
-    match execute_variant(paths, &mut client, selected, "miyu variant")? {
+    match execute_variant(paths, &mut client, selected, "miyu effort")? {
         VariantOutcome::Updated => print_variant_updated(),
         VariantOutcome::Cancelled => {}
         VariantOutcome::Rejected(message) => bail!("{message}"),

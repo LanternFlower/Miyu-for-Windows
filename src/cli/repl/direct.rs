@@ -598,13 +598,13 @@ pub(in crate::cli) async fn run_direct_repl(
             println!();
             continue;
         }
-        if command.eq_ignore_ascii_case("/variant") {
+        if names_repl_command(command, ReplSlashCommand::Effort) {
             if !miyu_base::models_cache::is_loaded() {
                 println!(
                     "{}\n",
                     t(
-                        "model metadata is still loading; try /variant again shortly",
-                        "模型元数据仍在加载，请稍后重试 /variant"
+                        "model metadata is still loading; try /effort again shortly",
+                        "模型元数据仍在加载，请稍后重试 /effort"
                     )
                 );
                 continue;
@@ -614,7 +614,7 @@ pub(in crate::cli) async fn run_direct_repl(
                 paths,
                 &mut client,
                 (!selected.is_empty()).then_some(selected),
-                "/variant",
+                "/effort",
             )? {
                 VariantOutcome::Updated => {
                     let thinking_summary = client.thinking_variant_summary();

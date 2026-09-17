@@ -48,7 +48,7 @@ pub(in crate::cli) fn root_help_template() -> String {
   zsh-init           Integrate with zsh
   remove-shell-hook  Safely remove installed Miyu shell hooks
   models             Switch the terminal session's model (-g edits the global pool)
-  variant            Switch the terminal session model's thinking level
+  effort             Switch the terminal session model's thinking level (alias: variant)
   history            Show conversation history
   reset              Clear the terminal-integration session context
   reset-memory       Erase the long-term memory this terminal session produced
@@ -60,7 +60,7 @@ pub(in crate::cli) fn root_help_template() -> String {
   zsh-init           集成到 zsh
   remove-shell-hook  安全删除已安装的 Miyu shell hook
   models             修改终端集成会话的模型（-g 改全局模型池）
-  variant            切换终端集成会话模型的思考档位
+  effort             切换终端集成会话模型的思考档位（别名 variant）
   history            显示会话历史
   reset              清除终端集成会话上下文
   reset-memory       清空本次终端会话记下的长期记忆
@@ -245,9 +245,9 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
         ),
         ("list-models", "List available models", "列出可用模型"),
         (
-            "variant",
-            "Switch the terminal session model's thinking level",
-            "切换终端集成会话模型的思考档位",
+            "effort",
+            "Switch the terminal session model's thinking level (alias: variant)",
+            "切换终端集成会话模型的思考档位（别名 variant）",
         ),
         (
             "fish-init",
@@ -324,7 +324,7 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
         "zsh-init",
         "remove-shell-hook",
         "models",
-        "variant",
+        "effort",
         "history",
         "reset",
         "reset-memory",
@@ -365,7 +365,7 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
         .mut_subcommand("ask", localize_ask_command)
         .mut_subcommand("session", localize_session_command)
         .mut_subcommand("models", localize_models_command)
-        .mut_subcommand("variant", localize_variant_command)
+        .mut_subcommand("effort", localize_variant_command)
         .mut_subcommand("history", localize_history_command)
         .mut_subcommand("pop", localize_pop_command)
         .mut_subcommand("reset", |command| {
