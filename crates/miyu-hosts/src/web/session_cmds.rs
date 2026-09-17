@@ -241,7 +241,7 @@ pub(in crate::web) async fn handle_session_command(
                 .session_record(&session_id)
                 .map_err(|error| safe_error_message(&error))?
                 .ok_or_else(|| "session not found".to_string())?;
-            let mode = turn_mode_for_session(&session_store, &session_id, AgentMode::Normal);
+            let mode = turn_mode_for_session(&session_store, &session_id, PersonaLane::Active);
             // 与回合同源的 registry(guard/超时齐备);会话工作区与来源
             // 一并作用域化,内层工具看到的世界和回合内一致。
             let config = session_scoped_config(state, &session_id);
@@ -331,15 +331,15 @@ pub(in crate::web) async fn handle_session_command(
                 None => store.session_id().to_string(),
             };
             let session_store = state.stores.for_session(&session_id);
-            let mode = turn_mode_for_session(&session_store, &session_id, AgentMode::Normal);
+            let mode = turn_mode_for_session(&session_store, &session_id, PersonaLane::Active);
             let config = session_scoped_config(state, &session_id);
             let mut registry =
                 miyu_engine::tools::build_tool_registry(&config, &state.paths, mode, false)
                     .map_err(|error| safe_error_message(&error))?;
             attach_owner_turn_tools(&mut registry, state, &config, mode, &session_id);
             let mode_label = match mode {
-                AgentMode::Dev => "dev",
-                AgentMode::Normal => "normal",
+                PersonaLane::Dev => "dev",
+                PersonaLane::Active => "normal",
             };
             match name {
                 Some(name) => {
@@ -596,7 +596,7 @@ pub(in crate::web) fn attach_owner_turn_tools(
     registry: &mut miyu_engine::tools::ToolRegistry,
     state: &DaemonState,
     config: &AppConfig,
-    mode: AgentMode,
+    mode: PersonaLane,
     session_id: &str,
 ) {
     if !config.tools.enabled {
@@ -656,7 +656,7 @@ pub(in crate::web) fn attach_owner_turn_tools(
     // 原来只看 mode,注释还写着"与 task.rs 相同的条件",其实少了一半。
     // claude-code 的工具**只能**从 MCP 桥拿,于是 REPL 里照样拿到——
     // 08-26 那次"群友经由桥能调 run_command"是同一个坑的另一半。
-    if mode == AgentMode::Normal && session_is_running_local_webui(state, session_id) {
+    if mode == PersonaLane::Active && session_is_running_local_webui(state, session_id) {
         miyu_engine::tools::register_webui_artifact_tools(
             registry,
             config,

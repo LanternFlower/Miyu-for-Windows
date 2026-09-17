@@ -75,9 +75,8 @@ impl Agent {
             let tools = self.tools.lock().unwrap();
             // 有效模式按候选模型池解析(模型级覆盖,任一成员要 full 则整池
             // full)——约束解码型模型吃不下空壳 stub(09-01)。
-            if tools::is_stub_loading_mode(&tools::effective_tools_loading_mode(
-                &self.core.config,
-            )) {
+            if tools::is_stub_loading_mode(&tools::effective_tools_loading_mode(&self.core.config))
+            {
                 tools.stub_definitions()
             } else {
                 tools.definitions()

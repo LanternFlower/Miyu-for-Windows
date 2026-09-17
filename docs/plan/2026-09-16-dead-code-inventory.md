@@ -243,3 +243,11 @@
 
 - `AgentMode`:340 处引用;`AgentMode::reminder()` 恒 `None`、`with_mode_reminder` 空操作、`runtime_context` 的 `mode` 参数是 `let _ = mode;`——退役另开专项(提示词字节)。
 - `agent → render` 两处反向使用(`is_command_tool`、`SPINNER_INTERVAL`)。
+
+## 09-17 补记:rebase 到 main 32227cc0 之后
+
+- `crates/miyu-hosts/src/render/command.rs` 的 `static_detail` / `detail_tail` / `live_tail` 三个方法(76 行)**已删**:main 的 `32227cc0`
+  (命令那一步抬头给 title、正文给命令)把它们的调用点全换成了 `command_rows`,main 上也已无人调用;留着编译零警告门禁过不去。
+  要恢复直接从 `32227cc0:src/render/command.rs` 取。
+- `render/tests/timeline_panels.rs` 的 `a_finished_commands_preview_rows_follow_the_configured_count` 由做 rebase 的会话删掉(钉的是旧契约,
+  新契约那份在 `render/tests/command_step.rs`)。

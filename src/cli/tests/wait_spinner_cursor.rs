@@ -304,7 +304,7 @@ fn back_to_back_command_cards_leave_exactly_one_blank() {
         let frame = renderer.take_output_frame();
         // 数的是**空行**,不是行数。09-17 起 live 区里多了一行命令本身(内容行,
         // 不是空行),拿行数当空行数的代理会被它戳穿。
-        let painted = crate::render::strip_ansi_text(&String::from_utf8_lossy(&frame));
+        let painted = miyu_hosts::render::strip_ansi_text(&String::from_utf8_lossy(&frame));
         let blanks = painted
             .lines()
             .filter(|line| line.trim().is_empty())

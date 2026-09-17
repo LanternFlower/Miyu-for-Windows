@@ -30,7 +30,7 @@ impl Agent {
         state: StateStore,
         client: OpenAiCompatibleClient,
         tools: ToolRegistry,
-        mode: AgentMode,
+        lane: PersonaLane,
     ) -> Result<Self> {
         Self::new_for_audience(
             config,
@@ -38,7 +38,7 @@ impl Agent {
             state,
             client,
             tools,
-            mode,
+            lane,
             PromptAudience::Owner,
         )
     }
@@ -49,17 +49,17 @@ impl Agent {
         state: StateStore,
         client: OpenAiCompatibleClient,
         tools: ToolRegistry,
-        mode: AgentMode,
+        lane: PersonaLane,
         prompt_audience: PromptAudience,
     ) -> Result<Self> {
         // Construction is side-effect free (aside from idempotent memory
         // init) so concurrent turns can each build their own Agent; startup
         // maintenance (prompt-change reset, stale-turn recovery) lives in
         // `prepare_for_turn`.
-        // 场所的 AgentMode 在这里折成人格面:dev 走保留人格 "dev" 的作用域,记忆
+        // 场所的人格车道在这里折成人格面:dev 走保留人格 "dev" 的作用域,记忆
         // 整套在这里关掉(09-09),派生目录也随之隔离,免得日后重开时读到默认
         // 人格的库。往下的一切只看 `dev` 与人格清单,不再看模式。
-        let dev = mode == AgentMode::Dev;
+        let dev = lane.is_dev();
         let config = if dev { config.dev_scoped() } else { config };
         // claude-code 中转的双四档工具作用域按人格面裁决;其他协议无感。
         let client = client.with_claude_code_dev_mode(dev);
@@ -469,13 +469,9 @@ impl Agent {
         Ok(())
     }
 
-    /// 对外仍用场所词汇回答「现在是哪种会话」:由人格面折回。
-    pub fn mode(&self) -> AgentMode {
-        if self.core.dev {
-            AgentMode::Dev
-        } else {
-            AgentMode::Normal
-        }
+    /// 回答场所「现在走哪条人格车道」:由人格面折回。
+    pub fn persona_lane(&self) -> PersonaLane {
+        PersonaLane::from_dev(self.core.dev)
     }
 
     pub fn context_window(&self) -> Option<usize> {
@@ -519,8 +515,8 @@ impl Agent {
     /// 回合中途场所换了会话形态(REPL `/dev` 开关):折成人格面、换工具面、重算
     /// 预设对话。config 不在这里重新作用域化——记忆库与派生目录是构造期定的,
     /// 回合里换库会让日记落到另一个命名空间。
-    pub fn switch_mode(&mut self, mode: AgentMode, tools: ToolRegistry) {
-        self.core.dev = mode == AgentMode::Dev;
+    pub fn switch_lane(&mut self, lane: PersonaLane, tools: ToolRegistry) {
+        self.core.dev = lane.is_dev();
         // 情境化工具的原件跟着新表走:两张表是分别建的,拿旧表的 Arc 去
         // 新表上放回,等于把上一人格面的工具塞进这一面。
         self.situational_tools = situational_tool_specs(&tools, self.core.dev);

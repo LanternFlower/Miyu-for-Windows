@@ -79,17 +79,17 @@ fn replayed_job_wake_turns_are_not_drawn_as_user_prompts() {
         assistant_reasoning: None,
     };
 
-    let frame = session_replay_frame(&[wake], AgentMode::Normal, &config, 80).unwrap();
+    let frame = session_replay_frame(&[wake], PersonaLane::Active, &config, 80).unwrap();
     let frame = String::from_utf8_lossy(&frame);
     // Dim ⚙ notice with the bracketed prefix stripped, exactly like the
     // live path — never the user bubble's bar.
     assert!(frame.contains("⚙ 子代理完成 82bea3 · 后台测试A"));
     assert!(!frame.contains("[后台任务完成]"));
-    assert!(!frame.contains(&submitted_echo_bar(AgentMode::Normal)));
+    assert!(!frame.contains(&submitted_echo_bar(PersonaLane::Active)));
 
-    let frame = session_replay_frame(&[typed], AgentMode::Normal, &config, 80).unwrap();
+    let frame = session_replay_frame(&[typed], PersonaLane::Active, &config, 80).unwrap();
     let frame = String::from_utf8_lossy(&frame);
-    assert!(frame.contains(&submitted_echo_bar(AgentMode::Normal)));
+    assert!(frame.contains(&submitted_echo_bar(PersonaLane::Active)));
     assert!(!frame.contains('⚙'));
 }
 
@@ -177,7 +177,7 @@ fn footer_turn_completion_updates_the_rendered_token_accounting() {
     assert_eq!(footer.token_usage.session_tokens, 240);
     assert_eq!(footer.token_usage.cumulative_tokens, Some(100));
     assert_eq!(
-        strip_terminal_control_sequences(&repl_footer_line(AgentMode::Normal, &footer, 80))
+        strip_terminal_control_sequences(&repl_footer_line(PersonaLane::Active, &footer, 80))
             .split_whitespace()
             .last(),
         Some("Σ100")
@@ -231,13 +231,14 @@ fn the_footer_drops_the_output_speed_before_the_cumulative_total() {
         },
     );
 
-    let wide = strip_terminal_control_sequences(&repl_footer_line(AgentMode::Normal, &footer, 100));
+    let wide =
+        strip_terminal_control_sequences(&repl_footer_line(PersonaLane::Active, &footer, 100));
     assert!(
         wide.contains("361 tok/s · 21.7k/1M(2.2%) · Σ180.1k(C24%)"),
         "{wide}"
     );
     let narrow =
-        strip_terminal_control_sequences(&repl_footer_line(AgentMode::Normal, &footer, 64));
+        strip_terminal_control_sequences(&repl_footer_line(PersonaLane::Active, &footer, 64));
     assert!(!narrow.contains("tok/s"), "{narrow}");
     assert!(narrow.contains("Σ180.1k(C24%)"), "{narrow}");
 }
@@ -262,7 +263,8 @@ fn the_footer_leaves_the_per_turn_figure_to_the_token_line() {
         },
     );
 
-    let line = strip_terminal_control_sequences(&repl_footer_line(AgentMode::Normal, &footer, 80));
+    let line =
+        strip_terminal_control_sequences(&repl_footer_line(PersonaLane::Active, &footer, 80));
     // Two standing gauges only. Carrying the turn figure as well cost 14
     // columns and pushed the whole footer past 80.
     assert!(line.contains("21.7k/1M(2.2%)"), "{line}");
@@ -282,7 +284,7 @@ fn footer_variant_always_uses_the_fixed_primary_color() {
     let mut footer = ReplFooterStatus::from_config(&config, 0, TurnTokens::default());
     footer.update_thinking_variant(Some("high"));
 
-    for mode in [AgentMode::Normal, AgentMode::Dev] {
+    for mode in [PersonaLane::Active, PersonaLane::Dev] {
         let line = repl_footer_left(mode, &footer, 120);
         assert!(line.contains("\x1b[1m\x1b[34mhigh\x1b[0m"));
         assert_eq!(
@@ -322,7 +324,7 @@ fn mixed_footer_uses_dim_provider_and_hides_global_variant() {
     let mut footer = ReplFooterStatus::from_config(&config, 0, TurnTokens::default());
     footer.update_thinking_variant(Some("mixed"));
 
-    let line = repl_footer_left(AgentMode::Normal, &footer, 120);
+    let line = repl_footer_left(PersonaLane::Active, &footer, 120);
 
     assert_eq!(footer.provider, "mixed");
     assert!(footer.thinking.is_none());
@@ -330,7 +332,7 @@ fn mixed_footer_uses_dim_provider_and_hides_global_variant() {
         strip_terminal_control_sequences(&line),
         format!(
             "{} · {} mixed",
-            AgentMode::Normal.label(),
+            PersonaLane::Active.label(),
             t("Mixed", "混合")
         )
     );
@@ -340,7 +342,7 @@ fn mixed_footer_uses_dim_provider_and_hides_global_variant() {
 
 #[test]
 fn committed_user_message_keeps_one_blank_line_before_output() {
-    let output = committed_user_messages_text(&[("hello", AgentMode::Normal)], true, 80);
+    let output = committed_user_messages_text(&[("hello", PersonaLane::Active)], true, 80);
 
     assert_eq!(
         strip_terminal_control_sequences(&output),
@@ -360,18 +362,18 @@ fn queued_message_uses_full_height_bar_and_primary_status() {
         submitted_at: String::new(),
     };
 
-    let normal = queued_prompt_lines(std::slice::from_ref(&prompt), AgentMode::Normal, 80);
-    let chat = queued_prompt_lines(&[prompt], AgentMode::Dev, 80);
+    let normal = queued_prompt_lines(std::slice::from_ref(&prompt), PersonaLane::Active, 80);
+    let chat = queued_prompt_lines(&[prompt], PersonaLane::Dev, 80);
 
     assert_eq!(normal.len(), 4);
-    assert_eq!(normal[0], submitted_echo_bar(AgentMode::Normal));
-    assert_eq!(normal[2], submitted_echo_bar(AgentMode::Normal));
-    assert!(normal[3].starts_with(&submitted_echo_bar(AgentMode::Normal)));
+    assert_eq!(normal[0], submitted_echo_bar(PersonaLane::Active));
+    assert_eq!(normal[2], submitted_echo_bar(PersonaLane::Active));
+    assert!(normal[3].starts_with(&submitted_echo_bar(PersonaLane::Active)));
     assert!(normal[3].contains(&primary_footer_text(t("Queued", "排队中"))));
     assert!(chat
         .iter()
         .filter(|line| !line.is_empty())
-        .all(|line| line.starts_with(&submitted_echo_bar(AgentMode::Dev))));
+        .all(|line| line.starts_with(&submitted_echo_bar(PersonaLane::Dev))));
     assert_ne!(normal[0], chat[0]);
 }
 
@@ -475,7 +477,7 @@ fn streaming_output_never_drags_an_anchored_tail_back_up() {
 fn spinner_does_not_resume_tail_during_external_output() {
     let config = AppConfig::default();
     let mut live = LiveReplTail {
-        editor: LiveReplEditor::new(AgentMode::Normal, Vec::new()),
+        editor: LiveReplEditor::new(PersonaLane::Active, Vec::new()),
         queued: Vec::new(),
         pending_chunks: Vec::new(),
         footer: ReplFooterStatus::from_config(&config, 0, TurnTokens::default()),
@@ -521,7 +523,7 @@ fn spinner_does_not_resume_tail_during_external_output() {
 fn live_tail_coalesces_adjacent_stream_chunks_and_can_discard_them() {
     let config = AppConfig::default();
     let mut live = LiveReplTail {
-        editor: LiveReplEditor::new(AgentMode::Normal, Vec::new()),
+        editor: LiveReplEditor::new(PersonaLane::Active, Vec::new()),
         queued: Vec::new(),
         pending_chunks: Vec::new(),
         footer: ReplFooterStatus::from_config(&config, 0, TurnTokens::default()),

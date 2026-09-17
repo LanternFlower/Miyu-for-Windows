@@ -32,7 +32,7 @@ pub(super) fn manager_with_run(
             run_id.to_string(),
             RunInfo {
                 session_id: "default".into(),
-                mode: AgentMode::Normal,
+                mode: PersonaLane::Active,
                 audience: PromptAudience::Owner,
                 cancel: cancel_tx,
                 turn_id: None,

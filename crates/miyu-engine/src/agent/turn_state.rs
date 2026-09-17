@@ -20,7 +20,7 @@ use super::*;
 /// 都发生在回合之外。
 pub(in crate::agent) struct CoreTurnSnapshot {
     /// 这一会话跑的是不是保留人格 `dev`(一行开发提示词、无人格全家、精简工具面)。
-    /// 场所传进来的 [`AgentMode`] 在构造 / `switch_mode` 边界折成这一位布尔;回合引擎
+    /// 场所传进来的 [`PersonaLane`] 在构造 / `switch_lane` 边界折成这一位布尔;回合引擎
     /// 内部没有「模式」这个概念,dev 只是一张启用集为空的内置人格(09-16 退役)。
     pub(in crate::agent) dev: bool,
     pub(in crate::agent) prompt_audience: PromptAudience,

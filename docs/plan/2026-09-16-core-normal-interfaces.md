@@ -353,3 +353,29 @@ lazy 档描述,改成断言生产 `stub_definitions` 里有该脚本桩。
 进程全局态的测试隔离:拆 crate 后全量并行跑两遍(2427/2427)没再出现 onebot notices 与 render::math 的抖动;
 `render/blocks.rs` 的块标记开关在测试态是线程局部的(现在对上游 crate 的测试也生效了),`onebot::tests::notices` 有串行锁。
 剩下已知的抖动只有 `claude_code::haiku_*`(根因未找到,两次都没红)。
+
+## 第十至十二轮(09-16/17,用户 goal「直接运行到全部做完」):拆 crate → 大文件拆分 → 场所层 AgentMode
+
+| 步 | 做了什么 | 验证 |
+|---|---|---|
+| 拆 crate | 5 包 workspace(`crates/{miyu-base,miyu-core,miyu-engine,miyu-hosts}` + 根包 `miyu`),构建 id 挪到根包 `build.rs`,下层 17 处 `cfg(test)` 行为开关改 `any(test, feature = "testkit")`,`CARGO_MANIFEST_DIR` 改 `miyu_base::WORKSPACE_ROOT`,139 行无引用依赖清掉 | 2427/0 测试;五道门禁;host-query 9/9;oobe 7/7;增量 check 18.3→7.2 s、build 42.2→8.8 s、tools 29.1→9.6 s、`test --no-run` 55.5→23.5 s(峰值顶到 20 GB 上限,含页缓存) |
+| 大文件拆分 A 批 | 10 份施工单四批派 Opus 子代理,61 分钟零返工:timeline.rs 2358→781、tools/mod.rs 1379→448、vision 1360→825、subagent 1345→647、apply_patch 1209→434、overlay 1389→508、screen 1298→651、cli/mod.rs 1373→814、web/sessions 1204→523、config/mod.rs 1186→492 | 每份 check 零警告 + 定向测试用例数不变 + 规模门禁 |
+| 大文件拆分 B 批 | `chat_with_tools` 1216 行 → 150 行骨架 + 9 个步骤文件(`RoundState` 收局部态);`run_remote_repl` 1334 行 → `RemoteRepl` 状态 + 22 条命令各成方法 + `submit_chat` | `agent::` 164/164;`cli::` 265/265;`request_shape_probe` 五张脸逐字节相同;`testkit/cli` 57 项过 56(那条 main 上同样红) |
+| 场所层 AgentMode | `miyu_base::config::PersonaLane { Active, Dev }` 取代引擎的 `AgentMode`(全仓 289 处),`build_tool_registry` 按 `lane.scope(config)`,`normal|dev` 只走 `mode_word()/from_mode_word()`;IPC / 会话库 / 前端未动 | workspace 零警告;五张脸逐字节相同 |
+| 插曲 | 另一会话按用户要求把树 rebase 到 main `32227cc0`(顶 `e903c3ef`),我补回被冲掉的在途改动并修它漏跑 `--all-targets` 的 4 处 | 见 `2026-09-16-file-split.md` 末尾 |
+
+规模门禁:越红线文件 20 → 0,超上限 0,超目标 71(基线 78),拆分进度 89.4%。全量收尾验证见 `~/.cache/miyu-refactor-2026-09-16/logs/post-split-summary.log`(最后一次)。
+
+**没做 / 留给用户**:`cargo test --no-run` 峰值内存的压法(`-j 4` 或 `debug = "line-tables-only"`)是配置决定;`testkit/cli` 那条 compact 口径用例;
+`deepseek-miyu-refactor` worktree 的 12 个未提交改动(PTY / jobs / render)碰的文件在这边已搬进 crates 并拆过,合并时先合这条再把它搬过来;
+`docs/plan/2026-09-16-dead-code-inventory.md` 里 main 32227cc0 孤立的三个 render 方法已删(要恢复直接从那个提交取)。
+
+**收尾全量验证(09-17 02:4x,序列全部做完之后)**:fmt 零改动;check 零警告;`cargo test --workspace` **2437 过 / 0 败**(基线 2427,多出的 10 条来自 main 的合入);
+五道门禁全绿(总行数 293,598);五张脸逐字节相同;host-query 9/9;oobe 7/7。量尺这一轮:warm check 2.1 s、改 agent 一行 check 36.7 s
+(上一轮安静机器上是 7.2 s;这轮机器上还有别的会话在编译,数字按最好的那次算)、改 cli 一行 build 12.3 s、改 tools 11.6 s、`test --no-run` 34.1 s。
+
+**`testkit/tui` 走查(09-17 02:4x,桩模型 + 沙箱 daemon,离线)**:`run.py` 37 项里红 3 条(`input_bar_at_bottom`、`tool_row_has_peek`、
+`item01_empty_enter_sends_nothing`),用主检出 main 的二进制跑同样红这 3 条;`round26.py` 红的 3 条(`r26_04/01/02`,都是时序采样)main 上也红;
+`item05_ctrlc_no_strip_flash` 我这边两红一绿、main 两绿,是 load 9 下的时序抖动。**坑**:`cargo test`(含 `--no-run`)会把带 `testkit`
+特性的 hosts 链进 `target/debug/miyu`(集成测试要 `CARGO_BIN_EXE`),它的 `hyperlinks_supported()` 等测试态开关都是假的——
+跑任何黑盒前先 `cargo build`,否则 OSC 8 两条会假红(我就撞了一次)。

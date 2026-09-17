@@ -489,14 +489,14 @@ pub(in crate::web) fn rebuild_for_config(
     let build_agent = || -> Result<Agent> {
         miyu_base::models_cache::ensure_active_metadata(paths, &next_config);
         let client = OpenAiCompatibleClient::from_config(&next_config, paths)?;
-        let registry = build_tool_registry(&next_config, paths, AgentMode::Normal, true)?;
+        let registry = build_tool_registry(&next_config, paths, PersonaLane::Active, true)?;
         Ok(Agent::new(
             next_config.clone(),
             paths,
             target_state_store.clone(),
             client,
             registry,
-            AgentMode::Normal,
+            PersonaLane::Active,
         )?
         .with_headless_pacing())
     };

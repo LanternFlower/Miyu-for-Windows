@@ -21,7 +21,7 @@
 //! 把 `Option<&mut ...>` 的分叉搬个地方。
 
 use miyu_core::llm::{ChatStreamChunk, ChatStreamKind, GenerationSpeed, TurnTokens, Usage};
-use miyu_engine::agent::{AgentEvent, AgentMode};
+use miyu_engine::agent::{AgentEvent, PersonaLane};
 use miyu_engine::tools::CommandOutputStream;
 use serde_json::Value;
 use std::time::Instant;
@@ -149,8 +149,8 @@ pub(crate) fn decode_ipc_event_at(kind: &str, data: &Value, received_at: Instant
         "queue.consumed" => AgentEvent::QueuedPromptsConsumed {
             prompt_ids: ipc_str_array(data, "prompt_ids"),
             mode: match ipc_text(data, "mode") {
-                "dev" => AgentMode::Dev,
-                _ => AgentMode::Normal,
+                "dev" => PersonaLane::Dev,
+                _ => PersonaLane::Active,
             },
             provider_id: ipc_opt_text(data, "provider_id"),
             model: ipc_opt_text(data, "model"),
@@ -388,7 +388,7 @@ mod tests {
             panic!("queue.consumed 应当解码成 QueuedPromptsConsumed");
         };
         assert_eq!(prompt_ids, vec!["a".to_string(), "b".to_string()]);
-        assert_eq!(mode, AgentMode::Dev);
+        assert_eq!(mode, PersonaLane::Dev);
         assert_eq!(provider_id.as_deref(), Some("claude-code"));
         assert_eq!(model.as_deref(), Some("opus"));
     }
@@ -400,7 +400,7 @@ mod tests {
         else {
             panic!("queue.consumed 应当解码成 QueuedPromptsConsumed");
         };
-        assert_eq!(mode, AgentMode::Normal);
+        assert_eq!(mode, PersonaLane::Active);
     }
 
     #[test]

@@ -11,7 +11,7 @@ fn write_manifest(config: &AppConfig, paths: &MiyuPaths, body: &str) {
     std::fs::write(path, body).unwrap();
 }
 
-fn build_agent(config: AppConfig, paths: &MiyuPaths, mode: AgentMode) -> Agent {
+fn build_agent(config: AppConfig, paths: &MiyuPaths, mode: PersonaLane) -> Agent {
     let state = StateStore::new(paths).unwrap();
     state.init_files().unwrap();
     let client =
@@ -34,7 +34,7 @@ fn persona_with_memory_off_never_gets_the_memory_preamble() {
     let config = AppConfig::default();
     assert!(config.memory_config().enabled, "机器侧记忆默认开着");
     write_manifest(&config, &paths, "[subsystems]\nmemory = false\n");
-    let mut agent = build_agent(config, &paths, AgentMode::Normal);
+    let mut agent = build_agent(config, &paths, PersonaLane::Active);
     assert!(
         !system_prompt_of(&agent).contains("<associative-memory>"),
         "构造期就不该有前言"
@@ -55,7 +55,7 @@ fn dev_agent_resolves_an_empty_subsystem_set() {
     let mut config = AppConfig::default();
     config.voice.enabled = true;
     config.prompt.persona_reminder = true;
-    let agent = build_agent(config, &paths, AgentMode::Dev);
+    let agent = build_agent(config, &paths, PersonaLane::Dev);
     assert!(
         agent.core.subsystems.is_empty(),
         "{:?}",
@@ -68,7 +68,7 @@ fn dev_agent_resolves_an_empty_subsystem_set() {
 fn default_persona_keeps_the_preamble_on_both_paths() {
     let temp = tempfile::tempdir().unwrap();
     let paths = test_paths(temp.path());
-    let mut agent = build_agent(AppConfig::default(), &paths, AgentMode::Normal);
+    let mut agent = build_agent(AppConfig::default(), &paths, PersonaLane::Active);
     assert!(system_prompt_of(&agent).contains("<associative-memory>"));
     agent.prepare_for_turn().unwrap();
     assert!(system_prompt_of(&agent).contains("<associative-memory>"));

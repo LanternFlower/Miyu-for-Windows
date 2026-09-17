@@ -633,7 +633,7 @@ pub(in crate::web) fn build_actor_agent(
     paths: &MiyuPaths,
     state: &StateStore,
 ) -> Result<Agent> {
-    let mut agent = build_session_agent(config, paths, state, AgentMode::Normal)?;
+    let mut agent = build_session_agent(config, paths, state, PersonaLane::Active)?;
     agent.prepare_for_turn()?;
     Ok(agent)
 }

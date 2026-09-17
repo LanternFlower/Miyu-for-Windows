@@ -267,7 +267,7 @@ fn runtime_system_context_refreshes_the_effective_prompt_immediately() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
 
@@ -369,7 +369,7 @@ async fn persona_reminder_fossilizes_on_interval_and_replays() {
         state.clone(),
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
     let context = Arc::new(FakePlatformTurn::onebot());
@@ -471,7 +471,7 @@ async fn manual_persona_reminder_overrides_distillation() {
         state.clone(),
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
     let context = Arc::new(FakePlatformTurn::onebot());
@@ -510,7 +510,7 @@ fn preset_dialogs_ride_after_system_before_history() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
     let messages = agent.chat_messages("current", "新消息").unwrap().0;
@@ -549,7 +549,7 @@ fn dev_mode_uses_one_line_prompt_and_skips_persona_family() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Dev,
+        PersonaLane::Dev,
     )
     .unwrap();
     let messages = agent.chat_messages("current", "新消息").unwrap().0;
@@ -582,10 +582,18 @@ fn dev_load_tools_registers_only_after_the_session_used_it() {
     state.init_files().unwrap();
     let client =
         OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
-    let tools = crate::tools::build_tool_registry(&config, &paths, AgentMode::Dev, false).unwrap();
+    let tools =
+        crate::tools::build_tool_registry(&config, &paths, PersonaLane::Dev, false).unwrap();
     assert!(tools.contains("load_tools"), "底座表里本来就有 load_tools");
-    let mut agent =
-        Agent::new(config, &paths, state.clone(), client, tools, AgentMode::Dev).unwrap();
+    let mut agent = Agent::new(
+        config,
+        &paths,
+        state.clone(),
+        client,
+        tools,
+        PersonaLane::Dev,
+    )
+    .unwrap();
 
     agent.prepare_for_turn().unwrap();
     assert!(

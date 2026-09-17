@@ -7,7 +7,7 @@ use crate::cli::*;
 
 pub(in crate::cli) async fn run_tool(
     paths: &MiyuPaths,
-    mode: AgentMode,
+    mode: PersonaLane,
     args: ToolArgs,
 ) -> Result<()> {
     let config = AppConfig::load_or_default(paths)?;
@@ -27,9 +27,9 @@ pub(in crate::cli) async fn run_tool_call(paths: &MiyuPaths, args: ToolCallArgs)
     let config = AppConfig::load_or_default(paths)?;
     let env_mode = std::env::var("MIYU_TURN_MODE").unwrap_or_default();
     let mode = if env_mode == "dev" {
-        AgentMode::Dev
+        PersonaLane::Dev
     } else {
-        AgentMode::Normal
+        PersonaLane::Active
     };
     if args.list || args.describe {
         if args.describe && args.name.is_none() {

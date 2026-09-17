@@ -1,4 +1,5 @@
 use super::*;
+use miyu_base::config::PersonaLane;
 
 /// 显示名表是合并登记的:normal 之后再登记一张没有脚本的 dev 表,属主脚本的
 /// 名字不能被冲掉(09-10 沙盒实测 battery_care 变裸 id 的根因)。
@@ -180,7 +181,7 @@ fn dev_registry_drops_skills_and_memory() {
             .unwrap()
             .tool_names()
     };
-    let dev = names(crate::agent::AgentMode::Dev);
+    let dev = names(PersonaLane::Dev);
     for gone in [
         "load_skill",
         "recall_memories",
@@ -193,7 +194,7 @@ fn dev_registry_drops_skills_and_memory() {
     for kept in ["run_command", "edit", "subagent", "job", "todowrite"] {
         assert!(dev.contains(&kept.to_string()), "dev lost {kept}");
     }
-    let normal = names(crate::agent::AgentMode::Normal);
+    let normal = names(PersonaLane::Active);
     for kept in ["load_skill", "recall_memories", "remember_fact"] {
         assert!(normal.contains(&kept.to_string()), "normal lost {kept}");
     }
@@ -464,9 +465,8 @@ fn skill_tools_are_normal_mode_only() {
     let temp = tempfile::tempdir().unwrap();
     let paths = test_paths(temp.path());
     let config = AppConfig::default();
-    let normal =
-        build_tool_registry(&config, &paths, crate::agent::AgentMode::Normal, false).unwrap();
-    let dev = build_tool_registry(&config, &paths, crate::agent::AgentMode::Dev, false).unwrap();
+    let normal = build_tool_registry(&config, &paths, PersonaLane::Active, false).unwrap();
+    let dev = build_tool_registry(&config, &paths, PersonaLane::Dev, false).unwrap();
 
     assert!(normal.contains("manage_skill"));
     assert!(!dev.contains("manage_skill"));

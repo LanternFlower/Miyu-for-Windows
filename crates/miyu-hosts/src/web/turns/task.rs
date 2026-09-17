@@ -54,7 +54,7 @@ pub(in crate::web) async fn run_turn_task(
     run_id: String,
     session_id: Arc<str>,
     input: TurnTaskInput,
-    mode: AgentMode,
+    mode: PersonaLane,
     audience: PromptAudience,
     profile: Option<platforms::TurnProfile>,
     cancel: tokio::sync::watch::Receiver<bool>,
@@ -107,7 +107,7 @@ async fn run_turn_task_inner(
     run_id: String,
     session_id: Arc<str>,
     input: TurnTaskInput,
-    mode: AgentMode,
+    mode: PersonaLane,
     audience: PromptAudience,
     profile: Option<platforms::TurnProfile>,
     mut cancel: tokio::sync::watch::Receiver<bool>,
@@ -309,8 +309,8 @@ async fn run_turn_task_inner(
             }
         }
         let active_tools = match mode {
-            AgentMode::Normal => normal_tools.clone(),
-            AgentMode::Dev => dev_tools.clone(),
+            PersonaLane::Active => normal_tools.clone(),
+            PersonaLane::Dev => dev_tools.clone(),
         };
         // 成员的档案(阶段 6):`home/<用户名>/profile.md` 顶替管理员的属主档案。
         // 只改 Agent 手里的配置副本,资源缓存键不变;通讯平台受众本就不注入档案。
@@ -362,7 +362,7 @@ async fn run_turn_task_inner(
             .as_ref()
             .map(|profile| profile.turn_system_context.clone())
             .unwrap_or_default();
-        if local_webui && mode == AgentMode::Normal {
+        if local_webui && mode == PersonaLane::Active {
             let manifest = tools::webui_artifact_manifest(&config, &paths, &session_id)
                 .unwrap_or_else(|_| {
                     "(the artifact manifest is temporarily unavailable)".to_string()

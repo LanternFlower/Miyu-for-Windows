@@ -559,14 +559,14 @@ pub(in crate::web) fn validate_thinking_variant_updates(
     Ok(validated)
 }
 
-pub(in crate::web) fn parse_mode(mode: &str) -> std::result::Result<AgentMode, ApiError> {
+pub(in crate::web) fn parse_mode(mode: &str) -> std::result::Result<PersonaLane, ApiError> {
     match mode {
-        "normal" => Ok(AgentMode::Normal),
+        "normal" => Ok(PersonaLane::Active),
         // 历史会话可能存过 plan：模式已移除，回落到普通模式而不是让会话打不开。
-        "plan" => Ok(AgentMode::Normal),
+        "plan" => Ok(PersonaLane::Active),
         // 闲聊模式已删除:历史会话存过 "chat" 的回落普通模式,老会话照常打开。
-        "chat" => Ok(AgentMode::Normal),
-        "dev" => Ok(AgentMode::Dev),
+        "chat" => Ok(PersonaLane::Active),
+        "dev" => Ok(PersonaLane::Dev),
         _ => Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "mode must be normal or dev",
@@ -574,10 +574,10 @@ pub(in crate::web) fn parse_mode(mode: &str) -> std::result::Result<AgentMode, A
     }
 }
 
-pub(in crate::web) fn mode_name(mode: AgentMode) -> &'static str {
+pub(in crate::web) fn mode_name(mode: PersonaLane) -> &'static str {
     match mode {
-        AgentMode::Normal => "normal",
-        AgentMode::Dev => "dev",
+        PersonaLane::Active => "normal",
+        PersonaLane::Dev => "dev",
     }
 }
 

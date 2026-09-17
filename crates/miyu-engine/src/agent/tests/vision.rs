@@ -102,7 +102,7 @@ async fn platform_images_register_a_turn_scoped_vision_tool() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
     agent.set_image_platform("qq", "QQ");
@@ -139,7 +139,7 @@ async fn context_image_ids_register_vision_without_a_current_image() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
     agent.set_image_platform("qq", "QQ");
@@ -246,7 +246,7 @@ async fn binary_image_reaches_vision_pool_then_text_model() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
     let image = PastedImage::Binary(ClipboardImage::new(
@@ -334,7 +334,7 @@ async fn path_images_are_inlined_when_model_supports_vision() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
 
@@ -427,7 +427,7 @@ async fn local_pdf_paths_inline_only_when_the_model_takes_pdf() {
             state,
             client,
             ToolRegistry::new(),
-            AgentMode::Normal,
+            PersonaLane::Active,
         )
         .unwrap()
     };
@@ -509,7 +509,7 @@ async fn local_video_paths_inline_when_the_model_takes_video() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
     let images = vec![Some(PastedImage::Path(video_path.clone()))];
@@ -533,7 +533,7 @@ async fn local_video_paths_inline_when_the_model_takes_video() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
     assert!(!agent.current_model_supports_vision());
@@ -566,7 +566,7 @@ async fn local_video_paths_inline_when_the_model_takes_video() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
     let images = vec![Some(PastedImage::Path(video_path))];
@@ -620,11 +620,11 @@ async fn inlined_images_do_not_invite_the_vision_tool() {
                 crate::tools::build_tool_registry(
                     &AppConfig::default(),
                     &paths,
-                    AgentMode::Normal,
+                    PersonaLane::Active,
                     false,
                 )
                 .unwrap(),
-                AgentMode::Normal,
+                PersonaLane::Active,
             )
             .unwrap();
             let prepared = agent.prepare_user_input("看图", &images).await.unwrap();
@@ -646,11 +646,11 @@ async fn inlined_images_do_not_invite_the_vision_tool() {
                 crate::tools::build_tool_registry(
                     &AppConfig::default(),
                     &paths,
-                    AgentMode::Normal,
+                    PersonaLane::Active,
                     false,
                 )
                 .unwrap(),
-                AgentMode::Normal,
+                PersonaLane::Active,
             )
             .unwrap();
             let images = vec![Some(PastedImage::Path(path))];

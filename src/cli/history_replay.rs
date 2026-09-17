@@ -101,7 +101,7 @@ impl ReplHistoryEntry {
 /// Turns older than the transcript column fall back to prompt + final reply.
 pub(super) fn session_replay_frame(
     replays: &[miyu_core::state::TurnReplay],
-    mode: AgentMode,
+    mode: PersonaLane,
     config: &AppConfig,
     cols: usize,
 ) -> Result<Vec<u8>> {

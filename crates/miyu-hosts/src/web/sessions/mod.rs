@@ -296,15 +296,15 @@ pub(in crate::web) fn session_overview_json(
 pub(in crate::web) fn turn_mode_for_session(
     store: &StateStore,
     session_id: &str,
-    requested: AgentMode,
-) -> AgentMode {
+    requested: PersonaLane,
+) -> PersonaLane {
     match store.session_record(session_id) {
-        Ok(Some(record)) if record.persona == miyu_core::state::DEV_PERSONA => AgentMode::Dev,
+        Ok(Some(record)) if record.persona == miyu_core::state::DEV_PERSONA => PersonaLane::Dev,
         _ => {
-            if requested == AgentMode::Dev {
+            if requested == PersonaLane::Dev {
                 tracing::debug!(%session_id, "client asked for dev mode on a non-dev session; forcing normal");
             }
-            AgentMode::Normal
+            PersonaLane::Active
         }
     }
 }
@@ -440,7 +440,7 @@ pub(in crate::web) fn build_session_agent(
     config: &AppConfig,
     paths: &MiyuPaths,
     state: &StateStore,
-    mode: AgentMode,
+    mode: PersonaLane,
 ) -> Result<Agent> {
     miyu_base::models_cache::ensure_active_metadata(paths, config);
     let client = OpenAiCompatibleClient::from_config(config, paths)?;

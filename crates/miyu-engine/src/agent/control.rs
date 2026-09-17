@@ -138,22 +138,10 @@ pub struct RedoPromptInput {
     pub images: Vec<Option<PastedImage>>,
 }
 
-/// 场所(CLI `--dev`、IPC/会话记录里的 `normal|dev`、WebUI 开关)说的会话形态。
-/// Normal=人格全能力;Dev=极简开发形态(一行可编辑提示词、无人格全家、
-/// 精简工具目录)。回合引擎内部没有这个概念(09-16 退役):`Agent::new` /
-/// `switch_mode` 把它折成 `core.dev`(是不是保留人格 `dev` 的会话),提示词、
-/// 工具面、记忆全按人格裁决;这里只剩对外词汇。原「闲聊(Chat)」模式已删除:
-/// 平台路径从来只跑 Normal,安全靠 restricted registry(工具不存在)而非模式门。
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum AgentMode {
-    Normal,
-    Dev,
-}
-
 #[derive(Clone)]
 pub struct AgentTurnControl {
-    pub(in crate::agent) mode: Arc<Mutex<AgentMode>>,
-    pub(in crate::agent) normal_tools: ToolRegistry,
+    pub(in crate::agent) lane: Arc<Mutex<PersonaLane>>,
+    pub(in crate::agent) active_tools: ToolRegistry,
     pub(in crate::agent) dev_tools: ToolRegistry,
     pub(in crate::agent) queue_ingress: Option<Arc<QueueIngressBarrier>>,
     pub(in crate::agent) supersede: Option<Arc<TurnSupersedeSignal>>,
@@ -256,10 +244,10 @@ impl Drop for QueueIngressReservation {
 }
 
 impl AgentTurnControl {
-    pub fn new(mode: AgentMode, normal_tools: ToolRegistry, dev_tools: ToolRegistry) -> Self {
+    pub fn new(lane: PersonaLane, active_tools: ToolRegistry, dev_tools: ToolRegistry) -> Self {
         Self {
-            mode: Arc::new(Mutex::new(mode)),
-            normal_tools,
+            lane: Arc::new(Mutex::new(lane)),
+            active_tools,
             dev_tools,
             queue_ingress: None,
             supersede: None,
@@ -284,34 +272,18 @@ impl AgentTurnControl {
         self.supersede_seen.store(generation, Ordering::Release);
     }
 
-    pub fn mode(&self) -> AgentMode {
-        *self.mode.lock().unwrap()
+    pub fn lane(&self) -> PersonaLane {
+        *self.lane.lock().unwrap()
     }
 
-    pub fn set_mode(&self, mode: AgentMode) {
-        *self.mode.lock().unwrap() = mode;
+    pub fn set_lane(&self, lane: PersonaLane) {
+        *self.lane.lock().unwrap() = lane;
     }
 
-    pub(in crate::agent) fn tools(&self, mode: AgentMode) -> ToolRegistry {
-        match mode {
-            AgentMode::Normal => self.normal_tools.clone(),
-            AgentMode::Dev => self.dev_tools.clone(),
-        }
-    }
-}
-
-impl AgentMode {
-    pub fn label(self) -> &'static str {
-        if miyu_base::i18n::is_zh() {
-            match self {
-                Self::Normal => "普通",
-                Self::Dev => "开发",
-            }
-        } else {
-            match self {
-                Self::Normal => "NORMAL",
-                Self::Dev => "DEV",
-            }
+    pub(in crate::agent) fn tools(&self, lane: PersonaLane) -> ToolRegistry {
+        match lane {
+            PersonaLane::Active => self.active_tools.clone(),
+            PersonaLane::Dev => self.dev_tools.clone(),
         }
     }
 }

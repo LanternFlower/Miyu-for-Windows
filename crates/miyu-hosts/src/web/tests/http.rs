@@ -192,7 +192,7 @@ async fn platform_session_reset_is_serialized_per_target_session() {
         "other_run".to_string(),
         RunInfo {
             session_id: other.session_id.clone().into(),
-            mode: AgentMode::Normal,
+            mode: PersonaLane::Active,
             audience: PromptAudience::Internal,
             cancel: other_cancel,
             turn_id: None,
@@ -224,7 +224,7 @@ async fn platform_session_reset_is_serialized_per_target_session() {
         "target_run".to_string(),
         RunInfo {
             session_id: target.session_id.clone().into(),
-            mode: AgentMode::Normal,
+            mode: PersonaLane::Active,
             audience: PromptAudience::External,
             cancel: target_cancel,
             turn_id: None,

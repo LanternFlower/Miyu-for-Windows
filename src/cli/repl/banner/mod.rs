@@ -11,13 +11,13 @@
 
 use crate::cli::repl::tail::screen::ansi::{spans_to_ansi, AnsiSpan};
 use miyu_base::config::AppConfig;
+use miyu_base::config::PersonaLane;
 use miyu_base::i18n::text as t;
 use miyu_base::paths::MiyuPaths;
 use miyu_base::terminal::palette::{Theme, BLUE, CORAL, DIM, FAINT, GOLD};
 use miyu_base::terminal::starfield::{
     fade, gradient_banner, segs_width, star_seg, subtitle_rule, BannerArt, Seg,
 };
-use miyu_engine::agent::AgentMode;
 
 pub(in crate::cli) mod preview;
 use ratatui::style::Modifier;
@@ -43,7 +43,7 @@ const STAR_PAD_X: usize = 14;
 pub(in crate::cli) struct BannerScene {
     theme: Theme,
     art: BannerArt,
-    mode: AgentMode,
+    mode: PersonaLane,
     tick: usize,
     /// 出场淡入：前几帧从底色浮出来。
     born: usize,
@@ -51,7 +51,7 @@ pub(in crate::cli) struct BannerScene {
 
 impl BannerScene {
     /// 按配置决定画不画、画哪份艺术字。`None` = 关掉了。
-    pub fn load(config: &AppConfig, paths: &MiyuPaths, mode: AgentMode) -> Option<Self> {
+    pub fn load(config: &AppConfig, paths: &MiyuPaths, mode: PersonaLane) -> Option<Self> {
         if !config.display.banner {
             return None;
         }
@@ -69,7 +69,7 @@ impl BannerScene {
         })
     }
 
-    pub(in crate::cli) fn set_mode(&mut self, mode: AgentMode) {
+    pub(in crate::cli) fn set_mode(&mut self, mode: PersonaLane) {
         self.mode = mode;
     }
 
@@ -99,7 +99,7 @@ impl BannerScene {
         (pos <= self.art.cols() as f32 + 6.0).then_some(pos)
     }
 
-    pub(in crate::cli) fn mode(&self) -> AgentMode {
+    pub(in crate::cli) fn mode(&self) -> PersonaLane {
         self.mode
     }
 
@@ -154,14 +154,17 @@ impl BannerScene {
         let theme = self.theme;
         let fade_t = self.fade_in();
         let mut segs = Vec::new();
-        for (index, mode) in [AgentMode::Normal, AgentMode::Dev].into_iter().enumerate() {
+        for (index, mode) in [PersonaLane::Active, PersonaLane::Dev]
+            .into_iter()
+            .enumerate()
+        {
             if index > 0 {
                 segs.push(Seg::raw("   "));
             }
             let here = mode == self.mode;
             let color = match mode {
-                AgentMode::Normal => BLUE,
-                AgentMode::Dev => CORAL,
+                PersonaLane::Active => BLUE,
+                PersonaLane::Dev => CORAL,
             };
             let (dot, style) = if here {
                 (
@@ -395,10 +398,10 @@ impl BannerScene {
     }
 }
 
-fn mode_name(mode: AgentMode) -> &'static str {
+fn mode_name(mode: PersonaLane) -> &'static str {
     match mode {
-        AgentMode::Normal => t("normal", "普通模式"),
-        AgentMode::Dev => t("dev", "开发模式"),
+        PersonaLane::Active => t("normal", "普通模式"),
+        PersonaLane::Dev => t("dev", "开发模式"),
     }
 }
 
@@ -450,7 +453,7 @@ fn center(segs: Vec<Seg>, cols: usize) -> Vec<Seg> {
 
 /// 空会话提示行（inline 后端在输入框上方、没有 banner 时也要有一句）。
 #[allow(dead_code)]
-pub(in crate::cli) fn plain_mode_hint(mode: AgentMode) -> String {
+pub(in crate::cli) fn plain_mode_hint(mode: PersonaLane) -> String {
     format!(
         "{} · {}",
         mode_name(mode),
@@ -470,7 +473,7 @@ mod tests {
                 ascii: false,
             },
             art: BannerArt::builtin(false),
-            mode: AgentMode::Normal,
+            mode: PersonaLane::Active,
             tick: 0,
             born: 24,
         }
@@ -511,7 +514,7 @@ mod tests {
             .map(|seg| seg.text.as_str())
             .collect();
         assert!(normal.starts_with("◉ 普通模式") || normal.starts_with("◉ normal"));
-        scene.set_mode(AgentMode::Dev);
+        scene.set_mode(PersonaLane::Dev);
         let dev: String = scene
             .mode_row()
             .iter()
@@ -585,10 +588,10 @@ mod tests {
         config.display.banner = true;
         let mut paths = miyu_base::paths::MiyuPaths::new().unwrap();
         paths.config_dir = dir.path().to_path_buf();
-        let scene = BannerScene::load(&config, &paths, AgentMode::Normal).unwrap();
+        let scene = BannerScene::load(&config, &paths, PersonaLane::Active).unwrap();
         assert_eq!(scene.art.subtitle, "MINE");
         assert_eq!(scene.art.rows(), 2);
         config.display.banner = false;
-        assert!(BannerScene::load(&config, &paths, AgentMode::Normal).is_none());
+        assert!(BannerScene::load(&config, &paths, PersonaLane::Active).is_none());
     }
 }

@@ -256,7 +256,7 @@ pub(in crate::cli) async fn run_live_agent_turn(
                         LiveEditorAction::ToggleMode => {}
                     }
                     if live.mode() != mode_before {
-                        control.set_mode(live.mode());
+                        control.set_lane(live.mode());
                     }
                 },
                 result = &mut chat => break result.map(Some),

@@ -160,7 +160,7 @@ fn cold_started_daemon_reports_a_nonzero_context_for_the_current_session() {
 
     // 而且要和「有 Agent 时」算出来的是同一个数——两条路口径不一致的话，
     // 切个会话数字就跳。
-    let live = build_session_agent(&config, &paths, &store, AgentMode::Normal).unwrap();
+    let live = build_session_agent(&config, &paths, &store, PersonaLane::Active).unwrap();
     assert_eq!(
         cold.tokens,
         live.effective_context_tokens().unwrap(),
@@ -800,7 +800,7 @@ async fn cancelling_an_autonomous_round_disarms_the_goal() {
         run_id.clone(),
         RunInfo {
             session_id: session_id.clone().into(),
-            mode: AgentMode::Normal,
+            mode: PersonaLane::Active,
             audience: PromptAudience::Owner,
             cancel: cancel_tx,
             turn_id: None,
@@ -887,7 +887,8 @@ fn tool_bridge_scopes_platform_tools_like_a_real_turn() {
     let guest = std::sync::Arc::new(guest);
     assert!(!guest.host_tools_allowed());
     let mut registry =
-        miyu_engine::tools::build_tool_registry(&config, &paths, AgentMode::Normal, false).unwrap();
+        miyu_engine::tools::build_tool_registry(&config, &paths, PersonaLane::Active, false)
+            .unwrap();
     assert!(registry.contains("run_command"), "底座本应有宿主工具");
     crate::platforms::apply_platform_turn_scope(&mut registry, &config, &paths, &guest, None);
     assert!(
@@ -905,7 +906,8 @@ fn tool_bridge_scopes_platform_tools_like_a_real_turn() {
     let admin = std::sync::Arc::new(admin);
     assert!(admin.host_tools_allowed(), "管理员应放行宿主工具");
     let mut registry =
-        miyu_engine::tools::build_tool_registry(&config, &paths, AgentMode::Normal, false).unwrap();
+        miyu_engine::tools::build_tool_registry(&config, &paths, PersonaLane::Active, false)
+            .unwrap();
     crate::platforms::apply_platform_turn_scope(&mut registry, &config, &paths, &admin, None);
     assert!(registry.contains("run_command"), "管理员会话保留底座");
 
@@ -914,7 +916,8 @@ fn tool_bridge_scopes_platform_tools_like_a_real_turn() {
     let mut cached = miyu_engine::tools::restricted_platform_registry(&config, &paths);
     cached.unregister("read_file");
     let mut registry =
-        miyu_engine::tools::build_tool_registry(&config, &paths, AgentMode::Normal, false).unwrap();
+        miyu_engine::tools::build_tool_registry(&config, &paths, PersonaLane::Active, false)
+            .unwrap();
     crate::platforms::apply_platform_turn_scope(
         &mut registry,
         &config,

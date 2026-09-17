@@ -398,10 +398,7 @@ pub(in crate::cli) async fn follow_wake_run(
                             .collect()
                     })
                     .unwrap_or_default();
-                let consumed_mode = match ipc_text(&data, "mode") {
-                    "dev" => AgentMode::Dev,
-                    _ => AgentMode::Normal,
-                };
+                let consumed_mode = PersonaLane::from_mode_word(Some(ipc_text(&data, "mode")));
                 renderer.prepare_for_external_output()?;
                 live.apply_renderer_frame(&mut renderer)?;
                 synchronized_terminal_update(CursorAfterUpdate::Preserve, || {

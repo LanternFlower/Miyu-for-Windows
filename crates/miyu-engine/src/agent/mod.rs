@@ -26,7 +26,7 @@ use control::*;
 // 子模块本身是私有的，得显式再导出
 pub use context::archive_and_delete_visible_turns;
 pub use control::{
-    AgentMode, AgentTurnControl, QueueIngressBarrier, QueueIngressReservation, RedoPromptInput,
+    AgentTurnControl, QueueIngressBarrier, QueueIngressReservation, RedoPromptInput,
     TurnSupersedeSignal,
 };
 // 平台侧的 PDF 工具要问同一个能力判定,不能自己另写一份"池吃不吃 PDF"。
@@ -51,6 +51,7 @@ use anyhow::{bail, Context, Result};
 use base64::Engine;
 use chrono::Local;
 use miyu_base::clipboard::{ClipboardImage, PastedImage};
+pub use miyu_base::config::PersonaLane;
 use miyu_base::config::{AppConfig, PromptAudience};
 use miyu_base::host_info::xml_attr_escape;
 use miyu_base::paths::MiyuPaths;
@@ -157,7 +158,7 @@ pub enum AgentEvent {
     },
     QueuedPromptsConsumed {
         prompt_ids: Vec<String>,
-        mode: AgentMode,
+        mode: PersonaLane,
         provider_id: Option<String>,
         model: Option<String>,
     },

@@ -13,7 +13,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
     message: &str,
     show_reasoning: Option<bool>,
     plain: bool,
-    mode: AgentMode,
+    mode: PersonaLane,
     images: &[Option<miyu_base::clipboard::PastedImage>],
     session_override: Option<String>,
     jobs_feed: Option<&JobsFeed>,
@@ -700,10 +700,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                                 .collect()
                         })
                         .unwrap_or_default();
-                    let consumed_mode = match ipc_text(&data, "mode") {
-                        "dev" => AgentMode::Dev,
-                        _ => AgentMode::Normal,
-                    };
+                    let consumed_mode = PersonaLane::from_mode_word(Some(ipc_text(&data, "mode")));
                     renderer.prepare_for_external_output()?;
                     live.apply_renderer_frame(&mut renderer)?;
                     synchronized_terminal_update(CursorAfterUpdate::Preserve, || {

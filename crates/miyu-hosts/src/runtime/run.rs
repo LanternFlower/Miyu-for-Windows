@@ -6,8 +6,8 @@
 // 兄弟模块的类型互相引用（DaemonState 持有 EventHub、run 记录引用
 // ManagerState 等），统一从 mod.rs 的再导出取，免得每个文件维护一份
 // 交叉导入清单。
+use miyu_base::config::PersonaLane;
 use miyu_base::config::{AppConfig, PromptAudience};
-use miyu_engine::agent::AgentMode;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 /// A turn currently executing in the daemon.
 pub(crate) struct RunInfo {
     pub(crate) session_id: Arc<str>,
-    pub(crate) mode: AgentMode,
+    pub(crate) mode: PersonaLane,
     pub(crate) audience: PromptAudience,
     /// Signals cancellation to the turn task; the task selects on the
     /// paired receiver.

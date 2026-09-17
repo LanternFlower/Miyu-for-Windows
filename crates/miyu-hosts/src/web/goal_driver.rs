@@ -305,7 +305,7 @@ pub(in crate::web) async fn maybe_continue_goal(state: DaemonState, session_id: 
             run_id.clone(),
             RunInfo {
                 session_id: session_id.clone().into(),
-                mode: AgentMode::Normal,
+                mode: PersonaLane::Active,
                 audience: PromptAudience::Owner,
                 cancel: cancel_tx,
                 turn_id: None,
@@ -336,7 +336,7 @@ pub(in crate::web) async fn maybe_continue_goal(state: DaemonState, session_id: 
             content,
             display_content,
             attachment_run_id: None,
-            mode: AgentMode::Normal,
+            mode: PersonaLane::Active,
             images: Vec::new(),
             cwd: None,
             origin_tty: None,

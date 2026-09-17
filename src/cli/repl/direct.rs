@@ -22,7 +22,7 @@ pub(in crate::cli) async fn run_chat_with_images(
             &message,
             None,
             false,
-            AgentMode::Normal,
+            PersonaLane::Active,
             &pasted_images,
             None,
             None,
@@ -48,7 +48,7 @@ pub(in crate::cli) async fn run_chat_with_images(
     let registry = build_tool_registry(
         &config,
         paths,
-        AgentMode::Normal,
+        PersonaLane::Active,
         crate::question_tui::available(false),
     )?;
     let reasoning_mode = render::ReasoningDisplayMode::from_config(&config.display.reasoning);
@@ -64,7 +64,7 @@ pub(in crate::cli) async fn run_chat_with_images(
         state.clone(),
         client,
         registry,
-        AgentMode::Normal,
+        PersonaLane::Active,
     )?;
     agent.set_memory_organizer(memory_organizer_handle);
     agent.prepare_for_turn()?;
@@ -125,7 +125,7 @@ pub(in crate::cli) async fn run_chat_with_images_and_options(
     message: String,
     images: Vec<Option<miyu_base::clipboard::PastedImage>>,
     plain: bool,
-    mode: AgentMode,
+    mode: PersonaLane,
     session: TurnSession,
     overrides: Option<miyu_core::ipc::TurnOverrides>,
 ) -> Result<()> {
@@ -161,7 +161,7 @@ pub(in crate::cli) async fn run_chat_with_options(
     message: String,
     show_reasoning: Option<bool>,
     plain: bool,
-    mode: AgentMode,
+    mode: PersonaLane,
     session: TurnSession,
     overrides: Option<miyu_core::ipc::TurnOverrides>,
 ) -> Result<()> {
@@ -305,7 +305,7 @@ pub(in crate::cli) async fn run_chat_with_options(
 
 pub(in crate::cli) async fn run_direct_repl(
     paths: &MiyuPaths,
-    initial_mode: AgentMode,
+    initial_mode: PersonaLane,
 ) -> Result<()> {
     let _core_lease = ipc::acquire_direct_core(paths)?;
     initialize_models_cache(paths);
@@ -317,7 +317,7 @@ pub(in crate::cli) async fn run_direct_repl(
     state.init_files()?;
     // Same lane as the remote REPL: resume where the last REPL was, not where
     // shell-hook happens to be pointing.
-    let persona = if initial_mode == AgentMode::Dev {
+    let persona = if initial_mode == PersonaLane::Dev {
         miyu_core::state::DEV_PERSONA.to_string()
     } else {
         config.active_persona_scope()
@@ -392,7 +392,7 @@ pub(in crate::cli) async fn run_direct_repl(
                 LiveReplOutcome::SwitchMode(next) => {
                     // 直连模式换车道:与启动时同一条语义——那条车道当前会话
                     // 非空就新开一条,再按新模式重建客户端与工具面。
-                    let persona = if next == AgentMode::Dev {
+                    let persona = if next == PersonaLane::Dev {
                         miyu_core::state::DEV_PERSONA.to_string()
                     } else {
                         config.active_persona_scope()
@@ -420,7 +420,7 @@ pub(in crate::cli) async fn run_direct_repl(
                         crate::question_tui::available(false),
                     )?;
                     agent.reload_config(config.clone(), client.clone())?;
-                    agent.switch_mode(mode, registry);
+                    agent.switch_lane(mode, registry);
                     footer.update_context_window(
                         agent.context_window(),
                         agent.context_window_assumed(),
@@ -503,7 +503,7 @@ pub(in crate::cli) async fn run_direct_repl(
                     // 人格是会话的命名空间维度:切人格后必须重绑到新人格的
                     // 会话(与启动时 ensure_repl_session 同一条语义),否则 agent
                     // 还挂在旧人格的会话上,人格提示词与历史命名空间错位。
-                    let persona = if mode == AgentMode::Dev {
+                    let persona = if mode == PersonaLane::Dev {
                         miyu_core::state::DEV_PERSONA.to_string()
                     } else {
                         config.active_persona_scope()
@@ -528,7 +528,7 @@ pub(in crate::cli) async fn run_direct_repl(
                         crate::question_tui::available(false),
                     )?;
                     agent.reload_config(config.clone(), client.clone())?;
-                    agent.switch_mode(mode, registry);
+                    agent.switch_lane(mode, registry);
                     footer.update_context_window(
                         agent.context_window(),
                         agent.context_window_assumed(),
@@ -561,7 +561,7 @@ pub(in crate::cli) async fn run_direct_repl(
             let registry =
                 build_tool_registry(&config, paths, mode, crate::question_tui::available(false))?;
             agent.reload_config(config.clone(), client.clone())?;
-            agent.switch_mode(mode, registry);
+            agent.switch_lane(mode, registry);
             footer.update_context_window(agent.context_window(), agent.context_window_assumed());
             if let Some(live) = live_repl.as_mut() {
                 live.set_footer(footer.clone());
@@ -589,7 +589,7 @@ pub(in crate::cli) async fn run_direct_repl(
             let registry =
                 build_tool_registry(&config, paths, mode, crate::question_tui::available(false))?;
             agent.reload_config(config.clone(), client.clone())?;
-            agent.switch_mode(mode, registry);
+            agent.switch_lane(mode, registry);
             footer.update_context_window(agent.context_window(), agent.context_window_assumed());
             if let Some(live) = live_repl.as_mut() {
                 live.set_footer(footer.clone());
@@ -784,10 +784,10 @@ pub(in crate::cli) async fn run_direct_repl(
         if let Some(live) = live_repl.as_mut() {
             live.editor.record_history(history_entry);
         }
-        if agent.mode() != mode {
+        if agent.persona_lane() != mode {
             let registry =
                 build_tool_registry(&config, paths, mode, crate::question_tui::available(false))?;
-            agent.switch_mode(mode, registry);
+            agent.switch_lane(mode, registry);
         }
         agent.prepare_for_turn()?;
         let reasoning_mode = render::ReasoningDisplayMode::from_config(&config.display.reasoning);
@@ -804,13 +804,13 @@ pub(in crate::cli) async fn run_direct_repl(
             build_tool_registry(
                 &config,
                 paths,
-                AgentMode::Normal,
+                PersonaLane::Active,
                 crate::question_tui::available(false),
             )?,
             build_tool_registry(
                 &config,
                 paths,
-                AgentMode::Dev,
+                PersonaLane::Dev,
                 crate::question_tui::available(false),
             )?,
         );

@@ -399,13 +399,13 @@ async fn dev_sessions_live_under_the_reserved_persona_and_pin_dev_mode() {
     assert_eq!(record.persona, miyu_core::state::DEV_PERSONA);
     // 会话模式由记录强制:dev 会话怎么请求都是 Dev,普通会话反之。
     assert_eq!(
-        turn_mode_for_session(&state.state_store, &session_id, AgentMode::Normal),
-        AgentMode::Dev
+        turn_mode_for_session(&state.state_store, &session_id, PersonaLane::Active),
+        PersonaLane::Dev
     );
     let normal_id = state.state_store.session_id().to_string();
     assert_eq!(
-        turn_mode_for_session(&state.state_store, &normal_id, AgentMode::Dev),
-        AgentMode::Normal
+        turn_mode_for_session(&state.state_store, &normal_id, PersonaLane::Dev),
+        PersonaLane::Active
     );
 }
 
@@ -756,7 +756,7 @@ async fn config_reload_succeeds_and_keeps_turns_running() {
         "hot-reload-run".to_string(),
         RunInfo {
             session_id: state.state_store.session_id().into(),
-            mode: AgentMode::Normal,
+            mode: PersonaLane::Active,
             audience: PromptAudience::External,
             cancel,
             turn_id: None,
@@ -902,7 +902,7 @@ async fn the_bridge_hands_out_artifact_tools_only_to_webui_turns() {
                     "run_probe".to_string(),
                     RunInfo {
                         session_id: session_id.clone().into(),
-                        mode: AgentMode::Normal,
+                        mode: PersonaLane::Active,
                         audience,
                         cancel: tokio::sync::watch::channel(false).0,
                         turn_id: None,
@@ -920,7 +920,7 @@ async fn the_bridge_hands_out_artifact_tools_only_to_webui_turns() {
         let mut registry = miyu_engine::tools::build_tool_registry(
             &config,
             &state.paths,
-            AgentMode::Normal,
+            PersonaLane::Active,
             false,
         )
         .unwrap();
@@ -928,7 +928,7 @@ async fn the_bridge_hands_out_artifact_tools_only_to_webui_turns() {
             &mut registry,
             &state,
             &config,
-            AgentMode::Normal,
+            PersonaLane::Active,
             &session_id,
         );
         registry.contains("artifact")

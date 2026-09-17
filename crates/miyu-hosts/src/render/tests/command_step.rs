@@ -4,7 +4,6 @@
 //! 再长。
 
 use super::timeline::{block_id_in, timeline_renderer_with_preview_rows, with_blocks};
-use crate::render::t;
 
 /// 全屏：跑完之后抬头底下留着的是**命令本身**（超出配置行数的在底部换成省略
 /// 标记），输出只在点开里；收成 `Worked for` 后点开那一块，命令与输出都在。

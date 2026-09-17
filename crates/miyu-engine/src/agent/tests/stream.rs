@@ -174,7 +174,7 @@ async fn parallel_task_calls_run_concurrently_and_map_outputs() {
         state.clone(),
         client,
         registry,
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
 
@@ -253,7 +253,7 @@ async fn responses_tool_round_uses_previous_response_id_and_only_new_input() {
         empty_parameters(),
         |_| async { Ok("tool finished".to_string()) },
     ));
-    let control = AgentTurnControl::new(AgentMode::Normal, tools.clone(), tools.clone());
+    let control = AgentTurnControl::new(PersonaLane::Active, tools.clone(), tools.clone());
     let server_control = control.clone();
 
     let (first_request_tx, first_request_rx) = oneshot::channel();
@@ -262,7 +262,7 @@ async fn responses_tool_round_uses_previous_response_id_and_only_new_input() {
         let (mut first, _) = listener.accept().await.unwrap();
         let first_request = read_test_http_request(&mut first).await;
         let _ = first_request_tx.send(first_request);
-        server_control.set_mode(AgentMode::Dev);
+        server_control.set_lane(PersonaLane::Dev);
         write_test_sse(
             &mut first,
             concat!(
@@ -299,7 +299,7 @@ async fn responses_tool_round_uses_previous_response_id_and_only_new_input() {
         state.clone(),
         client,
         tools,
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
     state
@@ -312,7 +312,7 @@ async fn responses_tool_round_uses_previous_response_id_and_only_new_input() {
         .unwrap();
 
     assert_eq!(result.content, "final answer");
-    assert_eq!(agent.mode(), AgentMode::Dev);
+    assert_eq!(agent.persona_lane(), PersonaLane::Dev);
     assert!(result.responses_continuation.is_none());
     assert!(result.usage_estimated);
     let tool_only_tokens =
@@ -416,7 +416,7 @@ async fn guard_denied_tool_soft_fails_and_turn_continues() {
         "rm -rf /".to_string()
     ]));
     let control = AgentTurnControl::new(
-        AgentMode::Normal,
+        PersonaLane::Active,
         normal_tools.clone(),
         normal_tools.clone(),
     );
@@ -458,7 +458,7 @@ async fn guard_denied_tool_soft_fails_and_turn_continues() {
         state.clone(),
         client,
         normal_tools,
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
 
@@ -504,7 +504,7 @@ async fn a_turn_that_dies_mid_loop_keeps_the_tools_it_already_ran() {
         empty_parameters(),
         |_| async { Ok("已经跑过了，别再跑一遍".to_string()) },
     ));
-    let control = AgentTurnControl::new(AgentMode::Normal, tools.clone(), tools.clone());
+    let control = AgentTurnControl::new(PersonaLane::Active, tools.clone(), tools.clone());
 
     let server = tokio::spawn(async move {
         let (mut first, _) = listener.accept().await.unwrap();
@@ -533,7 +533,7 @@ async fn a_turn_that_dies_mid_loop_keeps_the_tools_it_already_ran() {
         state.clone(),
         client,
         tools,
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
 
@@ -585,7 +585,7 @@ async fn identical_tool_call_loop_is_skipped_then_fused() {
             }
         },
     ));
-    let control = AgentTurnControl::new(AgentMode::Normal, tools.clone(), tools.clone());
+    let control = AgentTurnControl::new(PersonaLane::Active, tools.clone(), tools.clone());
 
     let server = tokio::spawn(async move {
         // 桩模型:每次请求都发一模一样的 web_search 调用,最多陪 100 轮。
@@ -617,7 +617,7 @@ async fn identical_tool_call_loop_is_skipped_then_fused() {
         state.clone(),
         client,
         tools,
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
 
@@ -670,7 +670,7 @@ async fn repeat_fuse_warning_stays_out_of_external_reply_content() {
         empty_parameters(),
         |_| async { Ok("{\"ok\": true}".to_string()) },
     ));
-    let control = AgentTurnControl::new(AgentMode::Normal, tools.clone(), tools.clone());
+    let control = AgentTurnControl::new(PersonaLane::Active, tools.clone(), tools.clone());
 
     let server = tokio::spawn(async move {
         for _ in 0..100 {
@@ -694,7 +694,7 @@ async fn repeat_fuse_warning_stays_out_of_external_reply_content() {
     state.init_files().unwrap();
     let provider = config.provider(None).unwrap().clone();
     let client = OpenAiCompatibleClient::new(&provider, &config, &paths).unwrap();
-    let mut agent = Agent::new(config, &paths, state, client, tools, AgentMode::Normal).unwrap();
+    let mut agent = Agent::new(config, &paths, state, client, tools, PersonaLane::Active).unwrap();
     agent.core.prompt_audience = miyu_base::config::PromptAudience::External;
 
     let reply = agent
@@ -747,7 +747,7 @@ async fn round_usage_event_fires_per_model_request() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
     let rounds = std::cell::RefCell::new(Vec::new());
@@ -803,7 +803,7 @@ async fn dropping_the_agent_stops_the_keepalive_loop() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
 

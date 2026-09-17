@@ -182,7 +182,7 @@ impl LiveReplTail {
     pub(in crate::cli) fn consume_queued(
         &mut self,
         prompt_ids: &[String],
-        mode: AgentMode,
+        mode: PersonaLane,
     ) -> Result<()> {
         let ids = prompt_ids.iter().collect::<std::collections::HashSet<_>>();
         // 全屏这条路要先把文本拷出来再动队列——借着 `self.queued` 的切片

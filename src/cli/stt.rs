@@ -9,7 +9,7 @@ use crate::cli::*;
 pub(in crate::cli) async fn run_stt_once(
     paths: &MiyuPaths,
     plain: bool,
-    mode: AgentMode,
+    mode: PersonaLane,
     session: TurnSession,
 ) -> Result<()> {
     let text = dictate_one_sentence(paths).await?;

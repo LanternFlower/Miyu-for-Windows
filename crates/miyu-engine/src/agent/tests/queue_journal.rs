@@ -126,7 +126,7 @@ fn journal_flush_precedes_queued_prompt_boundary() {
         .unwrap();
     journaled(AgentEvent::QueuedPromptsConsumed {
         prompt_ids: vec!["q1".to_string()],
-        mode: AgentMode::Normal,
+        mode: PersonaLane::Active,
         provider_id: None,
         model: None,
     })
@@ -157,7 +157,7 @@ fn interrupted_redo_replays_prefix_followups_before_new_boundaries() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
     let followup =
@@ -356,15 +356,18 @@ async fn queued_prompt_continues_after_a_completed_model_call() {
         "test-model".to_string(),
         vec!["text".to_string(), "image".to_string()],
     );
-    let control =
-        AgentTurnControl::new(AgentMode::Normal, ToolRegistry::new(), ToolRegistry::new());
+    let control = AgentTurnControl::new(
+        PersonaLane::Active,
+        ToolRegistry::new(),
+        ToolRegistry::new(),
+    );
     let server_control = control.clone();
     let (request_tx, request_rx) = oneshot::channel();
     let (redo_request_tx, redo_request_rx) = oneshot::channel();
     let server = tokio::spawn(async move {
         let (mut first, _) = listener.accept().await.unwrap();
         let _ = read_test_http_request(&mut first).await;
-        server_control.set_mode(AgentMode::Dev);
+        server_control.set_lane(PersonaLane::Dev);
         write_test_sse(
             &mut first,
             concat!(
@@ -413,7 +416,7 @@ async fn queued_prompt_continues_after_a_completed_model_call() {
         state.clone(),
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
     state
@@ -434,7 +437,7 @@ async fn queued_prompt_continues_after_a_completed_model_call() {
         .unwrap();
 
     assert_eq!(result.content, "continued answer");
-    assert_eq!(agent.mode(), AgentMode::Dev);
+    assert_eq!(agent.persona_lane(), PersonaLane::Dev);
     let request: serde_json::Value = serde_json::from_slice(&request_rx.await.unwrap()).unwrap();
     let messages = request["messages"].as_array().unwrap();
     let first_answer = messages
@@ -596,12 +599,15 @@ async fn supersede_restarts_the_same_turn_without_replaying_partial_output() {
         state.clone(),
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
     let signal = Arc::new(TurnSupersedeSignal::default());
-    let mut control =
-        AgentTurnControl::new(AgentMode::Normal, ToolRegistry::new(), ToolRegistry::new());
+    let mut control = AgentTurnControl::new(
+        PersonaLane::Active,
+        ToolRegistry::new(),
+        ToolRegistry::new(),
+    );
     control.set_supersede_signal(signal.clone());
     let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
     let event_log = events.clone();
@@ -652,14 +658,17 @@ async fn queued_prompts_are_consumed_after_tools_with_dispatch_time_mode() {
         empty_parameters(),
         |_| async { Ok("tool finished".to_string()) },
     ));
-    let control =
-        AgentTurnControl::new(AgentMode::Normal, normal_tools.clone(), ToolRegistry::new());
+    let control = AgentTurnControl::new(
+        PersonaLane::Active,
+        normal_tools.clone(),
+        ToolRegistry::new(),
+    );
     let server_control = control.clone();
     let (request_tx, request_rx) = oneshot::channel();
     let server = tokio::spawn(async move {
         let (mut first, _) = listener.accept().await.unwrap();
         let _ = read_test_http_request(&mut first).await;
-        server_control.set_mode(AgentMode::Dev);
+        server_control.set_lane(PersonaLane::Dev);
         write_test_sse(
             &mut first,
             concat!(
@@ -694,7 +703,7 @@ async fn queued_prompts_are_consumed_after_tools_with_dispatch_time_mode() {
         state.clone(),
         client,
         normal_tools,
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
     state
@@ -719,10 +728,10 @@ async fn queued_prompts_are_consumed_after_tools_with_dispatch_time_mode() {
         .unwrap();
 
     assert_eq!(result.content, "final answer");
-    assert_eq!(agent.mode(), AgentMode::Dev);
+    assert_eq!(agent.persona_lane(), PersonaLane::Dev);
     assert_eq!(
         consumed,
-        Some((vec!["q1".to_string(), "q2".to_string()], AgentMode::Dev))
+        Some((vec!["q1".to_string(), "q2".to_string()], PersonaLane::Dev))
     );
     let request: serde_json::Value = serde_json::from_slice(&request_rx.await.unwrap()).unwrap();
     let messages = request["messages"].as_array().unwrap();
@@ -857,7 +866,7 @@ async fn ask_question_accepts_questions_serialized_as_a_json_string() {
         state.clone(),
         client,
         tools,
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
 

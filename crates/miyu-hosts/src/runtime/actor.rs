@@ -3,9 +3,9 @@
 // ManagerState 等），统一从 mod.rs 的再导出取，免得每个文件维护一份
 // 交叉导入清单。
 use super::*;
+use miyu_base::config::PersonaLane;
 use miyu_base::config::{ActiveProviderModelConfig, AppConfig, PromptAudience};
 use miyu_core::ipc::ImageAttachment;
-use miyu_engine::agent::AgentMode;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::oneshot;
@@ -18,7 +18,7 @@ pub(crate) enum ActorCommand {
         content: String,
         display_content: String,
         attachment_run_id: Option<String>,
-        mode: AgentMode,
+        mode: PersonaLane,
         images: Vec<Option<ImageAttachment>>,
         cwd: Option<std::path::PathBuf>,
         /// 触发回合的终端(shellhook/单次 CLI);后台任务完成回写用。
@@ -40,7 +40,7 @@ pub(crate) enum ActorCommand {
         session_id: Arc<str>,
         candidate: miyu_core::state::RedoCandidate,
         prompts: Vec<RedoWebPrompt>,
-        mode: AgentMode,
+        mode: PersonaLane,
         cancel: tokio::sync::watch::Receiver<bool>,
     },
     SetModels {

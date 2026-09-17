@@ -602,7 +602,7 @@ async fn tool_followup_reservation_requires_the_same_conversation_and_sender() {
         "run_1".to_string(),
         crate::runtime::RunInfo {
             session_id: session_id.clone(),
-            mode: miyu_engine::agent::AgentMode::Normal,
+            mode: miyu_engine::agent::PersonaLane::Active,
             audience: miyu_base::config::PromptAudience::External,
             cancel,
             turn_id: Some("turn_1".to_string()),
@@ -633,7 +633,7 @@ async fn tool_followup_reservation_requires_the_same_conversation_and_sender() {
         "run_2".to_string(),
         crate::runtime::RunInfo {
             session_id: session_id.clone(),
-            mode: miyu_engine::agent::AgentMode::Normal,
+            mode: miyu_engine::agent::PersonaLane::Active,
             audience: miyu_base::config::PromptAudience::External,
             cancel: newer_cancel,
             turn_id: Some("turn_2".to_string()),

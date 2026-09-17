@@ -103,7 +103,7 @@ fn state_with_running_run(
         run_id.to_string(),
         RunInfo {
             session_id,
-            mode: AgentMode::Normal,
+            mode: PersonaLane::Active,
             audience,
             cancel,
             turn_id: Some(turn_id.to_string()),
@@ -207,7 +207,7 @@ fn turn_updates_are_routed_to_the_exact_run_and_turn() {
             run_id.to_string(),
             RunInfo {
                 session_id: session_id.clone(),
-                mode: AgentMode::Normal,
+                mode: PersonaLane::Active,
                 audience: PromptAudience::External,
                 cancel,
                 turn_id: Some(turn_id.to_string()),

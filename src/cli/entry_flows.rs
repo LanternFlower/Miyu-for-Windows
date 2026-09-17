@@ -44,7 +44,7 @@ pub(super) async fn run_one_shot(
     message: String,
     read_stdin: bool,
     plain: bool,
-    mode: AgentMode,
+    mode: PersonaLane,
 ) -> Result<()> {
     let message = if read_stdin {
         append_stdin_to_eof(message)?

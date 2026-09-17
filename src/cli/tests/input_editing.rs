@@ -213,7 +213,7 @@ fn ctrl_arrows_jump_by_word() {
     let paths = pop_test_paths(temp.path());
     let ctrl_left = || Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
     let ctrl_right = || Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
-    let mut editor = LiveReplEditor::new(AgentMode::Normal, Vec::new());
+    let mut editor = LiveReplEditor::new(PersonaLane::Active, Vec::new());
 
     // ASCII：三个词，从行尾往回跳到每个词首。
     editor.input = "cargo test --all".to_string();
@@ -265,7 +265,7 @@ fn ctrl_arrows_treat_placeholders_as_atomic() {
     let paths = pop_test_paths(temp.path());
     let ctrl_left = || Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
     let ctrl_right = || Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
-    let mut editor = LiveReplEditor::new(AgentMode::Normal, Vec::new());
+    let mut editor = LiveReplEditor::new(PersonaLane::Active, Vec::new());
 
     let input = "看 [Pasted 1: ~3 lines] 这段";
     let placeholders = find_repl_placeholders(input);
@@ -303,7 +303,7 @@ fn live_editor_restores_clear_screen_and_double_escape_controls() {
     let temp = tempfile::tempdir().unwrap();
     let paths = pop_test_paths(temp.path());
     let escape = || Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    let mut editor = LiveReplEditor::new(AgentMode::Normal, Vec::new());
+    let mut editor = LiveReplEditor::new(PersonaLane::Active, Vec::new());
     editor.input = "draft".to_string();
     assert!(matches!(
         editor.handle_event(escape(), &paths, true).unwrap(),
@@ -371,7 +371,7 @@ fn live_editor_restores_clear_screen_and_double_escape_controls() {
 fn recalled_history_keeps_the_paste_placeholder_alive() {
     let temp = tempfile::tempdir().unwrap();
     let paths = pop_test_paths(temp.path());
-    let mut editor = LiveReplEditor::new(AgentMode::Normal, Vec::new());
+    let mut editor = LiveReplEditor::new(PersonaLane::Active, Vec::new());
     editor
         .handle_event(
             Event::Paste("alpha\nbeta\ngamma".to_string()),
@@ -445,7 +445,7 @@ fn history_file_round_trips_placeholder_payloads_and_reads_old_lines() {
 fn live_editor_shift_enter_inserts_newline_without_submit() {
     let temp = tempfile::tempdir().unwrap();
     let paths = pop_test_paths(temp.path());
-    let mut editor = LiveReplEditor::new(AgentMode::Normal, Vec::new());
+    let mut editor = LiveReplEditor::new(PersonaLane::Active, Vec::new());
     editor.input = "hello".to_string();
     editor.cursor = 5;
     assert!(matches!(

@@ -191,7 +191,7 @@ impl ReplFooterStatus {
 }
 
 pub(in crate::cli) fn repl_footer_line(
-    mode: AgentMode,
+    mode: PersonaLane,
     footer: &ReplFooterStatus,
     cols: usize,
 ) -> String {
@@ -248,7 +248,7 @@ pub(in crate::cli) fn repl_footer_line(
 }
 
 pub(in crate::cli) fn repl_footer_left(
-    mode: AgentMode,
+    mode: PersonaLane,
     footer: &ReplFooterStatus,
     width: usize,
 ) -> String {
@@ -260,7 +260,7 @@ pub(in crate::cli) fn repl_footer_left(
     // 模型信息之间隔三个空格,不进 " · " 序列(用户点名)。
     let wave = footer
         .running_spinner
-        .map(|frame| sound_wave_frame(frame, mode == AgentMode::Dev));
+        .map(|frame| sound_wave_frame(frame, mode == PersonaLane::Dev));
     let with_wave = |text: String| match wave.as_deref() {
         Some(wave) => format!("{text}   {wave}"),
         None => text,
@@ -361,13 +361,13 @@ pub(in crate::cli) fn sound_wave_frame(frame: usize, dev: bool) -> String {
     out
 }
 
-pub(in crate::cli) fn colored_footer_mode_label(mode: AgentMode) -> String {
+pub(in crate::cli) fn colored_footer_mode_label(mode: PersonaLane) -> String {
     let label = mode.label();
     match mode {
-        AgentMode::Normal => primary_footer_text(label),
+        PersonaLane::Active => primary_footer_text(label),
         // tertiary(35 酒红,与 render/webui 的 tertiary 一致),区别于普通
         // 模式的 primary 蓝。
-        AgentMode::Dev => format!("\x1b[1m\x1b[35m{label}\x1b[0m"),
+        PersonaLane::Dev => format!("\x1b[1m\x1b[35m{label}\x1b[0m"),
     }
 }
 

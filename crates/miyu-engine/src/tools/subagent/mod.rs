@@ -1,7 +1,7 @@
 use super::subagent_runner::{ProgressMode, SubagentProgress, SubagentRunner, SubagentStats};
 use super::{ToolRegistry, ToolSpec};
-use crate::agent::AgentMode;
 use anyhow::{bail, Result};
+use miyu_base::config::PersonaLane;
 use miyu_base::config::{AppConfig, ModelTier};
 use miyu_base::paths::MiyuPaths;
 use miyu_core::llm::OpenAiCompatibleClient;
@@ -521,7 +521,7 @@ async fn run_core(
     // 现造而不是注册时造——注册发生在 `compose_registry` 里,在那儿造 dev
     // 面会自己套自己。
     let tools = if dev {
-        crate::tools::build_tool_registry(&config, &context.paths, AgentMode::Dev, false)?
+        crate::tools::build_tool_registry(&config, &context.paths, PersonaLane::Dev, false)?
     } else {
         context.tools.clone()
     };

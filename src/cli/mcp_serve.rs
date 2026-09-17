@@ -235,9 +235,9 @@ async fn list_tools(
     // 直连回退:与 tool-call 的回退同一构建方式(模式取 MIYU_TURN_MODE)。
     let config = AppConfig::load_or_default(paths)?;
     let mode = if std::env::var("MIYU_TURN_MODE").unwrap_or_default() == "dev" {
-        AgentMode::Dev
+        PersonaLane::Dev
     } else {
-        AgentMode::Normal
+        PersonaLane::Active
     };
     let registry = build_tool_registry(&config, paths, mode, false)?;
     let mut names = registry.tool_names();
@@ -287,9 +287,9 @@ async fn call_tool(
     }
     let config = AppConfig::load_or_default(paths)?;
     let mode = if std::env::var("MIYU_TURN_MODE").unwrap_or_default() == "dev" {
-        AgentMode::Dev
+        PersonaLane::Dev
     } else {
-        AgentMode::Normal
+        PersonaLane::Active
     };
     let registry = build_tool_registry(&config, paths, mode, false)?;
     if !registry.contains(name) {

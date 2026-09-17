@@ -277,7 +277,10 @@ mod tests {
             serde_json::json!({"type":"object","properties":{}}),
             |_| async { Ok("ran".to_string()) },
         ));
-        crate::tools::install_builtin_guards(&mut registry, &crate::config::AppConfig::default());
+        crate::tools::install_builtin_guards(
+            &mut registry,
+            &miyu_base::config::AppConfig::default(),
+        );
 
         let denied = registry
             .call("run_command", r#"{"command":"rm -f /tmp/x"}"#)
@@ -306,7 +309,7 @@ mod tests {
             serde_json::json!({"type":"object","properties":{}}),
             |_| async { Ok("ran".to_string()) },
         ));
-        let mut config = crate::config::AppConfig::default();
+        let mut config = miyu_base::config::AppConfig::default();
         config.tools.block_dangerous_commands = false;
         crate::tools::install_builtin_guards(&mut registry, &config);
 
@@ -326,12 +329,12 @@ mod tests {
     async fn rm_guard_covers_every_face() {
         let temp = tempfile::tempdir().unwrap();
         let paths = crate::tools::tests::test_paths(temp.path());
-        let config = crate::config::AppConfig::default();
+        let config = miyu_base::config::AppConfig::default();
         let probe = r#"{"command":"rm -f /nonexistent-miyu-rm-guard-probe"}"#;
 
         for mode in [
-            crate::agent::AgentMode::Normal,
-            crate::agent::AgentMode::Dev,
+            miyu_base::config::PersonaLane::Active,
+            miyu_base::config::PersonaLane::Dev,
         ] {
             let denial = crate::tools::build_tool_registry(&config, &paths, mode, false)
                 .unwrap()

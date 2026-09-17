@@ -91,7 +91,9 @@ serde 派生与字段一字不改;`config/tests/*` 断言不动。
   (请求组装 / 一轮模型往返 / 工具执行 / 续传与排队 / 收尾),借用与局部状态要重新划分。
   验收除三件套外加 `request_shape_probe`、`testkit/cli` 黑盒、`testkit/tui` 走查;每抽一块跑一次 agent 测试。
 
-### B1 `chat_with_tools` 切法(按 09-16 通读定)
+### B1 `chat_with_tools` 切法(按 09-16 通读定)— **已完成(09-17)**
+
+结果:`turn_loop/mod.rs` 1397 → 357(`chat_with_tools` 1216 行 → 约 150 行的骨架:初始化 → loop { 刷新目录 → 组请求 → 模型往返 → 自愈/超越 → 收尾或工具批 → 轮后排队 });新文件 `round_state.rs` 76、`catalog_refresh.rs` 89、`round_request.rs` 46、`model_round.rs` 106、`overflow_recovery.rs` 131、`finish.rs` 246、`tool_exec.rs` 226、`tool_call.rs` 413、`queue.rs` 188。验收:workspace 零警告、`agent::` 164/164、`request_shape_probe` 五张脸逐字节相同。手法:先把 16 个循环外局部量收成 `RoundState`(脚本按标识符改写 `x`→`st.x`,只改代码行不改注释),再按锚点逐块切成方法,`continue`/`return` 改成枚举返回值(`RoundRecovery` / `ToolBatchOutcome` / `Option<ChatResult>`),每切一两块编译一次。
 
 循环内的局部态收成 `struct RoundState`(tool_round / question_rounds / replay_start / overflow_recovery_attempted /
 loaded_tools / contract_hinted / usage_accumulator / last_round_completed_at / responses_continuation /
@@ -112,7 +114,9 @@ continuation_input_start / continuation_context / artifact_* / repeat_gate / rep
 所有发事件的方法保持 `F: FnMut(AgentEvent) -> Result<()>` 泛型;`messages: &mut Vec<ChatMessage>` 与 `RoundState` 作参数传,不进 `self`。
 每抽一步跑 `cargo test -p miyu-engine agent::` + `request_shape_probe`(五张脸逐字节相同)。
 
-### B2 `run_remote_repl` 切法
+### B2 `run_remote_repl` 切法 — **已完成(09-17)**
+
+结果:`remote/interactive.rs` 1347 → 350(`run_remote_repl` = 起 daemon、建 `RemoteRepl` 状态、回放尾巴;`RemoteRepl::run` 主循环约 150 行),`slash_session.rs` 386(/new /session /rename /delete /sandbox /goal)、`slash_config.rs` 304(/help /stt /history /clear /usage /persona /models /config /variant)、`slash_context.rs` 350(/undo /pop /compact /reset* /wipe)、`submit.rs` 120(发回合)。`continue`/`break` 改成 `LoopStep` 返回值。验收:workspace 零警告、`cli::` 265/265、规模门禁过;`testkit/cli` 黑盒 57 项过 56,唯一红的「compact 后上下文明显变小」(49 → 35484)用主检出 main `32227cc0` 的二进制跑同样红(49 → 35569):桩模型固定回 `total_tokens: 49`,压前读的是供应商用量、压后读的是估算,是 main 上就有的口径问题,不是本轮引入,留给用户。
 
 主循环是「读输入 → 斜杠命令 22 分支 → 发回合」。局部态收成 `struct RemoteRepl { paths, config, mode, active_session_id, history,
 cumulative_tokens, footer, live_repl, jobs_shared, jobs_feed }`(`src/cli/repl/remote/session_state.rs`),
@@ -126,7 +130,18 @@ cumulative_tokens, footer, live_repl, jobs_shared, jobs_feed }`(`src/cli/repl/re
 `agent/tests/context.rs`、`config/tests/{provider,platform}.rs`、`render/tests/*`、`cli/tests/*`、`web/tests/session.rs` 这些
 测试文件超 1000 行属于测试体量,不在规模门禁的红线判定里,不拆。
 
-# 场所层 `AgentMode` → 人格作用域(大文件拆分之后做;我做)
+# 场所层 `AgentMode` → 人格车道(09-17 已完成)
+
+**实际落地**与下面的施工单有一处不同:没有做 `PersonaScope(String)` newtype,而是 `miyu_base::config::PersonaLane { Active, Dev }`
++ `scope(config)` / `is_dev()` / `mode_word()` / `from_mode_word()` / `label()`。理由:场所层能说出来的信息本来只有两值
+(当前激活人格 vs 保留人格 dev,「当前激活的是谁」是全局配置不是每回合的输入),塞一个 String 只会在几十处 `Agent::new(config, …)`
+调用点上制造 `PersonaScope::active(&config)` 与 `config` 被移动的借用顺序问题,信息量却一点没多。`AgentMode` 枚举从引擎删除,
+`Agent::mode()`→`persona_lane()`、`switch_mode`→`switch_lane`、`AgentTurnControl::{mode,set_mode,normal_tools}`→`{lane,set_lane,active_tools}`,
+`build_tool_registry(config, paths, lane, …)` 用 `lane.scope(config)`;hosts / cli 全部改用 `PersonaLane`(引擎 `agent` 模块保留一条再导出),
+手写的 `normal|dev` 词表改走 `mode_word()` / `from_mode_word()`;IPC 字段、会话库、WebUI 前端一字未动。
+验收:workspace 零警告;`request_shape_probe` 五张脸逐字节相同;全量测试与门禁见收尾。
+
+## 原施工单(供对照)
 
 **现状**:回合引擎里 `AgentMode` 已只剩边界折算(`Agent::new` / `switch_mode` → `core.dev`),但 cli / web / runtime / platforms
 还有 ~300 处按「模式」思考;`tools::build_tool_registry(config, paths, mode, …)` 把 `Dev` 折成 `DEV_PERSONA`、`Normal` 折成
@@ -148,3 +163,12 @@ cumulative_tokens, footer, live_repl, jobs_shared, jobs_feed }`(`src/cli/repl/re
   `docs/interfaces/README.md` 对应句;`next-release-note.md` 不写(用户不可见)。
 
 **不做**:不改会话库 schema(`mode` 列照存 `normal|dev`);不改 WebUI 前端 JS(它只认 `mode` 字段的词)。
+
+## 09-17 01:34 插曲:另一个会话把这棵树 rebase 到了 main
+
+用户在另一个会话里让它「rebase 一下那个 worktree」:它把全部在途改动打成 WIP 提交并 rebase 到 main `32227cc0`(比原基线 843c169a
+多 5 个提交:rm 拦截、TUI 三修、antigravity 文档),四文件冲突按新布局解掉(`command_peek` 认到 engine 层;`command_rows` 替换旧预览),
+现在分支顶 `e903c3ef`。它 `git add -A` 时把我正在写的 B1 半成品扫进提交又摘出来,`turn_loop/mod.rs` 上 E4–E6 的改动被 checkout 冲掉,
+从 EMERGENCY 快照补回。它移植 main 的 `command_guard.rs` 测试还带着 `crate::config::AppConfig`(engine 里是 `miyu_base::config`)、
+根包测试 `crate::render::strip_ansi_text`(应为 `miyu_hosts::render`)、两处未用导入——都是只跑了 `cargo build` 没跑 `--all-targets` 漏的,已修。
+教训:**同一棵 worktree 只能有一个会话动手**;真要接手先发消息(ListAgents/SendMessage 可达),接手方 `git add` 别用 `-A`。

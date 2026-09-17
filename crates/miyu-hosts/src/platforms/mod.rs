@@ -60,7 +60,7 @@ use miyu_base::i18n::{text_for, Locale};
 use miyu_base::paths::MiyuPaths;
 use miyu_core::ipc::ImageAttachment;
 use miyu_core::state::{PlatformSessionBindingKey, StateStore};
-use miyu_engine::agent::{AgentMode, QueueIngressBarrier, QueueIngressReservation};
+use miyu_engine::agent::{PersonaLane, QueueIngressBarrier, QueueIngressReservation};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};

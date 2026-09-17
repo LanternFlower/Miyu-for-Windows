@@ -100,7 +100,7 @@ pub(in crate::cli) fn inline_fuzzy_scroll(selected: usize, scroll: usize, visibl
 }
 
 pub(in crate::cli) fn inline_fuzzy_bar() -> String {
-    input_prompt_bar(AgentMode::Normal)
+    input_prompt_bar(PersonaLane::Active)
 }
 
 pub(in crate::cli) fn inline_fuzzy_header(query: &str, width: usize) -> String {

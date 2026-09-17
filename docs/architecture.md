@@ -246,9 +246,11 @@ state/cache/models。目录名用用户名，账号 id 另存账号表，princip
 `runtime: TurnRuntime`(跨回合运行态：人格提醒、缓存保活、压缩计数)、`memory: MemorySubsystem`
 (记忆整套句柄与库身份)。请求字节由 `agent/tests/request_shape.rs` 量尺钉着（重构前后 diff）。
 
-回合引擎里没有「模式」：场所传进来的 `AgentMode`(CLI `--dev`、IPC / 会话记录里的 `normal|dev`)在
-`Agent::new` / `switch_mode` 边界折成 `core.dev`(是不是保留人格 `dev` 的会话),提示词源、风格锁、
-预设对话、情境化工具、表情包提醒全按人格面裁决;`AgentMode` 只剩对外词汇。语音协议段随 `subsystems.voice`
+代码里没有「模式」:场所与引擎之间传的是 `miyu_base::config::PersonaLane`(`Active` = 当前激活的人格,
+`Dev` = 保留人格 `dev`),它回答的是「这次回合走哪条人格车道」;`Agent::new` / `switch_lane` 把它折成 `core.dev`,
+提示词源、风格锁、预设对话、情境化工具、表情包提醒全按人格面裁决,工具面按 `lane.scope(config)` 找人格清单。
+老词 `normal|dev` 只留在线上(IPC 的 `mode` 字段、会话记录、CLI 输出),用 `mode_word()` / `from_mode_word()` 进出,
+协议一字未改(09-17 `AgentMode` 退役)。语音协议段随 `subsystems.voice`
 走(人格清单 × 机器语音配置),关着就不进系统提示词。
 
 ---

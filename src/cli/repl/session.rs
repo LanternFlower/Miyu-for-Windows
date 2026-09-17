@@ -229,14 +229,14 @@ pub(in crate::cli) fn session_is_empty(paths: &MiyuPaths, session_id: &str) -> b
 pub(in crate::cli) async fn switch_repl_lane(
     paths: &MiyuPaths,
     config: &AppConfig,
-    mode: AgentMode,
+    mode: PersonaLane,
     active_session_id: &mut String,
     history: &mut Vec<ReplHistoryEntry>,
     live_repl: &mut LiveReplTail,
     footer: &mut ReplFooterStatus,
     cumulative_tokens: &mut TurnTokens,
 ) -> Result<()> {
-    let lane = (mode == AgentMode::Dev).then(|| "dev".to_string());
+    let lane = mode.is_dev().then(|| "dev".to_string());
     let (state, _) =
         send_ipc_admin(paths, IpcCommand::GetReplSession { mode: lane.clone() }).await?;
     let state = if session_is_empty(paths, &state.session_id) {
@@ -290,7 +290,7 @@ pub(in crate::cli) async fn switch_repl_lane(
 pub(in crate::cli) async fn apply_repl_session_switch(
     paths: &MiyuPaths,
     config: &AppConfig,
-    mode: AgentMode,
+    mode: PersonaLane,
     state: &ipc::SessionState,
     active_session_id: &mut String,
     history: &mut Vec<ReplHistoryEntry>,
@@ -574,20 +574,20 @@ pub(in crate::cli) fn select_session_target(
 /// Resolves a user-typed `/session` / `/delete` argument into a session ref:
 /// a number picks from the visible session list, anything else is a name.
 /// REPL 会话列表的作用域:dev REPL 只看/只解析 dev 人格名下的会话。
-pub(in crate::cli) fn repl_list_mode(mode: AgentMode) -> Option<String> {
-    (mode == AgentMode::Dev).then(|| "dev".to_string())
+pub(in crate::cli) fn repl_list_mode(mode: PersonaLane) -> Option<String> {
+    mode.is_dev().then(|| "dev".to_string())
 }
 
 pub(in crate::cli) async fn resolve_repl_session_target(
     paths: &MiyuPaths,
     live: &mut LiveReplTail,
-    mode: AgentMode,
+    mode: PersonaLane,
     arg: &str,
 ) -> Result<Option<miyu_core::ipc::SessionRef>> {
     let index = arg.parse::<usize>().ok();
     // 名字寻址在 daemon 侧按"当前人格"检索,够不着 dev 会话;dev REPL
     // 统一走列表在客户端配对,再降成不可猜的 id 显式寻址。
-    if index.is_some() || mode == AgentMode::Dev {
+    if index.is_some() || mode == PersonaLane::Dev {
         let Some((_, data)) = repl_ipc_admin(
             paths,
             live,
@@ -701,11 +701,11 @@ pub(in crate::cli) async fn repl_get_session_switch(
 pub(in crate::cli) async fn repl_fallback_session_state(
     paths: &MiyuPaths,
     live: &mut LiveReplTail,
-    mode: AgentMode,
+    mode: PersonaLane,
 ) -> Result<Option<ipc::SessionState>> {
     // dev 无普通人格的"终端会话"可退:GetReplSession 会治愈指针并在
     // 没有 dev 会话时就地自举一个,绝不落回普通人格的会话。
-    if mode == AgentMode::Dev {
+    if mode == PersonaLane::Dev {
         return Ok(repl_ipc_admin(
             paths,
             live,
@@ -746,7 +746,7 @@ pub(in crate::cli) async fn repl_fallback_session_state(
 pub(in crate::cli) async fn repl_pick_session(
     paths: &MiyuPaths,
     live: &mut LiveReplTail,
-    mode: AgentMode,
+    mode: PersonaLane,
     active_session_id: &str,
 ) -> Result<Option<ipc::SessionState>> {
     let mut cursor = None;
@@ -934,11 +934,8 @@ where
 // 这里只转一手,cli 内几十处调用不动。
 pub(in crate::cli) use miyu_hosts::runtime::{ipc_text, ipc_u64};
 
-pub(in crate::cli) fn ipc_mode_name(mode: AgentMode) -> &'static str {
-    match mode {
-        AgentMode::Normal => "normal",
-        AgentMode::Dev => "dev",
-    }
+pub(in crate::cli) fn ipc_mode_name(mode: PersonaLane) -> &'static str {
+    mode.mode_word()
 }
 
 pub(in crate::cli) fn ipc_images(

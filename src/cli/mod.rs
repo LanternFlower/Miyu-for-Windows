@@ -8,7 +8,7 @@ use miyu_core::llm::{
 };
 use miyu_core::memory::{MemoryOrganizer, MemoryStore};
 use miyu_engine::agent::{
-    archive_and_delete_visible_turns, Agent, AgentEvent, AgentMode, AgentTurnControl,
+    archive_and_delete_visible_turns, Agent, AgentEvent, AgentTurnControl, PersonaLane,
 };
 mod args;
 mod daemon_cmds;
@@ -187,7 +187,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
             }
         }
     };
-    let mode = AgentMode::Normal;
+    let mode = PersonaLane::Active;
 
     if cli.shell_intercept {
         let shell_name = cli.shell.as_deref().unwrap_or("fish");
@@ -407,10 +407,10 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
             session_cmds::run_session_command(&paths, args.command, plain).await
         }
         Some(Command::Stdio) => stdio::run_stdio(&paths).await,
-        Some(Command::Dev) => run_repl(&paths, AgentMode::Dev).await,
+        Some(Command::Dev) => run_repl(&paths, PersonaLane::Dev).await,
         Some(Command::Oobe) => {
             if run_oobe_flow(&paths).await? {
-                let result = run_repl(&paths, AgentMode::Normal).await;
+                let result = run_repl(&paths, PersonaLane::Active).await;
                 // REPL 没能接过备用屏(启动失败)就自己退回主屏,别把终端留在备用屏上。
                 miyu_base::terminal::release_alt_screen_if_held();
                 result
@@ -438,7 +438,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                 if crate::oobe::needed(&config) && !run_oobe_flow(&paths).await? {
                     return Ok(());
                 }
-                let result = run_repl(&paths, AgentMode::Normal).await;
+                let result = run_repl(&paths, PersonaLane::Active).await;
                 miyu_base::terminal::release_alt_screen_if_held();
                 result
             } else {
@@ -448,7 +448,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
     }
 }
 
-async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
+async fn run_repl(paths: &MiyuPaths, initial_mode: PersonaLane) -> Result<()> {
     if direct_mode_requested() {
         run_direct_repl(paths, initial_mode).await
     } else {
@@ -604,7 +604,7 @@ struct LiveAgentInput<'a> {
     images: &'a [Option<miyu_base::clipboard::PastedImage>],
 }
 
-fn queued_prompt_lines(prompts: &[QueuedPrompt], mode: AgentMode, cols: usize) -> Vec<String> {
+fn queued_prompt_lines(prompts: &[QueuedPrompt], mode: PersonaLane, cols: usize) -> Vec<String> {
     let mut lines = Vec::new();
     for (index, prompt) in prompts.iter().enumerate() {
         if index > 0 {
@@ -620,7 +620,10 @@ fn queued_prompt_lines(prompts: &[QueuedPrompt], mode: AgentMode, cols: usize) -
     lines
 }
 
-fn write_committed_user_messages(messages: &[(&str, AgentMode)], leading_gap: bool) -> Result<()> {
+fn write_committed_user_messages(
+    messages: &[(&str, PersonaLane)],
+    leading_gap: bool,
+) -> Result<()> {
     write_committed_user_messages_from(messages, leading_gap, None)
 }
 
@@ -628,7 +631,7 @@ fn write_committed_user_messages(messages: &[(&str, AgentMode)], leading_gap: bo
 /// 查询(等应答会让 kitty 同步超时、提前提交半成品帧——光标闪屏),
 /// suspend 之后列是确定的,直接传进来。
 fn write_committed_user_messages_from(
-    messages: &[(&str, AgentMode)],
+    messages: &[(&str, PersonaLane)],
     leading_gap: bool,
     known_col: Option<u16>,
 ) -> Result<()> {
@@ -649,7 +652,7 @@ fn write_committed_user_messages_from(
 /// 回显要写到终端的全部字节:光标不在行首就先换行,再接回显正文。
 /// 单独成函数是为了让提交路径能拿同一串字节去推算写完后的光标位置。
 fn committed_user_messages_frame(
-    messages: &[(&str, AgentMode)],
+    messages: &[(&str, PersonaLane)],
     leading_gap: bool,
     col: u16,
     cols: usize,
@@ -663,7 +666,7 @@ fn committed_user_messages_frame(
 }
 
 fn committed_user_messages_text(
-    messages: &[(&str, AgentMode)],
+    messages: &[(&str, PersonaLane)],
     leading_gap: bool,
     cols: usize,
 ) -> String {
@@ -727,7 +730,7 @@ fn persist_queued_submission(
 enum LiveReplOutcome {
     Exit,
     Submit(
-        AgentMode,
+        PersonaLane,
         String,
         Vec<Option<miyu_base::clipboard::PastedImage>>,
         /// 进上键历史的样子(占位符+载荷),不是展开后的全文。
@@ -747,7 +750,7 @@ enum LiveReplOutcome {
         job_id: String,
     },
     /// 空会话里按了 Tab:换到另一条车道(普通 ↔ 开发)。调用方负责重绑会话。
-    SwitchMode(AgentMode),
+    SwitchMode(PersonaLane),
 }
 
 fn repl_history_is_clean(

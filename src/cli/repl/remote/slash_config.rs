@@ -1,0 +1,298 @@
+//! 远端 REPL 的帮助 / 听写 / 历史 / 清屏 / 用量与配置类斜杠命令(/persona /models /config /variant)。09-17 从 `run_remote_repl` 抽出。
+
+use super::interactive::{LoopStep, RemoteRepl};
+use crate::cli::repl::tail::*;
+use crate::cli::*;
+
+impl RemoteRepl {
+    pub(super) async fn cmd_help(&mut self) -> Result<LoopStep> {
+        // 走缓冲而不是 `println!`：全屏下直接打 stdout 的字节不在
+        // 缓冲里，下一帧重画就没了，回翻也找不到。
+        repl_note(
+            &mut self.live_repl,
+            crate::cli::repl::commands::repl_help_text().trim_end(),
+        )?;
+        Ok(LoopStep::Continue)
+    }
+
+    pub(super) async fn cmd_stt(&mut self) -> Result<LoopStep> {
+        if crate::cli::repl::dictation::is_active() {
+            crate::cli::repl::dictation::stop();
+            repl_note(
+                &mut self.live_repl,
+                &format!("\x1b[2m{}\x1b[0m\n", t("dictation stopped", "听写已停止")),
+            )?;
+        } else if crate::cli::repl::dictation::start(
+            &self.paths,
+            self.config.voice.dictation_auto_submit,
+        ) {
+            repl_note(
+                &mut self.live_repl,
+                &format!(
+                    "\x1b[2m{}\x1b[0m\n",
+                    t(
+                        "listening… speak; Esc stops, Enter sends (10s of silence also ends it)",
+                        "在听…请讲;Esc 停止,回车发送(静默 10 秒也会自动结束)"
+                    )
+                ),
+            )?;
+        }
+        Ok(LoopStep::Continue)
+    }
+
+    pub(super) async fn cmd_history(&mut self) -> Result<LoopStep> {
+        let state = StateStore::new(&self.paths)?.pinned(&self.active_session_id);
+        run_history_with_state(
+            &state,
+            HistoryArgs {
+                limit: 20,
+                raw: false,
+                no_thinking: false,
+            },
+        )?;
+        Ok(LoopStep::Continue)
+    }
+
+    pub(super) async fn cmd_clear(&mut self) -> Result<LoopStep> {
+        synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
+            self.live_repl.clear_screen()
+        })?;
+        Ok(LoopStep::Continue)
+    }
+
+    pub(super) async fn cmd_usage(&mut self) -> Result<LoopStep> {
+        let snapshot = StateStore::new(&self.paths)?.usage_snapshot()?;
+        let usage = self.footer.token_usage;
+        let context = Some((usage.session_tokens, usage.context_window));
+        repl_note(
+            &mut self.live_repl,
+            &format!("{}\n\n", usage_overview_text(&snapshot, context)),
+        )?;
+        Ok(LoopStep::Continue)
+    }
+
+    pub(super) async fn cmd_persona(&mut self, command_args: &str) -> Result<LoopStep> {
+        match run_persona_picker(&self.paths, command_args) {
+            Ok(true) => {
+                let _ = repl_ipc_admin(&self.paths, &mut self.live_repl, IpcCommand::ReloadConfig)
+                    .await;
+                self.config = AppConfig::load(&self.paths)?;
+                // 人格是会话的命名空间维度:切人格后 daemon 的当前会话
+                // 指针已经指向新人格的会话,前端必须重取并把
+                // active_session_id / history / footer 一起换过去。
+                // 漏了这步(09-01 前的实现)会让前端还挂在旧人格的
+                // 会话上等事件流,而 daemon 在新人格语境里跑,消息发出
+                // 去永远等不到回执——UI 卡死在「加载中 0ms」。
+                let (daemon_state, _) = send_ipc_admin(
+                    &self.paths,
+                    IpcCommand::GetReplSession {
+                        mode: self.mode.is_dev().then(|| "dev".to_string()),
+                    },
+                )
+                .await?;
+                apply_repl_session_switch(
+                    &self.paths,
+                    &self.config,
+                    self.mode,
+                    &daemon_state,
+                    &mut self.active_session_id,
+                    &mut self.history,
+                    &mut self.live_repl,
+                    &mut self.footer,
+                    &mut self.cumulative_tokens,
+                )
+                .await?;
+                repl_note(
+                    &mut self.live_repl,
+                    &format!("{}\n", t("configuration reloaded", "配置已重新加载")),
+                )?;
+            }
+            Ok(false) => {}
+            Err(error) => repl_note(&mut self.live_repl, &format!("\x1b[31m{error:#}\x1b[0m\n"))?,
+        }
+        Ok(LoopStep::Continue)
+    }
+
+    pub(super) async fn cmd_models(&mut self, command_args: &str) -> Result<LoopStep> {
+        // Switches this session's pinned model; the change takes
+        // effect from the next turn without a daemon reload.
+        let argument = command_args.trim();
+        // 选择器与它的结果行都是直接往 stdout 打的(println):活动区
+        // 还挂着时它们会落在输入框下面、活动区也不知道多了几行,
+        // 于是「已恢复跟随全局」孤零零留在输入框底下。先收起活动区,
+        // 打完再按真实光标位置重新挂回去。
+        synchronized_terminal_update(CursorAfterUpdate::Shown, || self.live_repl.suspend())?;
+        let result = run_models_for_session(
+            &self.paths,
+            parse_models_argument(argument),
+            Some(&self.active_session_id),
+        )
+        .await;
+        synchronized_terminal_update(CursorAfterUpdate::Shown, || self.live_repl.resume())?;
+        let changed = match result {
+            Ok(changed) => changed,
+            Err(error) => {
+                repl_note(&mut self.live_repl, &format!("\x1b[31m{error:#}\x1b[0m\n"))?;
+                return Ok(LoopStep::Continue);
+            }
+        };
+        let session_config =
+            footer_config_for_session(&self.paths, &self.config, &self.active_session_id);
+        let (state, _) = repl_active_or_default_state(&self.paths, &self.active_session_id).await?;
+        self.cumulative_tokens = state_cumulative(&state);
+        self.footer = ReplFooterStatus::from_config(
+            &session_config,
+            state.context_tokens,
+            self.cumulative_tokens,
+        );
+        let client = OpenAiCompatibleClient::from_config(&session_config, &self.paths)?;
+        let thinking_summary = client.thinking_variant_summary();
+        self.footer
+            .update_thinking_variant(thinking_summary.as_deref());
+        self.footer
+            .update_context_window(state.context_window, state.context_window_assumed);
+        // 重绘着推进去:set_footer 只换数据不画,后面那条提示走的
+        // 输出帧也不重画 footer 行,于是模型标签要等下一次按键才换
+        // (09-10 用户截图:提示已说「已更新」,footer 仍是旧模型)。
+        self.live_repl.refresh_footer(self.footer.clone())?;
+        // Esc 退出选择器时什么都没改，这句"已更新"就是假消息
+        //（用户实测）。选择器自己该说的话它已经说过了。
+        if changed {
+            repl_note(
+                &mut self.live_repl,
+                &format!(
+                    "\x1b[2m{}\x1b[0m\n",
+                    t(
+                        "session model updated; takes effect from the next turn",
+                        "会话模型已更新，下一轮生效"
+                    )
+                ),
+            )?;
+        }
+        Ok(LoopStep::Continue)
+    }
+
+    pub(super) async fn cmd_config(&mut self) -> Result<LoopStep> {
+        crate::config_tui::run(&self.paths)?;
+        // 设置界面退出时画面原样留着、光标藏着：在一个同步块里把 REPL
+        // 整屏画回来，光标直接出现在输入框，中间不经过左上角。
+        if crate::cli::in_fullscreen() {
+            synchronized_terminal_update(CursorAfterUpdate::Shown, || self.live_repl.resume())?;
+        }
+        let Some((_, _)) =
+            repl_ipc_admin(&self.paths, &mut self.live_repl, IpcCommand::ReloadConfig).await?
+        else {
+            return Ok(LoopStep::Continue);
+        };
+        let refreshed = AppConfig::load(&self.paths)?;
+        self.config = refreshed;
+        let (state, changed) =
+            repl_active_or_default_state(&self.paths, &self.active_session_id).await?;
+        if changed {
+            apply_repl_session_switch(
+                &self.paths,
+                &self.config,
+                self.mode,
+                &state,
+                &mut self.active_session_id,
+                &mut self.history,
+                &mut self.live_repl,
+                &mut self.footer,
+                &mut self.cumulative_tokens,
+            )
+            .await?;
+        }
+        self.cumulative_tokens = state_cumulative(&state);
+        // 同源约束(验收#23):标签与思考程度都取会话作用域配置。
+        let session_config =
+            footer_config_for_session(&self.paths, &self.config, &self.active_session_id);
+        self.footer = ReplFooterStatus::from_config(
+            &session_config,
+            state.context_tokens,
+            self.cumulative_tokens,
+        );
+        let client = OpenAiCompatibleClient::from_config(&session_config, &self.paths)?;
+        let thinking_summary = client.thinking_variant_summary();
+        self.footer
+            .update_thinking_variant(thinking_summary.as_deref());
+        self.footer
+            .update_context_window(state.context_window, state.context_window_assumed);
+        self.live_repl.set_footer(self.footer.clone());
+        repl_note(
+            &mut self.live_repl,
+            &format!("{}\n", t("configuration reloaded", "配置已重新加载")),
+        )?;
+        Ok(LoopStep::Continue)
+    }
+
+    pub(super) async fn cmd_variant(&mut self, command_args: &str) -> Result<LoopStep> {
+        if !miyu_base::models_cache::is_loaded() {
+            repl_note(
+                &mut self.live_repl,
+                &format!(
+                    "{}\n",
+                    t(
+                        "model metadata is still loading; try /variant again shortly",
+                        "模型元数据仍在加载，请稍后重试 /variant"
+                    )
+                ),
+            )?;
+            return Ok(LoopStep::Continue);
+        }
+        let selected = command_args.trim();
+        let mut client = OpenAiCompatibleClient::from_config(&self.config, &self.paths)?;
+        match execute_variant(
+            &self.paths,
+            &mut client,
+            (!selected.is_empty()).then_some(selected),
+            "/variant",
+        )? {
+            VariantOutcome::Updated => {
+                let Some((_, _)) =
+                    repl_ipc_admin(&self.paths, &mut self.live_repl, IpcCommand::ReloadConfig)
+                        .await?
+                else {
+                    return Ok(LoopStep::Continue);
+                };
+                self.config = AppConfig::load(&self.paths)?;
+                let (state, changed) =
+                    repl_active_or_default_state(&self.paths, &self.active_session_id).await?;
+                if changed {
+                    apply_repl_session_switch(
+                        &self.paths,
+                        &self.config,
+                        self.mode,
+                        &state,
+                        &mut self.active_session_id,
+                        &mut self.history,
+                        &mut self.live_repl,
+                        &mut self.footer,
+                        &mut self.cumulative_tokens,
+                    )
+                    .await?;
+                }
+                self.cumulative_tokens = state_cumulative(&state);
+                self.footer = ReplFooterStatus::from_config(
+                    &footer_config_for_session(&self.paths, &self.config, &self.active_session_id),
+                    state.context_tokens,
+                    self.cumulative_tokens,
+                );
+                let thinking_summary = client.thinking_variant_summary();
+                self.footer
+                    .update_thinking_variant(thinking_summary.as_deref());
+                self.footer
+                    .update_context_window(state.context_window, state.context_window_assumed);
+                self.live_repl.set_footer(self.footer.clone());
+                repl_note(
+                    &mut self.live_repl,
+                    &format!("{}\n", t("thinking variants updated", "已更新思考档位")),
+                )?;
+            }
+            VariantOutcome::Cancelled => {}
+            VariantOutcome::Rejected(message) => {
+                repl_note(&mut self.live_repl, &format!("\x1b[31m{message}\x1b[0m"))?;
+            }
+        }
+        Ok(LoopStep::Continue)
+    }
+}

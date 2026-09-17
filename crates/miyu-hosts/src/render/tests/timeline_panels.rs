@@ -1,9 +1,7 @@
 //! 过程时间线:子代理面板、命令展开、预览行数这些「面板形态」的断言。
 //! 从 `timeline.rs` 拆出来(09-16,那份超过了文件规模基线);共用的夹具留在那边。
 
-use super::timeline::{
-    block_id_in, timeline_renderer, timeline_renderer_with_preview_rows, with_blocks,
-};
+use super::timeline::{block_id_in, timeline_renderer, with_blocks};
 use crate::render::stream::timeline::LIVE_SPINNER_CELL;
 use crate::render::t;
 use std::time::Duration;

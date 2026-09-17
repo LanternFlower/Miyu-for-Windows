@@ -70,7 +70,7 @@ fn truncation_respects_very_narrow_widths() {
 #[test]
 fn shortcut_hint_line_is_bar_aligned_and_truncated() {
     // Tab 切换模式已随闲聊模式删除,提示行首个词条现在是换行快捷键。
-    let line = repl_shortcut_hint_line(AgentMode::Normal, 24);
+    let line = repl_shortcut_hint_line(PersonaLane::Active, 24);
     assert!(strip_terminal_control_sequences(&line).contains("Shift+Enter"));
     assert!(visible_width(&line) <= 24);
 }

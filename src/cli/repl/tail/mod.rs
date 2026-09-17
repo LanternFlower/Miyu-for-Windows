@@ -576,7 +576,7 @@ pub(in crate::cli) fn max_live_tail_start(terminal_rows: u16, tail_rows: u16) ->
 
 impl LiveReplTail {
     pub fn new(
-        mode: AgentMode,
+        mode: PersonaLane,
         history: Vec<ReplHistoryEntry>,
         queued: Vec<QueuedPrompt>,
         footer: ReplFooterStatus,
@@ -658,7 +658,7 @@ impl LiveReplTail {
     }
 
     /// 换车道:输入框竖条换色、banner 的模式行跟着走。
-    pub(in crate::cli) fn set_mode(&mut self, mode: AgentMode) {
+    pub(in crate::cli) fn set_mode(&mut self, mode: PersonaLane) {
         self.editor.mode = mode;
         if let Some(banner) = &mut self.banner {
             banner.set_mode(mode);
@@ -721,7 +721,7 @@ impl LiveReplTail {
         })
     }
 
-    pub(in crate::cli) fn mode(&self) -> AgentMode {
+    pub(in crate::cli) fn mode(&self) -> PersonaLane {
         self.editor.mode
     }
 

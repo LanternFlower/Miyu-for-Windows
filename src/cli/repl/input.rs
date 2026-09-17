@@ -251,8 +251,8 @@ pub(in crate::cli) fn read_live_repl_input(
                 }
                 LiveEditorAction::ToggleMode => {
                     let next = match live.mode() {
-                        AgentMode::Normal => AgentMode::Dev,
-                        AgentMode::Dev => AgentMode::Normal,
+                        PersonaLane::Active => PersonaLane::Dev,
+                        PersonaLane::Dev => PersonaLane::Active,
                     };
                     return Ok(LiveReplOutcome::SwitchMode(next));
                 }
@@ -285,14 +285,14 @@ pub(in crate::cli) fn read_live_repl_input(
 
 pub(in crate::cli) fn read_repl_input(
     paths: &MiyuPaths,
-    mode: AgentMode,
+    mode: PersonaLane,
     prefill: Option<String>,
     history: &[ReplHistoryEntry],
     footer: &ReplFooterStatus,
     show_shortcut_hint: bool,
 ) -> Result<
     Option<(
-        AgentMode,
+        PersonaLane,
         String,
         Vec<Option<miyu_base::clipboard::PastedImage>>,
     )>,
@@ -330,7 +330,7 @@ pub(in crate::cli) fn read_repl_input(
     let render_repl_input = |stdout: &mut io::Stdout,
                              input_row: &mut u16,
                              rendered_rows: &mut u16,
-                             mode: AgentMode,
+                             mode: PersonaLane,
                              input: &str,
                              cursor: usize,
                              raw_pasted_lines: usize| {
@@ -820,7 +820,7 @@ pub(in crate::cli) fn render_repl_input_with_footer(
     // `drawn`：画出去的输入行（屏幕行号 + 这一行的文字）。全屏下拿它做选区——
     // 输入区不在正文缓冲里，不记下来就没法知道某一格上是什么字。
     drawn: &mut Vec<(u16, String)>,
-    mode: AgentMode,
+    mode: PersonaLane,
     input: &str,
     cursor: usize,
     raw_pasted_lines: usize,
@@ -958,7 +958,7 @@ pub(in crate::cli) fn replace_repl_input_with_user_echo(
     stdout: &mut io::Stdout,
     input_row: u16,
     rendered_rows: u16,
-    mode: AgentMode,
+    mode: PersonaLane,
     input: &str,
 ) -> Result<()> {
     let cols = terminal_cols();

@@ -529,7 +529,7 @@ pub(in crate::web) fn wake_local_session_for_job(
             run_id.clone(),
             RunInfo {
                 session_id: session_id.clone(),
-                mode: AgentMode::Normal,
+                mode: PersonaLane::Active,
                 audience: PromptAudience::Owner,
                 cancel: cancel_tx,
                 turn_id: None,
@@ -562,7 +562,7 @@ pub(in crate::web) fn wake_local_session_for_job(
             content,
             display_content,
             attachment_run_id: None,
-            mode: AgentMode::Normal,
+            mode: PersonaLane::Active,
             images: Vec::new(),
             cwd: Some(completion.workspace.clone()),
             origin_tty: completion.origin_tty.clone().map(Box::new),

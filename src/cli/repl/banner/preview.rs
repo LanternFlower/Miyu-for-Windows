@@ -12,9 +12,9 @@ use crossterm::terminal::{
 };
 use crossterm::{execute, queue};
 use miyu_base::config::AppConfig;
+use miyu_base::config::PersonaLane;
 use miyu_base::i18n::text as t;
 use miyu_base::paths::MiyuPaths;
-use miyu_engine::agent::AgentMode;
 use std::io::{self, IsTerminal, Write};
 use std::time::Duration;
 
@@ -25,7 +25,7 @@ pub fn run(config: &AppConfig, paths: &MiyuPaths) -> Result<()> {
             t("--banner needs a terminal", "--banner 需要在终端里跑")
         );
     }
-    let Some(mut scene) = BannerScene::load(config, paths, AgentMode::Normal) else {
+    let Some(mut scene) = BannerScene::load(config, paths, PersonaLane::Active) else {
         bail!(
             "{}",
             t(
@@ -65,8 +65,8 @@ pub fn run(config: &AppConfig, paths: &MiyuPaths) -> Result<()> {
                     Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                         KeyCode::Tab => {
                             let next = match scene_mode(&scene) {
-                                AgentMode::Normal => AgentMode::Dev,
-                                AgentMode::Dev => AgentMode::Normal,
+                                PersonaLane::Active => PersonaLane::Dev,
+                                PersonaLane::Dev => PersonaLane::Active,
                             };
                             scene.set_mode(next);
                         }
@@ -87,6 +87,6 @@ pub fn run(config: &AppConfig, paths: &MiyuPaths) -> Result<()> {
     result
 }
 
-fn scene_mode(scene: &BannerScene) -> AgentMode {
+fn scene_mode(scene: &BannerScene) -> PersonaLane {
     scene.mode()
 }

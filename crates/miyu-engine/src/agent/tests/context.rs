@@ -50,7 +50,7 @@ fn consecutive_identical_history_rounds_collapse_on_replay() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
 
@@ -126,7 +126,7 @@ fn agent_for(config: AppConfig, paths: &MiyuPaths, state: StateStore) -> Agent {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap()
 }
@@ -241,7 +241,7 @@ async fn pop_overflow_evicts_until_under_target() {
         state.clone(),
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
 
@@ -302,7 +302,7 @@ fn structured_platform_context_can_suppress_ambiguous_session_replay() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
 
@@ -340,7 +340,7 @@ async fn changing_the_working_directory_only_moves_the_tail_after_the_user_messa
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
 
@@ -413,7 +413,7 @@ fn fossilized_transient_tail_replays_between_user_and_assistant() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
 
@@ -580,7 +580,7 @@ fn effective_context_tokens_include_tool_definitions() {
         state.clone(),
         client.clone(),
         tools,
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
     let without_tools = Agent::new(
@@ -595,7 +595,7 @@ fn effective_context_tokens_include_tool_definitions() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
 
@@ -709,7 +709,7 @@ fn trim_visible_context_keeps_summary_and_removes_oldest_turn() {
         state.clone(),
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
     state
@@ -951,7 +951,7 @@ async fn compaction_resets_the_byte_prefix_at_most_once_each() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
 
@@ -1148,7 +1148,7 @@ async fn effective_context_tokens_prefers_the_provider_anchor() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
 
@@ -1273,7 +1273,7 @@ async fn compaction_restores_recent_files_behind_the_checkpoint() {
         state,
         client,
         ToolRegistry::new(),
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .unwrap();
 

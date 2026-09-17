@@ -77,7 +77,7 @@ pub(in crate::cli) fn restore_history_entry(
 }
 
 pub(in crate::cli) struct LiveReplEditor {
-    pub(in crate::cli) mode: AgentMode,
+    pub(in crate::cli) mode: PersonaLane,
     /// 会话还是空的:Tab 可以换车道(普通 ↔ 开发)。第一条消息一发就钉死。
     pub(in crate::cli) mode_switchable: bool,
     pub(in crate::cli) input: String,
@@ -115,7 +115,7 @@ pub(in crate::cli) enum LiveEditorAction {
 }
 
 impl LiveReplEditor {
-    pub fn new(mode: AgentMode, history: Vec<ReplHistoryEntry>) -> Self {
+    pub fn new(mode: PersonaLane, history: Vec<ReplHistoryEntry>) -> Self {
         let history_index = history.len();
         Self {
             mode,

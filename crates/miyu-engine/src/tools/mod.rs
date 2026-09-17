@@ -30,6 +30,7 @@ pub mod net_guard;
 mod patch_preview;
 pub mod platform_outreach;
 mod readable_names;
+use miyu_base::config::PersonaLane;
 #[cfg(test)]
 use readable_names::builtin_readable_group_name;
 pub(crate) use readable_names::builtin_readable_tool_name;
@@ -57,7 +58,6 @@ pub mod vision;
 mod web;
 mod web_images;
 
-use crate::agent::AgentMode;
 use miyu_base::config::{AppConfig, PersonaManifest};
 use miyu_base::paths::MiyuPaths;
 use std::collections::HashMap;
@@ -405,15 +405,12 @@ pub fn effective_tools_loading_mode(config: &AppConfig) -> String {
 pub fn build_tool_registry(
     config: &AppConfig,
     paths: &MiyuPaths,
-    mode: AgentMode,
+    lane: PersonaLane,
     interactive_questions: bool,
 ) -> anyhow::Result<ToolRegistry> {
-    // mode 只剩「哪个 persona」这一层含义:Dev = 保留人格 "dev"(清单默认
-    // core_only),Normal = 当前人格。真正裁决工具面的是 persona 清单。
-    let persona = match mode {
-        AgentMode::Dev => miyu_core::state::DEV_PERSONA.to_string(),
-        AgentMode::Normal => config.active_persona_scope(),
-    };
+    // 车道只说「哪个 persona」:Dev = 保留人格 "dev"(清单默认 core_only),
+    // Active = 当前人格。真正裁决工具面的是 persona 清单。
+    let persona = lane.scope(config);
     let registry = if config.tools.enabled {
         let manifest = PersonaManifest::load(config, paths, &persona);
         compose_registry(

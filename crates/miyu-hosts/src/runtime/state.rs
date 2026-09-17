@@ -10,10 +10,10 @@ use super::*;
 use crate::platforms::PlatformRuntime;
 use anyhow::{bail, Context, Result};
 use miyu_base::config::AppConfig;
+use miyu_base::config::PersonaLane;
 use miyu_base::paths::MiyuPaths;
 use miyu_core::llm::OpenAiCompatibleClient;
 use miyu_core::state::StateStore;
-use miyu_engine::agent::AgentMode;
 use miyu_engine::tools::build_tool_registry;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
@@ -145,8 +145,8 @@ impl TurnResourceCache {
         miyu_engine::tools::register_script_display_names(&restricted_tools);
         let resources = Arc::new(TurnResources {
             client: OpenAiCompatibleClient::from_config(config, paths)?,
-            normal_tools: build_tool_registry(config, paths, AgentMode::Normal, false)?,
-            dev_tools: build_tool_registry(config, paths, AgentMode::Dev, false)?,
+            normal_tools: build_tool_registry(config, paths, PersonaLane::Active, false)?,
+            dev_tools: build_tool_registry(config, paths, PersonaLane::Dev, false)?,
             restricted_tools,
         });
 
@@ -577,14 +577,14 @@ fn cold_context_tokens(
 ) -> Option<u64> {
     miyu_base::models_cache::ensure_active_metadata(paths, config);
     let client = OpenAiCompatibleClient::from_config(config, paths).ok()?;
-    let registry = build_tool_registry(config, paths, AgentMode::Normal, true).ok()?;
+    let registry = build_tool_registry(config, paths, PersonaLane::Active, true).ok()?;
     let agent = miyu_engine::agent::Agent::new(
         config.clone(),
         paths,
         state_store.clone(),
         client,
         registry,
-        AgentMode::Normal,
+        PersonaLane::Active,
     )
     .ok()?;
     agent.effective_context_tokens().ok()

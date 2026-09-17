@@ -73,7 +73,7 @@ pub(crate) async fn run_platform_turn(
             run_id.clone(),
             RunInfo {
                 session_id: session_id.clone(),
-                mode: AgentMode::Normal,
+                mode: PersonaLane::Active,
                 audience: PromptAudience::External,
                 cancel: cancel_tx.clone(),
                 turn_id: None,
@@ -110,7 +110,7 @@ pub(crate) async fn run_platform_turn(
             display_content: content.clone(),
             content,
             attachment_run_id: None,
-            mode: AgentMode::Normal,
+            mode: PersonaLane::Active,
             images,
             cwd: None,
             origin_tty: None,

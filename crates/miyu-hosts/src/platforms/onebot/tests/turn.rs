@@ -66,7 +66,7 @@ async fn text_tool_followup_is_observed_and_queued_for_the_running_turn() {
         "run-followup".to_string(),
         crate::runtime::RunInfo {
             session_id: session_id.clone(),
-            mode: miyu_engine::agent::AgentMode::Normal,
+            mode: miyu_engine::agent::PersonaLane::Active,
             audience: miyu_base::config::PromptAudience::External,
             cancel,
             turn_id: Some("running_followup".to_string()),
@@ -339,7 +339,7 @@ async fn stop_command_cancels_the_session_and_preserves_completed_history() {
         "active_stop_test".to_string(),
         crate::runtime::RunInfo {
             session_id: session_id.clone(),
-            mode: miyu_engine::agent::AgentMode::Normal,
+            mode: miyu_engine::agent::PersonaLane::Active,
             audience: miyu_base::config::PromptAudience::External,
             cancel,
             turn_id: None,

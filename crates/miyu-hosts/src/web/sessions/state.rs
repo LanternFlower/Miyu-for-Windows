@@ -313,9 +313,9 @@ pub(in crate::web) fn session_state_for(
         // dev 会话按 dev 装配估算：系统提示词、工具表、记忆钥匙都跟着模式
         // 走，拿 Normal 硬算的话，dev 空会话和普通空会话永远是同一个数。
         let (config, mode) = if record.persona == miyu_core::state::DEV_PERSONA {
-            (config.dev_scoped(), AgentMode::Dev)
+            (config.dev_scoped(), PersonaLane::Dev)
         } else {
-            (config.clone(), AgentMode::Normal)
+            (config.clone(), PersonaLane::Active)
         };
         let store = session_store.pinned(session_id);
         current_context(&build_session_agent(&config, &state.paths, &store, mode)?)?

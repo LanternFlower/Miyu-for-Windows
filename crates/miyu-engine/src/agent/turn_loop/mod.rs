@@ -10,16 +10,24 @@
 //! `execute_parallel_task_calls` 负责一批工具的并发执行：**输出必须按请求顺序
 //! 映射回去**，不能按完成顺序——否则模型看到的结果和它发的调用对不上。
 
+mod catalog_refresh;
+mod finish;
+mod model_round;
+mod overflow_recovery;
 mod parallel;
+mod queue;
 mod redo;
 mod repeat_gate;
-mod stream;
-mod catalog_refresh;
 mod round_request;
 mod round_state;
+mod stream;
+mod tool_call;
+mod tool_exec;
 
+use overflow_recovery::RoundRecovery;
 use repeat_gate::{REPEAT_FUSE_THRESHOLD, REPEAT_SKIP_THRESHOLD};
 use round_state::RoundState;
+use tool_exec::ToolBatchOutcome;
 
 /// 回合内问题最多等这么久(与 web/bridge_question.rs 的桥问题同档)。
 const QUESTION_WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
@@ -69,13 +77,7 @@ impl Agent {
             on_event(AgentEvent::ReasoningStart {
                 received_at: Instant::now(),
             })?;
-            let (chunk_tx, mut chunk_rx) =
-                tokio::sync::mpsc::unbounded_channel::<(ChatStreamChunk, Instant)>();
             let request_messages = self.build_round_request(current_turn_id, messages, &st)?;
-            let mut reasoning_filter = ReasoningTitleFilter::default();
-            // 与 reasoning_filter 同生命周期:一轮模型调用 = 一条 assistant
-            // 消息,批量提示要的正是"这条消息里的第几个工具调用"。
-            let mut tool_calls_seen = 0usize;
             if self.core.config.cache.write_grace_ms > 0 {
                 if let Some(previous) = st.last_round_completed_at {
                     let grace =
@@ -90,1035 +92,112 @@ impl Agent {
                 self.runtime.last_request_snapshot =
                     Some((request_messages.clone(), definitions.clone()));
             }
-            let round_streamed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let mut round_timing = RoundTiming::default();
-            let round = {
-                let streamed_flag = round_streamed.clone();
-                let llm_future = self.client.chat_stream_with_continuation(
+            let mut model_round = self
+                .run_model_round(
+                    current_turn_id,
                     request_messages.clone(),
                     definitions,
                     st.responses_continuation.as_deref(),
-                    move |chunk| {
-                        streamed_flag.store(true, Ordering::Relaxed);
-                        let _ = chunk_tx.send((chunk, Instant::now()));
-                        Ok(())
-                    },
-                );
-                tokio::pin!(llm_future);
-                let mut spinner_interval = tokio::time::interval(self.core.spinner_interval);
-                spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                spinner_interval.tick().await;
-                let supersede = control.and_then(|control| control.supersede.as_deref());
-                let supersede_generation = control.and_then(|control| {
-                    supersede.map(|_| control.supersede_seen.load(Ordering::Acquire))
-                });
-                loop {
-                    tokio::select! {
-                        biased;
-                        _ = async {
-                            match (supersede, supersede_generation) {
-                                (Some(signal), Some(generation)) => signal.wait_after(generation).await,
-                                _ => std::future::pending::<()>().await,
-                            }
-                        } => {
-                            break None;
-                        }
-                        result = &mut llm_future => {
-                            break Some(result);
-                        }
-                        Some((chunk, received_at)) = chunk_rx.recv() => {
-                            round_timing.observe(received_at);
-                            if let Some(delta) = record_remote_tool_chunk(
-                                &chunk,
-                                &self.runtime.pending_remote_tool_calls,
-                            ) {
-                                self.state.merge_turn_footprint(current_turn_id, &delta)?;
-                            }
-                            emit_model_chunk_at(
-                                chunk,
-                                received_at,
-                                &mut reasoning_filter,
-                                &mut tool_calls_seen,
-                                on_event,
-                            )?;
-                        }
-                        _ = spinner_interval.tick() => {
-                            on_event(AgentEvent::SpinnerTick)?;
-                        }
-                    }
-                }
-            };
+                    control,
+                    on_event,
+                )
+                .await?;
+            let round = model_round.outcome.take();
             let round = match round {
                 Some(Err(error)) => {
-                    // Responses 续传自愈(任务#16):上游不支持
-                    // previous_response_id 时,工具轮第二步只发增量会撞
-                    // "No tool call found for tool output" 类 400。此时清
-                    // 续传重发全量(messages 里工具结果已齐,无状态回放
-                    // 完整),并让客户端持久记该供应商不可续传——本会话
-                    // 与后续会话都不再发增量。
-                    if st.responses_continuation.is_some()
-                        && miyu_core::llm::is_responses_continuation_unsupported_error(&error)
-                    {
-                        tracing::warn!(
-                            error = %error,
-                            "responses continuation rejected; retrying this round with full stateless input"
-                        );
-                        self.client.mark_responses_continuation_unsupported();
-                        st.responses_continuation = None;
-                        continue;
-                    }
-                    // Passive overflow trigger (compact-and-retry). Only at
-                    // the turn's initial request, before any assistant output
-                    // was streamed: mid-loop the live tool exchange is not
-                    // rebuildable from the DB, and a partially shown answer
-                    // must not be silently retried (opencode's
-                    // hasAssistantStarted guard).
-                    let initial_request = st.tool_round == initial_tool_rounds
-                        && st.question_rounds == initial_question_rounds
-                        && st.responses_continuation.is_none()
-                        && !round_streamed.load(Ordering::Relaxed);
-                    let window = self.context_window();
-                    if initial_request
-                        && !st.overflow_recovery_attempted
-                        && window.is_some()
-                        && miyu_core::llm::is_context_overflow_error(&error)
-                    {
-                        st.overflow_recovery_attempted = true;
-                        let window = window.unwrap();
-                        let check = overflow::OverflowCheck::new(
-                            Some(window),
-                            self.core.trim_at_ratio,
-                            None,
-                        );
-                        on_event(AgentEvent::CompactStart)?;
-                        let compactor = compact::Compactor::new(
-                            self.client.clone(),
-                            self.state.clone(),
-                            window,
-                            check.reserved_tokens,
-                            self.compact_tail_budget(window),
-                            self.preset_dialogs.len(),
+                    match self
+                        .recover_round_error(
+                            current_turn_id,
+                            messages,
+                            &mut st,
+                            initial_tool_rounds,
+                            initial_question_rounds,
+                            model_round.streamed,
+                            error,
+                            on_event,
                         )
-                        .with_extras(self.compact_extras_policy());
-                        let mut on_compact_chunk =
-                            |chunk: ChatStreamChunk| on_event(AgentEvent::CompactChunk(chunk));
-                        // No fork here: a fork of an overflowing conversation
-                        // overflows identically — recovery must use the
-                        // isolated serialized path.
-                        let compacted = compactor
-                            .perform_compact(true, true, None, &mut on_compact_chunk)
-                            .await;
-                        on_event(AgentEvent::CompactEnd)?;
-                        if let Ok(Some(compact_result)) = compacted {
-                            self.state.add_auxiliary_usage(
-                                &compact_result.usage,
-                                miyu_core::state::UsageMeta {
-                                    source: self.usage_source(),
-                                    provider: compact_result.provider_id.as_deref(),
-                                    model: None,
-                                    kind: None,
-                                },
-                            )?;
-                            // Splice the rebuilt (compacted) history prefix in
-                            // front of the current turn's user message; the
-                            // live tail (user input, runtime stamp, hints)
-                            // is preserved byte-for-byte.
-                            let user_index = live_user_index(messages, st.replay_start)
-                                .unwrap_or_else(|| st.replay_start.min(messages.len()));
-                            let (rebuilt, rebuilt_user_index) =
-                                self.chat_messages(current_turn_id, "")?;
-                            let tail = messages.split_off(user_index);
-                            messages.clear();
-                            messages.extend(rebuilt.into_iter().take(rebuilt_user_index));
-                            messages.extend(tail);
-                            // 活跃轮边界随尾巴整体平移:新前缀长 + 尾内偏移。
-                            st.replay_start = rebuilt_user_index + (st.replay_start - user_index);
-                            st.continuation_input_start = messages.len();
-                            tracing::info!(
-                                folded = compact_result.folded_turns,
-                                kept = compact_result.kept_turns,
-                                "context overflow recovered by compact-and-retry"
-                            );
-                            continue;
-                        }
-                        if let Err(compact_error) = compacted {
-                            tracing::warn!(
-                                error = %compact_error,
-                                "compact-and-retry failed; surfacing the original overflow"
-                            );
-                        }
+                        .await?
+                    {
+                        RoundRecovery::Retry => continue,
+                        RoundRecovery::Fail(error) => return Err(error),
                     }
-                    return Err(error);
                 }
                 Some(Ok(result)) => Some(result),
                 None => None,
             };
             let Some(result) = round else {
-                if let Some(control) = control {
-                    if let Some(generation) = control.pending_supersede_generation() {
-                        control.mark_supersede_seen(generation);
-                    }
-                }
-                let queued = self.state.load_queued_prompts()?;
-                if queued.is_empty() {
-                    continue;
-                }
-                let prompt_ids = queued
-                    .iter()
-                    .map(|prompt| prompt.prompt_id.clone())
-                    .collect::<Vec<_>>();
-                on_event(AgentEvent::GenerationSuperseded { prompt_ids })?;
-                let checkpoint = redo_checkpoint_payload(
-                    messages,
-                    st.replay_start,
-                    base_tool_reports,
-                    persisted_tool_reports,
-                    st.tool_round,
-                    st.question_rounds,
-                );
-                let continuation_context_index = st.responses_continuation.as_ref().map(|_| {
-                    st.continuation_context
-                        .as_ref()
-                        .map(|(index, _)| *index)
-                        .unwrap_or(messages.len())
-                });
-                self.consume_queued_prompts(
+                self.handle_superseded_round(
                     current_turn_id,
                     messages,
-                    queued,
-                    (None, None, None, None),
-                    checkpoint,
-                    control.expect("supersede requires turn control"),
+                    base_tool_reports,
+                    persisted_tool_reports,
+                    &mut st,
+                    control,
                     on_event,
                 )
                 .await?;
-                if let Some(index) = continuation_context_index {
-                    st.continuation_context = Some((
-                        index,
-                        vec![
-                            ChatMessage::turn_context(continuation_system_prompt(
-                                &self.system_prompt,
-                                self.core.dev,
-                            )),
-                            ChatMessage::turn_context(runtime_context(
-                                self.input.platform_context.is_some(),
-                            )),
-                        ],
-                    ));
-                }
                 continue;
             };
-            while let Ok((chunk, received_at)) = chunk_rx.try_recv() {
-                round_timing.observe(received_at);
-                if let Some(delta) =
-                    record_remote_tool_chunk(&chunk, &self.runtime.pending_remote_tool_calls)
-                {
-                    self.state.merge_turn_footprint(current_turn_id, &delta)?;
-                }
-                emit_model_chunk_at(
-                    chunk,
-                    received_at,
-                    &mut reasoning_filter,
-                    &mut tool_calls_seen,
-                    on_event,
-                )?;
-            }
-            let (title, text) = reasoning_filter.finish();
-            if let Some(title) = title {
-                on_event(AgentEvent::ReasoningTitle(title))?;
-            }
-            if let Some(text) = text {
-                on_event(AgentEvent::Chunk(ChatStreamChunk {
-                    kind: ChatStreamKind::Reasoning,
-                    text,
-                }))?;
-            }
-            let round_completion = st.usage_accumulator.add_result(&result, messages);
-            st.usage_accumulator.add_generation_sample(
-                round_completion,
-                round_timing.generation_ms(),
-                result.usage.is_none(),
-            );
-            if let Some(turn_usage) = st.usage_accumulator.usage() {
-                // 上下文表读数优先取供应商标注的"最后一次请求"口径。
-                let round = result
-                    .last_request_usage
-                    .clone()
-                    .or_else(|| result.usage.clone())
-                    .unwrap_or_else(|| {
-                        let prompt = overflow::estimate_messages_tokens(&request_messages) as u64;
-                        let completion = estimate_result_tokens(&result) as u64;
-                        Usage {
-                            prompt_tokens: prompt,
-                            completion_tokens: completion,
-                            total_tokens: prompt.saturating_add(completion),
-                            ..Usage::default()
-                        }
-                    });
-                let turn_tokens = TurnTokens::from_usage(Some(&turn_usage));
-                // 会话实时累计 = 已落库(往轮 + 已完成子代理子会话)+ 本回合至今。
-                // session_cumulative_token_totals 不含当前回合(回合末才 add_usage),所以
-                // 这里补上 turn_tokens;子代理跑完那一刻它的子会话行已记好,下一个主回合
-                // 读这个总数就把子代理花销带进来了(#131)。
-                let mut cumulative = self
-                    .state
-                    .session_cumulative_token_totals()
-                    .unwrap_or_default();
-                cumulative.add(turn_tokens);
-                on_event(AgentEvent::RoundUsage {
-                    round: Box::new(round),
-                    turn: turn_tokens,
-                    cumulative,
-                    speed: st.usage_accumulator.generation_speed(),
-                    estimated: st.usage_accumulator.estimated,
-                    provider_id: result.provider_id.clone(),
-                    model: result.model.clone(),
-                })?;
-            }
-            st.last_round_completed_at = Some(Instant::now());
-            if result.tool_calls.is_empty() || !self.core.tools_enabled {
-                st.responses_continuation = None;
-                st.continuation_input_start = messages.len();
-                st.continuation_context = None;
-                if let Some(control) = control {
-                    let queued = self.state.load_queued_prompts()?;
-                    if !queued.is_empty() {
-                        if let Some(generation) = control.pending_supersede_generation() {
-                            let prompt_ids = queued
-                                .iter()
-                                .map(|prompt| prompt.prompt_id.clone())
-                                .collect();
-                            on_event(AgentEvent::GenerationSuperseded { prompt_ids })?;
-                            let checkpoint = redo_checkpoint_payload(
-                                messages,
-                                st.replay_start,
-                                base_tool_reports,
-                                persisted_tool_reports,
-                                st.tool_round,
-                                st.question_rounds,
-                            );
-                            self.consume_queued_prompts(
-                                current_turn_id,
-                                messages,
-                                queued,
-                                (None, None, None, None),
-                                checkpoint,
-                                control,
-                                on_event,
-                            )
-                            .await?;
-                            control.mark_supersede_seen(generation);
-                            continue;
-                        }
-                        push_assistant_context_messages(
-                            messages,
-                            &result.content,
-                            result.reasoning.as_deref(),
-                            true,
-                        );
-                        let checkpoint = redo_checkpoint_payload(
-                            messages,
-                            st.replay_start,
-                            base_tool_reports,
-                            persisted_tool_reports,
-                            st.tool_round,
-                            st.question_rounds,
-                        );
-                        self.consume_queued_prompts(
-                            current_turn_id,
-                            messages,
-                            queued,
-                            (
-                                Some(&result.content),
-                                result.reasoning.as_deref(),
-                                result.provider_id.as_deref(),
-                                result.model.as_deref(),
-                            ),
-                            checkpoint,
-                            control,
-                            on_event,
-                        )
-                        .await?;
-                        continue;
-                    }
-                }
-                let mut result = result;
-                if st.artifact_auto_publish && !st.artifact_published {
-                    publish_auto_artifact_candidates(&st.artifact_candidates, on_event)?;
-                }
-                if let Some(usage) = st.usage_accumulator.usage() {
-                    // 供应商已给出"最后一次请求"的口径(claude-code 中转:
-                    // 结果帧是整轮累计,真实上下文在流内最后一次调用里)时
-                    // 尊重之,不再用轮用量覆盖。
-                    let round_usage = result.usage.take();
-                    if result.last_request_usage.is_none() {
-                        result.last_request_usage = round_usage;
-                    }
-                    result.usage = Some(usage);
-                    result.usage_estimated = st.usage_accumulator.estimated;
-                }
-                return Ok(result);
-            }
-            if tool_limit_reached {
-                let mut result = result;
-                // 复读保险丝收束:不产任何警告文本(08-24 用户裁定),模型在
-                // 无工具轮已有机会正常成文,这里只收尾。真 max_rounds 上限
-                // 保留原提示,但只给所有者受众;平台正文=群消息,拼进去就是
-                // 把系统文本发到群里(08-24 实录)。
-                if st.repeat_fused {
-                    tracing::warn!("tool repeat fuse: loop closed without a text answer");
-                } else if self.core.prompt_audience == PromptAudience::External {
-                    tracing::warn!(
-                        "tool calls reached the round limit of {}",
-                        self.core.max_tool_rounds
-                    );
-                } else {
-                    let warning = format!(
-                        "Tool calls reached the limit of {} rounds; the remaining tool calls were not executed. Set `tools.max_rounds` to 0 to allow unlimited tool rounds.",
-                        self.core.max_tool_rounds
-                    );
-                    let warning_chunk = if result.content.trim().is_empty() {
-                        warning.clone()
-                    } else {
-                        format!("\n\n{warning}")
-                    };
-                    result.content.push_str(&warning_chunk);
-                    on_event(AgentEvent::Chunk(ChatStreamChunk {
-                        kind: ChatStreamKind::Content,
-                        text: warning_chunk,
-                    }))?;
-                }
-                result.tool_calls.clear();
-                if let Some(usage) = st.usage_accumulator.usage() {
-                    let round_usage = result.usage.take();
-                    if result.last_request_usage.is_none() {
-                        result.last_request_usage = round_usage;
-                    }
-                    result.usage = Some(usage);
-                    result.usage_estimated = st.usage_accumulator.estimated;
-                }
-                return Ok(result);
-            }
-            // 同参复读闸(见 repeat_gate.rs):连续相同轮先跳过执行回灌错误,
-            // 到保险丝阈值置 repeat_fused——下一轮请求不再带工具,逼模型用
-            // 已有结果正常成文(硬截断+英文警告拼正文会把机器文本漏到 QQ,
-            // 08-24 线上翻车实录)。
-            let round_repeats = st.repeat_gate.observe(&result.tool_calls);
-            if round_repeats >= REPEAT_FUSE_THRESHOLD && !st.repeat_fused {
-                st.repeat_fused = true;
-                tracing::warn!(
-                    repeats = round_repeats,
-                    "tool repeat fuse blown; withholding tools so the model answers with existing results"
-                );
-            }
-            let repeat_skip = round_repeats >= REPEAT_SKIP_THRESHOLD;
-            st.tool_round += 1;
-            let next_responses_continuation = result.responses_continuation.clone();
-            push_assistant_message_with_reasoning(
+            self.finish_round_stream(
+                current_turn_id,
                 messages,
-                result.content.clone(),
-                result.reasoning.as_deref(),
-                result.thinking_signature.as_deref(),
-                // 参数的合法性由 ChatMessage::assistant 统一收口(见那里的
-                // 注释);执行侧仍拿原始参数,好让工具把 `EOF while parsing`
-                // 这类解析错误如实回给模型。
-                Some(result.tool_calls.clone()),
-                true,
-            );
-            if result
-                .finish_reason
-                .as_deref()
-                .is_some_and(|reason| reason.eq_ignore_ascii_case("length"))
-                && !result.tool_calls.is_empty()
-            {
-                // 续传簿记与正常路径同步:跳过它会让下一轮带着上一轮的旧
-                // response id 续传,服务端 400 后再走自愈,白费一次请求。
-                // start 必须在 push tool 错误之前设定(续传输入=工具输出段)。
-                if next_responses_continuation.is_some() {
-                    st.continuation_input_start = messages.len();
-                }
-                st.responses_continuation = next_responses_continuation;
-                st.continuation_context = None;
-                // A "length" stop means the output hit the token limit, so every
-                // tool call in this message may carry silently truncated
-                // arguments. Refuse to execute any of them and let the model
-                // re-issue the calls with complete arguments.
-                for call in &result.tool_calls {
-                    messages.push(ChatMessage::tool(
-                        call.id.clone(),
-                        "error: this reply was truncated by the output token limit, so the tool call arguments may be incomplete. Re-issue this tool call with complete arguments.",
-                    ));
-                }
-                continue;
-            }
-            if next_responses_continuation.is_some() {
-                st.continuation_input_start = messages.len();
-            }
-            st.responses_continuation = next_responses_continuation;
-            st.continuation_context = None;
-            let ask_question_enabled = self
-                .tools
-                .lock()
-                .unwrap()
-                .tool_names()
-                .iter()
-                .any(|name| name == "ask_question");
-            let question_call_count = result
-                .tool_calls
-                .iter()
-                .filter(|call| ask_question_enabled && call.function.name == "ask_question")
-                .count();
-            if question_call_count == 1 {
-                st.question_rounds += 1;
-            }
-            let question_round_allowed =
-                question_call_count == 1 && st.question_rounds <= MAX_QUESTION_ROUNDS_PER_TURN;
-            let defer_sibling_tools = question_call_count == 1 && result.tool_calls.len() > 1;
-            // Multiple `task` calls in one batch run concurrently (subagents
-            // are independent by design); everything else stays serial.
-            let mut parallel_task_outputs = if defer_sibling_tools || repeat_skip {
-                std::collections::HashMap::new()
-            } else {
-                self.execute_parallel_task_calls(&result.tool_calls, on_event)
-                    .await?
-            };
-            // 每个调用的执行起止:一次迭代压进 `messages` 的 tool 消息就是这个
-            // 调用的结果(各分支都以 push + continue 收尾),下一次迭代开始时给
-            // 上一批盖章。并行 task 组早在循环前跑完,这里量到的只是入队那一瞬,
-            // 与其给一个假的 0 ms,不如让它没有耗时。
-            let mut span_from = messages.len();
-            let mut span_since = unix_ms();
-            let mut span_skip = false;
-            for (call_index, call) in result.tool_calls.into_iter().enumerate() {
-                if !span_skip {
-                    stamp_tool_spans(&mut messages[span_from..], span_since, unix_ms());
-                }
-                span_from = messages.len();
-                span_since = unix_ms();
-                span_skip = parallel_task_outputs.contains_key(&call_index);
-                if let Some(group_output) = parallel_task_outputs.remove(&call_index) {
-                    // Executed in the parallel group; events already emitted.
-                    used_tools.push(call.function.name.clone());
-                    if let Some(report) = group_output.report {
-                        persisted_tool_reports.push((call.function.name.clone(), report));
-                    }
-                    let model_output = self
-                        .spill_tool_output(
-                            current_turn_id,
-                            &call.id,
-                            &call.function.name,
-                            &group_output.output,
-                        )
-                        .unwrap_or(group_output.output);
-                    messages.push(ChatMessage::tool(call.id, model_output));
-                    continue;
-                }
-                let call_id = call.id.clone();
-                let event_name = tool_event_name(&call.function.name, &call.function.arguments);
-                on_event(AgentEvent::ToolCall {
-                    call_id: call_id.clone(),
-                    name: event_name.clone(),
-                    arguments: call.function.arguments.clone(),
-                })?;
-                if repeat_skip {
-                    // 同参复读:不再真执行,回灌上一轮的真实结果字节。不注入
-                    // 指令文本——故障态模型看不见输入增量,提示无用(08-24)。
-                    let output =
-                        st.repeat_gate.cached_output(&call.function.name, &call.function.arguments);
-                    on_event(AgentEvent::ToolResult {
-                        call_id: call_id.clone(),
-                        name: event_name.clone(),
-                        ok: tool_output_succeeded(&output),
-                        output: output.clone(),
-                    })?;
-                    messages.push(ChatMessage::tool(call.id, output));
-                    continue;
-                }
-                if question_call_count > 1 {
-                    let output = "tool error: only one ask_question call is allowed per tool batch; combine all questions into one call".to_string();
-                    on_event(AgentEvent::ToolResult {
-                        call_id: call_id.clone(),
-                        name: event_name.clone(),
-                        ok: false,
-                        output: output.clone(),
-                    })?;
-                    messages.push(ChatMessage::tool(call.id, output));
-                    continue;
-                }
-                if defer_sibling_tools && call.function.name != "ask_question" {
-                    let output = "tool error: deferred until the user answers ask_question; reissue this tool call after receiving the answer".to_string();
-                    on_event(AgentEvent::ToolResult {
-                        call_id: call_id.clone(),
-                        name: event_name.clone(),
-                        ok: false,
-                        output: output.clone(),
-                    })?;
-                    messages.push(ChatMessage::tool(call.id, output));
-                    continue;
-                }
-                if ask_question_enabled && call.function.name == "ask_question" {
-                    if !question_round_allowed {
-                        let output = format!(
-                            "tool error: ask_question exceeded the per-turn limit of {MAX_QUESTION_ROUNDS_PER_TURN}"
-                        );
-                        on_event(AgentEvent::ToolResult {
-                            call_id: call_id.clone(),
-                            name: event_name.clone(),
-                            ok: false,
-                            output: output.clone(),
-                        })?;
-                        messages.push(ChatMessage::tool(call.id, output));
-                        continue;
-                    }
-                    let request = match QuestionRequest::parse(&call.function.arguments) {
-                        Ok(request) => request,
-                        Err(err) => {
-                            // 报错要说自己真正知道的:实测模型看到裸的 serde 消息
-                            // （"invalid type: string, expected a sequence"）之后
-                            // 反复重试同样的形状,最后判定成「接口不支持」放弃。
-                            // 补一句期望形状,它才知道该改什么。
-                            let output = format!(
-                                "tool error: invalid ask_question request: {err}\n\
-                                 expected {{\"questions\": [{{\"header\": ..., \"question\": ..., \
-                                 \"options\": [{{\"label\": ..., \"description\": ...}}]}}]}} \
-                                 — questions and options must be real JSON arrays, not strings"
-                            );
-                            on_event(AgentEvent::ToolResult {
-                                call_id: call_id.clone(),
-                                name: event_name.clone(),
-                                ok: false,
-                                output: output.clone(),
-                            })?;
-                            messages.push(ChatMessage::tool(call.id, output));
-                            continue;
-                        }
-                    };
-                    let (response_tx, response_rx) = oneshot::channel();
-                    on_event(AgentEvent::AskQuestion {
-                        call_id: call_id.clone(),
-                        request: request.clone(),
-                        responder: response_tx,
-                    })?;
-                    // 没人回答也得有个头:一次性客户端(shellhook)断线后没人能再
-                    // 应答,回合会永远卡在 running,被历史组装跳过——用户看到的
-                    // 是"上一轮失忆"(09-09)。超时当无人应答,回合正常收尾。
-                    let response =
-                        match tokio::time::timeout(QUESTION_WAIT_LIMIT, response_rx).await {
-                            Ok(response) => response.unwrap_or(QuestionResponse::Cancelled),
-                            Err(_) => QuestionResponse::Unavailable(
-                                "nobody answered within the time limit".to_string(),
-                            ),
-                        };
-                    let output = match response {
-                        QuestionResponse::Answered(answers) => {
-                            let exchange = QuestionExchange::new(request, answers)?;
-                            self.state
-                                .append_question_exchange(current_turn_id, &exchange)?;
-                            answered_tool_output(&exchange)
-                        }
-                        QuestionResponse::Closed => closed_tool_output(),
-                        QuestionResponse::Cancelled => return Err(QuestionCancelled.into()),
-                        QuestionResponse::Unavailable(reason) => unavailable_tool_output(&reason),
-                    };
-                    messages.push(ChatMessage::tool(call.id, output.clone()));
-                    on_event(AgentEvent::ToolResult {
-                        call_id: call_id.clone(),
-                        name: event_name,
-                        ok: true,
-                        output,
-                    })?;
-                    continue;
-                }
-                used_tools.push(call.function.name.clone());
-                // 模式级 ReadOnly 权限门随闲聊模式一并删除:拒绝层现在是
-                // registry 的单调 guard(软失败),不可用工具靠 registry 组合
-                // 不注册(平台 restricted 同理),未知工具在分发处软失败。
-                let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
-                let tool_future = {
-                    let tools = self.tools.lock().unwrap();
-                    // AUR 互斥等回合级规则已迁入 guard 层,凭 used_tools 上下文判定。
-                    tools.call_with_progress_future(
-                        &call.function.name,
-                        &call.function.arguments,
-                        progress_tx,
-                        &crate::tools::GuardCtx {
-                            used_tools: &used_tools,
-                        },
-                    )
-                };
-                // 桩工具失败时把真契约补进返回体(每个工具每回合只补一次)。
-                let mut attach_contract = |message: String| -> String {
-                    if !tools::is_stub_loading_mode(&self.core.config.tools.loading_mode) {
-                        return message;
-                    }
-                    if !st.contract_hinted.insert(call.function.name.clone()) {
-                        return message;
-                    }
-                    let tools = self.tools.lock().unwrap();
-                    if !tools.is_stub_presented(&call.function.name) {
-                        return message;
-                    }
-                    match tools.contract_text(&call.function.name) {
-                        Some(contract) => format!(
-                            "{message}\n\nThis tool was declared with an empty parameter shell, so its real schema follows. Call it again with these arguments at the top level.{contract}"
-                        ),
-                        None => message,
-                    }
-                };
-                let tool_future = match tool_future {
-                    Ok(f) => f,
-                    Err(err) => {
-                        let output = attach_contract(format!("tool error: {err}"));
-                        on_event(AgentEvent::ToolResult {
-                            call_id: call_id.clone(),
-                            name: event_name.clone(),
-                            ok: false,
-                            output: output.clone(),
-                        })?;
-                        messages.push(ChatMessage::tool(call.id, output));
-                        continue;
-                    }
-                };
-                tokio::pin!(tool_future);
-                let mut spinner_interval = tokio::time::interval(self.core.spinner_interval);
-                spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                spinner_interval.tick().await;
-                // 前台子代理跑到一半刷新页面就丢子过程(#5a 续:子过程只在内存里,
-                // 回合收尾才落库,而单个前台子代理走的就是这条串行路,收尾在它
-                // 整个跑完之后)。这里在子过程标记流上限流打检查点:此刻
-                // `messages` 里已有那条调子代理的 assistant 消息(见上面 push),
-                // checkpoint_tool_flow 走 peek 把当前累积的 sub_trace 落库,刷新时
-                // renderPersistedTurn 就能把在跑的子过程时间线画出来,不再是空。
-                // None = 还没落过,第一条子过程标记就立刻落一次(子代理常是先爆一小段
-                // 标记再钻进一次长 LLM 应答里安静好一会儿,若等满 1.5s 那一窗就全错过了)。
-                // `sub_dirty`:上次落库后又来过标记但被节流跳过了。子代理典型节奏是「爆一段
-                // 标记 → 钻进长 LLM 应答安静十几秒」:首条落库只抓到爆发的第一条,后面几条
-                // 全在 1.5s 窗内被跳过,然后一安静就再没有 recv 触发——那段就只活在实时流里、
-                // 刷新即丢。所以工具空转的 spinner tick 上补一刀:脏了且过了节流窗就把尾巴落了。
-                let mut last_sub_checkpoint: Option<std::time::Instant> = None;
-                let mut sub_dirty = false;
-                let (output, tool_succeeded) = loop {
-                    tokio::select! {
-                        result = &mut tool_future => {
-                            break match result {
-                                Ok(output) => {
-                                    while let Ok(progress) = progress_rx.try_recv() {
-                                        parallel::tee_subagent_trace(&call_id, &progress);
-                                        emit_tool_progress(on_event, &call_id, &event_name, progress)?;
-                                    }
-                                    (output, true)
-                                }
-                                Err(err) => {
-                                    while let Ok(progress) = progress_rx.try_recv() {
-                                        parallel::tee_subagent_trace(&call_id, &progress);
-                                        emit_tool_progress(on_event, &call_id, &event_name, progress)?;
-                                    }
-                                    let output = attach_contract(format!("tool error: {err}"));
-                                    on_event(AgentEvent::ToolResult {
-                                        call_id: call_id.clone(),
-                                        name: event_name.clone(),
-                                        ok: false,
-                                        output: output.clone(),
-                                    })?;
-                                    (output, false)
-                                }
-                            };
-                        }
-                        Some(progress) = progress_rx.recv() => {
-                            let is_sub_marker = matches!(
-                                &progress,
-                                tools::ToolProgressEvent::Message(message)
-                                    if tools::is_subagent_marker(message)
-                            );
-                            parallel::tee_subagent_trace(&call_id, &progress);
-                            emit_tool_progress(on_event, &call_id, &event_name, progress)?;
-                            // 限流:首条立刻落,之后每 ~1.5s 一次(peek 不清空,幂等),
-                            // 避免逐 token 写库。跳过的标记记脏,交给下面 spinner tick 补落。
-                            if is_sub_marker {
-                                sub_dirty = true;
-                                if last_sub_checkpoint.map_or(true, |at| {
-                                    at.elapsed() >= std::time::Duration::from_millis(1500)
-                                }) {
-                                    last_sub_checkpoint = Some(std::time::Instant::now());
-                                    sub_dirty = false;
-                                    self.checkpoint_tool_flow(
-                                        current_turn_id,
-                                        messages,
-                                        st.replay_start,
-                                    );
-                                }
-                            }
-                        }
-                        _ = spinner_interval.tick() => {
-                            on_event(AgentEvent::SpinnerTick)?;
-                            // 子代理安静下来(钻进长应答)后,把爆发尾巴那几条被节流跳过的
-                            // 标记补落一次,不然刷新只剩爆发首条。
-                            if sub_dirty
-                                && last_sub_checkpoint.map_or(true, |at| {
-                                    at.elapsed() >= std::time::Duration::from_millis(1500)
-                                })
-                            {
-                                last_sub_checkpoint = Some(std::time::Instant::now());
-                                sub_dirty = false;
-                                self.checkpoint_tool_flow(
-                                    current_turn_id,
-                                    messages,
-                                    st.replay_start,
-                                );
-                            }
-                        }
-                    }
-                };
-                let inline_media = if tool_succeeded {
-                    inline_media_from_tool_result(&call.function.name, &output)
-                } else {
-                    Vec::new()
-                };
-                let model_output = self
-                    .spill_tool_output(current_turn_id, &call.id, &call.function.name, &output)
-                    .unwrap_or_else(|| output.clone());
-                // 复读闸记账:下一轮同参跳过时按键回灌这份字节。(dsh 式
-                // advisory 重复提醒于 08-24 整体退役:222 连发与 08-23/24
-                // 两次故障实录证明提示文本对故障态模型无效,防线全部交给
-                // 结构化的 repeat_gate。)
-                st.repeat_gate.record_output(
-                    &call.function.name,
-                    &call.function.arguments,
-                    &model_output,
-                );
-                // tool 消息要等媒体块定下来再推:图直接进它的内容 parts(供应商
-                // 不认时才退回"之后补一条用户消息")。
-                let tool_message = ChatMessage::tool(call.id.clone(), model_output);
-                if tool_succeeded && call.function.name == "load_tools" {
-                    let loaded = loaded_items_from_output(&output);
-                    for name in &loaded.tools {
-                        st.loaded_tools.insert(name.clone());
-                    }
-                    if self.core.config.tools.persist_loaded_tools {
-                        self.state
-                            .add_session_loaded_tools(&loaded.tools, Some(current_turn_id))?;
-                        self.state
-                            .add_session_loaded_targets(&loaded.targets, Some(current_turn_id))?;
-                    }
-                }
-                let stamped = if !inline_media.is_empty() {
-                    let supports_vision = self.current_model_supports_vision();
-                    let needs_fallback = !supports_vision
-                        && inline_media
-                            .iter()
-                            .any(|item| item.kind == miyu_core::state::INLINE_MEDIA_KIND_IMAGE);
-                    let uses_vision_fallback =
-                        needs_fallback && self.core.config.plugins.vision.enabled;
-                    if needs_fallback {
-                        let message = if self.core.config.plugins.vision.enabled {
-                            if miyu_base::i18n::is_zh() {
-                                "视觉分析."
-                            } else {
-                                "Vision analysis."
-                            }
-                        } else if miyu_base::i18n::is_zh() {
-                            "当前模型不支持图片，且未启用视觉模型，无法分析这张图片。"
-                        } else {
-                            "The current model does not support images and the vision plugin is disabled, so the image cannot be analyzed."
-                        };
-                        on_event(AgentEvent::ToolProgress {
-                            call_id: call_id.clone(),
-                            name: event_name.clone(),
-                            message: message.to_string(),
-                        })?;
-                    }
-                    let items = if uses_vision_fallback {
-                        let describe_future = self.describe_inline_media(inline_media);
-                        tokio::pin!(describe_future);
-                        let mut spinner_interval =
-                            tokio::time::interval(self.core.spinner_interval);
-                        spinner_interval
-                            .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                        spinner_interval.tick().await;
-                        let mut progress_interval =
-                            tokio::time::interval(Duration::from_millis(900));
-                        progress_interval
-                            .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                        progress_interval.tick().await;
-                        let mut progress_tick = 0usize;
-                        loop {
-                            tokio::select! {
-                                result = &mut describe_future => {
-                                    break result?;
-                                }
-                                _ = progress_interval.tick() => {
-                                    progress_tick = progress_tick.wrapping_add(1);
-                                    on_event(AgentEvent::ToolProgress {
-                                        call_id: call_id.clone(),
-                                        name: event_name.clone(),
-                                        message: vision_analysis_progress(progress_tick),
-                                    })?;
-                                }
-                                _ = spinner_interval.tick() => {
-                                    on_event(AgentEvent::SpinnerTick)?;
-                                }
-                            }
-                        }
-                    } else if needs_fallback {
-                        Vec::new()
-                    } else {
-                        inline_media
-                    };
-                    // 先落库再推进对话:重放读的就是这批字节,活体与重放
-                    // 同源(1.2 化石化)。
-                    let stamped = items
-                        .into_iter()
-                        .enumerate()
-                        .map(|(seq, mut item)| {
-                            item.call_id = call.id.clone();
-                            item.seq = seq as i64;
-                            item
-                        })
-                        .collect::<Vec<_>>();
-                    if !stamped.is_empty() {
-                        self.state
-                            .save_turn_inline_media(current_turn_id, &stamped)?;
-                    }
-                    stamped
-                } else {
-                    Vec::new()
-                };
-                push_tool_result_with_media(
-                    messages,
-                    tool_message,
-                    &stamped,
-                    self.core.config.active_pool_tool_result_media(),
-                );
-                if tool_succeeded {
-                    let result_ok = tool_output_succeeded(&output);
-                    if result_ok {
-                        if let Some(delta) =
-                            tool_call_footprint(&call.function.name, &call.function.arguments)
-                        {
-                            self.state.merge_turn_footprint(current_turn_id, &delta)?;
-                        }
-                        if matches!(
-                            call.function.name.as_str(),
-                            "create_artifact" | "apply_artifact_patch" | "present_artifact"
-                        ) {
-                            st.artifact_published = true;
-                        } else if st.artifact_auto_publish {
-                            for path in artifact_candidate_paths(&call.function.name, &output) {
-                                st.artifact_candidates.push(AutoArtifactCandidate {
-                                    call_id: call_id.clone(),
-                                    tool_name: event_name.clone(),
-                                    path,
-                                });
-                            }
-                        }
-                    }
-                    on_event(AgentEvent::ToolResult {
-                        call_id,
-                        name: event_name.clone(),
-                        ok: result_ok,
-                        output: output.clone(),
-                    })?;
-                    if let Some(report) =
-                        extract_persistable_tool_report(&call.function.name, &output)
-                    {
-                        persisted_tool_reports.push((call.function.name.clone(), report));
-                    }
-                }
-            }
-            if !span_skip {
-                stamp_tool_spans(&mut messages[span_from..], span_since, unix_ms());
-            }
-            // 本轮工具结果已经全部进了 `messages`,趁这里把 tool_flow 落一次盘。
-            //
-            // 崩溃恢复时正文和工具报告都能从流水物化出来(`interrupted_projection`
-            // 与追加型的 `turn_tool_reports`),唯独 tool_flow 不能——它以前只在整
-            // 个回合跑完后写一次(`stream.rs` 的 `set_turn_tool_flow`),进程中途死
-            // 掉这份就从没存在过。而 tool_flow 正是 `history.rs` 回放给模型的那份
-            // 「调过哪些工具、拿到什么结果」,丢了它模型下一轮只看到半截文字,会把
-            // 已经跑过的命令、读过的文件原样再来一遍。
-            self.checkpoint_tool_flow(current_turn_id, messages, st.replay_start);
-            // goal 侧挂起的步间指令在这里取走注入:自主轮报了完成/受阻之后的
-            // 收尾指令(不注入的话,工具返回了 JSON,模型没有理由再说什么,
-            // 一个跑了十几轮的目标就无声停住);以及人在续轮中途 `/goal edit`
-            // 之后的目标变更通知(不注入的话,模型整轮都在推进旧目标)。
-            if let Some(session) = miyu_base::workspace::try_session() {
-                if let Some(wrapup) = crate::tools::goal::take_turn_notices(&session) {
-                    // `turn_context` 而不是 `system`：中途插一条 system 会把
-                    // 提供方模板里的 system 前置块整体挪位，前缀缓存全废
-                    // （`ChatMessage::turn_context` 的注释里有实测数据）。
-                    messages.push(ChatMessage::turn_context(wrapup));
-                }
-            }
-            if question_round_allowed {
-                st.tool_round = st.tool_round.saturating_sub(1);
-            }
-            if let Some(control) = control {
-                if let Some(queue_ingress) = control.queue_ingress.as_ref() {
-                    queue_ingress.wait_for_reserved_ingress().await;
-                }
-                let queued = self.state.load_queued_prompts()?;
-                if !queued.is_empty() {
-                    let supersede_generation = control.pending_supersede_generation();
-                    if supersede_generation.is_some() {
-                        let prompt_ids = queued
-                            .iter()
-                            .map(|prompt| prompt.prompt_id.clone())
-                            .collect();
-                        on_event(AgentEvent::GenerationSuperseded { prompt_ids })?;
-                    }
-                    let checkpoint = redo_checkpoint_payload(
-                        messages,
-                        st.replay_start,
-                        base_tool_reports,
-                        persisted_tool_reports,
-                        st.tool_round,
-                        st.question_rounds,
-                    );
-                    let preceding_assistant = if supersede_generation.is_some() {
-                        (None, None, None, None)
-                    } else {
-                        (
-                            Some(result.content.as_str()),
-                            result.reasoning.as_deref(),
-                            result.provider_id.as_deref(),
-                            result.model.as_deref(),
-                        )
-                    };
-                    let continuation_context_index = st.responses_continuation.as_ref().map(|_| {
-                        st.continuation_context
-                            .as_ref()
-                            .map(|(index, _)| *index)
-                            .unwrap_or(messages.len())
-                    });
-                    self.consume_queued_prompts(
+                &request_messages,
+                &result,
+                &mut model_round,
+                &mut st,
+                on_event,
+            )?;
+            if result.tool_calls.is_empty() || !self.core.tools_enabled {
+                match self
+                    .finish_without_tools(
                         current_turn_id,
                         messages,
-                        queued,
-                        preceding_assistant,
-                        checkpoint,
+                        base_tool_reports,
+                        persisted_tool_reports,
                         control,
+                        result,
+                        &mut st,
                         on_event,
                     )
-                    .await?;
-                    if let Some(index) = continuation_context_index {
-                        st.continuation_context = Some((
-                            index,
-                            vec![
-                                ChatMessage::turn_context(continuation_system_prompt(
-                                    &self.system_prompt,
-                                    self.core.dev,
-                                )),
-                                ChatMessage::turn_context(runtime_context(
-                                    self.input.platform_context.is_some(),
-                                )),
-                            ],
-                        ));
-                    }
-                    if let Some(generation) = supersede_generation {
-                        control.mark_supersede_seen(generation);
-                    }
+                    .await?
+                {
+                    Some(result) => return Ok(result),
+                    None => continue,
                 }
             }
+            if tool_limit_reached {
+                return self.finish_at_tool_limit(result, &st, on_event);
+            }
+            let mut result = result;
+            let question_round_allowed = match self
+                .execute_round_tool_calls(
+                    current_turn_id,
+                    messages,
+                    used_tools,
+                    persisted_tool_reports,
+                    &mut result,
+                    &mut st,
+                    on_event,
+                )
+                .await?
+            {
+                ToolBatchOutcome::Truncated => continue,
+                ToolBatchOutcome::Executed {
+                    question_round_allowed,
+                } => question_round_allowed,
+            };
+            self.after_tool_round(
+                current_turn_id,
+                messages,
+                base_tool_reports,
+                persisted_tool_reports,
+                control,
+                &result,
+                question_round_allowed,
+                &mut st,
+                on_event,
+            )
+            .await?;
         }
     }
 

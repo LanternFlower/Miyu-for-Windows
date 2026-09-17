@@ -99,7 +99,7 @@ pub(in crate::cli) fn ensure_repl_space(
 }
 
 pub(in crate::cli) fn submitted_echo_lines(
-    mode: AgentMode,
+    mode: PersonaLane,
     input: &str,
     cols: usize,
 ) -> Vec<String> {
@@ -120,19 +120,19 @@ pub(in crate::cli) fn submitted_echo_lines(
     output
 }
 
-pub(in crate::cli) fn submitted_echo_bar(mode: AgentMode) -> String {
+pub(in crate::cli) fn submitted_echo_bar(mode: PersonaLane) -> String {
     match mode {
-        AgentMode::Normal => "\x1b[1m\x1b[34m┃\x1b[0m".to_string(),
+        PersonaLane::Active => "\x1b[1m\x1b[34m┃\x1b[0m".to_string(),
         // 与 footer 模式标签同为 tertiary(35 酒红),整条 dev 视觉一致。
-        AgentMode::Dev => "\x1b[1m\x1b[35m┃\x1b[0m".to_string(),
+        PersonaLane::Dev => "\x1b[1m\x1b[35m┃\x1b[0m".to_string(),
     }
 }
 
-pub(in crate::cli) fn input_prompt_bar(mode: AgentMode) -> String {
+pub(in crate::cli) fn input_prompt_bar(mode: PersonaLane) -> String {
     format!("{} ", submitted_echo_bar(mode))
 }
 
-pub(in crate::cli) fn repl_shortcut_hint_line(mode: AgentMode, cols: usize) -> String {
+pub(in crate::cli) fn repl_shortcut_hint_line(mode: PersonaLane, cols: usize) -> String {
     let bar = input_prompt_bar(mode);
     let text = t(
         "Shift+Enter newline; Ctrl+J newline; Ctrl+V paste clipboard",

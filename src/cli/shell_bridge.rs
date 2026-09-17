@@ -201,7 +201,7 @@ pub(in crate::cli) async fn run_shell_intercept(
             clean_message,
             None,
             false,
-            AgentMode::Normal,
+            PersonaLane::Active,
             TurnSession::Current,
             None,
         )

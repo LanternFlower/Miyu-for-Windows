@@ -316,7 +316,7 @@ mod tests {
             let registry = crate::tools::build_tool_registry(
                 &config,
                 &paths,
-                crate::agent::AgentMode::Normal,
+                miyu_base::config::PersonaLane::Active,
                 false,
             )
             .unwrap_or_else(|error| panic!("registry build failed for {persona:?}: {error:#}"));

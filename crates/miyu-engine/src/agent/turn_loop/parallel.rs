@@ -208,9 +208,9 @@ impl Agent {
             prepared.push((prompt, input));
         }
 
-        let mode = control.mode();
-        if self.mode() != mode {
-            self.switch_mode(mode, control.tools(mode));
+        let mode = control.lane();
+        if self.persona_lane() != mode {
+            self.switch_lane(mode, control.tools(mode));
             self.refresh_system_prompt()?;
         }
         replace_request_system_prompt(messages, &self.system_prompt);

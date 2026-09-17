@@ -42,29 +42,29 @@ fn request_shape_probe() {
     let faces = [
         (
             "normal-owner",
-            AgentMode::Normal,
+            PersonaLane::Active,
             PromptAudience::Owner,
             false,
         ),
         (
             "normal-owner-voice",
-            AgentMode::Normal,
+            PersonaLane::Active,
             PromptAudience::Owner,
             true,
         ),
         (
             "normal-external",
-            AgentMode::Normal,
+            PersonaLane::Active,
             PromptAudience::External,
             false,
         ),
         (
             "normal-internal",
-            AgentMode::Normal,
+            PersonaLane::Active,
             PromptAudience::Internal,
             false,
         ),
-        ("dev-owner", AgentMode::Dev, PromptAudience::Owner, false),
+        ("dev-owner", PersonaLane::Dev, PromptAudience::Owner, false),
     ];
     let mut report = serde_json::Map::new();
     for (label, mode, audience, voice) in faces {
