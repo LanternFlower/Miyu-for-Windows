@@ -322,6 +322,8 @@ impl RemoteRepl {
                     ReplSlashCommand::Clear => self.cmd_clear().await?,
                     ReplSlashCommand::New => self.cmd_new(command_args).await?,
                     ReplSlashCommand::Session => self.cmd_session(command_args).await?,
+                    ReplSlashCommand::Dev => self.cmd_lane(PersonaLane::Dev).await?,
+                    ReplSlashCommand::Normal => self.cmd_lane(PersonaLane::Active).await?,
                     ReplSlashCommand::Rename => self.cmd_rename(command_args).await?,
                     ReplSlashCommand::Delete => self.cmd_delete(command_args).await?,
                     ReplSlashCommand::Sandbox => self.cmd_sandbox(command_args).await?,

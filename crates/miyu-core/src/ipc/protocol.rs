@@ -41,6 +41,11 @@ pub struct SessionState {
     pub sandbox_writable: Vec<String>,
     #[serde(default)]
     pub sandbox_readable: Vec<String>,
+    /// 这条会话跑在哪个模式上：`"dev"` | `"normal"`，daemon 按会话人格推导（模式钉在
+    /// 会话上，见 `turn_mode_for_session`）。REPL 切到另一侧的会话时靠它把自己的
+    /// 车道跟过去。老 daemon 给空串——客户端按当前模式处理。
+    #[serde(default)]
+    pub mode: String,
 }
 
 /// 记忆重置的范围。

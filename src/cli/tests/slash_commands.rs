@@ -298,3 +298,41 @@ fn web_commands_are_a_subset_of_the_repl_table() {
         ]
     );
 }
+
+/// `/session` 两侧合并之后，当前车道的排前面、另一侧的排后面，各自保持原序。
+#[test]
+fn session_list_groups_the_current_lane_first() {
+    use crate::cli::repl::session::{order_entries_for_lane, SessionListEntry};
+    let entry = |name: &str, mode: &str| SessionListEntry {
+        id: name.to_string(),
+        name: name.to_string(),
+        is_current: false,
+        turns: 1,
+        snippet: String::new(),
+        sandbox: None,
+        sandbox_read_all: false,
+        mode: mode.to_string(),
+    };
+    let mixed = vec![
+        entry("d1", "dev"),
+        entry("n1", "normal"),
+        entry("d2", "dev"),
+        entry("n2", "normal"),
+    ];
+    let names =
+        |entries: Vec<SessionListEntry>| entries.into_iter().map(|e| e.name).collect::<Vec<_>>();
+    assert_eq!(
+        names(order_entries_for_lane(
+            mixed.clone(),
+            miyu_base::config::PersonaLane::Active
+        )),
+        ["n1", "n2", "d1", "d2"]
+    );
+    assert_eq!(
+        names(order_entries_for_lane(
+            mixed,
+            miyu_base::config::PersonaLane::Dev
+        )),
+        ["d1", "d2", "n1", "n2"]
+    );
+}

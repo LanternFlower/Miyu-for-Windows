@@ -61,6 +61,71 @@ impl RemoteRepl {
         Ok(LoopStep::Continue)
     }
 
+    /// `/dev` 与 `/normal`：去那条车道上的会话（车道指针指向的那条，
+    /// `GetReplSession{dev|None}`——`/dev` 和 `miyu dev` 启动拿到的是同一条），**不是**
+    /// 把当前会话改成另一个模式：模式钉在会话上（daemon `turn_mode_for_session`），
+    /// 换模式就是换会话。所以它不受 Tab 那条「空会话才能换车道」的限制。已经在
+    /// 那条车道上就只提示一句。
+    pub(super) async fn cmd_lane(&mut self, lane: PersonaLane) -> Result<LoopStep> {
+        if self.mode == lane {
+            let note = if lane.is_dev() {
+                t(
+                    "already in dev mode; /normal goes back",
+                    "已经在开发模式；/normal 回普通模式",
+                )
+            } else {
+                t(
+                    "already in normal mode; /dev goes to the dev lane",
+                    "已经在普通模式；/dev 去开发模式",
+                )
+            };
+            repl_note(&mut self.live_repl, &format!("\x1b[2m{note}\x1b[0m\n"))?;
+            return Ok(LoopStep::Continue);
+        }
+        let Some((state, _)) = repl_ipc_admin(
+            &self.paths,
+            &mut self.live_repl,
+            IpcCommand::GetReplSession {
+                mode: lane.is_dev().then(|| "dev".to_string()),
+            },
+        )
+        .await?
+        else {
+            return Ok(LoopStep::Continue);
+        };
+        self.switch_to_session(&state).await?;
+        Ok(LoopStep::Continue)
+    }
+
+    /// 切到一条会话，**车道跟着会话走**：目标是另一侧（普通 ↔ 开发）的会话，
+    /// 输入框竖条、banner、footer 一并换过去——不然会话已经跑在 dev 人格上，
+    /// 屏幕上还是普通模式的样子（初诊 §五 ③）。老 daemon 不报 `mode` 就留在原车道。
+    pub(super) async fn switch_to_session(&mut self, state: &ipc::SessionState) -> Result<()> {
+        let lane = match state.mode.as_str() {
+            "dev" => PersonaLane::Dev,
+            "normal" => PersonaLane::Active,
+            _ => self.mode,
+        };
+        if lane != self.mode {
+            // 先换色再切：切换的回执行和输入框竖条都按新模式画（和 Tab 换车道一样）。
+            self.live_repl.set_mode(lane);
+        }
+        apply_repl_session_switch(
+            &self.paths,
+            &self.config,
+            lane,
+            state,
+            &mut self.active_session_id,
+            &mut self.history,
+            &mut self.live_repl,
+            &mut self.footer,
+            &mut self.cumulative_tokens,
+        )
+        .await?;
+        self.mode = lane;
+        Ok(())
+    }
+
     pub(super) async fn cmd_session(&mut self, command_args: &str) -> Result<LoopStep> {
         let arg = command_args.trim();
         let state = if arg.is_empty() {
@@ -95,18 +160,7 @@ impl RemoteRepl {
                 None => return Ok(LoopStep::Continue),
             }
         };
-        apply_repl_session_switch(
-            &self.paths,
-            &self.config,
-            self.mode,
-            &state,
-            &mut self.active_session_id,
-            &mut self.history,
-            &mut self.live_repl,
-            &mut self.footer,
-            &mut self.cumulative_tokens,
-        )
-        .await?;
+        self.switch_to_session(&state).await?;
         Ok(LoopStep::Continue)
     }
 

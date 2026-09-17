@@ -458,7 +458,14 @@ pub(in crate::web) fn session_state(
     let context = manager.lock().unwrap().context;
     let session_id = state_store.session_id();
     let record = state_store.session_record(&session_id)?;
+    // 会话跑在哪个模式上：REPL 切到另一侧的会话时靠它把车道跟过去。
+    let mode = record
+        .as_ref()
+        .map(session_mode_label)
+        .unwrap_or("normal")
+        .to_string();
     Ok(ipc::SessionState {
+        mode,
         context_tokens: context.tokens,
         context_window: context.window,
         context_window_assumed: context.window_assumed,

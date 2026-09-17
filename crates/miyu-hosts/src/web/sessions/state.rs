@@ -346,6 +346,7 @@ pub(in crate::web) fn session_state_for(
         cumulative_tokens: context.cumulative_tokens,
         cumulative_prompt_tokens: context.cumulative_prompt_tokens,
         cumulative_cache_read_tokens: context.cumulative_cache_read_tokens,
+        mode: super::session_mode_label(&record).to_string(),
         session_id: record.session_id,
         session_name: record.name,
         sandbox: record.sandbox,

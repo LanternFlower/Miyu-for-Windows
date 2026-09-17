@@ -41,6 +41,8 @@ pub fn take_repl_flag<'a>(args: &'a str, flag: &str) -> (&'a str, bool) {
 pub enum ReplSlashCommand {
     New,
     Session,
+    Dev,
+    Normal,
     Rename,
     Delete,
     Sandbox,
@@ -151,6 +153,24 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
         arg_hint: "[name|index]",
         help_en: "list sessions, or switch to one (Ctrl+D deletes in the picker)",
         help_zh: "列出会话，或切换到指定会话（菜单内 Ctrl+D 删除）",
+        web: false,
+    },
+    ReplCommandSpec {
+        name: "/dev",
+        aliases: &[],
+        command: ReplSlashCommand::Dev,
+        arg_hint: "",
+        help_en: "switch to the dev lane's session (same as `miyu dev`)",
+        help_zh: "切到开发模式那条车道的会话（等同 miyu dev）",
+        web: false,
+    },
+    ReplCommandSpec {
+        name: "/normal",
+        aliases: &[],
+        command: ReplSlashCommand::Normal,
+        arg_hint: "",
+        help_en: "switch back to the normal lane's session",
+        help_zh: "切回普通模式那条车道的会话",
         web: false,
     },
     ReplCommandSpec {

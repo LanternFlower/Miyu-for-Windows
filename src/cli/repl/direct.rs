@@ -602,6 +602,20 @@ pub(in crate::cli) async fn run_direct_repl(
             println!();
             continue;
         }
+        if names_repl_command(command, ReplSlashCommand::Dev)
+            || names_repl_command(command, ReplSlashCommand::Normal)
+        {
+            // 直连 REPL 没有车道指针可去（会话是本地自举的）：换车道只有空会话按
+            // Tab 那一条路，或者重开 `miyu dev`。
+            println!(
+                "{}\n",
+                t(
+                    "direct REPL: press Tab in an empty session to switch lanes, or start `miyu dev`",
+                    "直连 REPL：空会话里按 Tab 换车道，或者直接运行 miyu dev"
+                )
+            );
+            continue;
+        }
         if names_repl_command(command, ReplSlashCommand::Effort) {
             if !miyu_base::models_cache::is_loaded() {
                 println!(

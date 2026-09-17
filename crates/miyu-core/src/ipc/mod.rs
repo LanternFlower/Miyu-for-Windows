@@ -397,6 +397,7 @@ mod tests {
                 cumulative_cache_read_tokens: 10,
                 session_id: "default".to_string(),
                 session_name: "终端集成会话".to_string(),
+                mode: "normal".to_string(),
                 sandbox: None,
                 sandbox_writable: Vec::new(),
                 sandbox_readable: Vec::new(),

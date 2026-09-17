@@ -576,9 +576,24 @@ pub(in crate::cli) fn select_session_target(
 
 /// Resolves a user-typed `/session` / `/delete` argument into a session ref:
 /// a number picks from the visible session list, anything else is a name.
-/// REPL 会话列表的作用域:dev REPL 只看/只解析 dev 人格名下的会话。
-pub(in crate::cli) fn repl_list_mode(mode: PersonaLane) -> Option<String> {
-    mode.is_dev().then(|| "dev".to_string())
+/// REPL 会话列表的作用域：普通 + 开发两侧合并（daemon 的 `all` 档，管理面
+/// `miyu session list`、WebUI 侧栏、模型的 session 工具早就这么列）。原来这儿只可能
+/// 给 `None`/`"dev"`，普通模式看不见开发会话、反之亦然（用户 09-17）。每行本来
+/// 就带「普通/开发」标签；选中另一侧的会话时车道跟着切（`switch_to_session`）。
+pub(in crate::cli) fn repl_list_mode(_mode: PersonaLane) -> Option<String> {
+    Some("all".to_string())
+}
+
+/// `/session` 列表的次序：当前车道的会话排前面，另一侧的排后面（各自仍按 daemon
+/// 给的更新时间序）。两侧合并之后按时间混排，开发/普通交错着看着乱（用户 09-18
+/// 截图）。菜单和 `/session <序号>` 都按这个顺序编号。
+pub(in crate::cli) fn order_entries_for_lane(
+    entries: Vec<SessionListEntry>,
+    mode: PersonaLane,
+) -> Vec<SessionListEntry> {
+    let mine = if mode.is_dev() { "dev" } else { "normal" };
+    let (first, rest): (Vec<_>, Vec<_>) = entries.into_iter().partition(|entry| entry.mode == mine);
+    first.into_iter().chain(rest).collect()
 }
 
 pub(in crate::cli) async fn resolve_repl_session_target(
@@ -588,45 +603,39 @@ pub(in crate::cli) async fn resolve_repl_session_target(
     arg: &str,
 ) -> Result<Option<miyu_core::ipc::SessionRef>> {
     let index = arg.parse::<usize>().ok();
-    // 名字寻址在 daemon 侧按"当前人格"检索,够不着 dev 会话;dev REPL
-    // 统一走列表在客户端配对,再降成不可猜的 id 显式寻址。
-    if index.is_some() || mode == PersonaLane::Dev {
-        let Some((_, data)) = repl_ipc_admin(
-            paths,
+    // 名字寻址在 daemon 侧按"当前人格"检索,够不着另一侧的会话;统一走列表
+    // （两侧合并）在客户端配对,再降成不可猜的 id 显式寻址。
+    let Some((_, data)) = repl_ipc_admin(
+        paths,
+        live,
+        IpcCommand::ListSessions {
+            mode: repl_list_mode(mode),
+        },
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let entries = order_entries_for_lane(session_list_entries(&data), mode);
+    let target = match index {
+        Some(index) => session_ref_from_index(&entries, index),
+        None => entries.iter().find(|entry| entry.name == arg).map(|entry| {
+            miyu_core::ipc::SessionRef::Id {
+                id: entry.id.clone(),
+            }
+        }),
+    };
+    let Some(target) = target else {
+        repl_note(
             live,
-            IpcCommand::ListSessions {
-                mode: repl_list_mode(mode),
-            },
-        )
-        .await?
-        else {
-            return Ok(None);
-        };
-        let entries = session_list_entries(&data);
-        let target = match index {
-            Some(index) => session_ref_from_index(&entries, index),
-            None => entries.iter().find(|entry| entry.name == arg).map(|entry| {
-                miyu_core::ipc::SessionRef::Id {
-                    id: entry.id.clone(),
-                }
-            }),
-        };
-        let Some(target) = target else {
-            repl_note(
-                live,
-                &format!(
-                    "\x1b[2m{}: {arg}\x1b[0m\n",
-                    t("no such session", "没有这个会话")
-                ),
-            )?;
-            return Ok(None);
-        };
-        Ok(Some(target))
-    } else {
-        Ok(Some(miyu_core::ipc::SessionRef::Name {
-            name: arg.to_string(),
-        }))
-    }
+            &format!(
+                "\x1b[2m{}: {arg}\x1b[0m\n",
+                t("no such session", "没有这个会话")
+            ),
+        )?;
+        return Ok(None);
+    };
+    Ok(Some(target))
 }
 
 pub(in crate::cli) fn reload_repl_queue(
@@ -793,7 +802,7 @@ pub(in crate::cli) async fn repl_pick_session(
         else {
             return Ok(None);
         };
-        let entries = session_list_entries(&data);
+        let entries = order_entries_for_lane(session_list_entries(&data), mode);
         if entries.is_empty() {
             repl_note(
                 live,
