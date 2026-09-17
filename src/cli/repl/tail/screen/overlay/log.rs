@@ -108,7 +108,18 @@ fn collapse_log_segment(steps: &mut Vec<LogStep>) {
     if steps.len() <= from + 1 {
         return;
     }
-    let collapsed: Vec<LogStep> = steps.drain(from..).collect();
+    let collapsed: Vec<LogStep> = steps
+        .drain(from..)
+        // 「准备执行」只有作为**此刻**那一条时才算数（见函数末尾那道
+        // `retain`）。收段是把已经过去的那几步卷起来，里面的准备全是过去式：
+        // 留着的话收缩行点开是一串「准备执行」，而且它们 `kind == Tool`，
+        // 连 `N tools` 都跟着虚高——真机日志实测 2 次工具报成 **17 tools**
+        //（用户 09-17 截图里那一屏「准备执行」就是点开收缩行看到的）。
+        //
+        // 末尾那道 `retain` 管不到这儿：它只扫顶层，而这几步已经被 `drain`
+        // 进收缩行的肚子里了。
+        .filter(|step| !step.preparing)
+        .collect();
     let tools = collapsed
         .iter()
         // `[统计]` 不算——同文件上面那条注释自己就写着「它不是工具调用：没有结果
@@ -470,6 +481,86 @@ pub(super) fn log_detail_body(step: &LogStep) -> Vec<String> {
 mod tests {
     use super::*;
     use miyu_engine::tools::subagent::protocol::from_marker;
+
+    /// 「准备执行」只有作为**末尾**那一条时才算数。
+    ///
+    /// 参数是逐块流的，`tool_preparing` 每来一块就报一条——攒起来就是一屏的
+    /// 「准备执行」（用户 09-17 实测截图）。
+    #[test]
+    fn only_the_last_preparing_row_survives() {
+        let markers = [
+            "__subtool_preparing__run_command",
+            "__subtool_preparing__run_command",
+            "__subtool_preparing__run_command",
+        ];
+        let steps = steps_from_events(markers.iter().filter_map(|m| from_marker(m)));
+        assert_eq!(steps.len(), 1, "准备执行攒了一堆: {steps:?}");
+    }
+
+    /// 收段的时候，卷进去的那些「准备执行」要扔掉。
+    ///
+    /// 末尾那道 `retain` 只扫顶层，而收段是 `drain` 进收缩行的肚子里的——于是
+    /// 点开收缩行看到的是一串「准备执行」，而且它们 `kind == Tool`，`N tools`
+    /// 跟着虚高。真机日志实测：2 次工具报成 **17 tools**（用户 09-17 截图）。
+    #[test]
+    fn collapsing_a_segment_drops_the_preparing_rows() {
+        let call = serde_json::json!({"name": "run_command", "display": "运行命令", "args": "{}"})
+            .to_string();
+        let result =
+            serde_json::json!({"name": "run_command", "args": "{}", "ok": true, "output": "x"})
+                .to_string();
+        let mut markers = vec!["__subagent_reasoning__想一句".to_string()];
+        // 参数逐块流：一次调用前面挂着一长串「准备执行」。
+        for _ in 0..13 {
+            markers.push("__subtool_preparing__run_command".to_string());
+        }
+        markers.push(format!("__subtool_call__{call}"));
+        markers.push(format!("__subtool_result__{result}"));
+        // 它开口说话 = 前面那一段收成 `Worked for …`。
+        markers.push("__subagent_content__跑完了。".to_string());
+
+        let steps = steps_from_events(markers.iter().filter_map(|m| from_marker(m)));
+        let fold = steps
+            .iter()
+            .find(|step| step.kind == StepKind::Fold)
+            .unwrap_or_else(|| panic!("这一段没收起来，测的就不是收段: {steps:#?}"));
+        assert!(
+            !fold.inner.iter().any(|step| step.preparing),
+            "收缩行里卷进了「准备执行」: {:#?}",
+            fold.inner
+        );
+        assert!(
+            fold.head.contains("1 tool") && !fold.head.contains("14 tool"),
+            "工具数被准备行撑虚了: {:?}",
+            fold.head
+        );
+    }
+
+    /// 真实顺序下也一样：每轮工具之前都有一串「准备执行」，只有最后那一条留得下。
+    #[test]
+    fn preparing_rows_from_earlier_rounds_are_dropped() {
+        let call = serde_json::json!({"name": "run_command", "display": "运行命令", "args": "{}"})
+            .to_string();
+        let result =
+            serde_json::json!({"name": "run_command", "args": "{}", "ok": true, "output": "x"})
+                .to_string();
+        let mut markers = Vec::new();
+        for _ in 0..2 {
+            markers.push("__subagent_reasoning__想一句".to_string());
+            for _ in 0..4 {
+                markers.push("__subtool_preparing__run_command".to_string());
+            }
+            markers.push(format!("__subtool_call__{call}"));
+            markers.push(format!("__subtool_result__{result}"));
+        }
+        // 最后一轮的参数还在流：末尾又挂着一串。
+        for _ in 0..4 {
+            markers.push("__subtool_preparing__run_command".to_string());
+        }
+        let steps = steps_from_events(markers.iter().filter_map(|m| from_marker(m)));
+        let preparing = steps.iter().filter(|step| step.preparing).count();
+        assert_eq!(preparing, 1, "准备执行攒了一堆: {steps:#?}");
+    }
 
     /// 标记流那条路也要有「已思考 · 1.2s」。
     ///

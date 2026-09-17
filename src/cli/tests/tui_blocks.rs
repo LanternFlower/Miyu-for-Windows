@@ -1040,6 +1040,49 @@ fn the_overlay_can_select_and_copy_text() {
     });
 }
 
+/// 后台任务面板也跟着那两个「展开」开关走。
+///
+/// 它是从日志/标记流攒步的，手上原来没有配置入口——于是同一件事在前台面板跟着
+/// 开关走、在后台面板永远收着（用户 09-17：「子代理浮层中的流式输出不受我们之前
+/// 做的三个开关影响」）。
+#[test]
+fn the_job_panel_follows_the_expand_switches() {
+    with_blocks(|| {
+        let dir = std::env::temp_dir().join(format!("miyu-log-expand-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建目录");
+        let path = dir.join("job.log");
+        std::fs::write(
+            &path,
+            ["[提示] 去看看", "[思考] 1.2s\t先想一句，再动手。"].join("\n") + "\n",
+        )
+        .expect("写日志");
+
+        // 收起档：只有抬头。
+        let mut collapsed = Screen::detached(100, 40);
+        assert!(collapsed.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
+        let rows = collapsed.overlay_rows();
+        assert!(
+            rows.iter().any(|row| row.contains("已思考")),
+            "丢了思考那一步: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.contains("先想一句")),
+            "收起档不该把正文摆出来: {rows:?}"
+        );
+
+        // 展开档：出来就是展开的，一次都不用点。
+        let mut expanded = Screen::detached(100, 40);
+        expanded.set_display_expand(true, true);
+        assert!(expanded.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
+        let rows = expanded.overlay_rows();
+        assert!(
+            rows.iter().any(|row| row.contains("先想一句")),
+            "展开档下面板里那一步没展开: {rows:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+}
+
 /// 一份「正文在前、工具在后」的流水账。**一行一条写，别用字符串续行**——
 /// rustfmt 会把续行的缩进拼进字符串里，`[正文]` 前面多出十几个空格就认不出标签，
 /// 整条日志会静静地退化成「一堆无标签续行」。

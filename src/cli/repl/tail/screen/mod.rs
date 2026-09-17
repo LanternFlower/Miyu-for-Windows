@@ -146,6 +146,13 @@ pub(in crate::cli) struct Screen {
     /// 「默认开着」的块里已经替用户开过的那些。见 `expand::seed_open`——
     /// 活动区每 tick 重写同样的标记，不记着的话用户收起来下一帧就被顶开。
     open_seeded: std::collections::HashSet<u64>,
+    /// `展开思考内容` / `展开工具内容`。
+    ///
+    /// 后台任务面板是从**日志/标记流**攒步的，手上没有配置入口（渲染统一那份
+    /// 报告 §2.4 记着这个缺口），于是同一件事在前台面板跟着开关走、在后台面板
+    /// 永远收着（用户 09-17：「子代理浮层中的流式输出不受我们之前做的三个开关
+    /// 影响」）。由 REPL 每轮把当前配置交进来。
+    display_expand: (bool, bool),
     /// 盖在正文上的详情面板（子代理）。开着时正文与活动区都不画。
     overlay: Option<overlay::Overlay>,
     /// 鼠标停在哪一块上。可交互的东西要看得出来「这里能点」。
@@ -260,6 +267,7 @@ impl Screen {
             body: None,
             expanded: std::collections::HashMap::new(),
             open_seeded: std::collections::HashSet::new(),
+            display_expand: (false, false),
             overlay: None,
             hover: None,
             input_rows: Vec::new(),

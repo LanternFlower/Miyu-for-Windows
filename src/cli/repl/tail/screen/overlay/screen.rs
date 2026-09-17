@@ -12,9 +12,10 @@ impl Screen {
         {
             return self.close_overlay();
         }
-        let Some(panel) = Overlay::from_block(id, panel_inner_width(self.cols)) else {
+        let Some(mut panel) = Overlay::from_block(id, panel_inner_width(self.cols)) else {
             return false;
         };
+        panel.display_expand = self.display_expand;
         self.overlay = Some(panel);
         self.invalidate();
         self.needs_clear = true;
@@ -36,13 +37,16 @@ impl Screen {
         {
             return self.close_overlay();
         }
-        self.overlay = Some(Overlay::from_file(
+        let mut panel = Overlay::from_file(
             path,
             title,
             job_id,
             command,
             panel_inner_width(self.cols),
-        ));
+            self.display_expand,
+        );
+        panel.display_expand = self.display_expand;
+        self.overlay = Some(panel);
         self.invalidate();
         self.needs_clear = true;
         true
@@ -165,6 +169,22 @@ impl Screen {
 
     pub(in crate::cli) fn overlay_open(&self) -> bool {
         self.overlay.is_some()
+    }
+
+    /// 把当前的两个显示开关交给后台面板。见 `Screen::display_expand`。
+    ///
+    /// 每轮都交一次：`/config` 改完下一轮就该生效，和渲染器那侧同一个节奏。
+    pub(in crate::cli) fn set_display_expand(&mut self, reasoning: bool, tools: bool) {
+        if self.display_expand == (reasoning, tools) {
+            return;
+        }
+        self.display_expand = (reasoning, tools);
+        // 档位变了：已经排好的那份要按新档位重排一次，不然要等下一次日志变动。
+        if let Some(panel) = &mut self.overlay {
+            panel.display_expand = (reasoning, tools);
+            panel.force_reload();
+        }
+        self.invalidate();
     }
 
     /// 屏幕第 `row` 行对应面板里第几行**内容**。框线、上下留白、面板外都是 `None`。

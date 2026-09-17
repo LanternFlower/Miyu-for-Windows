@@ -105,6 +105,10 @@ pub(in crate::cli) struct Overlay {
     /// 「默认开着」的块里已经替用户开过的那些。面板每帧重解析，不记着的话
     /// 收起来下一帧就被顶开。见 `screen::expand::seed_open`。
     open_seeded: std::collections::HashSet<u64>,
+    /// `展开思考内容` / `展开工具内容`，由 `Screen` 交进来（见
+    /// `Screen::set_display_expand`）。面板自己是从日志/标记流攒步的，手上没有
+    /// 配置入口。
+    display_expand: (bool, bool),
     /// 面板里的选区。行号是**面板自己的内容行**（`Overlay::row` 那套），不是
     /// 正文缓冲的绝对行——面板是另一张画布，滚动也是自己的。
     ///
@@ -142,6 +146,7 @@ impl Overlay {
             body: parse_body(&lines, cols),
             expanded: Expanded::new(),
             open_seeded: std::collections::HashSet::new(),
+            display_expand: (false, false),
             selection: None,
             scroll: 0,
             follow: true,
@@ -157,6 +162,9 @@ impl Overlay {
         job_id: Option<String>,
         command: String,
         cols: usize,
+        // 第一次排版就要按档位来：构造函数里已经读了一遍日志，晚一步交进来的话
+        // 面板刚打开那一帧是收着的，下一帧才展开——闪一下。
+        display_expand: (bool, bool),
     ) -> Self {
         let mut panel = Self {
             source: Source::File {
@@ -171,6 +179,7 @@ impl Overlay {
             cols,
             expanded: Expanded::new(),
             open_seeded: std::collections::HashSet::new(),
+            display_expand,
             selection: None,
             scroll: 0,
             follow: true,
@@ -299,13 +308,15 @@ impl Overlay {
         let indent = "  ";
         // 后台**命令**的日志就是一堆输出行，没有"步"可言——按时间线排会变成
         // 每行一个节点、行行之间一条连线，那是把日志排成了梯子。原样折行就好。
+        // 认标签用**协议那一份清单**，别在这儿手抄：抄的那份漏了 `[准备]`，
+        // 后来又漏了 `[思考+]` / `[正文+]`——只落了这几种标签的日志（子代理刚起头
+        // 就在准备工具、或者读到的那一截尾巴全是续截）会被判成"没有步"，整块原样
+        // 铺出来，**整条时间线当场消失**（用户 09-17：「这次更糟糕，甚至完全没有
+        // timeline 了」）。
         if !text.lines().any(|line| {
-            line.starts_with("[思考]")
-                || line.starts_with("[工具]")
-                || line.starts_with("[结果]")
-                || line.starts_with("[统计]")
-                || line.starts_with("[提示]")
-                || line.starts_with("[正文]")
+            miyu_engine::tools::subagent::protocol::LOG_TAGS
+                .iter()
+                .any(|tag| line.starts_with(tag))
         }) {
             self.step_blocks.clear();
             let width = self.cols.saturating_sub(6).max(20);
@@ -371,7 +382,7 @@ impl Overlay {
             let row = match step.block_id() {
                 Some(id) => format!(
                     "{}{}{}",
-                    blocks::begin_marker(id),
+                    blocks::begin_marker_in(id, step.open()),
                     step.line(),
                     blocks::END_MARKER
                 ),
@@ -434,6 +445,12 @@ impl Overlay {
             self.fold_body(index, &log.inner, head_width)
         };
         let mut step = miyu_hosts::render::timeline::Step::panel(log.kind, line, body, block);
+        // 「展开思考内容 / 展开工具内容」在这块面板上也算数：出来就是展开态。
+        step.set_open(match log.kind {
+            StepKind::Thought => self.display_expand.0,
+            StepKind::Tool => self.display_expand.1,
+            _ => false,
+        });
         // 这一步自己那块：按位置复用，内容每帧重灌（日志还在长）。
         let detail = miyu_hosts::render::timeline::step_detail_lines(&step);
         let id = match block {
@@ -521,6 +538,14 @@ impl Overlay {
             }
         }
         rows
+    }
+
+    /// 不管节流，立刻按当前档位重排一次（`/config` 改完那一下）。
+    fn force_reload(&mut self) {
+        match &mut self.source {
+            Source::Block { version, .. } => *version = u64::MAX,
+            Source::File { .. } => self.reload_file(true),
+        }
     }
 
     /// 内容有变就重取。

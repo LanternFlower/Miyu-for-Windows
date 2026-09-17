@@ -97,6 +97,12 @@ pub(in crate::cli) async fn try_run_remote_chat(
     renderer.fold_timeline = config.display.fold_timeline;
     let queue_state = Some(state_probe);
     if let Some(live) = live.as_deref_mut() {
+        // 后台任务面板也跟着这两个开关走。每轮交一次：它和渲染器读的是同一份
+        // 配置，节奏也该一样。
+        live.set_display_expand(
+            config.display.expand_reasoning,
+            config.display.expand_tool_calls,
+        );
         renderer.use_external_cursor_control();
         renderer.use_buffered_output();
         live.external_output_active = false;

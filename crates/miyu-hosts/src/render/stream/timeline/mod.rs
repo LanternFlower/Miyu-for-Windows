@@ -251,7 +251,7 @@ impl Step {
         self.open = open;
     }
 
-    pub(crate) fn open(&self) -> bool {
+    pub fn open(&self) -> bool {
         self.open
     }
 
