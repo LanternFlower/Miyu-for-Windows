@@ -249,7 +249,12 @@ pub(in crate::cli) async fn run_models_for_session(
     }
     if io::stdout().is_terminal() && io::stdin().is_terminal() {
         let menu = SessionModelMenu::new(&config, choices, paths, session_id)?;
-        let Some(active) = inline_fuzzy_select(&menu.labels, menu.initial.clone())? else {
+        let Some(active) = inline_fuzzy_select_with(
+            &menu.labels,
+            menu.initial.clone(),
+            Some(&menu.toggle_rule()),
+        )?
+        else {
             // 选择器里按了 Ctrl+C：什么都没发生，别让调用方去报"已更新"。
             return Ok(false);
         };
@@ -271,6 +276,83 @@ pub(in crate::cli) struct SessionModelMenu {
     choices: Vec<miyu_base::config::ProviderModelChoice>,
     pub(in crate::cli) labels: Vec<String>,
     pub(in crate::cli) initial: Vec<bool>,
+    /// 各行「因继承而勾上」吗——全局激活池里的那几个（第 0 行恒为假）。Tab 的
+    /// 连带规矩靠它：取消继承时把这些一并取消。
+    pub(in crate::cli) derived: Vec<bool>,
+}
+
+/// `/models` 菜单里 Tab 的连带规矩（行内与全屏两个选择器共用）。第 0 行是「继承
+/// 全局模型池」，`derived[i]` 标着因继承而勾上的模型行。
+///
+/// - 取消继承：派生勾选一并取消（用户 09-17：「取消激活继承全局模型的时候，那些
+///   被激活的全局模型应该跟着一起被取消激活」），之后自己挑；
+/// - 勾回继承：模型行回到派生态——全局池那几个勾上、别的清掉；
+/// - 继承着时翻某个模型行：那就是要自己钉一批了，继承取消、派生勾选留作起点，
+///   再翻转这一行。
+///
+/// 原来 Tab 是纯单行翻转：继承与各模型在存储层本是一对互斥形态（`None` = 继承、
+/// `Some(list)` = 覆盖），菜单把它拍平成一排互不相干的布尔，派生关系只在入场算过
+/// 一次、之后没人维护（初诊 BUG-10）。
+pub(in crate::cli) fn toggle_model_row(active: &mut [bool], derived: &[bool], index: usize) {
+    if active.is_empty() || index >= active.len() {
+        return;
+    }
+    if index == 0 {
+        let inherit = !active[0];
+        active[0] = inherit;
+        for (slot, is_derived) in active.iter_mut().zip(derived.iter()).skip(1) {
+            *slot = inherit && *is_derived;
+        }
+        return;
+    }
+    if active[0] {
+        active[0] = false;
+    }
+    active[index] = !active[index];
+}
+
+/// 菜单结果落盘前的裁决（纯函数，好测）。
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::cli) enum ModelMenuDecision {
+    /// 什么都没改。
+    NoChange,
+    /// 回到继承全局池。
+    Inherit,
+    /// 取消了继承却一个模型都没勾：存储层没有这个状态（空 = 继承），得说清楚。
+    NeedOne,
+    /// 自己钉一批：勾上的模型行下标（不含第 0 行）。
+    Override(Vec<usize>),
+}
+
+pub(in crate::cli) fn decide_model_menu(initial: &[bool], active: &[bool]) -> ModelMenuDecision {
+    let was_inherit = initial.first().copied().unwrap_or(false);
+    let inherit = active.first().copied().unwrap_or(false);
+    if inherit {
+        return if was_inherit {
+            ModelMenuDecision::NoChange
+        } else {
+            ModelMenuDecision::Inherit
+        };
+    }
+    let picked = active
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter_map(|(index, on)| on.then_some(index - 1))
+        .collect::<Vec<_>>();
+    if picked.is_empty() {
+        // 本来就是覆盖、现在全清了 = 回到继承（老规矩）；本来在继承、取消继承后
+        // 一个没勾 = 没法落盘，提示一句。
+        return if was_inherit {
+            ModelMenuDecision::NeedOne
+        } else {
+            ModelMenuDecision::Inherit
+        };
+    }
+    if !was_inherit && initial.iter().skip(1).eq(active.iter().skip(1)) {
+        return ModelMenuDecision::NoChange;
+    }
+    ModelMenuDecision::Override(picked)
 }
 
 impl SessionModelMenu {
@@ -291,11 +373,23 @@ impl SessionModelMenu {
             }),
             None => config.is_active_provider_model(&choice.provider_id, &choice.model),
         }));
+        let mut derived = vec![false];
+        derived.extend(
+            choices
+                .iter()
+                .map(|choice| config.is_active_provider_model(&choice.provider_id, &choice.model)),
+        );
         Ok(Self {
             choices,
             labels,
             initial,
+            derived,
         })
+    }
+
+    /// 给选择器的 Tab 规矩。
+    pub(in crate::cli) fn toggle_rule(&self) -> impl Fn(&mut [bool], usize) + '_ {
+        move |active, index| toggle_model_row(active, &self.derived, index)
     }
 
     /// 把菜单结果落成会话覆盖。返回（真的改了没, 给用户的一句话）。
@@ -310,44 +404,45 @@ impl SessionModelMenu {
             "当前会话已恢复跟随全局激活模型池",
         )
         .to_string();
-        // 勾了「继承」就是继承:继承与覆盖天然互斥,同时勾选时以继承为准
-        // (标签本身也这么说)。
-        if active.first().copied().unwrap_or(false) && !self.initial[0] {
-            set_session_models(paths, session_id, Vec::new()).await?;
-            return Ok((true, follows_global));
-        }
-        let active = active.into_iter().skip(1).collect::<Vec<_>>();
-        let initial = self.initial.iter().copied().skip(1).collect::<Vec<_>>();
-        if active == initial {
-            return Ok((
-                false,
-                t(
-                    "no changes (Enter picks the highlighted model; Tab multi-selects)",
-                    "未做修改（回车=选定高亮模型,Tab=多选勾选）",
-                )
-                .to_string(),
-            ));
-        }
-        let models = self
-            .choices
-            .iter()
-            .zip(active)
-            .filter_map(|(choice, active)| {
-                active.then(|| ActiveProviderModelConfig {
-                    provider_id: choice.provider_id.clone(),
-                    model: choice.model.clone(),
-                })
+        let picked = match decide_model_menu(&self.initial, &active) {
+            ModelMenuDecision::NoChange => {
+                return Ok((
+                    false,
+                    t(
+                        "no changes (Enter picks the highlighted model; Tab multi-selects)",
+                        "未做修改（回车=选定高亮模型,Tab=多选勾选）",
+                    )
+                    .to_string(),
+                ));
+            }
+            ModelMenuDecision::NeedOne => {
+                return Ok((
+                    false,
+                    t(
+                        "inheritance was unticked but no model is ticked; still inheriting the global pool (tick at least one model to pin your own)",
+                        "取消了继承但一个模型都没勾，仍继承全局模型池（要自己钉一批就至少勾一个）",
+                    )
+                    .to_string(),
+                ));
+            }
+            ModelMenuDecision::Inherit => {
+                set_session_models(paths, session_id, Vec::new()).await?;
+                return Ok((true, follows_global));
+            }
+            ModelMenuDecision::Override(picked) => picked,
+        };
+        let models = picked
+            .into_iter()
+            .filter_map(|index| self.choices.get(index))
+            .map(|choice| ActiveProviderModelConfig {
+                provider_id: choice.provider_id.clone(),
+                model: choice.model.clone(),
             })
             .collect::<Vec<_>>();
-        let cleared = models.is_empty();
         set_session_models(paths, session_id, models).await?;
         Ok((
             true,
-            if cleared {
-                follows_global
-            } else {
-                t("session models updated", "已更新当前会话模型").to_string()
-            },
+            t("session models updated", "已更新当前会话模型").to_string(),
         ))
     }
 }

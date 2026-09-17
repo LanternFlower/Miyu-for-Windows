@@ -231,11 +231,13 @@ impl RemoteRepl {
         }
         let menu =
             SessionModelMenu::new(&config, choices, &self.paths, Some(&self.active_session_id))?;
-        let Some(active) = pick_multi(
+        let rule = menu.toggle_rule();
+        let Some(active) = pick_multi_with(
             &mut self.live_repl,
             t("Select model", "选择模型"),
             &menu.labels,
             menu.initial.clone(),
+            Some(&rule),
         )?
         else {
             return Ok(false);

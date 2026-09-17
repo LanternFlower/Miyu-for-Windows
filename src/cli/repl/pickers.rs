@@ -38,12 +38,15 @@ pub(in crate::cli) fn pick_effort(
 /// 单选：当前项打 `[*]`、光标一开始就落在它上，Enter 选高亮，Esc/q 取消。
 /// 多选：Tab 勾选，Enter/q/Esc 完成（回车前没动过勾选、又搜过或移过光标，就当
 /// 单选切到高亮那一项——和行内版 `inline_fuzzy_select` 一个规矩），Ctrl+C 取消。
-struct FuzzyList {
+struct FuzzyList<'a> {
     title: String,
     items: Vec<String>,
     active: Vec<bool>,
     initial: Vec<bool>,
     multi: bool,
+    /// 多选时按 Tab 翻哪几格：给了就由它决定（`/models` 的「继承」连带，见
+    /// `model_cmds::toggle_model_row`），没给就是翻高亮那一格。
+    toggle: Option<&'a dyn Fn(&mut [bool], usize)>,
     matcher: SkimMatcherV2,
     query: String,
     selected: usize,
@@ -51,13 +54,14 @@ struct FuzzyList {
     navigated: bool,
 }
 
-impl FuzzyList {
+impl<'a> FuzzyList<'a> {
     fn new(title: &str, items: &[String], active: Vec<bool>, multi: bool, selected: usize) -> Self {
         Self {
             title: title.to_string(),
             items: items.to_vec(),
             initial: active.clone(),
             active,
+            toggle: None,
             multi,
             matcher: SkimMatcherV2::default(),
             query: String::new(),
@@ -84,7 +88,7 @@ fn solo(len: usize, index: usize) -> Vec<bool> {
     flags
 }
 
-impl PanelModel for FuzzyList {
+impl PanelModel for FuzzyList<'_> {
     type Output = Option<Vec<bool>>;
 
     fn desired_rows(&self) -> u16 {
@@ -146,8 +150,13 @@ impl PanelModel for FuzzyList {
             }
             KeyCode::Tab if self.multi => {
                 if let Some((_, index)) = matches.get(self.selected) {
-                    if let Some(slot) = self.active.get_mut(*index) {
-                        *slot = !*slot;
+                    match self.toggle {
+                        Some(toggle) => toggle(&mut self.active, *index),
+                        None => {
+                            if let Some(slot) = self.active.get_mut(*index) {
+                                *slot = !*slot;
+                            }
+                        }
                     }
                 }
                 None
@@ -197,7 +206,19 @@ pub(in crate::cli) fn pick_multi(
     items: &[String],
     active: Vec<bool>,
 ) -> Result<Option<Vec<bool>>> {
+    pick_multi_with(live, title, items, active, None)
+}
+
+/// 多选面板，带一条 Tab 规矩（见 `FuzzyList::toggle`）。
+pub(in crate::cli) fn pick_multi_with(
+    live: &mut LiveReplTail,
+    title: &str,
+    items: &[String],
+    active: Vec<bool>,
+    toggle: Option<&dyn Fn(&mut [bool], usize)>,
+) -> Result<Option<Vec<bool>>> {
     let mut list = FuzzyList::new(title, items, active, true, 0);
+    list.toggle = toggle;
     panel::pick(live, &mut list)
 }
 

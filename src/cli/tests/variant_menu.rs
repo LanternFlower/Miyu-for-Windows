@@ -207,3 +207,70 @@ fn variant_name_resolution_handles_default_and_case_insensitive_names() {
     assert!(resolve_variant_name("unknown", &available).is_err());
     assert!(resolve_variant_name("Variant:default", &available).is_err());
 }
+
+mod models_inherit {
+    //! `/models` 的「继承」连带规矩（BUG-10）：取消继承时因继承而勾上的模型跟着取消。
+    use crate::cli::model_cmds::{decide_model_menu, toggle_model_row, ModelMenuDecision};
+
+    // 行 0 = 继承；行 1、2 是全局池里的（派生）；行 3 不是。
+    const DERIVED: [bool; 4] = [false, true, true, false];
+
+    #[test]
+    fn unticking_inherit_cascades_to_the_derived_rows() {
+        let mut active = vec![true, true, true, false];
+        toggle_model_row(&mut active, &DERIVED, 0);
+        assert_eq!(active, [false, false, false, false]);
+        // 勾回继承：回到派生态。
+        active[3] = true;
+        toggle_model_row(&mut active, &DERIVED, 0);
+        assert_eq!(active, [true, true, true, false]);
+    }
+
+    #[test]
+    fn toggling_a_model_while_inheriting_leaves_inheritance_and_keeps_the_pool_as_a_start() {
+        let mut active = vec![true, true, true, false];
+        toggle_model_row(&mut active, &DERIVED, 3);
+        assert_eq!(active, [false, true, true, true]);
+        let mut active = vec![true, true, true, false];
+        toggle_model_row(&mut active, &DERIVED, 1);
+        assert_eq!(active, [false, false, true, false]);
+    }
+
+    #[test]
+    fn decisions_cover_the_states_the_store_cannot_express() {
+        let inheriting = [true, true, true, false];
+        // 只取消继承、一个没勾：不能落盘，说清楚（原来被判成「未做修改」）。
+        assert_eq!(
+            decide_model_menu(&inheriting, &[false, false, false, false]),
+            ModelMenuDecision::NeedOne
+        );
+        // 没动：未做修改。
+        assert_eq!(
+            decide_model_menu(&inheriting, &inheriting),
+            ModelMenuDecision::NoChange
+        );
+        // 取消继承 + 钉住原班：这是一次真实改动（原来和「未做修改」等价）。
+        assert_eq!(
+            decide_model_menu(&inheriting, &[false, true, true, false]),
+            ModelMenuDecision::Override(vec![0, 1])
+        );
+        // 本来是覆盖：勾回继承 = 回到继承；全清 = 回到继承（老规矩）；原样 = 未做修改。
+        let overriding = [false, false, true, false];
+        assert_eq!(
+            decide_model_menu(&overriding, &[true, false, true, false]),
+            ModelMenuDecision::Inherit
+        );
+        assert_eq!(
+            decide_model_menu(&overriding, &[false, false, false, false]),
+            ModelMenuDecision::Inherit
+        );
+        assert_eq!(
+            decide_model_menu(&overriding, &overriding),
+            ModelMenuDecision::NoChange
+        );
+        assert_eq!(
+            decide_model_menu(&overriding, &[false, false, true, true]),
+            ModelMenuDecision::Override(vec![1, 2])
+        );
+    }
+}

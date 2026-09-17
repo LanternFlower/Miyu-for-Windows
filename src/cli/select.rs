@@ -7,7 +7,17 @@ use crate::cli::*;
 
 pub(in crate::cli) fn inline_fuzzy_select(
     items: &[String],
+    active: Vec<bool>,
+) -> Result<Option<Vec<bool>>> {
+    inline_fuzzy_select_with(items, active, None)
+}
+
+/// 带一条 Tab 规矩的多选：`toggle` 给了就由它决定按 Tab 时哪几格翻（`/models` 的
+/// 「继承」连带，见 `model_cmds::toggle_model_row`）；没给就是翻高亮那一格。
+pub(in crate::cli) fn inline_fuzzy_select_with(
+    items: &[String],
     mut active: Vec<bool>,
+    toggle: Option<&dyn Fn(&mut [bool], usize)>,
 ) -> Result<Option<Vec<bool>>> {
     let menu_lines = inline_fuzzy_lines(items.len());
     reserve_inline_fuzzy_space(menu_lines)?;
@@ -74,8 +84,13 @@ pub(in crate::cli) fn inline_fuzzy_select(
                 }
                 KeyCode::Tab => {
                     if let Some((_, index)) = matches.get(selected) {
-                        if let Some(value) = active.get_mut(*index) {
-                            *value = !*value;
+                        match toggle {
+                            Some(toggle) => toggle(&mut active, *index),
+                            None => {
+                                if let Some(value) = active.get_mut(*index) {
+                                    *value = !*value;
+                                }
+                            }
                         }
                     }
                 }
