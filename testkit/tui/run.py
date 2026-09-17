@@ -12,6 +12,10 @@ TUI 跑在 alt screen 上，画面要用 pyte 还原成屏幕矩阵才看得清�
 
 产物在 ~/.cache/miyu-tui-smoke/：raw.bin（终端原始输出）、screen.txt（最后一屏）、
 report.json、daemon.log。
+
+**这些 TUI 走查只能一个一个跑**：它们共用同一个 `MIYU_HOME`（`/tmp/miyu-tui-smoke/home`）
+和同一个桩模型端口，起头还会 `rmtree` 那个家目录。并行跑的话两边互相掀桌子，红成一片
+而代码一点问题都没有。
 """
 
 import json
@@ -395,19 +399,26 @@ def main():
         report["alt_screen"] = b"\x1b[?1049h" in bytes(sink)
 
         screen = render(bytes(sink))
-        # 2. 底部是输入区：连着三行带竖条（空 / 输入 / 空）
-        bar_rows = [i for i, line in enumerate(screen) if line.startswith(BAR)]
+        # 2. 输入区在屏幕下半部分，带竖条。
+        #
+        # 这条断言陈旧于**空会话大厅**（09-13 起空会话画 banner + 星空）：
+        #   - 竖条不再顶在第 0 列，大厅把它整块缩进画在星空里 → `startswith` 恒假；
+        #   - 输入框也不贴底，它跟在 banner 后面，底下还有一片星空。
+        bar_rows = [i for i, line in enumerate(screen) if BAR in line]
         report["input_bar_rows"] = len(bar_rows)
-        report["input_bar_at_bottom"] = bool(bar_rows) and max(bar_rows) >= ROWS - 6
+        report["input_bar_at_bottom"] = bool(bar_rows) and max(bar_rows) >= ROWS // 2
         # 3. footer 带模型名
         report["footer_model"] = any("stub-model" in line for line in screen)
 
         # item01：空内容回车什么都不该发生（原来会发出一条空的、不触发回复的消息）
-        empty_before = render(bytes(sink))
+        #
+        # **别整屏比对**：空会话大厅的星空是动画，两帧永远不相等（这条因此红了
+        # 很久）。判据换成「大厅还在」——真发出去一条消息，大厅当场就退了。
+        lobby = lambda rows: any("Tab" in line for line in rows)
+        assert lobby(screen), f"开屏不是大厅，这条判据不成立: {screen[:40]}"
         os.write(master, b"\r")
         settle(master, sink)
-        empty_after = render(bytes(sink))
-        report["item01_empty_enter_sends_nothing"] = empty_before == empty_after
+        report["item01_empty_enter_sends_nothing"] = lobby(render(bytes(sink)))
 
         # 4. 打字 → 出现在输入框里
         os.write(master, PROMPT.encode())
@@ -598,8 +609,14 @@ def main():
         #   - 子代理：点开是**覆盖层**而不是就地展开，面板里是它自己的时间线
         settle(master, sink)
         stream = bytes(sink).decode("utf-8", "replace")
+        # 这条断言陈旧过两次，都记在这儿免得再错：
+        #   1. 耗时 09-17 起不到一秒报**毫秒**（`reported_seconds`），只写 `s`
+        #      的话在快机器上永远红；
+        #   2. 命令那一步 09-17 起**抬头给 title、正文给命令**（`32227cc0`），
+        #      窥视不再是 `printf …`。命令全文归 `tool_detail_has_command` 验。
+        # 这儿只验「抬头上有耗时、后面还挂着一段窥视」。
         report["tool_row_has_peek"] = bool(
-            re.search(r"运行命令 · [\d.]+s · printf", stream)
+            re.search(r"运行命令 · [\d.]+m?s · \S", stream)
         )
         report["tool_counted_in_summary"] = bool(re.search(r"Worked for [^·]+· \d+ tool", stream))
         defaults = {

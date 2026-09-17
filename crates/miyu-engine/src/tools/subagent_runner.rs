@@ -176,11 +176,21 @@ impl ProgressMode {
     }
 }
 
+use crate::tools::subagent::protocol::REASONING_DONE_MARKER;
+
 #[derive(Clone)]
 pub struct SubagentProgress {
     progress: ToolProgress,
     tool_mode: ProgressMode,
     enabled: bool,
+    /// 这一段思考从什么时候开始的。段结束时报一条耗时。
+    ///
+    /// **标记流里原来没有任何时间信息。** 写日志那一侧自己掐表、把耗时写进
+    /// `[思考] 1.2s\t…`；而后台面板 09-17 起优先订标记流（阶段 4），于是面板上
+    /// 的思考全都成了光秃秃的「已思考」——同一件事，换条路看就没有耗时了。
+    /// 掐表的地方只能在**发的这一侧**：它是唯一知道"这一段什么时候开始、什么
+    /// 时候结束"的人。
+    reasoning_since: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 impl SubagentProgress {
@@ -189,7 +199,27 @@ impl SubagentProgress {
             progress,
             tool_mode,
             enabled,
+            reasoning_since: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    /// 这一段思考到此为止：报一条耗时，读的那一侧把它盖到刚才那一步上。
+    ///
+    /// 别的事件一来就调它（正文、准备、工具）——那正是"想完了"的信号。
+    fn seal_reasoning(&self) {
+        let Ok(mut since) = self.reasoning_since.lock() else {
+            return;
+        };
+        let Some(started) = since.take() else {
+            return;
+        };
+        if !self.enabled || self.tool_mode == ProgressMode::Hidden {
+            return;
+        }
+        self.progress.report(format!(
+            "{REASONING_DONE_MARKER}{}",
+            started.elapsed().as_millis()
+        ));
     }
 
     pub fn phase(&self, message: impl Into<String>) {
@@ -208,6 +238,9 @@ impl SubagentProgress {
             return;
         }
         if self.enabled && self.tool_mode != ProgressMode::Hidden {
+            if let Ok(mut since) = self.reasoning_since.lock() {
+                since.get_or_insert_with(std::time::Instant::now);
+            }
             self.progress
                 .report(format!("__subagent_reasoning__{}", text));
         }
@@ -223,6 +256,7 @@ impl SubagentProgress {
         // 同 `reasoning`：**Summary 档也发**。前台子代理的面板要靠它把"它开始
         // 说话了"这件事表达出来——说话之前那几步该收成一行 `Worked for …`。
         if self.enabled && self.tool_mode != ProgressMode::Hidden {
+            self.seal_reasoning();
             self.progress
                 .report(format!("__subagent_content__{}", text));
         }
@@ -237,6 +271,7 @@ impl SubagentProgress {
         if crate::tools::preparing_phase(name).is_none() {
             return;
         }
+        self.seal_reasoning();
         self.progress.report(format!("__subtool_preparing__{name}"));
     }
 
@@ -271,6 +306,7 @@ impl SubagentProgress {
         if !self.enabled || self.tool_mode == ProgressMode::Hidden {
             return;
         }
+        self.seal_reasoning();
         self.progress.report(format!(
             "__subtool_call__{}",
             json!({
@@ -869,10 +905,43 @@ mod tests {
             panic!("expected reasoning progress message");
         };
         assert_eq!(message, "__subagent_reasoning__detailed reasoning");
+        // 工具一来就说明刚才那一段想完了：先报一条耗时，读的那一侧把它盖到上一步
+        // 思考上（标记流里原来一点时间信息都没有）。
+        let ToolProgressEvent::Message(message) = receiver.try_recv().unwrap() else {
+            panic!("expected the reasoning-done marker");
+        };
+        assert!(
+            message.starts_with(REASONING_DONE_MARKER),
+            "想完了没报耗时: {message:?}"
+        );
         let ToolProgressEvent::Message(message) = receiver.try_recv().unwrap() else {
             panic!("expected tool detail progress message");
         };
         assert!(message.starts_with("__subtool_call__"));
         assert!(receiver.try_recv().is_err());
+    }
+
+    /// 一段思考只报一次耗时：段收掉之后再来别的事件不该又报一条。
+    #[test]
+    fn the_reasoning_timer_is_sealed_once() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let progress = SubagentProgress::new(ToolProgress::new(sender), ProgressMode::Full, true);
+
+        progress.reasoning("想一句");
+        progress.content("说一句");
+        progress.content("再说一句");
+
+        let mut markers = Vec::new();
+        while let Ok(ToolProgressEvent::Message(message)) = receiver.try_recv() {
+            markers.push(message);
+        }
+        assert_eq!(
+            markers
+                .iter()
+                .filter(|message| message.starts_with(REASONING_DONE_MARKER))
+                .count(),
+            1,
+            "耗时报了不止一次: {markers:?}"
+        );
     }
 }

@@ -167,6 +167,130 @@ impl Screen {
         self.overlay.is_some()
     }
 
+    /// 屏幕第 `row` 行对应面板里第几行**内容**。框线、上下留白、面板外都是 `None`。
+    ///
+    /// 和 `overlay_click` 用同一套几何：高度取**画的时候那个**（只涨不缩），
+    /// 按当前内容重算的话和屏幕上的框对不上，整体差几行。
+    fn overlay_content_index(&self, row: u16) -> Option<usize> {
+        let panel = self.overlay.as_ref()?;
+        let height = panel.height.max(1);
+        let bottom = self.rows.saturating_sub(2);
+        let top = bottom.saturating_sub(height.saturating_sub(1));
+        let first = top.saturating_add(1 + PANEL_PAD);
+        let last = bottom.saturating_sub(1 + PANEL_PAD);
+        if row < first || row > last {
+            return None;
+        }
+        Some((panel.scroll + usize::from(row - first)).min(panel.len().saturating_sub(1)))
+    }
+
+    /// 屏幕列 → 面板内容列。内容画在 `PANEL_MARGIN` 那一列起。
+    fn overlay_column(column: u16) -> u16 {
+        column.saturating_sub(PANEL_MARGIN)
+    }
+
+    /// 在面板里按下左键：起一个选区。返回真表示这一下归面板管。
+    pub(in crate::cli) fn overlay_select_begin(&mut self, column: u16, row: u16) -> bool {
+        let Some(index) = self.overlay_content_index(row) else {
+            // 按在框线或者面板外：把旧选区清掉，别留一片反显在那儿。
+            return self.overlay_select_clear();
+        };
+        let column = Self::overlay_column(column);
+        let Some(panel) = &mut self.overlay else {
+            return false;
+        };
+        panel.selection = Some(super::super::select::Selection {
+            anchor: (index, column),
+            cursor: (index, column),
+            dragging: true,
+        });
+        self.invalidate();
+        true
+    }
+
+    /// 拖动：把选区的另一头挪过去。拖出面板就钉在最近的那一行上，别让选区断掉。
+    pub(in crate::cli) fn overlay_select_extend(&mut self, column: u16, row: u16) {
+        let index = self.overlay_content_index(row).unwrap_or_else(|| {
+            let panel = self.overlay.as_ref();
+            let (scroll, len) = panel.map_or((0, 1), |panel| (panel.scroll, panel.len().max(1)));
+            // 往上拖就钉在这一屏的第一行，往下拖钉在最后一行。
+            let height = panel.map_or(1, |panel| usize::from(panel.height.max(1)));
+            if row < self.rows.saturating_sub(2) / 2 {
+                scroll
+            } else {
+                (scroll + height).min(len - 1)
+            }
+        });
+        let column = Self::overlay_column(column);
+        let Some(panel) = &mut self.overlay else {
+            return;
+        };
+        if let Some(selection) = &mut panel.selection {
+            if selection.dragging {
+                selection.cursor = (index, column);
+                self.invalidate();
+            }
+        }
+    }
+
+    /// 松手。拖过就把选中的文字交给剪贴板；**原地点一下**返回那一行，
+    /// 由调用方去开合那一块——两者共用一次按下-松开，只能靠有没有拖动来分。
+    pub(in crate::cli) fn overlay_select_finish(&mut self) -> Option<u16> {
+        let panel = self.overlay.as_mut()?;
+        let mut selection = panel.selection?;
+        selection.dragging = false;
+        if selection.anchor == selection.cursor {
+            panel.selection = None;
+            self.invalidate();
+            return Some(0);
+        }
+        panel.selection = Some(selection);
+        let text = self.overlay_selection_text(selection);
+        if !text.trim().is_empty() {
+            self.pending_copy = Some(text);
+        }
+        self.invalidate();
+        None
+    }
+
+    /// 清掉面板里的选区。返回真表示确实清掉了。
+    pub(in crate::cli) fn overlay_select_clear(&mut self) -> bool {
+        let Some(panel) = &mut self.overlay else {
+            return false;
+        };
+        if panel.selection.take().is_some() {
+            self.invalidate();
+            return true;
+        }
+        false
+    }
+
+    /// 选中的文字。逐行按显示列切，跳过每行的装饰列——和正文那侧同一套
+    /// （`Screen::selection_text`），只是取行的地方换成面板自己那张画布。
+    fn overlay_selection_text(&self, selection: super::super::select::Selection) -> String {
+        let Some(panel) = &self.overlay else {
+            return String::new();
+        };
+        let (start, end) = selection.ordered();
+        let mut out = Vec::new();
+        for index in start.0..=end.0.min(panel.len().saturating_sub(1)) {
+            let spans = panel.row(index);
+            if spans.is_empty() {
+                out.push(String::new());
+                continue;
+            }
+            let skip = super::super::select::decoration_of(&spans);
+            let from = if index == start.0 {
+                start.1.max(skip)
+            } else {
+                skip
+            };
+            let to = if index == end.0 { end.1 } else { u16::MAX };
+            out.push(super::super::select::slice_columns(&spans, from, to, 0));
+        }
+        out.join("\n")
+    }
+
     pub(in crate::cli) fn scroll_overlay(&mut self, delta: isize) {
         let rows = self.rows;
         let Some(panel) = &self.overlay else {
@@ -234,6 +358,7 @@ impl Screen {
             panel.scroll = panel.scroll.min(max);
         }
         let scroll = panel.scroll;
+        let selection = panel.selection;
         let title = panel.title.clone();
         let stoppable = panel.job_id.is_some();
         // 左右各留 `PANEL_MARGIN` 列。没有竖线，这一列留白就是边界。
@@ -255,6 +380,12 @@ impl Screen {
                     } else {
                         spans
                     };
+                // 选区反显。只反显可复制的那几列——左边的装饰亮起来会让人以为
+                // 竖条也复制进去了（和正文那侧同一条规矩）。
+                let spans = match selection {
+                    Some(selection) => highlight_row(selection, index, spans),
+                    None => spans,
+                };
                 // 「正在进行」那一行左边距上的占位格换成当帧的点阵字形。
                 miyu_hosts::render::clip_to_display_width(&spans_to_ansi(&spans), inner)
                     .replace(miyu_hosts::render::timeline::LIVE_SPINNER_CELL, &spinner)
@@ -387,4 +518,25 @@ impl Screen {
         self.invalidate();
         Ok(())
     }
+}
+
+/// 面板里某一行的选区反显。和 `Screen::highlight` 同一条规矩，只是行号是面板
+/// 自己的内容行。
+fn highlight_row(
+    selection: super::super::select::Selection,
+    index: usize,
+    spans: Vec<super::super::ansi::AnsiSpan>,
+) -> Vec<super::super::ansi::AnsiSpan> {
+    let (start, end) = selection.ordered();
+    if index < start.0 || index > end.0 || spans.is_empty() {
+        return spans;
+    }
+    let skip = super::super::select::decoration_of(&spans);
+    let from = if index == start.0 {
+        start.1.max(skip)
+    } else {
+        skip
+    };
+    let to = if index == end.0 { end.1 } else { u16::MAX };
+    super::super::select::highlight_columns(spans, from, to)
 }

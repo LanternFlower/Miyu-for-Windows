@@ -325,6 +325,11 @@ pub(super) fn readable_subagent_log_line_timed(message: &str, elapsed: Option<Du
         let phase = crate::tools::preparing_phase(name).unwrap_or("");
         return format!("[准备] {name}\t{phase}");
     }
+    // 段末那条耗时**不进流水账**：日志那条路自己掐表，写的是 `[思考] 1.2s\t…`
+    //（`stamp_thought_lines`）。两边各报一次的话，面板会把同一段的时间加两遍。
+    if message.starts_with(super::protocol::REASONING_DONE_MARKER) {
+        return String::new();
+    }
     // 原始标记是**逐 delta** 的一截，不是一行：写成 `+` 标签，读那侧才会粘回去
     // 而不是一句一个台阶。也不 trim——两头的空白就是词边界。
     if let Some(text) = message.strip_prefix("__subagent_reasoning__") {

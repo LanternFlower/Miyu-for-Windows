@@ -1000,6 +1000,46 @@ fn a_trailing_stats_line_is_not_a_running_step() {
     });
 }
 
+/// 浮层里的字要选得动、复制得走。
+///
+/// 面板原来整个不做选区（`tail_impl` 里那句「其余吞掉」），而它装的正是最想复制
+/// 走的东西：子代理的输出、后台命令的日志（用户 09-17：「这样的浮层无法选中
+/// 文字」）。
+///
+/// 「原地点一下 = 开合这一块 / 拖过 = 选区复制」共用一次按下-松开，只能靠有没有
+/// 拖动来分——这条也一起钉住。
+#[test]
+fn the_overlay_can_select_and_copy_text() {
+    with_blocks(|| {
+        let panel = blocks::register_overlay(
+            "面板".into(),
+            vec!["  第一行内容".into(), "  第二行内容".into()],
+        )
+        .expect("面板没登记");
+        let mut screen = Screen::detached(80, 24);
+        assert!(screen.open_overlay(panel));
+
+        // 从第 0 行第 2 列拖到第 1 行行尾。
+        screen.overlay_select_span((0, 2), (1, u16::MAX));
+        assert!(
+            screen.overlay_select_finish().is_none(),
+            "拖过了就不该当成点击"
+        );
+        let copied = screen.take_pending_copy().expect("什么都没进剪贴板");
+        // 左边那两列缩进算"装饰"，不进剪贴板——和正文那侧一个规矩：
+        // 把竖条和缩进也复制走的话，粘出去还得手动删一遍。
+        assert_eq!(copied, "第一行内容\n第二行内容");
+
+        // 原地点一下：不进剪贴板，交回给"开合这一块"。
+        screen.overlay_select_span((0, 4), (0, 4));
+        assert!(
+            screen.overlay_select_finish().is_some(),
+            "原地点一下该当成点击"
+        );
+        assert!(screen.take_pending_copy().is_none(), "点一下不该复制东西");
+    });
+}
+
 /// 一份「正文在前、工具在后」的流水账。**一行一条写，别用字符串续行**——
 /// rustfmt 会把续行的缩进拼进字符串里，`[正文]` 前面多出十几个空格就认不出标签，
 /// 整条日志会静静地退化成「一堆无标签续行」。

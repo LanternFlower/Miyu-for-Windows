@@ -36,7 +36,7 @@ pub(super) fn read_tail(path: &std::path::Path, budget: u64) -> String {
 /// （抬头绿、正文白）看着像把手比内容还重要，而这一行本来就只是个把手（用户
 /// 实测：浮层里思考行和思考展开内容的颜色反了）。所以这儿**没有**「这一步是不是
 /// 绿的」这个字段：它曾经在，但从来没人读，只留着一句 `let _ =` 说明为什么不读。
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(super) struct LogStep {
     /// 这一步**是什么**。见 [`StepKind`]。
     pub(super) kind: StepKind,
@@ -211,6 +211,17 @@ pub(super) fn steps_from_events<'a>(events: impl Iterator<Item = LogEvent<'a>>) 
                         elapsed,
                         ..Default::default()
                     }),
+                }
+            }
+            // 刚才那一段思考花了多久。它不是一步，是盖在上一步思考上的一个数
+            // ——标记流里没有时间信息，这一条是发的那一侧专门补的。
+            LogEvent::ThoughtElapsed(elapsed) => {
+                if let Some(last) = steps
+                    .iter_mut()
+                    .rev()
+                    .find(|step| step.kind == StepKind::Thought)
+                {
+                    last.elapsed = Some(elapsed);
                 }
             }
             LogEvent::Prompt(rest) => {
@@ -453,4 +464,33 @@ pub(super) fn log_detail_body(step: &LogStep) -> Vec<String> {
         }
     }
     body
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use miyu_engine::tools::subagent::protocol::from_marker;
+
+    /// 标记流那条路也要有「已思考 · 1.2s」。
+    ///
+    /// 标记流里原来一点时间信息都没有（写日志那侧是自己掐表的），而后台面板
+    /// 09-17 起优先订标记流——于是同一段思考，换条路看就没有耗时了。发的那一侧
+    /// 现在在段末补一条 `__subagent_reasoning_done__`，这儿把它盖到上一步上。
+    #[test]
+    fn the_marker_stream_carries_the_thought_elapsed() {
+        let markers = [
+            "__subagent_reasoning__先看一眼",
+            "__subagent_reasoning__再决定怎么下手。",
+            "__subagent_reasoning_done__1234",
+        ];
+        let steps = steps_from_events(markers.iter().filter_map(|message| from_marker(message)));
+        assert_eq!(steps.len(), 1, "逐 delta 的思考该并成一步: {steps:?}");
+        assert_eq!(steps[0].kind, StepKind::Thought);
+        assert_eq!(steps[0].head, "先看一眼再决定怎么下手。", "没粘回一段");
+        assert_eq!(
+            steps[0].elapsed,
+            Some(std::time::Duration::from_millis(1234)),
+            "段末那条耗时没盖上去"
+        );
+    }
 }

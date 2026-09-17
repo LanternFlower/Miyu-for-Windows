@@ -280,6 +280,7 @@ fn every_marker_writes_a_tag_from_the_list() {
         "__subagent_reasoning__" => "先列一下".to_string(),
         "__subagent_content__" => "里面是空的。".to_string(),
         "__subagent_metric__" => "工具调用 3 次".to_string(),
+        super::protocol::REASONING_DONE_MARKER => "1234".to_string(),
         "__subagent_stats__" => "词元 1234".to_string(),
         "__subtool_preparing__" => "run_command".to_string(),
         "__subtool_call__" => call.clone(),
@@ -307,10 +308,13 @@ fn every_marker_writes_a_tag_from_the_list() {
     for marker in super::protocol::INNER_MARKERS {
         let message = format!("{marker}{}", payload(marker));
         let written = readable_subagent_log_line_timed(&message, Some(Duration::from_millis(400)));
-        // 中途的量报**故意**不进流水账：每调一次工具记一条的话，面板的时间线
-        // 会被这些节点撑满（跑完那次的 `__subagent_stats__` 照旧留一行）。
-        if *marker == "__subagent_metric__" {
-            assert!(written.is_empty(), "中途量报不该进流水账: {written:?}");
+        // 这两条**故意**不进流水账：
+        //   - 中途量报：每调一次工具记一条的话，面板的时间线会被这些节点撑满
+        //     （跑完那次的 `__subagent_stats__` 照旧留一行）；
+        //   - 段末耗时：日志那条路自己掐表（`stamp_thought_lines`），两边都报
+        //     的话同一段的时间会被加两遍。
+        if *marker == "__subagent_metric__" || *marker == super::protocol::REASONING_DONE_MARKER {
+            assert!(written.is_empty(), "{marker} 不该进流水账: {written:?}");
             continue;
         }
         assert!(!written.is_empty(), "{marker} 什么都没写");

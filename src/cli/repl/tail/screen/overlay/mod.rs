@@ -105,6 +105,13 @@ pub(in crate::cli) struct Overlay {
     /// 「默认开着」的块里已经替用户开过的那些。面板每帧重解析，不记着的话
     /// 收起来下一帧就被顶开。见 `screen::expand::seed_open`。
     open_seeded: std::collections::HashSet<u64>,
+    /// 面板里的选区。行号是**面板自己的内容行**（`Overlay::row` 那套），不是
+    /// 正文缓冲的绝对行——面板是另一张画布，滚动也是自己的。
+    ///
+    /// 面板原来整个不做选区（`tail_impl` 里那句「其余吞掉」），而面板里装的正是
+    /// 最想复制走的东西：子代理的输出、后台命令的日志（用户 09-17：「这样的浮层
+    /// 无法选中文字」）。
+    selection: Option<super::select::Selection>,
     scroll: usize,
     /// 停在底部就跟着新内容走；自己往回翻过就别再拽他。
     follow: bool,
@@ -135,6 +142,7 @@ impl Overlay {
             body: parse_body(&lines, cols),
             expanded: Expanded::new(),
             open_seeded: std::collections::HashSet::new(),
+            selection: None,
             scroll: 0,
             follow: true,
             height: 0,
@@ -163,6 +171,7 @@ impl Overlay {
             cols,
             expanded: Expanded::new(),
             open_seeded: std::collections::HashSet::new(),
+            selection: None,
             scroll: 0,
             follow: true,
             height: 0,
@@ -183,6 +192,8 @@ impl Overlay {
         self.cols = cols;
         self.expanded.clear();
         self.open_seeded.clear();
+        // 宽度变了内容要重排，按行列记的选区会指到别处去。
+        self.selection = None;
         match &mut self.source {
             Source::Block { id, version } => {
                 let id = *id;

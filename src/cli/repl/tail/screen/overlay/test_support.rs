@@ -45,3 +45,26 @@ impl Screen {
             .collect()
     }
 }
+
+impl Screen {
+    /// 在面板里拖一个选区（测试用）：`(内容行, 显示列)` 两头直接给，省掉屏幕行
+    /// 到内容行的几何换算——那套换算要面板画过一次才算得准（高度只涨不缩）。
+    pub(in crate::cli) fn overlay_select_span(
+        &mut self,
+        anchor: (usize, u16),
+        cursor: (usize, u16),
+    ) {
+        if let Some(panel) = &mut self.overlay {
+            panel.selection = Some(super::super::select::Selection {
+                anchor,
+                cursor,
+                dragging: true,
+            });
+        }
+    }
+
+    /// 松手之后待写进剪贴板的那段文字（测试用）。
+    pub(in crate::cli) fn take_pending_copy(&mut self) -> Option<String> {
+        self.pending_copy.take()
+    }
+}

@@ -61,7 +61,12 @@ impl super::super::LiveReplTail {
                     );
                 }
             }
-            // 覆盖层开着：滚轮翻页、左键开合面板里的块，其余吞掉（面板不做选区）。
+            // 覆盖层开着：滚轮翻页、左键**拖选或开合**面板里的块，其余吞掉。
+            //
+            // 面板原来整个不做选区，而它装的正是最想复制走的东西：子代理的输出、
+            // 后台命令的日志（用户 09-17：「这样的浮层无法选中文字」）。
+            // 「原地点一下 = 开合这一块 / 拖过 = 选区复制」的消歧和正文那侧同一
+            // 条规矩：按下-松开是同一次，只能靠有没有拖动来分。
             if self
                 .screen
                 .as_ref()
@@ -70,11 +75,35 @@ impl super::super::LiveReplTail {
                 let delta = match mouse.kind {
                     MouseEventKind::ScrollUp => -3,
                     MouseEventKind::ScrollDown => 3,
-                    MouseEventKind::Up(MouseButton::Left) => {
+                    MouseEventKind::Down(MouseButton::Left) => {
                         if let Some(screen) = &mut self.screen {
-                            screen.overlay_click(row);
+                            screen.overlay_select_begin(column, row);
                         }
                         self.repaint_screen()?;
+                        return Ok(true);
+                    }
+                    MouseEventKind::Drag(MouseButton::Left) => {
+                        if let Some(screen) = &mut self.screen {
+                            screen.overlay_select_extend(column, row);
+                        }
+                        // 同正文那侧：后面还堆着事件就先不画，不然跟不上手。
+                        if !crossterm::event::poll(std::time::Duration::ZERO).unwrap_or(false) {
+                            self.repaint_screen()?;
+                        }
+                        return Ok(true);
+                    }
+                    MouseEventKind::Up(MouseButton::Left) => {
+                        let clicked = self
+                            .screen
+                            .as_mut()
+                            .and_then(super::super::screen::Screen::overlay_select_finish);
+                        if clicked.is_some() {
+                            if let Some(screen) = &mut self.screen {
+                                screen.overlay_click(row);
+                            }
+                        }
+                        self.repaint_screen()?;
+                        self.flush_clipboard()?;
                         return Ok(true);
                     }
                     _ => return Ok(true),

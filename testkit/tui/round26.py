@@ -13,6 +13,10 @@
     python3 testkit/tui/round26.py
 
 复用 `run.py` 的沙箱与 PTY 辅助。产物在 ~/.cache/miyu-tui-smoke/round26-*.txt。
+
+**这些 TUI 走查只能一个一个跑**：它们共用同一个 `MIYU_HOME`（`/tmp/miyu-tui-smoke/home`）
+和同一个桩模型端口，起头还会 `rmtree` 那个家目录。并行跑的话两边互相掀桌子，红成一片
+而代码一点问题都没有。
 """
 
 import json

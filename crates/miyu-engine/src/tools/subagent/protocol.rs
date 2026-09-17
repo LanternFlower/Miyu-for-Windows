@@ -53,6 +53,7 @@ pub const LOG_TAGS: &[&str] = &[
 pub const INNER_MARKERS: &[&str] = &[
     "__subagent_brief__",
     "__subagent_reasoning__",
+    REASONING_DONE_MARKER,
     "__subagent_content__",
     "__subagent_metric__",
     "__subagent_stats__",
@@ -60,6 +61,16 @@ pub const INNER_MARKERS: &[&str] = &[
     "__subtool_call__",
     "__subtool_result__",
 ];
+
+/// 一段思考到此为止，花了这么多毫秒：`__subagent_reasoning_done__1234`。
+///
+/// 标记流里原来没有任何时间信息（写日志那一侧是自己掐表的），后台面板 09-17 起
+/// 优先订标记流，于是面板上的思考全成了光秃秃的「已思考」。掐表只能在发的那一
+/// 侧做——它是唯一知道这一段什么时候开始、什么时候结束的人。
+///
+/// 它**不进流水账**：那条路自己掐表，写的是 `[思考] 1.2s\t…`（见
+/// `log::stamp_thought_lines`）。
+pub const REASONING_DONE_MARKER: &str = "__subagent_reasoning_done__";
 
 /// 「已后台运行」那一条走的是**外层** `subagent` 工具的通道
 /// （`tools/jobs/mod.rs`），只到主渲染器，不进流水账——所以它不在
@@ -119,6 +130,9 @@ pub enum LogEvent<'a> {
     /// `[统计] 词元 1234`。它**不是**一次工具调用：没有结果行，也不该被当成
     /// 「末尾那个还没回来的调用」挂上转轮。
     Stats(Cow<'a, str>),
+    /// 刚才那一段思考花了多久。它不是一步，是盖在**上一步**思考上的一个数
+    /// （见 [`REASONING_DONE_MARKER`]）。
+    ThoughtElapsed(Duration),
     /// 没打标签的行。跟在思考／正文后面是续行（一段话里的换行），跟在工具后面是
     /// 内层渲染器自己的进度回声。
     Continuation(Cow<'a, str>),
@@ -255,6 +269,13 @@ pub fn from_marker(message: &str) -> Option<LogEvent<'static>> {
             elapsed: None,
             continues: true,
         });
+    }
+    if let Some(millis) = message.strip_prefix(REASONING_DONE_MARKER) {
+        return millis
+            .trim()
+            .parse()
+            .ok()
+            .map(|millis| LogEvent::ThoughtElapsed(Duration::from_millis(millis)));
     }
     if let Some(text) = message.strip_prefix("__subagent_content__") {
         return (!text.is_empty()).then(|| LogEvent::Speech {
@@ -663,6 +684,7 @@ mod tests {
             "__subagent_reasoning__" => "先列一下".to_string(),
             "__subagent_content__" => "里面是空的。".to_string(),
             "__subagent_metric__" => "≈3.1K\t3100\t工具调用 3 次".to_string(),
+            REASONING_DONE_MARKER => "1234".to_string(),
             "__subagent_stats__" => "词元 1234".to_string(),
             "__subtool_preparing__" => "run_command".to_string(),
             "__subtool_call__" => call.clone(),
@@ -674,6 +696,16 @@ mod tests {
             let direct = from_marker(&message);
             let written =
                 crate::tools::subagent::log::readable_subagent_log_line_timed(&message, None);
+            // 段末耗时只走标记流：它盖在上一步思考上，日志那条路自己掐表。
+            if *marker == REASONING_DONE_MARKER {
+                assert_eq!(
+                    direct,
+                    Some(LogEvent::ThoughtElapsed(Duration::from_millis(1234))),
+                    "段末耗时没解出来"
+                );
+                assert!(written.is_empty(), "段末耗时不该进流水账: {written:?}");
+                continue;
+            }
             // 中途量报两条路都该不产出：进了时间线就把面板撑满。
             if *marker == "__subagent_metric__" {
                 assert!(direct.is_none(), "中途量报不该解成过程事件");
