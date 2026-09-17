@@ -10890,6 +10890,47 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 .assistant-blocks .proc-steps > .reasoning-block:not([open]) > summary .reasoning-peek {
   display: flex;
 }
+/* 正在想 + 思考收着:标题底下那扇滚动窗(display.thinking_scroll_lines 行),露正文
+   末尾几行(多出来的从顶上滚走);这时标题行里的窥视让位。想完(is-live 撤掉)或点开就藏。
+   它在 <summary> 里(summary 换行铺满):合着的 <details> 不画 summary 之外的东西。 */
+.reasoning-window {
+  display: none;
+  position: relative;
+  flex: 1 0 100%;
+  box-sizing: border-box;
+  max-height: calc(var(--think-window-lines, 10) * 1.75em);
+  /* 正文和展开后的思考正文一样退到时间线右边;左侧那根线画在**时间线那一列**
+     (和 .proc-rail 同列同色),像终端里 `│` 穿过去那几行(用户 09-17:「线在
+     timeline 的位置会更好看」)。 */
+  margin: 2px 8px 2px 0;
+  padding-left: var(--proc-indent, 0px);
+  overflow: hidden;
+  cursor: default;
+  color: var(--proc-think);
+  font-size: var(--fs-meta);
+  line-height: 1.75;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.reasoning-window::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--proc-col, 16px) / 2 - 0.5px);
+  width: 1px;
+  background: color-mix(in srgb, var(--line-strong) 75%, var(--line));
+}
+.reasoning-block.is-live.has-window:not([open]) > summary {
+  flex-wrap: wrap;
+}
+.reasoning-block.is-live.has-window:not([open]) > summary > .reasoning-window {
+  display: block;
+}
+.assistant-blocks .proc-steps > .reasoning-block.is-live.has-window:not([open]) > summary .reasoning-peek,
+.reasoning-block.is-live.has-window:not([open]) > summary .reasoning-peek {
+  display: none;
+}
 .assistant-blocks .proc-steps > .reasoning-block > .reasoning-text {
   margin: 0 8px 6px var(--proc-indent);
   padding: 0;

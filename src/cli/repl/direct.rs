@@ -55,6 +55,7 @@ pub(in crate::cli) async fn run_chat_with_images(
     let tool_call_mode = render::ToolCallDisplayMode::from_expand(config.display.expand_tool_calls);
     let readable_tool_names = config.display.readable_tool_names;
     let command_output_lines = config.display.command_output_lines;
+    let thinking_scroll_lines = config.display.thinking_scroll_lines;
     let show_token_usage = config.display.show_token_usage;
     let show_mixed_model_endpoint = show_mixed_model_endpoint(&config, false);
     let display_config = config.clone();
@@ -75,6 +76,7 @@ pub(in crate::cli) async fn run_chat_with_images(
         readable_tool_names,
         command_output_lines,
     );
+    renderer.thinking_scroll_lines = thinking_scroll_lines;
     renderer.start_waiting()?;
     let result = agent
         .chat_stream_with_images(&message, &pasted_images, |event| {
@@ -249,6 +251,7 @@ pub(in crate::cli) async fn run_chat_with_options(
     };
     let readable_tool_names = config.display.readable_tool_names;
     let command_output_lines = config.display.command_output_lines;
+    let thinking_scroll_lines = config.display.thinking_scroll_lines;
     let show_token_usage = config.display.show_token_usage && !plain;
     let show_mixed_model_endpoint = show_mixed_model_endpoint(&config, false);
     let display_config = config.clone();
@@ -262,6 +265,7 @@ pub(in crate::cli) async fn run_chat_with_options(
         readable_tool_names,
         command_output_lines,
     );
+    renderer.thinking_scroll_lines = thinking_scroll_lines;
     renderer.start_waiting()?;
     let result = agent
         .chat_stream(&message, |event| handle_agent_event(&mut renderer, event))
@@ -686,6 +690,8 @@ pub(in crate::cli) async fn run_direct_repl(
                 config.display.command_output_lines,
             );
             renderer.fold_timeline = config.display.fold_timeline;
+            renderer.thinking_scroll_lines = config.display.thinking_scroll_lines;
+            renderer.thinking_scroll_lines = config.display.thinking_scroll_lines;
             match agent
                 .compact_now(|event| handle_agent_event(&mut renderer, event))
                 .await
@@ -807,6 +813,7 @@ pub(in crate::cli) async fn run_direct_repl(
             config.display.command_output_lines,
         );
         renderer.fold_timeline = config.display.fold_timeline;
+        renderer.thinking_scroll_lines = config.display.thinking_scroll_lines;
         let control = AgentTurnControl::new(
             mode,
             build_tool_registry(

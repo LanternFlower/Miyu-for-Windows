@@ -50,6 +50,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub const MAX_COMMAND_OUTPUT_LINES: usize = 1_000;
+/// 思考滚动窗最多露多少行——再高就顶到屏幕外了，没意义。
+pub const MAX_THINKING_SCROLL_LINES: usize = 200;
 
 /// Dev 模式提示词文件名(config 目录下,可编辑;清空=回退内置默认)。
 pub const DEV_PROMPT_FILE: &str = "dev-prompt.md";

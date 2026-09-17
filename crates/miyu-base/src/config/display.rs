@@ -31,6 +31,11 @@ pub struct DisplayConfig {
     /// 退到点开里;键名不改,改了用户设过的值会掉回默认。
     #[serde(default = "default_command_output_lines")]
     pub command_output_lines: usize,
+    /// 思考进行中「思考中」抬头底下滚着露最近几行；想完收成一行
+    /// `已思考 · N 词元 · Xs`。0 = 只留抬头不露正文。`expand_reasoning` 开着
+    /// 时不走这个窗：全屏 TUI 直接把正文展开、shellhook 边想边往下流。
+    #[serde(default = "default_thinking_scroll_lines")]
+    pub thinking_scroll_lines: usize,
     /// 一段过程跑完收成一行 `Worked for …` 吗。关掉就每一步就地留着——和 shell
     /// 无缝对话那条路一个样子（用户 todolist:21）。
     ///
@@ -83,6 +88,8 @@ struct RawDisplayConfig {
     mixed_model_endpoint_display: Option<String>,
     #[serde(default)]
     command_output_lines: Option<usize>,
+    #[serde(default)]
+    thinking_scroll_lines: Option<usize>,
     #[serde(default)]
     keep_timeline_open: Option<bool>,
     #[serde(default)]
@@ -139,6 +146,9 @@ impl<'de> Deserialize<'de> for DisplayConfig {
             command_output_lines: raw
                 .command_output_lines
                 .unwrap_or_else(default_command_output_lines),
+            thinking_scroll_lines: raw
+                .thinking_scroll_lines
+                .unwrap_or_else(default_thinking_scroll_lines),
             fold_timeline,
             repl_replay_turns: raw
                 .repl_replay_turns
@@ -159,6 +169,7 @@ impl Default for DisplayConfig {
             show_token_usage: false,
             mixed_model_endpoint_display: default_mixed_model_endpoint_display(),
             command_output_lines: default_command_output_lines(),
+            thinking_scroll_lines: default_thinking_scroll_lines(),
             fold_timeline: true,
             repl_replay_turns: default_repl_replay_turns(),
             banner: true,

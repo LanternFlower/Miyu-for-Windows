@@ -39,6 +39,7 @@ pub(in crate::web) struct WebDisplayConfig {
     pub(in crate::web) tool_calls: String,
     pub(in crate::web) readable_tool_names: bool,
     pub(in crate::web) command_output_lines: usize,
+    pub(in crate::web) thinking_scroll_lines: usize,
     pub(in crate::web) mixed_model_endpoint_display: String,
     pub(in crate::web) show_mixed_model_endpoint: bool,
 }
@@ -885,6 +886,7 @@ pub(in crate::web) fn web_display_config(config: &AppConfig) -> WebDisplayConfig
         tool_calls: expand_word(config.display.expand_tool_calls),
         readable_tool_names: config.display.readable_tool_names,
         command_output_lines: config.display.command_output_lines,
+        thinking_scroll_lines: config.display.thinking_scroll_lines,
         show_mixed_model_endpoint: config.active_provider_model_choices().len() > 1
             && matches!(mixed_model_endpoint_display.as_str(), "interactive" | "all"),
         mixed_model_endpoint_display,

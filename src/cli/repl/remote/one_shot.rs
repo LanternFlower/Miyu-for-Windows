@@ -95,6 +95,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
         config.display.command_output_lines,
     );
     renderer.fold_timeline = config.display.fold_timeline;
+    renderer.thinking_scroll_lines = config.display.thinking_scroll_lines;
     let queue_state = Some(state_probe);
     if let Some(live) = live.as_deref_mut() {
         // 后台任务面板也跟着这两个开关走。每轮交一次：它和渲染器读的是同一份

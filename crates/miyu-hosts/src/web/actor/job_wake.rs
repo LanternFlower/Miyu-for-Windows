@@ -329,6 +329,7 @@ pub(in crate::web) fn origin_tty_writer(
         setup.readable_tool_names,
         setup.command_output_lines,
     );
+    renderer.thinking_scroll_lines = setup.thinking_scroll_lines;
     // daemon 的 stdout 是管道，可这些字节要进 shellhook 那个 tty——选的是那一面。
     renderer.use_terminal_surface();
     renderer.use_external_cursor_control();

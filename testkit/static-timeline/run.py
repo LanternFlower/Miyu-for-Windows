@@ -281,9 +281,15 @@ def check_normal(raw, screen, snapshots):
         below = frame[heading + 1:]
         if any(l.startswith("  │ ") and "先看一眼需求" in l for l in below):
             thought_live = True
-    # 摘要档本来就不露正文，只在开关开着（ST_EXPAND_REASONING=1）时算这一项。
     if os.environ.get("ST_EXPAND_REASONING"):
         report["thought_body_live"] = thought_live
+    else:
+        # 开关关着：正在想时抬头底下开一扇窗，滚着露最近几行（同一种 `  │` 行，
+        # 用户 09-17：「思考行不是单行窥视，而是有滚动」）；想完只剩一行 tag。
+        report["thought_window_live"] = thought_live
+        report["thought_body_collapsed_when_done"] = not any(
+            "先看一眼需求" in line for line in screen
+        )
     # 时间线和正文之间空一行。
     reply_rows = [i for i, line in enumerate(screen) if "走查的回复" in line]
     gap_ok = False

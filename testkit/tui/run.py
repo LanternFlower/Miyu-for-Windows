@@ -983,10 +983,12 @@ def main():
         # 而且这一段每帧都在变（同一行不同内容出现多次）。
         stream = bytes(sink).decode("utf-8", "replace")
         # live 行上没有静态图标：正在跑的那一步由点阵转轮占着 logo 那一列。
-        peeks = set(
-            re.findall(r"思考中 · \d+ [^·\x1b]+ · [^·\x1b]+ · (\S[^\x1b]*)", stream)
+        # 「展开思考内容」关着：抬头底下那扇窗（`│ <绿色正文>`）每帧在长，不再是
+        # 抬头末尾那截窥视（用户 09-17：「思考行不是单行窥视，而是有滚动」）。
+        windows = set(
+            re.findall(r"思考中 · [^\n]{0,160}?│[^\n]{0,60}?\x1b\[38;5;10m([^\x1b]+)", stream)
         )
-        report["thinking_peek_refreshes"] = len(peeks) >= 2
+        report["thinking_window_refreshes"] = len(windows) >= 2
         # 点阵转轮落在**左边距**（第 0 列），logo 留在自己那一列：
         # `⠋ <logo> 抬头`——转轮后面紧跟一个空格和 logo，而不是抬头文字。
         # 看的是画出来的字节（全屏按格子重画，SGR 是它自己的），所以颜色序列
@@ -1629,7 +1631,7 @@ def main():
         "job_overlay": True,
         "job_overlay_has_output": True,
         "scrollback": True,
-        "thinking_peek_refreshes": True,
+        "thinking_window_refreshes": True,
         "spinner_in_glyph_column": True,
         "clear_empties_viewport": True,
         "clear_keeps_history": True,

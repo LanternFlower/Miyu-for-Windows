@@ -69,6 +69,10 @@ pub(in crate::config_tui) fn edit_settings(
             config.display.expand_tool_calls,
         ),
         Field::new(
+            t("Thinking scroll lines", "思考滚动显示行数"),
+            config.display.thinking_scroll_lines.to_string(),
+        ),
+        Field::new(
             t("Command lines", "命令显示行数"),
             config.display.command_output_lines.to_string(),
         ),
@@ -116,7 +120,7 @@ pub(in crate::config_tui) fn edit_settings(
     // debug builds; new fields go on the end.
     debug_assert_eq!(
         fields.len(),
-        16,
+        17,
         "global settings fields changed: update the positional read-back below"
     );
     run_form_without_buttons(stdout, t(" GLOBAL SETTINGS ", " 全局设置 "), &mut fields)?;
@@ -131,21 +135,26 @@ pub(in crate::config_tui) fn edit_settings(
         .to_string();
     config.display.expand_reasoning = parse_bool_field(&fields[7].value)?;
     config.display.expand_tool_calls = parse_bool_field(&fields[8].value)?;
-    config.display.command_output_lines = fields[9]
+    config.display.thinking_scroll_lines = fields[9]
+        .value
+        .trim()
+        .parse::<usize>()?
+        .min(MAX_THINKING_SCROLL_LINES);
+    config.display.command_output_lines = fields[10]
         .value
         .trim()
         .parse::<usize>()?
         .min(MAX_COMMAND_OUTPUT_LINES);
-    config.display.readable_tool_names = parse_bool_field(&fields[10].value)?;
-    config.display.show_token_usage = parse_bool_field(&fields[11].value)?;
-    config.display.mixed_model_endpoint_display = parse_mixed_endpoint_display(&fields[12].value);
-    config.display.repl_replay_turns = fields[13]
+    config.display.readable_tool_names = parse_bool_field(&fields[11].value)?;
+    config.display.show_token_usage = parse_bool_field(&fields[12].value)?;
+    config.display.mixed_model_endpoint_display = parse_mixed_endpoint_display(&fields[13].value);
+    config.display.repl_replay_turns = fields[14]
         .value
         .trim()
         .parse::<usize>()?
         .min(MAX_REPL_REPLAY_TURNS);
-    config.tools.block_dangerous_commands = parse_bool_field(&fields[14].value)?;
-    config.display.fold_timeline = parse_bool_field(&fields[15].value)?;
+    config.tools.block_dangerous_commands = parse_bool_field(&fields[15].value)?;
+    config.display.fold_timeline = parse_bool_field(&fields[16].value)?;
     Ok(())
 }
 

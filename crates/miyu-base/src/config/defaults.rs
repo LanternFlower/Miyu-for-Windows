@@ -149,6 +149,11 @@ pub(crate) fn default_command_output_lines() -> usize {
     8
 }
 
+/// 思考进行中露出最近几行(用户 09-17:「思考滚动显示行数」默认 10)。
+pub(crate) fn default_thinking_scroll_lines() -> usize {
+    10
+}
+
 pub(crate) fn default_repl_replay_turns() -> usize {
     3
 }

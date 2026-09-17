@@ -444,7 +444,7 @@ pub(crate) struct ThoughtStream {
 }
 
 /// 正在想的正文最多在 live 区里占几行：整屏减去转轮行、连线与页边距的余量。
-fn live_thought_rows() -> usize {
+pub(crate) fn live_thought_rows() -> usize {
     crate::render::terminal_rows(24).saturating_sub(3).max(4)
 }
 

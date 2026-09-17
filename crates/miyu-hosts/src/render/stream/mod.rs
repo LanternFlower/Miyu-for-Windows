@@ -91,6 +91,9 @@ pub struct StreamRenderer {
     /// 语义 09-17 从「输出行数」改成「命令行数」,但键名不动:改了的话用户
     /// 已经设过的值会掉回默认。
     pub(crate) command_display_lines: usize,
+    /// 「思考中」抬头底下那扇窗露最近几行（「展开思考内容」关着时）。见
+    /// `DisplayConfig::thinking_scroll_lines`。0 = 不开窗，抬头后面只跟一截窥视。
+    pub thinking_scroll_lines: usize,
     /// 全屏里不把过程收成 `Worked for …`(用户 todolist:21)。只在能点开的面上
     /// 有意义:逐步落地的面本来就不收。
     /// 一段过程跑完收成一行 `Worked for …` 吗。见 `DisplayConfig::fold_timeline`。
@@ -167,6 +170,7 @@ impl StreamRenderer {
             tool_seq: 0,
             readable_tool_names,
             command_display_lines,
+            thinking_scroll_lines: 10,
             fold_timeline: true,
             pending_after_timeline: Vec::new(),
             timeline_ends_after_tools: false,

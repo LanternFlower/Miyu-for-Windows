@@ -442,6 +442,19 @@ impl StreamRenderer {
                     tail: lines,
                     open: true,
                 }]
+            } else if self.reasoning_mode != ReasoningDisplayMode::Full
+                && self.thinking_scroll_lines > 0
+            {
+                // 「展开思考内容」关着：抬头底下开一扇窗，滚着露最近几行（用户
+                // 09-17：「思考行不是单行窥视，而是有滚动」）；想完收成一行
+                // `已思考 · …`（那一步照旧在时间线里）。行数按
+                // `display.thinking_scroll_lines`。
+                vec![LiveRow {
+                    line: format!("{} {}", glyph_think(), self.thinking_head()),
+                    target: self.live_block,
+                    tail: self.thought_window_rows(),
+                    open: false,
+                }]
             } else {
                 // 给窥视留下的宽度：整屏减掉「  │ ✳ 思考中 · 320 词元 · 7.5s  」
                 vec![LiveRow {
@@ -576,6 +589,17 @@ impl StreamRenderer {
                 }
             })
             .collect()
+    }
+
+    /// 「思考中」抬头底下那扇窗：正文折好行，取末尾 `thinking_scroll_lines` 行。
+    /// 再多也不超过 live 区放得下的行数——静态面的 live 区高过一屏就擦不干净了。
+    pub(crate) fn thought_window_rows(&self) -> Vec<String> {
+        let rows = thought_body_lines(&self.reasoning_text);
+        let keep = self
+            .thinking_scroll_lines
+            .min(live_thought_rows().saturating_sub(1))
+            .min(rows.len());
+        rows[rows.len() - keep..].to_vec()
     }
 
     /// 正在想的抬头：`思考中 · N 词元 · Xs`（不带窥视）。

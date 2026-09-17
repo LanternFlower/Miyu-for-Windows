@@ -16,7 +16,7 @@ Playwright 拦下 index.html / app.js / styles.css 换成 WEB 里的文件,二�
   peek_tail_on_overflow 手机宽度放不下时切到尾部可见(is-overflow,右边缘贴槽)
   status_inline      工具行的耗时/失败图标紧跟文字,不在最右边
   fold_synced        收起动画逐帧看,线的底端不超过裁剪底边;收完线高 0;开合期间线无 transition
-  think_peek         思考内容收着时,思考中那一行里滚着正在想的话(尾部对齐)
+  think_window       思考内容收着时,思考中那一行底下开一扇窗滚着正在想的话(标题行里的窥视让位)
   peek_stays_after   想完之后收着的那行里窥视文字还在,展开时藏起
   command_dedup      命令签跑完展开只有「参数」「结果」两块(流式输出已藏),收起态没有输出预览气泡
   think_node         思考中的节点仍是原子图标(svg 显示、芯片形态的三个跳动点不显示、宽 16px)
@@ -180,11 +180,11 @@ def main():
                         head_hidden_seen = True
                     if l["live"] and not l["headHidden"]:
                         head_shown_live = True
-                peek_now = page.evaluate("() => { const p = document.querySelector('.live-assistant .proc-steps > .reasoning-block.is-live:not([open]) > summary > .reasoning-peek'); if (!p) return null; const r = p.getBoundingClientRect(); return { display: getComputedStyle(p).display, text: p.textContent, width: r.width }; }")
+                peek_now = page.evaluate("() => { const b = document.querySelector('.live-assistant .proc-steps > .reasoning-block.is-live:not([open])'); if (!b) return null; const w = b.querySelector(':scope > summary > .reasoning-window'); const p = b.querySelector(':scope > summary > .reasoning-peek'); if (!w) return null; const r = w.getBoundingClientRect(); return { display: getComputedStyle(w).display, text: w.textContent, height: r.height, peekDisplay: p ? getComputedStyle(p).display : 'none' }; }")
                 if peek_now and peek_now["text"] and (peek_seen is None or len(peek_now["text"]) > len(peek_seen["text"])):
                     peek_seen = peek_now
                     if len(peek_now["text"]) > 12:
-                        page.screenshot(path=str(OUT / "00c-live-peek.png"))
+                        page.screenshot(path=str(OUT / "00c-live-window.png"))
                 if think_seen is None and page.evaluate("Boolean(document.querySelector('.live-assistant .proc-steps > .reasoning-block.is-live'))"):
                     think_seen = page.evaluate("() => { const i = document.querySelector('.live-assistant .proc-steps > .reasoning-block.is-live > summary > .reasoning-icon'); const svg = i.querySelector('svg'); const dot = i.querySelector('i'); return { svgShown: svg && getComputedStyle(svg).display !== 'none', dotsShown: dot ? getComputedStyle(dot).display !== 'none' : false, width: i.getBoundingClientRect().width }; }")
                     page.screenshot(path=str(OUT / "00-live-thinking.png"))
@@ -259,8 +259,9 @@ def main():
             report["think_seen"] = think_seen
             report["prep_seen"] = prep_seen
             report["peek_seen"] = peek_seen
-            # 思考收着时,思考中那一行里要有思考文字在滚(display flex、有文字、占了宽度)
-            report["think_peek"] = bool(peek_seen) and peek_seen["display"] == "flex" and len(peek_seen["text"]) > 0 and peek_seen["width"] > 40
+            # 思考收着时,思考中那一行底下那扇窗里要有思考文字在滚(显示着、有文字、有高度),
+            # 标题行里的窥视这时让位(display none)
+            report["think_window"] = bool(peek_seen) and peek_seen["display"] == "block" and len(peek_seen["text"]) > 0 and peek_seen["height"] > 10 and peek_seen["peekDisplay"] == "none"
             # 想完之后窥视文字留着(收着的时候);展开那条就藏
             report["peek_after"] = page.evaluate("() => { const b = document.querySelector('.assistant-message:has(.proc-line) .proc-steps > .reasoning-block'); if (!b) return null; const p = b.querySelector('.reasoning-peek'); const shown = getComputedStyle(p).display !== 'none' && p.textContent.length > 0; b.open = true; const hiddenWhenOpen = getComputedStyle(p).display === 'none'; b.open = false; return { shown, hiddenWhenOpen }; }")
             report["peek_stays_after"] = bool(report["peek_after"]) and report["peek_after"]["shown"] and report["peek_after"]["hiddenWhenOpen"]
@@ -396,7 +397,7 @@ def main():
     # 回看重建的签压根没有预览元素(None),实时的签有但必须藏着("none")
     report["command_dedup"] = cp.get("visibleDetails") == ["参数", "结果"] and cp.get("preview") in (None, "none")
     (OUT / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), "utf-8")
-    keys = ["send_scrolls_direct", "send_scrolls_queued", "underscore_intraword", "queue_inline", "queue_settles", "peek_left_aligned", "peek_tail_on_overflow", "status_inline", "fold_synced", "think_peek", "peek_stays_after", "command_dedup", "think_node", "prep_row", "live_groups", "live_head_hidden", "live_collapsed", "err_marked", "rail_sized", "persisted_groups", "persisted_err", "no_times", "toggle_off_on", "console_clean"]
+    keys = ["send_scrolls_direct", "send_scrolls_queued", "underscore_intraword", "queue_inline", "queue_settles", "peek_left_aligned", "peek_tail_on_overflow", "status_inline", "fold_synced", "think_window", "peek_stays_after", "command_dedup", "think_node", "prep_row", "live_groups", "live_head_hidden", "live_collapsed", "err_marked", "rail_sized", "persisted_groups", "persisted_err", "no_times", "toggle_off_on", "console_clean"]
     for k in keys:
         print(f"{'  ok ' if report.get(k) else 'FAIL '} {k}")
     print("report:", OUT / "report.json")

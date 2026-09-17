@@ -47,6 +47,7 @@ pub(in crate::cli) async fn follow_wake_run(
         config.display.command_output_lines,
     );
     renderer.fold_timeline = config.display.fold_timeline;
+    renderer.thinking_scroll_lines = config.display.thinking_scroll_lines;
     renderer.use_external_cursor_control();
     renderer.use_buffered_output();
     live.external_output_active = false;

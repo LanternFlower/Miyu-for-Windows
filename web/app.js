@@ -448,6 +448,7 @@
       tool_calls: "summary",
       readable_tool_names: true,
       command_output_lines: 10,
+      thinking_scroll_lines: 10,
       mixed_model_endpoint_display: "interactive",
       show_mixed_model_endpoint: false
     },
@@ -6094,6 +6095,23 @@
     return String(text || "").replace(/\s+/g, " ").trimEnd().slice(-160);
   }
 
+  // 「思考滚动显示行数」(display.thinking_scroll_lines):思考收着时,正在想的那一行
+  // 底下开一扇窗,滚着露最近几行正文(和终端那扇窗一个意思,用户 09-17:「思考行
+  // 不是单行窥视,而是有滚动」)。0 = 不开窗,只留标题行里那截窥视。
+  function thinkingWindowLines() {
+    const n = Number(state.display?.thinking_scroll_lines);
+    return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 200) : 0;
+  }
+
+  // 窗里只放尾巴那一截(按每行 240 字估),免得每个 delta 重排整段;写完滚到底。
+  function setReasoningWindow(block, text) {
+    const node = block?.window;
+    if (!node) return;
+    const lines = Number(node.style.getPropertyValue("--think-window-lines")) || 10;
+    node.textContent = String(text || "").slice(-(lines * 240));
+    node.scrollTop = node.scrollHeight;
+  }
+
   // 写入窥视文字并量一下:放得下就左对齐紧跟着时间;放不下才切到尾部可见 + 左侧渐隐
   function setReasoningPeek(peek, text) {
     if (!peek) return;
@@ -6216,6 +6234,11 @@
       setReasoningPeek(sink.think.peek, finalText || "");
       sink.think.title.textContent = "已思考";
       sink.think.element.classList.remove("is-live");
+      sink.think.element.classList.remove("has-window");
+      if (sink.think.window) {
+        sink.think.window.remove();
+        sink.think.window = null;
+      }
       // 冻结读秒(09-12 #4:子过程思考读秒一直停在 0s)。startedAt 是创建时的
       // performance.now();收尾时算出最终耗时定格,ticker 靠 is-live 判活,收尾即停。
       const ls = sink.think.liveStatus;
@@ -6402,6 +6425,7 @@
           subStickBottom(sink, () => {
             think.body.textContent = think.__acc || "";
             setReasoningPeek(think.peek, think.__acc || "");
+            setReasoningWindow(think, think.__acc || "");
             // 行窥视也合进这一帧:每 token 各测一次 scrollWidth 会引发同步重排,连带把
             // 已完成的「已思考」行窥视一起抖(#3 疯狂抖动)。一帧只测一次。
             if (sink.taskPeek) setReasoningPeek(sink.taskPeek, think.__acc || "");
@@ -6480,7 +6504,7 @@
     return sink;
   }
 
-  function createReasoningBlock(text, title = "已思考", live = false, summaryOnly = false) {
+  function createReasoningBlock(text, title = "已思考", live = false, summaryOnly = false, withWindow = false) {
     const details = document.createElement("details");
     details.className = "reasoning-block";
     details.classList.toggle("is-summary", summaryOnly);
@@ -6521,6 +6545,22 @@
     peek.textContent = reasoningPeekText(text);
     window.requestAnimationFrame(() => setReasoningPeek(peek, text));
     summary.appendChild(chevron);
+    // 正在想 + 思考收着:标题底下那扇滚动窗(见 thinkingWindowLines)。想完或点开
+    // 就让位——想完那一行收成「已思考 · Xs」,和原来一样。
+    // 它得挂在 <summary> 里(summary 换行铺满一行):<details> 合着时 summary 以外
+    // 的子元素浏览器根本不画,量得到尺寸却不上屏(Chromium 151 实测)。
+    // 只给主线的思考块开窗:子代理子过程、后台任务流里那些块仍是标题行里那截
+    // 单行窥视(用户 09-17:子代理那一路回滚,全部沿用以前的单行刷新窥视)。
+    let windowNode = null;
+    const windowLines = live && withWindow ? thinkingWindowLines() : 0;
+    if (windowLines > 0) {
+      windowNode = document.createElement("div");
+      windowNode.className = "reasoning-window";
+      windowNode.style.setProperty("--think-window-lines", String(windowLines));
+      windowNode.setAttribute("aria-hidden", "true");
+      details.classList.add("has-window");
+      summary.appendChild(windowNode);
+    }
     const body = document.createElement("div");
     body.className = "reasoning-text";
     body.textContent = String(text || "");
@@ -6534,6 +6574,7 @@
       progress,
       body,
       peek,
+      window: windowNode,
       raw: String(text || ""),
       pendingTitle: "",
       summaryOnly,
@@ -7612,7 +7653,7 @@
     if (live.reasoning) return live.reasoning;
     breakLiveText(live);
     live.contextOperation = null;
-    const reasoning = createReasoningBlock("", "正在思考", true);
+    const reasoning = createReasoningBlock("", "正在思考", true, false, true);
     // 计时从 reasoning.start 事件算起,而不是签出现的时刻(签是惰性创建的)
     if (live.reasoningClockStart != null) reasoning.startedAt = live.reasoningClockStart;
     reasoning.pendingTitle = normalizeReasoningTitle(live.reasoningTitle);
@@ -7652,9 +7693,14 @@
       reasoning.element.remove();
     } else {
       reasoning.element.classList.remove("is-live");
+      reasoning.element.classList.remove("has-window");
       reasoning.title.textContent = title;
       reasoning.body.textContent = reasoning.raw;
       if (reasoning.progress) reasoning.progress.remove();
+      if (reasoning.window) {
+        reasoning.window.remove();
+        reasoning.window = null;
+      }
       if (reasoning.liveStatus) {
         if (reasoning.startedAt != null) {
           reasoning.liveStatus.textContent = `${((performance.now() - reasoning.startedAt) / 1000).toFixed(1)}s`;
@@ -7686,6 +7732,7 @@
         live.reasoning.raw = "";
         live.reasoning.body.textContent = "";
         live.reasoning.pendingTitle = "";
+        setReasoningWindow(live.reasoning, "");
       }
       return;
     }
@@ -7704,6 +7751,7 @@
       reasoning.body.textContent = reasoning.raw;
       // 窥视槽只放尾巴:换行折成空格,取最后 160 字,够撑满一行还不至于每个 delta 都重排一大段
       setReasoningPeek(reasoning.peek, reasoning.raw);
+      setReasoningWindow(reasoning, reasoning.raw);
       live.assistantReasoning = collectLiveReasoning(live);
       contentAdded(live);
       return;

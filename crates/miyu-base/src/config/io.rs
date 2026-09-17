@@ -350,6 +350,11 @@ impl AppConfig {
         if self.display.command_output_lines > MAX_COMMAND_OUTPUT_LINES {
             bail!("display.command_output_lines must be between 0 and {MAX_COMMAND_OUTPUT_LINES}");
         }
+        if self.display.thinking_scroll_lines > MAX_THINKING_SCROLL_LINES {
+            bail!(
+                "display.thinking_scroll_lines must be between 0 and {MAX_THINKING_SCROLL_LINES}"
+            );
+        }
         if self.plugins.print_image.width_percent == 0
             || self.plugins.print_image.width_percent > 100
         {

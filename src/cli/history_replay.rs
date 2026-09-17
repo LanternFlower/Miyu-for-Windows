@@ -149,6 +149,7 @@ pub(super) fn session_replay_frame(
             config.display.command_output_lines,
         );
         renderer.fold_timeline = config.display.fold_timeline;
+        renderer.thinking_scroll_lines = config.display.thinking_scroll_lines;
         renderer.use_external_cursor_control();
         renderer.use_buffered_output();
         // 流水账里带着思考就按它的位置放，别再用 `assistant_reasoning` 那一列

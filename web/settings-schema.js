@@ -223,6 +223,17 @@
           default: true,
         },
         {
+          path: "display.thinking_scroll_lines",
+          label: "思考滚动显示行数",
+          hint: "思考进行中抬头底下滚着露最近几行,想完收成一行「已思考」;0 = 只留抬头。「展开思考内容」开着时不走这个窗",
+          kind: "number",
+          integer: true,
+          min: 0,
+          max: 200,
+          unit: "行",
+          default: 10,
+        },
+        {
           path: "display.command_output_lines",
           label: "命令显示行数",
           hint: "命令那一步抬头底下露几行命令本身,0 = 不露;输出点开才看",

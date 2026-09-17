@@ -270,6 +270,60 @@ def scenario_live_is_expanded_too(report):
         r.stop(tui, daemon, stub)
 
 
+def scenario_window_when_collapsed(report):
+    """「展开思考内容」关着：正在想时抬头底下开一扇窗，滚着露最近几行；想完收成
+    一行 `已思考 · …`（用户 09-17：「思考行不是单行窥视，而是有滚动」）。窗多高
+    按 `display.thinking_scroll_lines`。
+    """
+    stub, daemon, tui, master, sink = r.start(
+        # 慢一点，好在"还在想"的那几帧上做断言。
+        dict(STUB, STUB_CHUNK_SLEEP="0.3"),
+        config_extra=display(expand_reasoning=False, thinking_scroll_lines=3),
+    )
+    try:
+        os.write(master, h.PROMPT.encode())
+        h.drain_until(master, sink, h.PROMPT, 3.0)
+        os.write(master, b"\r")
+        # 命令之后那一段思考是逐块流出来的，看得见"正在想"。
+        screen = r.wait_screen(
+            master,
+            sink,
+            lambda rows: any("运行命令" in line for line in rows),
+            timeout=30,
+        )
+        screen = r.wait_screen(
+            master,
+            sink,
+            lambda rows: any("思考中" in line for line in rows),
+            timeout=30,
+        )
+        report["window_thinking_row_seen"] = screen is not None
+        if screen is None:
+            return
+        screen = follow_while(master, sink, "思考中", THINK_LIVE, seconds=6)
+        r.save("window-live", screen)
+        head = row_of(screen, "思考中")
+        rows = []
+        if head is not None:
+            j = head + 1
+            while j < len(screen) and screen[j].startswith("  │"):
+                rows.append(screen[j])
+                j += 1
+        report["window_rows_under_the_heading"] = any(THINK_LIVE in line for line in rows)
+        report["window_is_at_most_three_rows"] = 0 < len(rows) <= 3
+        # 抬头后面不再挂单行窥视：正文在窗里。
+        report["heading_has_no_peek"] = head is not None and THINK_LIVE not in screen[head]
+        h.settle(master, sink, quiet=1.2, timeout=40)
+        screen = h.render(bytes(sink))
+        r.save("window-done", screen)
+        # 想完那一步收成一行、照旧收进 `Worked for` 里：屏上不该再有正文。
+        report["window_collapses_to_a_tag"] = not any(
+            THINK_LIVE in line or THINK_BODY in line for line in screen
+        )
+    finally:
+        r.stop(tui, daemon, stub)
+
+
 def scenario_config_applies_next_turn(report):
     """`/config` 改完，**下一轮**就生效，不用重开 TUI。"""
     stub, daemon, tui, master, sink = r.start(
@@ -315,6 +369,7 @@ def main():
         scenario_expanded_survives_the_fold,
         scenario_collapsed,
         scenario_no_fold,
+        scenario_window_when_collapsed,
     ):
         try:
             scenario(report)
