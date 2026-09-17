@@ -21,6 +21,7 @@ use miyu_base::terminal::starfield::{
 
 pub(in crate::cli) mod preview;
 use ratatui::style::Modifier;
+use std::cell::RefCell;
 
 /// 用户自带艺术字的文件名（放在配置目录下）。
 pub(in crate::cli) const BANNER_FILE: &str = "banner.txt";
@@ -47,7 +48,14 @@ pub(in crate::cli) struct BannerScene {
     tick: usize,
     /// 出场淡入：前几帧从底色浮出来。
     born: usize,
+    /// 这一帧的大厅算过一次就留着（键里带帧号，下一帧自然失效）。`tick_banner`
+    /// 在同步块**外**先算一遍，块里 `paint_tail` 再要就是现成的——块越短越好，
+    /// 见 `LiveReplTail::tick_banner`。
+    lobby_cache: RefCell<Option<(LobbyKey, Lobby)>>,
 }
+
+/// (cols, rows, activity_rows, bottom_rows, tick, born, dev)
+type LobbyKey = (usize, usize, usize, usize, usize, usize, bool);
 
 impl BannerScene {
     /// 按配置决定画不画、画哪份艺术字。`None` = 关掉了。
@@ -66,6 +74,7 @@ impl BannerScene {
             mode,
             tick: 0,
             born: 0,
+            lobby_cache: RefCell::new(None),
         })
     }
 
@@ -86,6 +95,26 @@ impl BannerScene {
             self.born += 1;
         }
         true
+    }
+
+    /// 测试用：不读配置文件的内置艺术字。
+    #[cfg(test)]
+    pub(in crate::cli) fn builtin_for_tests(mode: PersonaLane) -> Self {
+        let theme = Theme::detect();
+        Self {
+            theme,
+            art: BannerArt::builtin(theme.ascii),
+            mode,
+            tick: 0,
+            born: 0,
+            lobby_cache: RefCell::new(None),
+        }
+    }
+
+    /// 走到第几帧了。
+    #[cfg(test)]
+    pub(in crate::cli) fn frame(&self) -> usize {
+        self.tick
     }
 
     /// 扫光此刻在第几列（可能在字外面）。扫完停一小会儿马上再来，持续播放。
@@ -277,6 +306,43 @@ impl BannerScene {
         activity_rows: usize,
         bottom_rows: usize,
     ) -> Lobby {
+        let key: LobbyKey = (
+            cols,
+            rows,
+            activity_rows,
+            bottom_rows,
+            self.tick,
+            self.born,
+            matches!(self.mode, PersonaLane::Dev),
+        );
+        if let Some((cached_key, lobby)) = &*self.lobby_cache.borrow() {
+            if *cached_key == key {
+                return lobby.clone();
+            }
+        }
+        let lobby = self.compose_lobby(cols, rows, activity_rows, bottom_rows);
+        self.lobby_cache.replace(Some((key, lobby.clone())));
+        lobby
+    }
+
+    /// 同步块外先把这一帧算好；块里 `paint_tail` 用同样的参数来要时直接命中。
+    pub(in crate::cli) fn warm_lobby(
+        &self,
+        cols: usize,
+        rows: usize,
+        activity_rows: usize,
+        bottom_rows: usize,
+    ) {
+        let _ = self.lobby_with_bottom_space(cols, rows, activity_rows, bottom_rows);
+    }
+
+    fn compose_lobby(
+        &self,
+        cols: usize,
+        rows: usize,
+        activity_rows: usize,
+        bottom_rows: usize,
+    ) -> Lobby {
         let theme = self.theme;
         let art_cols = self.art.cols();
         let art_rows = self.art.rows();
@@ -321,12 +387,21 @@ impl BannerScene {
             )
         };
         let mut out = Vec::with_capacity(rows);
+        // 面板那几行(`bottom_rows`):面板占的那一段留白,星星只留两侧。否则每帧
+        // diff 都把面板那几行的星星重写一遍、面板再压回去——支持同步输出的终端看
+        // 不出来,不支持的(和 pyte 抓屏)就是一闪一闪。
+        let band = (top + block_rows)..(top + block_rows + bottom_rows);
         for y in 0..rows {
             let in_block = y >= top && y < top + block_rows;
             let mut row: Vec<Seg> = Vec::with_capacity(cols);
             if !in_block {
+                let in_band = bottom_rows > 0 && band.contains(&y);
                 for x in 0..cols {
-                    row.push(star(x, y));
+                    row.push(if in_band && x >= left && x < left + width {
+                        Seg::raw(" ")
+                    } else {
+                        star(x, y)
+                    });
                 }
                 out.push(row);
                 continue;
@@ -406,6 +481,7 @@ fn mode_name(mode: PersonaLane) -> &'static str {
 }
 
 /// 全屏大厅的一帧：整屏的行，加上输入框该落在哪。
+#[derive(Clone)]
 pub(in crate::cli) struct Lobby {
     pub rows: Vec<String>,
     /// 活动区（空行 + 输入框 + footer）从第几行开始。
@@ -476,6 +552,7 @@ mod tests {
             mode: PersonaLane::Active,
             tick: 0,
             born: 24,
+            lobby_cache: RefCell::new(None),
         }
     }
 

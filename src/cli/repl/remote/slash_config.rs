@@ -89,11 +89,14 @@ impl RemoteRepl {
                 // 漏了这步(09-01 前的实现)会让前端还挂在旧人格的
                 // 会话上等事件流,而 daemon 在新人格语境里跑,消息发出
                 // 去永远等不到回执——UI 卡死在「加载中 0ms」。
-                let (daemon_state, _) = send_ipc_admin(
-                    &self.paths,
-                    IpcCommand::GetReplSession {
-                        mode: self.mode.is_dev().then(|| "dev".to_string()),
-                    },
+                let (daemon_state, _) = await_in_lobby(
+                    &mut self.live_repl,
+                    send_ipc_admin(
+                        &self.paths,
+                        IpcCommand::GetReplSession {
+                            mode: self.mode.is_dev().then(|| "dev".to_string()),
+                        },
+                    ),
                 )
                 .await?;
                 apply_repl_session_switch(
@@ -175,7 +178,11 @@ impl RemoteRepl {
         };
         let session_config =
             footer_config_for_session(&self.paths, &self.config, &self.active_session_id);
-        let (state, _) = repl_active_or_default_state(&self.paths, &self.active_session_id).await?;
+        let (state, _) = await_in_lobby(
+            &mut self.live_repl,
+            repl_active_or_default_state(&self.paths, &self.active_session_id),
+        )
+        .await?;
         self.cumulative_tokens = state_cumulative(&state);
         self.footer = ReplFooterStatus::from_config(
             &session_config,
@@ -254,8 +261,11 @@ impl RemoteRepl {
         };
         let refreshed = AppConfig::load(&self.paths)?;
         self.config = refreshed;
-        let (state, changed) =
-            repl_active_or_default_state(&self.paths, &self.active_session_id).await?;
+        let (state, changed) = await_in_lobby(
+            &mut self.live_repl,
+            repl_active_or_default_state(&self.paths, &self.active_session_id),
+        )
+        .await?;
         if changed {
             apply_repl_session_switch(
                 &self.paths,
@@ -339,8 +349,11 @@ impl RemoteRepl {
                     return Ok(LoopStep::Continue);
                 };
                 self.config = AppConfig::load(&self.paths)?;
-                let (state, changed) =
-                    repl_active_or_default_state(&self.paths, &self.active_session_id).await?;
+                let (state, changed) = await_in_lobby(
+                    &mut self.live_repl,
+                    repl_active_or_default_state(&self.paths, &self.active_session_id),
+                )
+                .await?;
                 if changed {
                     apply_repl_session_switch(
                         &self.paths,

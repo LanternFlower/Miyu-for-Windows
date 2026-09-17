@@ -14,6 +14,23 @@ use std::io::{self, Write};
 
 thread_local! {
     static UPDATE_DEPTH: Cell<usize> = const { Cell::new(0) };
+    static BLOCK_STARTED: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+}
+
+/// `MIYU_SYNC_TRACE=1`：每个最外层同步块的时长（微秒）追加到
+/// `/tmp/miyu-sync-trace.log`。kitty 在块开着的时间里按活光标给输入法定位，块越
+/// 短越不容易撞上（09-17），这把尺子量的就是那个窗口。
+static SYNC_TRACE: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("MIYU_SYNC_TRACE").is_some());
+
+fn trace_block(elapsed: std::time::Duration) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/miyu-sync-trace.log")
+    {
+        let _ = writeln!(file, "{}", elapsed.as_micros());
+    }
 }
 
 pub(in crate::cli) fn synchronized_terminal_update<T>(
@@ -52,6 +69,9 @@ struct UpdateGuard<W: Write> {
 impl<W: Write> UpdateGuard<W> {
     fn begin(mut writer: W, cursor_after: CursorAfterUpdate) -> io::Result<Self> {
         let outermost = UPDATE_DEPTH.get() == 0;
+        if outermost && *SYNC_TRACE {
+            BLOCK_STARTED.set(Some(std::time::Instant::now()));
+        }
         if matches!(
             cursor_after,
             CursorAfterUpdate::Shown | CursorAfterUpdate::Hidden
@@ -82,6 +102,9 @@ impl<W: Write> UpdateGuard<W> {
         UPDATE_DEPTH.set(UPDATE_DEPTH.get() - 1);
         if self.outermost {
             execute!(self.writer, EndSynchronizedUpdate)?;
+            if let Some(started) = BLOCK_STARTED.take() {
+                trace_block(started.elapsed());
+            }
         }
         match self.cursor_after {
             CursorAfterUpdate::Shown => execute!(self.writer, Show),

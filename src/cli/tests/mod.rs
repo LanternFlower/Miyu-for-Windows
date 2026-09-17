@@ -9,6 +9,7 @@ mod footer_width;
 mod golden_panel;
 mod hangup;
 mod input_editing;
+mod lobby_anim;
 mod lobby_layout;
 mod pop_menu;
 mod shared;

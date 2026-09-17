@@ -702,6 +702,21 @@ impl LiveReplTail {
             return Ok(());
         }
         if self.screen.is_some() {
+            // 先在同步块**外**把这一帧的大厅算好（整屏的行、ANSI 串），块里只剩
+            // diff 与写。kitty 处理输入法预编辑时按**活光标**定位
+            // （screen_update_overlay_text），块开着的那几毫秒活光标正在星星格子上，
+            // 预编辑事件落在这段就把光标画到星星上、下一帧再弹回输入框——用户
+            // 09-17 报的「用输入法时光标从别处瞬移回输入框」。块越短撞上的概率
+            // 越小：debug 构建实测块时长 7~12ms → 约 1ms。
+            if let Some(banner) = &self.banner {
+                let (cols, rows) = terminal::size().unwrap_or((80, 24));
+                banner.warm_lobby(
+                    usize::from(cols),
+                    usize::from(rows),
+                    usize::from(self.tail_rows),
+                    usize::from(self.lobby_panel_rows),
+                );
+            }
             // 一帧一个同步块：这一帧会把输入框那几行先擦再写，不裹起来的话终端
             // （和 pyte 探针）都可能撞见擦了还没写的半帧，看着像输入框闪没了。
             let cursor = self.output_cursor;

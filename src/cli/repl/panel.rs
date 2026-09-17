@@ -62,14 +62,18 @@ pub(in crate::cli) fn pick<M: PanelModel>(
 }
 
 fn run<M: PanelModel>(live: &mut LiveReplTail, model: &mut M) -> Result<M::Output> {
+    const TICK: std::time::Duration = std::time::Duration::from_millis(40);
     let _raw = LiveRawMode::start()?;
     let mut body_delta = 0isize;
     let mut layout: Option<((u16, u16, u16), Panel)> = None;
+    let mut next_tick = std::time::Instant::now() + TICK;
     loop {
         if expire_toast(live) {
             layout = None;
         }
         let mut page_rows = 1isize;
+        // 这一帧画过的东西留一份:空闲期推大厅动画之后要把面板原样压回去。
+        let mut painted: Option<(Panel, String, Vec<String>)> = None;
         synchronized_terminal_update(CursorAfterUpdate::Hidden, || {
             let (cols, rows) = terminal::size().unwrap_or((80, 24));
             let desired = model.desired_rows();
@@ -88,26 +92,36 @@ fn run<M: PanelModel>(live: &mut LiveReplTail, model: &mut M) -> Result<M::Outpu
             };
             let mut lines = model.content(&frame);
             lines.resize(usize::from(panel.rows), String::new());
-            let mut stdout = io::stdout();
-            for (row, line) in lines.iter().enumerate() {
-                let y = panel.top.saturating_add(row as u16);
-                queue!(
-                    stdout,
-                    MoveTo(panel.left, y),
-                    Print(" ".repeat(usize::from(panel.width))),
-                    MoveTo(panel.left, y),
-                    Print(render::clip_to_display_width(
-                        &format!("{bar}{line}"),
-                        usize::from(panel.width)
-                    ))
-                )?;
-            }
-            stdout.flush()?;
+            paint_panel(&panel, &bar, &lines)?;
+            painted = Some((panel, bar, lines));
             Ok(())
         })?;
         body_delta = 0;
-        // 面板拿着输入时 REPL 的事件泵是停的；空等期间只有通知条过期会让版面重算。
-        while !event::poll(std::time::Duration::from_millis(100))? {
+        // 面板拿着输入时 REPL 的事件泵是停的。大厅 banner 挂着就按 40ms 的节拍
+        // 推帧(与输入泵一致),每拍推一帧星空、再把面板压回去——以前面板开着的
+        // 那段星空与扫光是定格的(09-17 用户报)。节拍按**时刻**算,不按「等满
+        // 40ms 没按键」算:按住 j/k 时按键比 40ms 密,后一种算法一帧都推不出,
+        // 扫光一顿一顿(用户实测)。面板占的是 banner 让出来的那几行,整帧 diff
+        // 不会碰它,压回去只是保险。没有 banner 就 100ms 只看通知条过期。
+        loop {
+            let wait = if live.banner.is_some() {
+                let now = std::time::Instant::now();
+                if now >= next_tick {
+                    if let Some((panel, bar, lines)) = &painted {
+                        synchronized_terminal_update(CursorAfterUpdate::Hidden, || {
+                            live.tick_banner()?;
+                            paint_panel(panel, bar, lines)
+                        })?;
+                    }
+                    next_tick = now + TICK;
+                }
+                next_tick.saturating_duration_since(std::time::Instant::now())
+            } else {
+                std::time::Duration::from_millis(100)
+            };
+            if event::poll(wait)? {
+                break;
+            }
             if expire_toast(live) {
                 layout = None;
                 break;
@@ -151,6 +165,26 @@ fn run<M: PanelModel>(live: &mut LiveReplTail, model: &mut M) -> Result<M::Outpu
             return Ok(output);
         }
     }
+}
+
+/// 把面板那几行写到屏上:每行先用空格铺满面板宽再写内容(竖条 + 行)。
+fn paint_panel(panel: &Panel, bar: &str, lines: &[String]) -> Result<()> {
+    let mut stdout = io::stdout();
+    for (row, line) in lines.iter().enumerate() {
+        let y = panel.top.saturating_add(row as u16);
+        queue!(
+            stdout,
+            MoveTo(panel.left, y),
+            Print(" ".repeat(usize::from(panel.width))),
+            MoveTo(panel.left, y),
+            Print(render::clip_to_display_width(
+                &format!("{bar}{line}"),
+                usize::from(panel.width)
+            ))
+        )?;
+    }
+    stdout.flush()?;
+    Ok(())
 }
 
 fn expire_toast(live: &mut LiveReplTail) -> bool {

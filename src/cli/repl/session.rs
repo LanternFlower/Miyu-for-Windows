@@ -362,13 +362,16 @@ pub(in crate::cli) async fn apply_repl_session_switch(
     // Every REPL session change funnels through here, so this is the one place
     // the REPL lane needs to be remembered. Best effort: losing the write only
     // means the next REPL starts on the terminal session.
-    let _ = send_ipc_admin(
-        paths,
-        IpcCommand::SetReplSession {
-            target: miyu_core::ipc::SessionRef::Id {
-                id: state.session_id.clone(),
+    let _ = await_in_lobby(
+        live_repl,
+        send_ipc_admin(
+            paths,
+            IpcCommand::SetReplSession {
+                target: miyu_core::ipc::SessionRef::Id {
+                    id: state.session_id.clone(),
+                },
             },
-        },
+        ),
     )
     .await;
     Ok(())
@@ -650,6 +653,33 @@ pub(in crate::cli) fn confirm_stdin(prompt: &str) -> Result<bool> {
     Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES"))
 }
 
+/// 在大厅里等一个 future(多半是 daemon 的应答)时,每 40ms 推一帧 banner——
+/// 星空与扫光不因为「命令在等 daemon」而定格。没有 banner(会话视图、inline)
+/// 就是普通的 await。
+///
+/// 09-17 用户报的「/config 退出后重载配置那几秒动画停了」就是这段:大厅先画
+/// 回来,然后 REPL 等 ReloadConfig(真机上要重载 MCP 等,几秒),泵没在跑,
+/// 画面定格。
+pub(in crate::cli) async fn await_in_lobby<T>(
+    live: &mut LiveReplTail,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    if live.banner.is_none() {
+        return future.await;
+    }
+    tokio::pin!(future);
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(40));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            result = &mut future => return result,
+            _ = ticker.tick() => {
+                let _ = live.tick_banner();
+            }
+        }
+    }
+}
+
 /// Sends an admin command from inside the REPL loop, printing failures (core
 /// busy, core restarting, …) through the live tail instead of propagating
 /// them so the REPL survives.
@@ -658,7 +688,7 @@ pub(in crate::cli) async fn repl_ipc_admin(
     live: &mut LiveReplTail,
     command: IpcCommand,
 ) -> Result<Option<(ipc::SessionState, serde_json::Value)>> {
-    match send_ipc_admin(paths, command).await {
+    match await_in_lobby(live, send_ipc_admin(paths, command)).await {
         Ok(result) => Ok(Some(result)),
         Err(err) => {
             repl_note(

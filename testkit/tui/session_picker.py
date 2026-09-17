@@ -139,6 +139,9 @@ def main():
         os.write(master, b"\x1b")
         wait_for("lobby-cancel", lambda actual: footer(actual) and
                  any("██" in line for line in actual) and not picker(actual))
+        # 命令收尾那几毫秒终端还是 cooked 的（面板的 raw 守卫已放、输入循环还没回来），
+        # 这时敲的回车会被行规程改成 \n、再被当成 Ctrl+J。等一拍再打字。
+        settle("lobby-cancel-settled")
         os.write(master, b"hello\r")
         wait_for("body-before", lambda actual: footer(actual) and
                  any(line.strip() == "SESSION-BODY-60" for line in actual))
