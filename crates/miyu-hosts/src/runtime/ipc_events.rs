@@ -97,7 +97,29 @@ fn chunk(kind: ChatStreamKind, text: &str) -> ChatStreamChunk {
 
 /// `(kind, data)` → 事件。`received_at` 由调用方传入而不是这里取
 /// `Instant::now()`，这样重放录制的事件流时时序不会被解码这一刻污染。
+/// 工具事件里 daemon 算好的显示名记到本进程的表里（见 `tools::register_display_name`）。
+/// 三条把 IPC 事件翻成 `AgentEvent` 的路（这儿、REPL 的 `remote::one_shot`、
+/// `wake`）都要过一遍，脚本在客户端的时间线上才有名字。
+pub fn learn_tool_display_name(data: &Value) {
+    miyu_engine::tools::register_display_name(
+        ipc_text(data, "name"),
+        ipc_text(data, "display_name"),
+    );
+    // 「加载」那一步点名的工具们：daemon 把它们的显示名一起带来了（见
+    // `web::event_map::load_target_display_names`）。
+    if let Some(targets) = data.get("display_names").and_then(Value::as_object) {
+        for (name, display) in targets {
+            if let Some(display) = display.as_str() {
+                miyu_engine::tools::register_display_name(name, display);
+            }
+        }
+    }
+}
+
 pub(crate) fn decode_ipc_event_at(kind: &str, data: &Value, received_at: Instant) -> DecodedIpc {
+    if matches!(kind, "tool.preparing" | "tool.started") {
+        learn_tool_display_name(data);
+    }
     let event = match kind {
         "turn.started" => AgentEvent::TurnStarted {
             turn_id: ipc_text(data, "turn_id").to_string(),
@@ -528,5 +550,52 @@ mod tests {
             panic!("reasoning.start 应当解码成 ReasoningStart");
         };
         assert_eq!(received_at, base);
+    }
+}
+
+#[cfg(test)]
+mod display_name_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 脚本的显示名在客户端进程里本来是空的：事件里带过来就要认得。
+    #[test]
+    fn a_tool_started_event_teaches_the_client_the_display_name() {
+        let data = json!({
+            "tool_id": "call_1",
+            "name": "walk_script_2026",
+            "display_name": "打个招呼",
+            "arguments": "{}",
+        });
+        let _ = decode_ipc_event("tool.started", &data);
+        assert_eq!(
+            miyu_engine::tools::readable_tool_name("walk_script_2026"),
+            "打个招呼"
+        );
+        // 内建工具不受影响：事件里的名字是 daemon 那边 locale 下的，内建表先翻。
+        learn_tool_display_name(&json!({"name": "run_command", "display_name": "Run command"}));
+        assert_eq!(
+            miyu_engine::tools::readable_tool_name("run_command"),
+            miyu_engine::tools::readable_tool_name("run_command")
+        );
+        // 没带、或者和 id 一样的不记。
+        learn_tool_display_name(&json!({"name": "walk_plain", "display_name": "walk_plain"}));
+        assert_eq!(
+            miyu_engine::tools::readable_tool_name("walk_plain"),
+            "walk_plain"
+        );
+        // 「加载：某脚本」那一步：事件名带前缀，daemon 已经拼好了显示名，整名照收——
+        // 那一刻脚本自己的名字还没学到。
+        let _ = decode_ipc_event(
+            "tool.preparing",
+            &json!({
+                "name": "load_tools:walk_script_later",
+                "display_name": "加载：稍后才学到的脚本"
+            }),
+        );
+        assert_eq!(
+            miyu_engine::tools::readable_tool_name("load_tools:walk_script_later"),
+            "加载：稍后才学到的脚本"
+        );
     }
 }

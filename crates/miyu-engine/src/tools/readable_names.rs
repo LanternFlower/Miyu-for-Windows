@@ -3,6 +3,16 @@ use miyu_base::i18n::{is_zh, text as t};
 use super::{tool_event_base_name, SCRIPT_DISPLAY_NAMES};
 
 pub fn readable_tool_name(name: &str) -> String {
+    if let Some(display_name) = builtin_readable_tool_name(name) {
+        return display_name.to_string();
+    }
+    // 脚本表里登记的、或客户端从 daemon 事件里学来的（`register_display_name`）：
+    // **整名优先**。`load_tools:某脚本` 这种带前缀的事件名 daemon 那边已经拼好了
+    // 「加载：显示名」，客户端照单全收——它自己拆前缀再去查脚本名的话，那一刻
+    // 脚本名还没学到（脚本自己的 tool.started 在后面），显示成「加载：裸 id」。
+    if let Some(display_name) = learned_display_name(name) {
+        return display_name;
+    }
     if let Some(skill) = name.strip_prefix("load_skill:") {
         return if is_zh() {
             format!("加载技能：{skill}")
@@ -27,9 +37,6 @@ pub fn readable_tool_name(name: &str) -> String {
             format!("Load: {display}")
         };
     }
-    if let Some(display_name) = builtin_readable_tool_name(name) {
-        return display_name.to_string();
-    }
     // `use_meme:search` / `subagent:xxx` 这类带 action 后缀的事件名，按基名取友好名。
     // 漏了这一步就一路落到最后的 `name.to_string()`，UI 上显示成裸的
     // `use_meme:search`——同一个工具有没有后缀，显示名不该差这么远。
@@ -38,15 +45,18 @@ pub fn readable_tool_name(name: &str) -> String {
         if let Some(display_name) = builtin_readable_tool_name(base) {
             return display_name.to_string();
         }
-    }
-    if let Ok(guard) = SCRIPT_DISPLAY_NAMES.read() {
-        if let Some(map) = guard.as_ref() {
-            if let Some(dn) = map.get(name) {
-                return dn.clone();
-            }
+        if let Some(display_name) = learned_display_name(base) {
+            return display_name;
         }
     }
     name.to_string()
+}
+
+/// 脚本表 / 事件里学来的显示名。见 `tools::register_script_display_names` 与
+/// `tools::register_display_name`。
+fn learned_display_name(name: &str) -> Option<String> {
+    let guard = SCRIPT_DISPLAY_NAMES.read().ok()?;
+    guard.as_ref()?.get(name).cloned()
 }
 
 fn readable_load_target_name(name: &str) -> String {

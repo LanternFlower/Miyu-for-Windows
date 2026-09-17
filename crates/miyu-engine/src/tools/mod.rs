@@ -136,6 +136,27 @@ pub fn register_script_display_names(registry: &ToolRegistry) {
     }
 }
 
+/// 客户端（全屏 TUI、`miyu "…"` 那条 shellhook 路）从 daemon 的事件里学到的显示名。
+///
+/// 脚本的显示名只在 daemon 里登记过（[`register_script_display_names`]），客户端
+/// 进程里那张表是空的——时间线上脚本因此显示成裸 id（用户 09-17：「scripts 接口
+/// 接进去的脚本在 timeline 里都没有渲染成显示名称，shellhook 和 TUI 看到了这个
+/// 问题，webui 没有」：WebUI 用的是事件里 daemon 算好的 `display_name`）。事件里
+/// 带了就记一笔，之后 [`readable_tool_name`] 认得。内建工具不受影响：它们先按内建
+/// 表翻，这张表只兜底。
+pub fn register_display_name(name: &str, display_name: &str) {
+    let name = name.trim();
+    let display_name = display_name.trim();
+    if name.is_empty() || display_name.is_empty() || name == display_name {
+        return;
+    }
+    if let Ok(mut guard) = SCRIPT_DISPLAY_NAMES.write() {
+        guard
+            .get_or_insert_with(HashMap::new)
+            .insert(name.to_string(), display_name.to_string());
+    }
+}
+
 pub fn clear_aur_review_state(paths: &MiyuPaths) -> anyhow::Result<()> {
     archlinux::aur_review::clear_aur_review_state(paths)
 }

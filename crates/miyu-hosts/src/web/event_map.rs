@@ -30,6 +30,31 @@ pub(in crate::web) struct ActiveTool {
     pub(in crate::web) command_output: Option<crate::render::CommandOutputTail>,
 }
 
+/// `load_tools` 这一步点名的每个工具 → 它的显示名（按 daemon 这边的表翻）。
+/// 别的工具给空表。
+fn load_target_display_names(name: &str, arguments: &str) -> serde_json::Map<String, Value> {
+    let mut map = serde_json::Map::new();
+    if real_tool_name(name) != "load_tools" {
+        return map;
+    }
+    let Ok(args) = serde_json::from_str::<Value>(arguments) else {
+        return map;
+    };
+    for target in args
+        .get("names")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        let display = tools::readable_tool_name(target);
+        if display != target {
+            map.insert(target.to_string(), Value::String(display));
+        }
+    }
+    map
+}
+
 impl RunEventMapper {
     pub fn new(
         run_id: String,
@@ -146,6 +171,10 @@ impl RunEventMapper {
                         "tool_id": tool.id,
                         "name": tool.name,
                         "display_name": tool.display_name,
+                        // 「加载」那一步要点名的那几个工具的显示名。脚本的显示名只有
+                        // daemon 知道；客户端（TUI / shellhook）画这一步的抬头时脚本
+                        // 自己那条事件还没到，不带上就显示成裸 id。
+                        "display_names": load_target_display_names(&tool.name, &arguments),
                         "arguments": arguments,
                         "provider_id": self.round_endpoint.as_ref().map(|(provider, _)| provider),
                         "model": self.round_endpoint.as_ref().map(|(_, model)| model),

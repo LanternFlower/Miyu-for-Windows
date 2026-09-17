@@ -50,6 +50,9 @@ SUBAGENT_COMMAND = os.environ.get("STUB_SUBAGENT_COMMAND", TOOL_COMMAND)
 # 只跑一条的话"趁它还活着点开看看"这件事根本来不及做。
 SUBAGENT_BG_COMMAND = os.environ.get("STUB_SUBAGENT_BG_COMMAND", SUBAGENT_COMMAND)
 SUBAGENT_BG_ROUNDS = int(os.environ.get("STUB_SUBAGENT_BG_ROUNDS", "3"))
+# 置 STUB_EXTRA_CALLS='[{"name":"load_tools","arguments":{"names":["x"]}},{"name":"x","arguments":{}}]'：
+# 按顺序再调这几个工具（走查脚本工具的显示名之类，阶段表里没有的都从这儿来）。
+EXTRA_CALLS = json.loads(os.environ.get("STUB_EXTRA_CALLS", "[]"))
 # 置 STUB_BACKGROUND=1:再派一条后台命令。后台任务的状态行点开是日志面板,
 # 只有真有后台任务在跑才验得了。
 BACKGROUND = os.environ.get("STUB_BACKGROUND")
@@ -128,6 +131,8 @@ class Handler(BaseHTTPRequestHandler):
                     # 切一段——「思考行被下一步顶掉」只在第二次之后才看得见。
                     if TODO and os.environ.get("STUB_TODO_REPEAT"):
                         stages.append("todo")
+            for index in range(len(EXTRA_CALLS)):
+                stages.append(f"extra:{index}")
             if EDIT:
                 stages.append("edit")
             if FAIL:
@@ -196,6 +201,10 @@ class Handler(BaseHTTPRequestHandler):
                     for i in range(TODO_ITEMS)
                 ]
                 arguments = json.dumps({"todos": todos}, ensure_ascii=False)
+            elif stage.startswith("extra:"):
+                call = EXTRA_CALLS[int(stage.split(":", 1)[1])]
+                name = call["name"]
+                arguments = json.dumps(call.get("arguments", {}), ensure_ascii=False)
             elif stage == "edit":
                 name = "edit"
                 patch = (

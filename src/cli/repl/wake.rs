@@ -308,26 +308,33 @@ pub(in crate::cli) async fn follow_wake_run(
                 &mut renderer,
                 AgentEvent::ReasoningTitle(ipc_text(&data, "title").to_string()),
             )?,
-            "tool.preparing" => handle_live_agent_event(
-                live,
-                &mut renderer,
-                AgentEvent::ToolPreparing {
-                    name: ipc_text(&data, "name").to_string(),
-                    batch: data
-                        .get("batch")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false),
-                },
-            )?,
-            "tool.started" => handle_live_agent_event(
-                live,
-                &mut renderer,
-                AgentEvent::ToolCall {
-                    call_id: ipc_text(&data, "tool_id").to_string(),
-                    name: ipc_text(&data, "name").to_string(),
-                    arguments: ipc_text(&data, "arguments").to_string(),
-                },
-            )?,
+            "tool.preparing" => {
+                miyu_hosts::runtime::learn_tool_display_name(&data);
+                handle_live_agent_event(
+                    live,
+                    &mut renderer,
+                    AgentEvent::ToolPreparing {
+                        name: ipc_text(&data, "name").to_string(),
+                        batch: data
+                            .get("batch")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false),
+                    },
+                )?
+            }
+            "tool.started" => {
+                // 脚本的显示名只有 daemon 知道，事件里带过来，先记下再画。
+                miyu_hosts::runtime::learn_tool_display_name(&data);
+                handle_live_agent_event(
+                    live,
+                    &mut renderer,
+                    AgentEvent::ToolCall {
+                        call_id: ipc_text(&data, "tool_id").to_string(),
+                        name: ipc_text(&data, "name").to_string(),
+                        arguments: ipc_text(&data, "arguments").to_string(),
+                    },
+                )?
+            }
             "tool.progress" => handle_live_agent_event(
                 live,
                 &mut renderer,
