@@ -615,6 +615,10 @@ pub(in crate::cli) async fn run_direct_repl(
                 &mut client,
                 (!selected.is_empty()).then_some(selected),
                 "/effort",
+                |options| match live_repl.as_mut() {
+                    Some(live) if live.screen.is_some() => pick_effort(live, options),
+                    _ => inline_variant_select(options),
+                },
             )? {
                 VariantOutcome::Updated => {
                     let thinking_summary = client.thinking_variant_summary();

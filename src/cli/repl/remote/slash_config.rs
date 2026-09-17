@@ -72,7 +72,13 @@ impl RemoteRepl {
     }
 
     pub(super) async fn cmd_persona(&mut self, command_args: &str) -> Result<LoopStep> {
-        match run_persona_picker(&self.paths, command_args) {
+        // 全屏：面板贴在大厅提示下方 / 会话正文底部，结果走缓冲；行内还是老的 println 路。
+        let result = if self.live_repl.screen.is_some() {
+            self.pick_persona_fullscreen(command_args)
+        } else {
+            run_persona_picker(&self.paths, command_args)
+        };
+        match result {
             Ok(true) => {
                 let _ = repl_ipc_admin(&self.paths, &mut self.live_repl, IpcCommand::ReloadConfig)
                     .await;
@@ -113,22 +119,53 @@ impl RemoteRepl {
         Ok(LoopStep::Continue)
     }
 
+    /// 全屏下的 /persona：面板版菜单，结果走缓冲而不是 println（全屏下直接打
+    /// stdout 的字节不在缓冲里，下一帧重画就没了）。
+    fn pick_persona_fullscreen(&mut self, command_args: &str) -> Result<bool> {
+        let choices = PersonaChoices::load(&self.paths)?;
+        let argument = command_args.trim();
+        let target = if !argument.is_empty() {
+            choices.resolve(argument)?
+        } else {
+            let (items, initial) = choices.menu();
+            let Some(target) = pick_single(
+                &mut self.live_repl,
+                t("Select persona", "选择人格"),
+                &items,
+                initial,
+            )?
+            .and_then(|index| choices.at_menu_index(index)) else {
+                return Ok(false);
+            };
+            target
+        };
+        let (changed, message) = choices.apply(&self.paths, target)?;
+        repl_note(&mut self.live_repl, &format!("{message}\n"))?;
+        Ok(changed)
+    }
+
     pub(super) async fn cmd_models(&mut self, command_args: &str) -> Result<LoopStep> {
         // Switches this session's pinned model; the change takes
         // effect from the next turn without a daemon reload.
         let argument = command_args.trim();
-        // 选择器与它的结果行都是直接往 stdout 打的(println):活动区
-        // 还挂着时它们会落在输入框下面、活动区也不知道多了几行,
-        // 于是「已恢复跟随全局」孤零零留在输入框底下。先收起活动区,
-        // 打完再按真实光标位置重新挂回去。
-        synchronized_terminal_update(CursorAfterUpdate::Shown, || self.live_repl.suspend())?;
-        let result = run_models_for_session(
-            &self.paths,
-            parse_models_argument(argument),
-            Some(&self.active_session_id),
-        )
-        .await;
-        synchronized_terminal_update(CursorAfterUpdate::Shown, || self.live_repl.resume())?;
+        let result = if self.live_repl.screen.is_some() && argument.is_empty() {
+            // 全屏：菜单走面板（大厅贴提示下方、会话贴正文底部），结果走缓冲。
+            self.pick_models_fullscreen().await
+        } else {
+            // 选择器与它的结果行都是直接往 stdout 打的(println):活动区
+            // 还挂着时它们会落在输入框下面、活动区也不知道多了几行,
+            // 于是「已恢复跟随全局」孤零零留在输入框底下。先收起活动区,
+            // 打完再按真实光标位置重新挂回去。
+            synchronized_terminal_update(CursorAfterUpdate::Shown, || self.live_repl.suspend())?;
+            let result = run_models_for_session(
+                &self.paths,
+                parse_models_argument(argument),
+                Some(&self.active_session_id),
+            )
+            .await;
+            synchronized_terminal_update(CursorAfterUpdate::Shown, || self.live_repl.resume())?;
+            result
+        };
         let changed = match result {
             Ok(changed) => changed,
             Err(error) => {
@@ -170,6 +207,37 @@ impl RemoteRepl {
             )?;
         }
         Ok(LoopStep::Continue)
+    }
+
+    /// 全屏下不带参数的 /models：面板多选。返回真的改了没。
+    async fn pick_models_fullscreen(&mut self) -> Result<bool> {
+        let config = AppConfig::load(&self.paths)?;
+        let choices = config.text_provider_model_choices();
+        if choices.is_empty() {
+            bail!(
+                "{}",
+                t(
+                    "no configured provider models; configure a model first",
+                    "没有已配置的 provider 模型；请先配置模型",
+                )
+            );
+        }
+        let menu =
+            SessionModelMenu::new(&config, choices, &self.paths, Some(&self.active_session_id))?;
+        let Some(active) = pick_multi(
+            &mut self.live_repl,
+            t("Select model", "选择模型"),
+            &menu.labels,
+            menu.initial.clone(),
+        )?
+        else {
+            return Ok(false);
+        };
+        let (changed, message) = menu
+            .apply(&self.paths, Some(&self.active_session_id), active)
+            .await?;
+        repl_note(&mut self.live_repl, &format!("\x1b[2m{message}\x1b[0m\n"))?;
+        Ok(changed)
     }
 
     pub(super) async fn cmd_config(&mut self) -> Result<LoopStep> {
@@ -248,11 +316,20 @@ impl RemoteRepl {
         let session_config =
             footer_config_for_session(&self.paths, &self.config, &self.active_session_id);
         let mut client = OpenAiCompatibleClient::from_config(&session_config, &self.paths)?;
+        // 全屏走面板（大厅贴提示下方、会话贴正文底部）；行内还是光标处的老菜单。
+        let fullscreen = self.live_repl.screen.is_some();
         match execute_variant(
             &self.paths,
             &mut client,
             (!selected.is_empty()).then_some(selected),
             "/effort",
+            |options| {
+                if fullscreen {
+                    pick_effort(&mut self.live_repl, options)
+                } else {
+                    inline_variant_select(options)
+                }
+            },
         )? {
             VariantOutcome::Updated => {
                 let Some((_, _)) =

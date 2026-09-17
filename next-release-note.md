@@ -2,6 +2,8 @@
 
 ## 修复
 
+- 全屏 TUI 里 `/effort`（原 `/variant`）、`/persona`、`/models` 三个菜单改走和 `/session` 同一套面板：空会话大厅里贴在提示行下方、与输入框左对齐，不再从第 0 列起笔画在星空上（`/effort` 与 `/persona` 此前在大厅里错位、盖住输入框那几行）；`/models` 此前是把整个大厅收掉、菜单孤零零出现在左上角，现在大厅留着。会话里三个面板都贴在正文底部，正文按面板高度让位，PageUp/PageDown 与滚轮照样翻正文，缩放窗口面板跟着走。顺带：`/persona` 的抬头此前写的是「选择模型」，改成「选择人格」。
+
 - `/variant` 改名 `/effort`（codex / Claude Code 的叫法），`/variant`（opencode 的叫法）保留为别名，打哪个都一样：打 `/var` 时候选里出的是 `/variant`、并注明它等于 `/effort`；`/help` 与打 `/` 列出来的只有 `/effort`。命令行的 `miyu variant` 同样改成 `miyu effort`，旧名照用。
 
 - 修复 `/effort`（原 `/variant`）列出的档位跟着**全局文本模型**走、而不是当前会话正在用的模型：会话用 `/models` 钉了别的模型时，全局模型只有 default 就只能看到一个 default，怎么都切不到会话模型的档位。现在按会话模型列档位、按会话模型存盘，下一轮生效。命令行 `miyu effort` 对终端集成会话同样按会话模型来。

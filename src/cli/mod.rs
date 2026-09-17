@@ -55,6 +55,7 @@ mod select;
 mod shell_bridge;
 mod stt;
 mod terminal_guard;
+mod variant_menu;
 
 // 日志读取与格式化已拆到 daemon_log。
 use alarm_worker::*;
@@ -72,13 +73,14 @@ use select::*;
 use shell_bridge::*;
 use stt::*;
 pub(crate) use terminal_guard::*;
+use variant_menu::*;
 #[cfg(test)]
 mod tests;
 
 // 宽度计算与输入编辑已拆到 repl 子模块，这里引回来。
 // repl 下几个新拆的子模块整组导入（原本就在 cli/mod.rs 里，平铺可见）
 pub(in crate::cli) use repl::{
-    commands::*, input_layout::*, jobs::*, layout::*, placeholder::*, session::*,
+    commands::*, input_layout::*, jobs::*, layout::*, pickers::*, placeholder::*, session::*,
 };
 // 命令表已上提到 crate 级与 WebUI 共用；这里再导出一次，cli 内的调用点不变。
 pub(in crate::cli) use miyu_core::slash_commands::*;

@@ -57,6 +57,67 @@ fn variant_menu_checks_pending_selection_before_confirming() {
     assert_eq!(item.selection().2.as_deref(), Some("max"));
 }
 
+/// 单模型菜单：行数 = 抬头 + visible + 帮助；j 移动、Tab 勾选、Enter 交出选择、Esc 取消。
+#[test]
+fn variant_menu_lines_and_keys() {
+    let options = ThinkingVariantOptions {
+        provider_id: "p".to_string(),
+        model: "m".to_string(),
+        variants: vec!["high".to_string(), "max".to_string()],
+        selected: None,
+    };
+    let mut menu = VariantMenu::new(std::slice::from_ref(&options)).unwrap();
+    assert!(menu.is_single());
+    assert_eq!(menu.height(), 5);
+    let lines = menu.lines(60, 3);
+    assert_eq!(lines.len(), 5, "{lines:?}");
+    assert!(lines[0].contains("思考档位") || lines[0].contains("Thinking variant"));
+    assert!(lines[1].contains("[*] default"), "{lines:?}");
+    assert_eq!(menu.handle_key(KeyCode::Down, KeyModifiers::NONE), None);
+    assert_eq!(menu.handle_key(KeyCode::Tab, KeyModifiers::NONE), None);
+    assert_eq!(
+        menu.handle_key(KeyCode::Enter, KeyModifiers::NONE),
+        Some(Some(vec![(
+            "p".to_string(),
+            "m".to_string(),
+            Some("high".to_string())
+        )]))
+    );
+    assert_eq!(
+        menu.handle_key(KeyCode::Esc, KeyModifiers::NONE),
+        Some(None)
+    );
+}
+
+/// 两个模型：左栏 j 换模型，l 切到右栏后 j 动的是档位。
+#[test]
+fn variant_menu_with_two_models_switches_columns() {
+    let make = |id: &str| ThinkingVariantOptions {
+        provider_id: id.to_string(),
+        model: "m".to_string(),
+        variants: vec!["high".to_string()],
+        selected: None,
+    };
+    let mut menu = VariantMenu::new(&[make("a"), make("b")]).unwrap();
+    assert!(!menu.is_single());
+    let lines = menu.lines(80, 2);
+    assert_eq!(lines.len(), 4, "{lines:?}");
+    assert!(
+        lines[1].contains("a / m") && lines[1].contains("default"),
+        "{lines:?}"
+    );
+    menu.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+    menu.handle_key(KeyCode::Char('l'), KeyModifiers::NONE);
+    menu.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+    menu.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+    let selections = menu
+        .handle_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap()
+        .unwrap();
+    assert_eq!(selections[0].2, None);
+    assert_eq!(selections[1].2.as_deref(), Some("high"));
+}
+
 #[test]
 fn single_variant_menu_uses_content_width() {
     let item = VariantMenuItem::from_options(&ThinkingVariantOptions {

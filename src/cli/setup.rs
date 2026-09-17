@@ -120,92 +120,156 @@ pub(in crate::cli) fn list_persona_files(
     Ok(names)
 }
 
-/// Interactive persona picker (single-select). Returns true when the active
-/// persona changed and the config was saved.
-pub(in crate::cli) fn run_persona_picker(paths: &MiyuPaths, argument: &str) -> Result<bool> {
-    let mut config = AppConfig::load(paths)?;
-    let personas = list_persona_files(paths, &config)?;
-    let current = config.prompt.active_persona.trim().to_string();
-    let argument = argument.trim();
-    let chosen: Option<String> = if !argument.is_empty() {
+/// /persona 的数据：人格文件清单、当前人格、配置（改完要存回去）。
+///
+/// 行内（`inline_fuzzy_select_single`）与全屏面板（`pick_single`）共用：菜单项、
+/// 名字解析、落盘都在这里，两条路一个规矩。
+pub(in crate::cli) struct PersonaChoices {
+    config: AppConfig,
+    pub(in crate::cli) personas: Vec<String>,
+    pub(in crate::cli) current: String,
+}
+
+impl PersonaChoices {
+    pub(in crate::cli) fn load(paths: &MiyuPaths) -> Result<Self> {
+        let config = AppConfig::load(paths)?;
+        let personas = list_persona_files(paths, &config)?;
+        let current = config.prompt.active_persona.trim().to_string();
+        Ok(Self {
+            config,
+            personas,
+            current,
+        })
+    }
+
+    /// 按名字找：`default` / `miyu` / `内置` 是内置默认（空串）；否则按文件名匹配
+    /// （不分大小写、可省 `.md`、可只写一截）。
+    pub(in crate::cli) fn resolve(&self, argument: &str) -> Result<String> {
+        let argument = argument.trim();
         if argument.eq_ignore_ascii_case("default")
             || argument.eq_ignore_ascii_case("miyu")
             || argument == "内置"
         {
-            Some(String::new())
-        } else {
-            let needle = argument.to_ascii_lowercase();
-            let matched = personas.iter().find(|name| {
+            return Ok(String::new());
+        }
+        let needle = argument.to_ascii_lowercase();
+        self.personas
+            .iter()
+            .find(|name| {
                 name.eq_ignore_ascii_case(argument)
                     || name
                         .to_ascii_lowercase()
                         .trim_end_matches(".md")
                         .contains(needle.trim_end_matches(".md"))
-            });
-            match matched {
-                Some(name) => Some(name.clone()),
-                None => bail!(
+            })
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
                     "{}: {argument}",
                     t("no persona file matches", "没有匹配的人格文件")
-                ),
-            }
-        }
-    } else if io::stdout().is_terminal() && io::stdin().is_terminal() {
-        let default_label = t(DEFAULT_PERSONA_LABEL_EN, DEFAULT_PERSONA_LABEL_ZH).to_string();
-        let mut items = vec![default_label];
-        items.extend(personas.iter().cloned());
-        let initial = if current.is_empty() {
+                )
+            })
+    }
+
+    /// 菜单项（第一项是内置默认）与光标初始位置（当前人格）。
+    pub(in crate::cli) fn menu(&self) -> (Vec<String>, usize) {
+        let mut items = vec![t(DEFAULT_PERSONA_LABEL_EN, DEFAULT_PERSONA_LABEL_ZH).to_string()];
+        items.extend(self.personas.iter().cloned());
+        let initial = if self.current.is_empty() {
             0
         } else {
-            personas
+            self.personas
                 .iter()
-                .position(|name| *name == current)
+                .position(|name| *name == self.current)
                 .map(|index| index + 1)
                 .unwrap_or(0)
         };
-        match inline_fuzzy_select_single(&items, initial)? {
-            Some(0) => Some(String::new()),
-            Some(index) => personas.get(index - 1).cloned(),
-            None => None,
-        }
-    } else {
-        println!(
-            "{}: {}",
-            t("current persona", "当前人格"),
-            if current.is_empty() {
-                t(DEFAULT_PERSONA_LABEL_EN, DEFAULT_PERSONA_LABEL_ZH).to_string()
-            } else {
-                current.clone()
-            }
-        );
-        for name in &personas {
-            println!("  {name}");
-        }
-        println!(
-            "{}",
-            t("switch with: /persona <name>", "切换：/persona <名称>")
-        );
-        return Ok(false);
-    };
-    let Some(target) = chosen else {
-        return Ok(false);
-    };
-    if target == current {
-        println!("{}", t("no changes", "未做修改"));
-        return Ok(false);
+        (items, initial)
     }
-    config.prompt.active_persona = target.clone();
-    config.save(paths)?;
-    println!(
-        "{}: {}",
-        t("active persona", "当前人格"),
-        if target.is_empty() {
+
+    /// 菜单第 `index` 项对应的人格；0 是内置默认（空串）。
+    pub(in crate::cli) fn at_menu_index(&self, index: usize) -> Option<String> {
+        if index == 0 {
+            Some(String::new())
+        } else {
+            self.personas.get(index - 1).cloned()
+        }
+    }
+
+    /// 不带参数、又不在终端里时的清单文本。
+    pub(in crate::cli) fn listing(&self) -> String {
+        let mut out = format!(
+            "{}: {}
+",
+            t("current persona", "当前人格"),
+            self.label_of(&self.current)
+        );
+        for name in &self.personas {
+            out.push_str(&format!(
+                "  {name}
+"
+            ));
+        }
+        out.push_str(&format!(
+            "{}
+",
+            t("switch with: /persona <name>", "切换：/persona <名称>")
+        ));
+        out
+    }
+
+    fn label_of(&self, persona: &str) -> String {
+        if persona.is_empty() {
             t(DEFAULT_PERSONA_LABEL_EN, DEFAULT_PERSONA_LABEL_ZH).to_string()
         } else {
-            target
+            persona.to_string()
         }
-    );
-    Ok(true)
+    }
+
+    /// 落盘。返回（改了没, 给用户的一句话）。
+    pub(in crate::cli) fn apply(
+        mut self,
+        paths: &MiyuPaths,
+        target: String,
+    ) -> Result<(bool, String)> {
+        if target == self.current {
+            return Ok((false, t("no changes", "未做修改").to_string()));
+        }
+        self.config.prompt.active_persona = target.clone();
+        self.config.save(paths)?;
+        Ok((
+            true,
+            format!(
+                "{}: {}",
+                t("active persona", "当前人格"),
+                self.label_of(&target)
+            ),
+        ))
+    }
+}
+
+/// Interactive persona picker (single-select). Returns true when the active
+/// persona changed and the config was saved.
+pub(in crate::cli) fn run_persona_picker(paths: &MiyuPaths, argument: &str) -> Result<bool> {
+    let choices = PersonaChoices::load(paths)?;
+    let argument = argument.trim();
+    let target = if !argument.is_empty() {
+        choices.resolve(argument)?
+    } else if io::stdout().is_terminal() && io::stdin().is_terminal() {
+        let (items, initial) = choices.menu();
+        let Some(target) = inline_fuzzy_select_single(&items, initial)?
+            .and_then(|index| choices.at_menu_index(index))
+        else {
+            return Ok(false);
+        };
+        target
+    } else {
+        print!("{}", choices.listing());
+        return Ok(false);
+    };
+    let (changed, message) = choices.apply(paths, target)?;
+    println!("{message}");
+    Ok(changed)
 }
 
 pub(in crate::cli) async fn run_config(paths: &MiyuPaths, args: ConfigArgs) -> Result<bool> {
