@@ -677,6 +677,21 @@ impl LiveReplTail {
         self.clear_screen()
     }
 
+    /// `/undo`：全屏把最后一轮从画布上截掉（前面的照旧能往上翻）。没有轮标记、
+    /// 或者不在全屏，返回假。
+    pub(in crate::cli) fn truncate_last_turn(&mut self) -> Result<bool> {
+        let Some(screen) = &mut self.screen else {
+            return Ok(false);
+        };
+        screen.dismiss_toast();
+        if !screen.truncate_last_turn() {
+            return Ok(false);
+        }
+        let cursor = self.output_cursor;
+        self.resume_at(cursor)?;
+        Ok(true)
+    }
+
     pub(in crate::cli) fn clear_screen(&mut self) -> Result<()> {
         // 全屏：和终端 `clear` 一个意思——往正文里补一屏空行把视口顶空，
         // **内容没删**，往回翻还在。

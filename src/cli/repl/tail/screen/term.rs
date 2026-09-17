@@ -95,6 +95,9 @@ pub(in crate::cli) struct Term {
     /// 那一刻光标还停在块的**下面**。
     /// 下一个字符落下时要开的块：id + 「默认开着吗」。
     pending_block: Option<(u64, bool)>,
+    /// 每一轮从第几行开始（提交回显、回放里每轮开头埋的 `TURN_START_MARKER`），
+    /// 升序。`/undo` 把缓冲截回最后一个标记处，见 [`Term::truncate_rows`]。
+    turn_starts: Vec<usize>,
 }
 
 /// 一块可展开内容在缓冲里占的行。
@@ -122,6 +125,7 @@ impl Default for Term {
             parser: Parser::new(),
             blocks: Vec::new(),
             pending_block: None,
+            turn_starts: Vec::new(),
             cols: 80,
         }
     }
@@ -252,6 +256,46 @@ impl Term {
             block.start -= count;
             block.end -= count;
         }
+        self.turn_starts.retain(|start| *start >= count);
+        for start in &mut self.turn_starts {
+            *start -= count;
+        }
+    }
+
+    /// 最后一轮从第几行开始（并把这个标记拿掉）。没有标记就 `None`。
+    pub(in crate::cli) fn pop_turn_start(&mut self) -> Option<usize> {
+        self.turn_starts.pop()
+    }
+
+    /// 各轮的起始行（测试用）。
+    pub(in crate::cli) fn turn_starts(&self) -> &[usize] {
+        &self.turn_starts
+    }
+
+    /// 只留前 `keep` 行，光标停在第 `keep` 行行首（一行空的），之后的输出接着写。
+    /// `/undo` 用：撤掉的那一轮从缓冲里截掉，前面的原样留着。
+    pub(in crate::cli) fn truncate_rows(&mut self, keep: usize) {
+        if keep >= self.line_count() {
+            return;
+        }
+        if keep <= self.archive.len() {
+            self.archive.truncate(keep);
+            self.lines = vec![Vec::new()];
+            self.stamps.clear();
+            self.row = 0;
+        } else {
+            let live = keep - self.archive.len();
+            self.lines.truncate(live);
+            self.stamps.truncate(live);
+            self.lines.push(Vec::new());
+            self.row = live;
+        }
+        self.col = 0;
+        self.touch(self.row);
+        // 截掉的行里的块跟着没了；正开着的块也不作数。
+        self.blocks.retain(|block| block.end <= keep);
+        self.pending_block = None;
+        self.turn_starts.retain(|start| *start < keep);
     }
 
     /// 收尾一块：结束标记发出来时光标停在最后一行上，那一行算在块里。
@@ -593,6 +637,16 @@ impl Perform for Term {
                     self.pending_block = Some((id, open));
                 }
                 Some(miyu_hosts::render::blocks::BlockMarker::End) => self.close_block(),
+                // 这一轮从光标所在行开始；光标停在半行上（上一段正文没换行）就算
+                // 下一行——截回去的时候那半行是上一轮的，得留着。
+                Some(miyu_hosts::render::blocks::BlockMarker::TurnStart) => {
+                    let start = if self.col == 0 {
+                        self.cursor_row()
+                    } else {
+                        self.cursor_row().saturating_add(1)
+                    };
+                    self.turn_starts.push(start);
+                }
                 None => {}
             }
             return;

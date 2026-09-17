@@ -654,6 +654,12 @@ pub(in crate::cli) async fn run_direct_repl(
         if command.eq_ignore_ascii_case("/undo") && command_args_empty {
             let (removed, prompt) = state.undo_last_turn()?;
             footer.update_session_tokens(agent.effective_context_tokens()?);
+            if removed > 0 {
+                if let Some(live) = live_repl.as_mut() {
+                    redraw_after_undo(paths, &config, mode, &state.session_id(), live)?;
+                    live.refresh_footer(footer.clone())?;
+                }
+            }
             if removed > 0 && prompt.is_none() {
                 println!("{}", t("context compaction undone", "已撤销上下文压缩"));
             } else {

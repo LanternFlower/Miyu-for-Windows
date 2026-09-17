@@ -108,6 +108,10 @@ pub(super) fn session_replay_frame(
     use miyu_core::state::ReplayEntry;
     let mut frame = Vec::new();
     for replay in replays {
+        // 每一轮开头埋一个标记，重开之后 `/undo` 也知道该截到哪儿。
+        if render::blocks::enabled() {
+            frame.extend_from_slice(render::blocks::TURN_START_MARKER.as_bytes());
+        }
         if replay.display_content.starts_with("[目标续轮]") {
             // 目标续轮什么都不画——实时渲染也不打表头。一个长任务几十轮，
             // 每轮一行只会把真正的输出挤散。

@@ -79,6 +79,8 @@ impl LiveReplTail {
                 0,
                 usize::from(cols),
             );
+            // 这一轮从这儿开始：`/undo` 截回到这个标记处。
+            let frame = format!("{}{frame}", miyu_hosts::render::blocks::TURN_START_MARKER);
             return self.apply_output_frame(frame.as_bytes());
         }
         self.suspend()?;

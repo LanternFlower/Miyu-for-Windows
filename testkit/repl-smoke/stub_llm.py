@@ -277,9 +277,13 @@ class Handler(BaseHTTPRequestHandler):
                                     "finish_reason": None}]})
             time.sleep(CHUNK_SLEEP)
         completion = max(1, len(REPLY) // 2)
+        # prompt 用量随对话长度涨（每条 user 消息算 5 个）：撤销/弹出之后 footer 的
+        # 上下文读数才有得变，走查看得出「即时刷新」。
+        user_turns = body.count(b'"role":"user"') + body.count(b'"role": "user"')
+        prompt_tokens = 12 + 5 * user_turns
         self._sse({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                   "usage": {"prompt_tokens": 12, "completion_tokens": completion,
-                             "total_tokens": 12 + completion}})
+                   "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion,
+                             "total_tokens": prompt_tokens + completion}})
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
 

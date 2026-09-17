@@ -638,6 +638,24 @@ impl Screen {
         self.needs_clear = true;
     }
 
+    /// `/undo`：把最后一轮从画布上截掉，前面的滚动历史原样留着。缓冲里没有
+    /// 轮标记（这一屏不是本进程画出来的）就返回假，调用方再走整段回放。
+    pub(in crate::cli) fn truncate_last_turn(&mut self) -> bool {
+        let Some(start) = self.term.pop_turn_start() else {
+            return false;
+        };
+        self.term.truncate_rows(start);
+        self.prune_expanded();
+        self.floor = self.floor.min(start);
+        self.hover = None;
+        self.selection = None;
+        self.pending_copy = None;
+        self.row_keys.clear();
+        self.follow = true;
+        self.invalidate();
+        true
+    }
+
     /// 下一帧全量重画。
     fn invalidate(&mut self) {
         self.painted.clear();

@@ -225,10 +225,18 @@ pub fn begin_marker_in(id: u64, open: bool) -> String {
 
 pub const END_MARKER: &str = "\x1b]1337;miyu-block-end\x07";
 
+/// 「一轮从这儿开始」的标记：提交回显、回放里每一轮开头各埋一个。全屏后端记下
+/// 那一刻的行号，`/undo` 把正文缓冲截回去——只截撤掉的那一轮，前面的滚动历史
+/// 原样留着（用户 09-18：整段回放会把往上翻的历史丢掉）。真终端不认得就整条吞掉。
+pub const TURN_START_MARKER: &str = "\x1b]1337;miyu-turn-start\x07";
+
 /// OSC 载荷 → 块 id。`Term` 解析时用。
 pub fn parse_marker(payload: &str) -> Option<BlockMarker> {
     if payload == "miyu-block-end" {
         return Some(BlockMarker::End);
+    }
+    if payload == "miyu-turn-start" {
+        return Some(BlockMarker::TurnStart);
     }
     if let Some(id) = payload.strip_prefix("miyu-block-open=") {
         return id
@@ -249,6 +257,8 @@ pub enum BlockMarker {
         open: bool,
     },
     End,
+    /// 一轮从这儿开始。见 [`TURN_START_MARKER`]。
+    TurnStart,
 }
 
 /// 一段纯文本按块的样式切成行。空块返回空 `Vec`，`register` 那边会当作

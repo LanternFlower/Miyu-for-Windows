@@ -22,6 +22,17 @@ impl RemoteRepl {
             .get("removed")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
+        // 先把撤掉的那一轮从屏上拿掉，再打「已撤销」那一行——不然那一行被
+        // 重画一起擦掉。
+        if removed > 0 {
+            redraw_after_undo(
+                &self.paths,
+                &self.config,
+                self.mode,
+                &self.active_session_id,
+                &mut self.live_repl,
+            )?;
+        }
         repl_note(
             &mut self.live_repl,
             &format!("{}: {removed}\n", t("undone messages", "已撤销消息数")),
@@ -36,6 +47,9 @@ impl RemoteRepl {
         self.footer
             .update_context_window(state.context_window, state.context_window_assumed);
         self.footer.update_cumulative_tokens(self.cumulative_tokens);
+        // 改了 footer 的数要当场重画：原来只改内存，上下文读数要等下一轮结束才变
+        //（用户 09-18：「上下文也没有因为 undo 去掉了一些内容而即时刷新」）。
+        self.live_repl.refresh_footer(self.footer.clone())?;
         Ok(LoopStep::Continue)
     }
 
@@ -104,6 +118,8 @@ impl RemoteRepl {
         self.footer
             .update_context_window(state.context_window, state.context_window_assumed);
         self.footer.update_cumulative_tokens(self.cumulative_tokens);
+        // 同 `/undo`：footer 的数当场重画。
+        self.live_repl.refresh_footer(self.footer.clone())?;
         Ok(LoopStep::Continue)
     }
 

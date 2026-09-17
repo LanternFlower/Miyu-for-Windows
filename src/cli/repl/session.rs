@@ -287,6 +287,66 @@ pub(in crate::cli) async fn switch_repl_lane(
     .await
 }
 
+/// 全屏：把这条会话最近几轮（`display.repl_replay_turns`）按当前宽度重画到正文
+/// 顶上。换会话、撤销之后都走它——画布已经擦过了，屏上只该有库里现在还有的东西。
+pub(in crate::cli) fn replay_recent_turns(
+    config: &AppConfig,
+    mode: PersonaLane,
+    store: &StateStore,
+    live_repl: &mut LiveReplTail,
+) -> Result<()> {
+    if config.display.repl_replay_turns == 0 {
+        return Ok(());
+    }
+    match store.session_replay(config.display.repl_replay_turns) {
+        Ok(replays) if !replays.is_empty() => {
+            let (cols, _) = terminal::size().unwrap_or((80, 24));
+            let cols = crate::cli::content_viewport()
+                .map(|(cols, _)| cols)
+                .unwrap_or(cols);
+            let frame = session_replay_frame(&replays, mode, config, usize::from(cols.max(1)))?;
+            live_repl.apply_output_frame(&frame)?;
+        }
+        Ok(_) => {}
+        Err(error) => tracing::debug!(error = %error, "session replay unavailable"),
+    }
+    Ok(())
+}
+
+/// 撤销之后把撤掉的那一轮从屏上拿掉（用户 09-18：「/undo 并没有去掉那条消息已经
+/// 渲染出来的内容」）。
+///
+/// 全屏：正文缓冲截回这一轮开头的标记处——**只截这一轮**，前面的滚动历史原样
+/// 留着，往上翻还在（用户：整段回放会把历史丢掉，不行）。缓冲里找不到标记
+///（这一屏不是本进程画的）才退回换画布 + 回放最近几轮。撤成空会话就回大厅。
+/// inline 擦不掉已经打出去的，只留那行「已撤销」。
+pub(in crate::cli) fn redraw_after_undo(
+    paths: &MiyuPaths,
+    config: &AppConfig,
+    mode: PersonaLane,
+    session_id: &str,
+    live_repl: &mut LiveReplTail,
+) -> Result<()> {
+    if !crate::cli::in_fullscreen() {
+        return Ok(());
+    }
+    let empty = session_is_empty(paths, session_id);
+    if empty {
+        // 回大厅（`set_session_empty` 里顺手丢画布）。
+        live_repl.set_session_empty(config, paths, true);
+        return Ok(());
+    }
+    let truncated = synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
+        live_repl.truncate_last_turn()
+    })?;
+    if truncated {
+        return Ok(());
+    }
+    synchronized_terminal_update(CursorAfterUpdate::Preserve, || live_repl.wipe_transcript())?;
+    let store = StateStore::new(paths)?.pinned(session_id);
+    replay_recent_turns(config, mode, &store, live_repl)
+}
+
 pub(in crate::cli) async fn apply_repl_session_switch(
     paths: &MiyuPaths,
     config: &AppConfig,
@@ -331,19 +391,8 @@ pub(in crate::cli) async fn apply_repl_session_switch(
             ),
         )?;
     }
-    if fullscreen && !empty && config.display.repl_replay_turns > 0 {
-        match store.session_replay(config.display.repl_replay_turns) {
-            Ok(replays) if !replays.is_empty() => {
-                let (cols, _) = terminal::size().unwrap_or((80, 24));
-                let cols = crate::cli::content_viewport()
-                    .map(|(cols, _)| cols)
-                    .unwrap_or(cols);
-                let frame = session_replay_frame(&replays, mode, config, usize::from(cols.max(1)))?;
-                live_repl.apply_output_frame(&frame)?;
-            }
-            Ok(_) => {}
-            Err(error) => tracing::debug!(error = %error, "session replay unavailable"),
-        }
+    if fullscreen && !empty {
+        replay_recent_turns(config, mode, &store, live_repl)?;
     }
     synchronized_terminal_update(CursorAfterUpdate::Shown, || live_repl.reload_queue(&store))?;
     // Rebuild rather than reset: the target session may pin its own model
