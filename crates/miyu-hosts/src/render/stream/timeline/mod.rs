@@ -432,6 +432,30 @@ pub(crate) fn wrap_detail(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// 边想边往下流的那一段思考的记账。
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ThoughtStream {
+    /// 正文折好的物理行里，前多少行已经滚进 scrollback。按物理行记而不按字节：
+    /// 一次只滚「多出来的那几行」，live 区高度稳在一屏上下，转轮才不上下跳；
+    /// 按逻辑行滚的话一段十行的话一次滚十行，转轮跟着跳十行。
+    pub(crate) flushed_rows: usize,
+    /// 抬头「思考中」滚进 scrollback 了没。还在的话转轮挂在它上面、计数实时。
+    pub(crate) heading_flushed: bool,
+}
+
+/// 正在想的正文最多在 live 区里占几行：整屏减去转轮行、连线与页边距的余量。
+fn live_thought_rows() -> usize {
+    crate::render::terminal_rows(24).saturating_sub(3).max(4)
+}
+
+/// 思考正文的行：折好行、上好色（和想完落地那份同一副样子）。
+pub(crate) fn thought_body_lines(text: &str) -> Vec<String> {
+    wrap_detail(text)
+        .into_iter()
+        .map(|line| format!("{THOUGHT_BODY_STYLE}{line}\x1b[0m"))
+        .collect()
+}
+
 /// 出错那一步：整行红色。
 ///
 /// 只换图标不够——一屏暗色里多一个小记号根本扫不到，而"哪一步失败了"正是
@@ -722,7 +746,9 @@ impl StreamRenderer {
         if from >= self.timeline.steps.len() {
             return Ok(());
         }
-        // 转轮先收掉：它那几行还留在屏上的话，新落的步骤会写在它们中间。
+        // 转轮先收掉：它那几行还留在屏上的话，新落的步骤会写在它们中间。擦和写
+        // 裹在一个同步输出块里，终端一次成帧，不露出「擦了还没写」的空当。
+        self.begin_synchronized()?;
         self.stop_waiting()?;
         // 能点开的面（全屏 + 「不自动收起过程」）走这儿时**照样挂块标记**：
         // 「不自动收起」说的只是段末不写 `Worked for …`，不该顺手把每一步变成
@@ -766,10 +792,29 @@ impl StreamRenderer {
         }
         let stdout = &mut self.output;
         write!(stdout, "{out}")?;
-        stdout.flush()?;
+        self.end_synchronized()?;
         self.timeline.committed = self.timeline.steps.len();
         // 这一步干出来的结果（todo 表、图片占位）紧跟着它。
         self.flush_after_timeline()
+    }
+
+    /// 同步输出块的两头：擦转轮、落正文、重起转轮之间不让终端画中间态。
+    pub(crate) fn begin_synchronized(&mut self) -> anyhow::Result<()> {
+        if self.sync_depth == 0 {
+            crossterm::queue!(self.output, crossterm::terminal::BeginSynchronizedUpdate)?;
+        }
+        self.sync_depth += 1;
+        Ok(())
+    }
+
+    pub(crate) fn end_synchronized(&mut self) -> anyhow::Result<()> {
+        use std::io::Write as _;
+        self.sync_depth = self.sync_depth.saturating_sub(1);
+        if self.sync_depth == 0 {
+            crossterm::queue!(self.output, crossterm::terminal::EndSynchronizedUpdate)?;
+            self.output.flush()?;
+        }
+        Ok(())
     }
 
     pub(crate) fn timeline_push_thought(&mut self) -> anyhow::Result<()> {
@@ -790,6 +835,10 @@ impl StreamRenderer {
             );
         }
         let label = timed_label(&label, elapsed);
+        // 边想边落地的那一段：正文大半已经在 scrollback 里了，只剩半行和末尾那行计数。
+        if let Some(stream) = self.thought_stream.take() {
+            return self.finish_streamed_thought(stream, &label);
+        }
         // 点不开的面 + 摘要档：思考全文就不留了——抬头上的词元数和秒数说明
         // "想过"，想了什么本来也只是折叠起来备查的。完整档要的正是那份全文，
         // 于是它就地印在抬头底下（`commit_static_steps`）。
@@ -812,13 +861,162 @@ impl StreamRenderer {
         step.kind = StepKind::Thought;
         step.open = full_reasoning && caps.expandable;
         self.timeline.steps.push(step);
+        self.clear_reasoning_phase();
+        self.settle_new_steps()
+    }
+
+    /// 点不开的面 + 完整档：思考正文要不要边想边往下流。
+    ///
+    /// 那个面的 live 区是每帧「上移 → 擦 → 重画」的，高不过一屏；回复正文能一直
+    /// 往下流，是因为它写进 scrollback 就不回头。思考照这个办：抬头带着转轮留在
+    /// live 区顶上、正文在它底下长，整段高过一屏时最上面的行（先是抬头，再是最老
+    /// 的整行）滚进 scrollback——和全屏里块高过视口、抬头滚出去是一个意思
+    /// （用户 09-17：「没法做到一直往下流式输出吗？」「转轮要固定在思考的 logo
+    /// 左侧」）。全屏面的块能原地改，不走这条路。
+    pub(crate) fn thought_streams_inline(&self) -> bool {
+        self.reasoning_mode == ReasoningDisplayMode::Full
+            && self.captures_reasoning()
+            && self.caps().detail_inline()
+    }
+
+    /// 每来一条思考 delta：开始记账，整段高过一屏就往上滚。
+    pub(crate) fn stream_thought_progress(&mut self) -> anyhow::Result<()> {
+        if !self.thought_streams_inline() {
+            return Ok(());
+        }
+        if self.thought_stream.is_none() {
+            self.thought_stream = Some(ThoughtStream::default());
+        }
+        self.trim_streamed_thought()
+    }
+
+    /// 整段高过一屏时，把最上面的行滚进 scrollback：先是抬头，再是最老的整行
+    /// （只滚到换行为止——折行是按词断的，半行的折法还会变，落早了改不着）。
+    fn trim_streamed_thought(&mut self) -> anyhow::Result<()> {
+        use std::io::Write as _;
+        let Some(mut stream) = self.thought_stream else {
+            return Ok(());
+        };
+        let max_rows = live_thought_rows();
+        loop {
+            let rows = thought_body_lines(&self.reasoning_text);
+            let live = rows.len().saturating_sub(stream.flushed_rows)
+                + usize::from(!stream.heading_flushed);
+            if live <= max_rows {
+                break;
+            }
+            if !stream.heading_flushed {
+                // 抬头滚出去：落地的这份不带计数——计数还在涨，落了就改不着，
+                // 想完由末尾那一行报（`finish_streamed_thought`）。
+                let mut step = Step::new(
+                    step_line(glyph_think(), t("thinking", "思考中")),
+                    Vec::new(),
+                    None,
+                );
+                step.kind = StepKind::Thought;
+                self.timeline.steps.push(step);
+                stream.heading_flushed = true;
+                self.thought_stream = Some(stream);
+                // 落地和重起转轮在同一个同步块里：中间那个「擦了还没画」的空当不露出来。
+                self.begin_synchronized()?;
+                self.commit_static_steps()?;
+                self.ensure_waiting_phase(self.reasoning_live_text(), self.wait_style())?;
+                self.end_synchronized()?;
+                continue;
+            }
+            // 只滚多出来的那几行；末尾两行永远留着——折行按词断，还在写的那一行
+            // 可能把上一行的尾词拽下来，再往上的行已经定了。
+            let stable = rows.len().saturating_sub(2);
+            let flushable = stable.saturating_sub(stream.flushed_rows);
+            if flushable == 0 {
+                break;
+            }
+            let count = (live - max_rows).min(flushable);
+            let from = stream.flushed_rows;
+            let prefix = rail_prefix();
+            let committed = rows[from..from + count]
+                .iter()
+                .map(|line| format!("{prefix}{line}"))
+                .collect::<Vec<_>>();
+            // 首选就地交接：这几行本来就画在 live 区顶上，抹掉转轮字形、从账上划走
+            // 就是了，一行不擦。办不到（软折行、转轮不在）才擦了重画——而且落地和
+            // 重起转轮在同一个同步块里，不露空当。
+            let width = crate::render::terminal_cols(120);
+            let in_place = match self.wait_spinner.as_mut() {
+                Some(spinner) => {
+                    spinner.commit_leading_rows(&mut self.output, &committed, width)?
+                }
+                None => false,
+            };
+            if !in_place {
+                self.begin_synchronized()?;
+                self.stop_waiting()?;
+                let mut out = String::new();
+                for line in &committed {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+                let stdout = &mut self.output;
+                write!(stdout, "{out}")?;
+                self.ensure_waiting_phase(self.reasoning_live_text(), self.wait_style())?;
+                self.end_synchronized()?;
+            }
+            stream.flushed_rows += count;
+            self.thought_stream = Some(stream);
+        }
+        self.thought_stream = Some(stream);
+        Ok(())
+    }
+
+    /// 想完了。抬头还在 live 区就按原版式落地（`已思考 · N 词元 · Xs` 当抬头、
+    /// 正文在它底下）；抬头已经滚出去了，就把剩下的正文落地、末尾收一行计数。
+    fn finish_streamed_thought(
+        &mut self,
+        stream: ThoughtStream,
+        label: &str,
+    ) -> anyhow::Result<()> {
+        use std::io::Write as _;
+        let rows = thought_body_lines(&self.reasoning_text);
+        let rest = rows
+            .into_iter()
+            .skip(stream.flushed_rows)
+            .collect::<Vec<_>>();
+        self.timeline.thoughts += 1;
+        if !stream.heading_flushed {
+            let mut step = Step::new(step_line(glyph_think(), label), rest, None);
+            step.kind = StepKind::Thought;
+            self.timeline.steps.push(step);
+            self.clear_reasoning_phase();
+            return self.settle_new_steps();
+        }
+        self.begin_synchronized()?;
+        self.stop_waiting()?;
+        let prefix = rail_prefix();
+        let mut out = String::new();
+        for line in &rest {
+            out.push_str(&prefix);
+            out.push_str(line);
+            out.push('\n');
+        }
+        out.push_str(&prefix);
+        out.push_str(&format!("\x1b[2m{label}\x1b[0m"));
+        out.push('\n');
+        let stdout = &mut self.output;
+        write!(stdout, "{out}")?;
+        self.end_synchronized()?;
+        self.clear_reasoning_phase();
+        self.flush_after_timeline()
+    }
+
+    /// 这一段思考收完了：计数、正文、起点全清，等下一段。
+    fn clear_reasoning_phase(&mut self) {
         self.reasoning_text.clear();
         self.reasoning_tokens = 0;
         self.reasoning_title = None;
         self.reasoning_started_at = None;
         self.reasoning_elapsed = None;
+        self.thought_stream = None;
         self.live_block = None;
-        self.settle_new_steps()
     }
 
     /// 回放：把某一步真实花掉的时间喂回去。

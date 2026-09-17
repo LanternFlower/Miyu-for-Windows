@@ -74,6 +74,9 @@ def write_config():
         }],
         "memory": {"enabled": False},
     }
+    # ST_EXPAND_REASONING=1：「展开思考内容」开着——正在想时正文得跟在抬头底下流。
+    if os.environ.get("ST_EXPAND_REASONING"):
+        config["display"] = {"expand_reasoning": True}
     (HOME / "config" / "config.jsonc").write_text(
         json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -268,6 +271,19 @@ def check_normal(raw, screen, snapshots):
                 if any(l.startswith("  │ ") and ("走查用的命令输出" in l or "第二行" in l) for l in below):
                     tail_live = True
     report["command_tail_live"] = tail_live
+    # 「展开思考内容」开着时，思考正文边想边落地：还在转（帧里有转轮）的时候，
+    # 抬头「思考中」已经落地、底下已有正文行从连线穿过去。
+    thought_live = False
+    for frame in live_frames:
+        heading = next((i for i, line in enumerate(frame) if "思考中" in line), None)
+        if heading is None:
+            continue
+        below = frame[heading + 1:]
+        if any(l.startswith("  │ ") and "先看一眼需求" in l for l in below):
+            thought_live = True
+    # 摘要档本来就不露正文，只在开关开着（ST_EXPAND_REASONING=1）时算这一项。
+    if os.environ.get("ST_EXPAND_REASONING"):
+        report["thought_body_live"] = thought_live
     # 时间线和正文之间空一行。
     reply_rows = [i for i, line in enumerate(screen) if "走查的回复" in line]
     gap_ok = False
@@ -323,7 +339,8 @@ def main():
             STUB_TOOL_COMMAND=(
                 "printf '走查用的命令输出\\n'; sleep 1.2; printf '第二行\\n'; sleep 1.2"
             ),
-            STUB_REASONING_TEXT="先看一眼需求，再决定怎么下手。" * 6,
+            # 带换行：「展开思考内容」下想完整行的正文要边想边落地。
+            STUB_REASONING_TEXT="先看一眼需求，再决定怎么下手。\n" * 6,
         ),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )

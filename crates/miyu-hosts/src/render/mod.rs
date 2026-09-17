@@ -70,6 +70,13 @@ pub(crate) fn cols_override() -> u16 {
 }
 
 /// 终端有多宽：先看本线程的覆盖值，再问 `terminal::size()`，都没有就用 `fallback`。
+/// 终端高度（行）。拿不到就用 `fallback`。
+pub(crate) fn terminal_rows(fallback: usize) -> usize {
+    terminal::size()
+        .map(|(_, height)| usize::from(height))
+        .unwrap_or(fallback)
+}
+
 pub(crate) fn terminal_cols(fallback: usize) -> usize {
     let forced = COLS_OVERRIDE.with(|cell| cell.get());
     if forced > 0 {

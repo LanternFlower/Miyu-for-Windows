@@ -236,7 +236,17 @@ impl StreamRenderer {
             // 转轮落在**左边距**那一列（第 0 列），logo 留在自己那一列——
             // 原来转轮顶掉 logo 的位置，跑完再换回来，一行两副面孔。
             //（用户：左边不是有一个边距吗，`<转轮><logo><抬头>` 就不用替代 logo 了。）
-            let mut row = format!("{}{begin}{line}", crate::render::wait_spinner::BLOCK_MARKER);
+            // 抬头已经滚出屏幕的思考：正文行上不放转轮（用户 09-17：转轮跟着正文
+            // 往下走反而碍眼），行首那格留空，列位不变。
+            let marker = if self
+                .thought_stream
+                .is_some_and(|stream| stream.heading_flushed)
+            {
+                crate::render::wait_spinner::BLOCK_MARKER_IDLE
+            } else {
+                crate::render::wait_spinner::BLOCK_MARKER
+            };
+            let mut row = format!("{marker}{begin}{line}");
             // 底下跟着的几行（跑着的命令此刻的输出）和这一行是同一项：连线从
             // 它们中间穿过去。块的结束标记放在最后一行之后——点开的时候展开
             // 内容把抬头和这几行**一起**换掉（用户：如果展开命令的话就替换掉
@@ -265,7 +275,12 @@ impl StreamRenderer {
             return (String::new(), None);
         }
         // 静态版：前面的步骤已经落进 scrollback 了，live 区从一根连线接上去。
-        if self.timeline.committed > 0 {
+        // 抬头已经滚出去的思考除外：转轮行直接接在刚滚出去的那行正文底下，中间不空一根线。
+        if self.timeline.committed > 0
+            && !self
+                .thought_stream
+                .is_some_and(|stream| stream.heading_flushed)
+        {
             lines.insert(0, rail());
         }
         (String::new(), Some(lines.join("\n")))
@@ -406,19 +421,42 @@ impl StreamRenderer {
         } else if !self.tool_stats.is_empty() {
             self.timeline_running_tool_lines()
         } else if self.reasoning_started_at.is_some() {
-            // 给窥视留下的宽度：整屏减掉「  │ ✳ 思考中 · 320 词元 · 7.5s  」
-            vec![LiveRow {
-                line: format!(
-                    "{} {}",
-                    glyph_think(),
-                    self.timeline_thinking_line(width.saturating_sub(46).max(12))
-                ),
-                target: self.live_block,
-                tail: Vec::new(),
-                // 「展开思考内容」开着时，**正在想**的这一步也是展开的：
-                // 点开看到的是它想到哪儿了（`live_block_lines` 每帧重灌）。
-                open: self.reasoning_mode == ReasoningDisplayMode::Full,
-            }]
+            if let Some(stream) = self.thought_stream {
+                // 边想边往下流：还没滚进 scrollback 的正文整段挂在抬头底下。抬头还
+                // 在时转轮就挂在它上面、计数实时；抬头滚出去了，转轮落在露着的第一
+                // 行正文的左边距上。
+                let mut lines = thought_body_lines(&self.reasoning_text)
+                    .into_iter()
+                    .skip(stream.flushed_rows)
+                    .collect::<Vec<_>>();
+                let line = if !stream.heading_flushed {
+                    format!("{} {}", glyph_think(), self.thinking_head())
+                } else if lines.is_empty() {
+                    RAIL.to_string()
+                } else {
+                    format!("{RAIL} {}", lines.remove(0))
+                };
+                vec![LiveRow {
+                    line,
+                    target: self.live_block,
+                    tail: lines,
+                    open: true,
+                }]
+            } else {
+                // 给窥视留下的宽度：整屏减掉「  │ ✳ 思考中 · 320 词元 · 7.5s  」
+                vec![LiveRow {
+                    line: format!(
+                        "{} {}",
+                        glyph_think(),
+                        self.timeline_thinking_line(width.saturating_sub(46).max(12))
+                    ),
+                    target: self.live_block,
+                    tail: Vec::new(),
+                    // 「展开思考内容」开着时，**正在想**的这一步也是展开的：
+                    // 点开看到的是它想到哪儿了（`live_block_lines` 每帧重灌）。
+                    open: self.reasoning_mode == ReasoningDisplayMode::Full,
+                }]
+            }
         } else {
             Vec::new()
         };
@@ -540,25 +578,31 @@ impl StreamRenderer {
             .collect()
     }
 
-    /// 正在想的那一行：`思考中 · N 词元 · Xs   <窥视>`。
-    ///
-    /// 窥视取思考正文的**末尾**一段并压成一行——想到哪儿了比想过什么更有用，
-    /// 而且它每帧都在变，正好当作「还活着」的指示。
-    pub(crate) fn timeline_thinking_line(&self, peek_width: usize) -> String {
+    /// 正在想的抬头：`思考中 · N 词元 · Xs`（不带窥视）。
+    pub(crate) fn thinking_head(&self) -> String {
         let elapsed = self
             .reasoning_started_at
             .map(|at| at.elapsed())
             .unwrap_or_default();
-        let mut head = format!("{} · {}", t("thinking", "思考中"), format_seconds(elapsed));
         if self.reasoning_tokens > 0 {
-            head = format!(
+            format!(
                 "{} · {} {} · {}",
                 t("thinking", "思考中"),
                 self.reasoning_tokens,
                 t("tokens", "词元"),
                 format_seconds(elapsed)
-            );
+            )
+        } else {
+            format!("{} · {}", t("thinking", "思考中"), format_seconds(elapsed))
         }
+    }
+
+    /// 正在想的那一行：`思考中 · N 词元 · Xs   <窥视>`。
+    ///
+    /// 窥视取思考正文的**末尾**一段并压成一行——想到哪儿了比想过什么更有用，
+    /// 而且它每帧都在变，正好当作「还活着」的指示。
+    pub(crate) fn timeline_thinking_line(&self, peek_width: usize) -> String {
+        let head = self.thinking_head();
         let peek = peek_tail(&self.reasoning_text, peek_width);
         if peek.is_empty() {
             head

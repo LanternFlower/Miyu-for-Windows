@@ -372,6 +372,243 @@ fn a_thought_is_one_line_and_there_is_no_worked_for_handle() {
     assert!(lines[search + 1].trim().is_empty(), "{lines:?}");
 }
 
+fn full_static_renderer() -> StreamRenderer {
+    let mut renderer = StreamRenderer::new(
+        ReasoningDisplayMode::Full,
+        ToolCallDisplayMode::Summary,
+        false,
+        true,
+        4,
+    );
+    renderer.use_external_cursor_control();
+    renderer.use_buffered_output();
+    renderer.use_terminal_surface();
+    assert!(renderer.timeline_static(), "该走静态时间线");
+    renderer
+}
+
+fn reasoning(renderer: &mut StreamRenderer, text: &str) {
+    renderer
+        .write_chunk(ChatStreamChunk {
+            kind: ChatStreamKind::Reasoning,
+            text: text.to_string(),
+        })
+        .unwrap();
+}
+
+/// 「展开思考内容」+ 点不开的面（shellhook 等）：思考正文**边想边往下流**，抬头带着
+/// 转轮留在 live 区顶上、正文在它底下长（用户 09-17：转轮要固定在思考的 logo 左侧）；
+/// 想完按原版式落地：`已思考 · N 词元 · Xs` 当抬头，正文在它底下，只印一遍。
+#[test]
+fn a_full_thought_streams_under_its_live_heading() {
+    let mut renderer = full_static_renderer();
+    let mut screen = Screen::new();
+    renderer
+        .start_reasoning_phase(std::time::Instant::now())
+        .unwrap();
+    reasoning(&mut renderer, "第一行想法\n第二行想法");
+    screen.feed(&renderer.take_output_frame());
+    // 抬头和正文都还在 live 区：抬头在上、正文跟在底下，什么都没落地。
+    let (_, live) = renderer.timeline_waiting();
+    let live = strip_ansi(&live.expect("live 区是空的"));
+    let rows: Vec<&str> = live.lines().collect();
+    let heading = rows
+        .iter()
+        .position(|row| row.contains(t("thinking", "思考中")))
+        .unwrap_or_else(|| panic!("live 区没有抬头: {live:?}"));
+    let first = rows
+        .iter()
+        .position(|row| row.contains("第一行想法"))
+        .unwrap_or_else(|| panic!("正文没跟在抬头底下: {live:?}"));
+    let second = rows
+        .iter()
+        .position(|row| row.contains("第二行想法"))
+        .unwrap_or_else(|| panic!("半行也该露着: {live:?}"));
+    assert!(heading < first && first < second, "{live:?}");
+    assert!(
+        rows[heading].starts_with(miyu_hosts::render::wait_spinner::BLOCK_MARKER),
+        "转轮该挂在抬头上: {:?}",
+        rows[heading]
+    );
+    assert!(
+        rows[first].trim_start().starts_with('│'),
+        "{:?}",
+        rows[first]
+    );
+    // 想完：抬头换成「已思考 · …」落地，正文在它底下，只印一遍，没有末尾计数行。
+    renderer
+        .write_chunk(ChatStreamChunk {
+            kind: ChatStreamKind::Content,
+            text: "正文来了".to_string(),
+        })
+        .unwrap();
+    renderer.finish().unwrap();
+    screen.feed(&renderer.take_output_frame());
+    let lines = screen.lines();
+    let heading = lines
+        .iter()
+        .position(|line| line.contains(t("thought", "已思考")))
+        .unwrap_or_else(|| panic!("想完的抬头没落地: {lines:?}"));
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.contains(t("thought", "已思考")))
+            .count(),
+        1,
+        "{lines:?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.contains(t("thinking", "思考中"))),
+        "落地后不该留着「思考中」: {lines:?}"
+    );
+    for needle in ["第一行想法", "第二行想法"] {
+        let at = lines
+            .iter()
+            .position(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} 没落地: {lines:?}"));
+        assert!(at > heading, "正文该在抬头底下: {lines:?}");
+        assert_eq!(
+            lines.iter().filter(|line| line.contains(needle)).count(),
+            1,
+            "{needle} 该正好印一遍: {lines:?}"
+        );
+    }
+}
+
+/// 整段高过一屏：抬头先滚进 scrollback，再滚最老的整行，live 区只留后面那一屏；
+/// 想完在末尾收一行计数，全文只印一遍。测试里终端高度按 24 行算。
+#[test]
+fn a_thought_taller_than_the_screen_scrolls_its_heading_away() {
+    let mut renderer = full_static_renderer();
+    let mut screen = Screen::new();
+    renderer
+        .start_reasoning_phase(std::time::Instant::now())
+        .unwrap();
+    let long = (0..40)
+        .map(|index| format!("第{index}行"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    reasoning(&mut renderer, &long);
+    screen.feed(&renderer.take_output_frame());
+    let lines = screen.lines();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains(t("thinking", "思考中"))),
+        "抬头该先滚进 scrollback: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("第0行")),
+        "最老的整行该滚进 scrollback: {lines:?}"
+    );
+    let (_, live) = renderer.timeline_waiting();
+    let live = live.expect("live 区是空的");
+    // 抬头滚出去了，正文行上不再挂转轮：只有留空的标记，没有转轮标记。
+    assert!(
+        live.contains(miyu_hosts::render::wait_spinner::BLOCK_MARKER_IDLE)
+            && !live.contains(miyu_hosts::render::wait_spinner::BLOCK_MARKER),
+        "抬头滚出去后 live 区不该再有转轮: {live:?}"
+    );
+    let live = strip_ansi(&live);
+    assert!(
+        live.contains("第39行")
+            && !live.contains("第0行")
+            && !live.contains(t("thinking", "思考中")),
+        "live 区该只剩后面那一屏: {live:?}"
+    );
+    assert!(live.lines().count() <= 24, "live 区高过一屏了: {live:?}");
+    renderer
+        .write_chunk(ChatStreamChunk {
+            kind: ChatStreamKind::Content,
+            text: "正文来了".to_string(),
+        })
+        .unwrap();
+    renderer.finish().unwrap();
+    screen.feed(&renderer.take_output_frame());
+    let lines = screen.lines();
+    for needle in ["第0行", "第20行", "第39行", "思考中"] {
+        assert_eq!(
+            lines.iter().filter(|line| line.contains(needle)).count(),
+            1,
+            "{needle} 该正好印一遍: {lines:?}"
+        );
+    }
+    let last = lines
+        .iter()
+        .position(|line| line.contains("第39行"))
+        .unwrap();
+    let closing = lines
+        .iter()
+        .position(|line| line.contains(t("thought", "已思考")))
+        .unwrap_or_else(|| panic!("末尾没收计数那一行: {lines:?}"));
+    let reply = lines
+        .iter()
+        .position(|line| line.contains("正文来了"))
+        .unwrap();
+    assert!(last < closing && closing < reply, "{lines:?}");
+    assert!(
+        lines[closing].trim_start().starts_with('│'),
+        "{:?}",
+        lines[closing]
+    );
+}
+
+/// 一整段没换行、自己就高过一屏（测试里终端按 24 行算）：按折好的物理行滚进
+/// scrollback，live 区不高过一屏，想完全文只印一遍。
+#[test]
+fn a_giant_paragraph_scrolls_by_wrapped_rows() {
+    let mut renderer = full_static_renderer();
+    let mut screen = Screen::new();
+    renderer
+        .start_reasoning_phase(std::time::Instant::now())
+        .unwrap();
+    let paragraph = (0..400)
+        .map(|index| format!("词{index:03}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    reasoning(&mut renderer, &paragraph);
+    screen.feed(&renderer.take_output_frame());
+    let lines = screen.lines();
+    assert!(
+        lines.iter().any(|line| line.contains("词000")),
+        "段首该已经滚进 scrollback: {lines:?}"
+    );
+    let (_, live) = renderer.timeline_waiting();
+    let live = strip_ansi(&live.expect("live 区是空的"));
+    assert!(live.lines().count() <= 24, "live 区高过一屏了: {live:?}");
+    assert!(
+        live.contains("词399") && !live.contains("词000"),
+        "{live:?}"
+    );
+    renderer
+        .write_chunk(ChatStreamChunk {
+            kind: ChatStreamKind::Content,
+            text: "正文来了".to_string(),
+        })
+        .unwrap();
+    renderer.finish().unwrap();
+    screen.feed(&renderer.take_output_frame());
+    let lines = screen.lines();
+    for needle in ["词000", "词200", "词399"] {
+        assert_eq!(
+            lines.iter().filter(|line| line.contains(needle)).count(),
+            1,
+            "{needle} 该正好印一遍: {lines:?}"
+        );
+    }
+    let closing = lines
+        .iter()
+        .position(|line| line.contains(t("thought", "已思考")))
+        .unwrap_or_else(|| panic!("末尾没收计数那一行: {lines:?}"));
+    let last = lines
+        .iter()
+        .position(|line| line.contains("词399"))
+        .unwrap();
+    assert!(last < closing, "{lines:?}");
+}
+
 #[test]
 fn the_live_area_continues_the_rail_after_a_committed_step() {
     let mut renderer = static_renderer();

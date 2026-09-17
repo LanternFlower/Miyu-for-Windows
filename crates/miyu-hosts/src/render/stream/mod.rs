@@ -78,6 +78,12 @@ pub struct StreamRenderer {
     pub(crate) reasoning_title: Option<String>,
     pub(crate) reasoning_started_at: Option<std::time::Instant>,
     pub(crate) reasoning_elapsed: Option<std::time::Duration>,
+    /// 点不开的面 + 完整档：这一段思考的正文边想边往下流。见 [`timeline::ThoughtStream`]。
+    /// `None` = 这一段没走这条路（全屏 / 摘要档 / 还没来第一条 delta）。
+    pub(crate) thought_stream: Option<timeline::ThoughtStream>,
+    /// 同步输出块的嵌套深度。DEC 2026 是个布尔不是栈：只有最外层那对才真的发
+    /// 标记，里层（落地时顺手收转轮）什么都不发，免得里层的结束把外层提前结掉。
+    pub(crate) sync_depth: usize,
     pub(crate) tool_stats: BTreeMap<String, ToolStats>,
     pub(crate) tool_seq: usize,
     pub(crate) readable_tool_names: bool,
@@ -154,6 +160,8 @@ impl StreamRenderer {
             reasoning_tokens: 0,
             reasoning_title: None,
             reasoning_started_at: None,
+            thought_stream: None,
+            sync_depth: 0,
             reasoning_elapsed: None,
             tool_stats: BTreeMap::new(),
             tool_seq: 0,
@@ -266,6 +274,8 @@ impl StreamRenderer {
             }
             self.finalize_tools_summary()?;
             self.record_reasoning_text(&text);
+            // 点不开的面 + 完整档：想完整行的正文当场落地（半行留在 live 区）。
+            self.stream_thought_progress()?;
             self.mode = Some(ChatStreamKind::Reasoning);
             self.ensure_waiting_phase(self.reasoning_live_text(), self.wait_style())?;
             return Ok(());

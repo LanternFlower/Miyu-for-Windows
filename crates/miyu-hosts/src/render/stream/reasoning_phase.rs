@@ -79,6 +79,7 @@ impl StreamRenderer {
             self.reasoning_elapsed = None;
             self.reasoning_title = None;
             self.reasoning_text.clear();
+            self.thought_stream = None;
             self.reasoning_tokens = 0;
         }
         self.start_waiting()?;
@@ -154,6 +155,7 @@ impl StreamRenderer {
         self.reasoning_elapsed = None;
         self.reasoning_title = None;
         self.reasoning_text.clear();
+        self.thought_stream = None;
         self.reasoning_tokens = 0;
         if mid_content && !has_pending_summary {
             // 转轮会 MoveToColumn(0)+清行,正文行开着时起它会抹掉半行字。
@@ -185,6 +187,7 @@ impl StreamRenderer {
         }
         self.reasoning_title = None;
         self.reasoning_text.clear();
+        self.thought_stream = None;
         self.reasoning_tokens = 0;
         self.reasoning_started_at = Some(received_at);
         self.reasoning_elapsed = None;
@@ -238,7 +241,9 @@ impl StreamRenderer {
                 debug_assert!(self.wait_spinner.is_none());
                 display.tick(&mut self.output)?;
             } else if let Some(spinner) = &mut self.wait_spinner {
-                spinner.tick(&mut self.output)?;
+                // 已经在同步块里（落地时顺手重起转轮）就别再发一对标记。
+                let own_block = self.sync_depth == 0;
+                spinner.tick_in(&mut self.output, own_block)?;
             }
             if self.wait_spinner.is_some()
                 || self.command_display.is_some()
@@ -282,6 +287,7 @@ impl StreamRenderer {
             })?;
             stdout.flush()?;
             self.reasoning_text.clear();
+            self.thought_stream = None;
             self.reasoning_tokens = 0;
             self.reasoning_title = None;
             self.reasoning_started_at = None;
@@ -468,7 +474,9 @@ impl StreamRenderer {
 
     pub(crate) fn stop_waiting(&mut self) -> Result<()> {
         if let Some(mut spinner) = self.wait_spinner.take() {
-            spinner.stop(&mut self.output)?;
+            // 已经在同步块里（落地时顺手收转轮）就别再发一对标记：2026 不是栈。
+            let own_block = self.sync_depth == 0;
+            spinner.stop_in(&mut self.output, own_block)?;
         }
         self.last_tick = None;
         Ok(())
