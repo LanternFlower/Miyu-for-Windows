@@ -1072,12 +1072,102 @@ fn the_job_panel_follows_the_expand_switches() {
 
         // 展开档：出来就是展开的，一次都不用点。
         let mut expanded = Screen::detached(100, 40);
-        expanded.set_display_expand(true, true);
+        expanded.set_display_expand(true, true, true);
         assert!(expanded.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
         let rows = expanded.overlay_rows();
         assert!(
             rows.iter().any(|row| row.contains("先想一句")),
             "展开档下面板里那一步没展开: {rows:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+}
+
+/// 浮层里的 tag 行也要有悬浮提亮。
+///
+/// 面板原来把 `Moved` 和别的鼠标事件一起吞掉了，于是「哪儿能点」全靠猜——而正文
+/// 那侧一直是有的（用户 09-17：「浮层的 tag 行没有悬浮变色的效果」）。
+///
+/// 提亮的是**整块**不是一行：一步的抬头和它露出来的几行是同一件事。
+#[test]
+fn the_overlay_highlights_the_row_under_the_mouse() {
+    with_blocks(|| {
+        let step = blocks::register(vec!["  详情".into()]).expect("步那块没登记");
+        let line = format!(
+            "{}  ✳ 一步{}",
+            blocks::begin_marker(step),
+            blocks::END_MARKER
+        );
+        let panel = blocks::register_overlay("面板".into(), vec!["  抬头".into(), line])
+            .expect("面板没登记");
+        let mut screen = Screen::detached(80, 24);
+        assert!(screen.open_overlay(panel));
+
+        let row = screen
+            .overlay_rows()
+            .iter()
+            .position(|row| row.contains("一步"))
+            .expect("没有那一步");
+        assert!(screen.overlay_hover_index(Some(row)), "悬浮没认出来");
+        assert_eq!(screen.overlay_hovered(), Some(step), "认错了块");
+        // 同一块上不动：不该每次移动都重画。
+        assert!(
+            !screen.overlay_hover_index(Some(row)),
+            "同一块又报了一次变化"
+        );
+        // 移到不能点的行上：提亮撤掉。
+        assert!(screen.overlay_hover_index(None), "离开没撤提亮");
+        assert_eq!(screen.overlay_hovered(), None);
+    });
+}
+
+/// 后台任务面板也跟着「过程收起成 Worked for」走。
+///
+/// 浮层原来是无条件收段的，那个开关在浮层里等于不存在（用户 09-17：「子代理浮层
+/// 也不受 `过程收起成 worked for` 这个开关的影响」）。
+#[test]
+fn the_job_panel_follows_the_fold_switch() {
+    with_blocks(|| {
+        let dir = std::env::temp_dir().join(format!("miyu-log-fold-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建目录");
+        let path = dir.join("job.log");
+        std::fs::write(
+            &path,
+            [
+                "[提示] 去看看",
+                "[思考] 1.2s\t先想一句。",
+                "[工具] run_command\t运行命令 · ls",
+                "[结果] run_command\t运行命令 ok · 0.3s · ls",
+                // 它开口说话 = 前面那一段该收成 `Worked for …`（开着的话）。
+                "[正文] 看完了。",
+            ]
+            .join("\n")
+                + "\n",
+        )
+        .expect("写日志");
+
+        let mut folded = Screen::detached(100, 40);
+        assert!(folded.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
+        assert!(
+            folded
+                .overlay_rows()
+                .iter()
+                .any(|row| row.contains("Worked for")),
+            "开着收段却没收: {:?}",
+            folded.overlay_rows()
+        );
+
+        let mut open = Screen::detached(100, 40);
+        open.set_display_expand(false, false, false);
+        assert!(open.open_log_overlay(path.clone(), "走查".into(), None, String::new()));
+        let rows = open.overlay_rows();
+        assert!(
+            !rows.iter().any(|row| row.contains("Worked for")),
+            "关了收段还是收了: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("已思考")),
+            "不收段那几步该就地留着: {rows:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     });

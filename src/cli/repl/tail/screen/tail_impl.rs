@@ -75,6 +75,18 @@ impl super::super::LiveReplTail {
                 let delta = match mouse.kind {
                     MouseEventKind::ScrollUp => -3,
                     MouseEventKind::ScrollDown => 3,
+                    // 悬浮提亮：面板里也得有。不提亮的话「哪儿能点」全靠猜，
+                    // 而正文那侧一直是有的（用户 09-17）。
+                    MouseEventKind::Moved => {
+                        if self
+                            .screen
+                            .as_mut()
+                            .is_some_and(|screen| screen.overlay_hover_at(row))
+                        {
+                            self.repaint_screen()?;
+                        }
+                        return Ok(true);
+                    }
                     MouseEventKind::Down(MouseButton::Left) => {
                         if let Some(screen) = &mut self.screen {
                             screen.overlay_select_begin(column, row);

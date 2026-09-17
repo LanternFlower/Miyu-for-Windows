@@ -63,6 +63,32 @@ impl Screen {
         }
     }
 
+    /// 鼠标停在面板里第 `index` 行上（测试用）：同 `overlay_toggle`，省掉屏幕行
+    /// 到内容行的几何换算。返回真表示悬浮目标变了。
+    pub(in crate::cli) fn overlay_hover_index(&mut self, index: Option<usize>) -> bool {
+        let Some(panel) = &mut self.overlay else {
+            return false;
+        };
+        let next = index.and_then(|index| {
+            super::super::expand::layer_hit(
+                &super::super::expand::Layer::Body(&panel.body),
+                &panel.expanded,
+                index,
+            )
+            .map(|(id, _)| id)
+        });
+        if next == panel.hover {
+            return false;
+        }
+        panel.hover = next;
+        true
+    }
+
+    /// 面板里鼠标停在哪一块上（测试用）。
+    pub(in crate::cli) fn overlay_hovered(&self) -> Option<u64> {
+        self.overlay.as_ref().and_then(|panel| panel.hover)
+    }
+
     /// 松手之后待写进剪贴板的那段文字（测试用）。
     pub(in crate::cli) fn take_pending_copy(&mut self) -> Option<String> {
         self.pending_copy.take()

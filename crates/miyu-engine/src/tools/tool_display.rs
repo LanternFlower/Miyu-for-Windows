@@ -34,6 +34,50 @@ pub fn tool_peek(name: &str, arguments: &str) -> Option<String> {
     args_peek(arguments)
 }
 
+/// 调用参数里那份 apply_patch 信封的加减行数。
+///
+/// **住在 engine 而不是渲染层**：它是「这次调用改了多少行」这件事实，两条路都要
+/// 用——写流水账那一侧（`tool_line_text`，抬头上的 `+3 -1`）和渲染那一侧（浮层
+/// 画 diff）。渲染层在 engine 之上，engine 够不着它，所以事实这一半得在下面。
+///
+/// 子代理内层的编辑拿不到 `__patch_preview__` 的真 diff，只有这份信封；信封本身
+/// 就是 `+`/`-` 的形状，数出来的量和真 diff 一致（除非补丁应用后被上下文吸收）。
+pub fn envelope_diff_stat(tool: &str, arguments: &str) -> Option<(usize, usize)> {
+    if !matches!(
+        tool_event_base_name(tool),
+        "edit" | "kb" | "artifact" | "apply_patch" | "apply_artifact_patch"
+    ) {
+        return None;
+    }
+    let args = serde_json::from_str::<serde_json::Value>(arguments.trim()).ok()?;
+    let patch = args
+        .get("patchText")
+        .or_else(|| args.get("patch_text"))
+        .and_then(serde_json::Value::as_str)?;
+    diff_stat(patch)
+}
+
+/// 一段 diff 的加减行数。
+///
+/// 数的是 diff 正文里的 `+`/`-` 行，`+++`/`---` 那两行文件头不算。一个补丁改好
+/// 几个文件时**合计**（抬头上的路径已经是「第一个 +2 项」的合计口径，统计跟着
+/// 合计才自洽；用户 09-17 裁定）。
+pub fn diff_stat(diff: &str) -> Option<(usize, usize)> {
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    for line in diff.lines() {
+        if line.starts_with("+++") || line.starts_with("---") {
+            continue;
+        }
+        if line.starts_with('+') {
+            added += 1;
+        } else if line.starts_with('-') {
+            removed += 1;
+        }
+    }
+    (added + removed > 0).then_some((added, removed))
+}
+
 /// 参数对象里的标量值按出现顺序串起来，`·` 隔开。数组、嵌套对象跳过；空的
 /// 就是没有。单个值裁到 48 列，总长交给调用方再裁。
 pub fn args_peek(arguments: &str) -> Option<String> {

@@ -147,6 +147,12 @@ pub enum LogEvent<'a> {
 pub struct ToolLine<'a> {
     pub tool: Option<Cow<'a, str>>,
     pub text: Cow<'a, str>,
+    /// 这次调用的**参数原文**。只有标记流那条路有——日志行上只留了拼好的抬头。
+    ///
+    /// 浮层画 diff 要靠它：子代理内层的编辑拿不到 `__patch_preview__` 的真 diff，
+    /// 只有调用参数里那份信封（用户 09-17：「展开后的 diff 渲染也没有」）。
+    /// 着色归渲染层，所以这儿只如实把参数带过去。
+    pub args: Option<Cow<'a, str>>,
 }
 
 impl<'a> ToolLine<'a> {
@@ -155,10 +161,12 @@ impl<'a> ToolLine<'a> {
             Some((tool, text)) => Self {
                 tool: Some(Cow::Borrowed(tool.trim())),
                 text: Cow::Borrowed(text.trim()),
+                args: None,
             },
             None => Self {
                 tool: None,
                 text: Cow::Borrowed(rest.trim()),
+                args: None,
             },
         }
     }
@@ -257,6 +265,7 @@ pub fn from_marker(message: &str) -> Option<LogEvent<'static>> {
         return Some(LogEvent::Preparing(ToolLine {
             tool: Some(Cow::Owned(name.to_string())),
             text: Cow::Owned(phase.to_string()),
+            args: None,
         }));
     }
     // 标记流是**逐 delta** 的（`SubagentRunner::reasoning` / `content` 一个 delta
@@ -347,22 +356,39 @@ pub(crate) fn tool_line_text(json: &str) -> String {
                 out.push_str(" · ");
                 out.push_str(&miyu_base::terminal::clip_to_display_width(&subject, 200));
             }
+            // 编辑类工具再带上改了多少行——主线和前台浮层的抬头一直有 `+3 -1`，
+            // 后台这条路上一直没有（用户 09-17：「子代理浮层的编辑文件没有 diff
+            // 信息，tag 行后的加减多少没有」）。写在**文本里**，于是读日志和订
+            // 标记流两条路都有。
+            if let Some((added, removed)) = crate::tools::envelope_diff_stat(name, args) {
+                out.push_str(&format!(" · +{added} -{removed}"));
+            }
         }
     }
     out
 }
 
-/// 同上，再按制表符拆成 [`ToolLine`]。
+/// 同上，再按制表符拆成 [`ToolLine`]。参数原文一并带上——浮层画 diff 要用它。
 fn tool_line_of(json: &str) -> ToolLine<'static> {
     let text = tool_line_text(json);
+    let args = serde_json::from_str::<serde_json::Value>(json.trim())
+        .ok()
+        .and_then(|value| {
+            value
+                .get("args")
+                .and_then(serde_json::Value::as_str)
+                .map(|args| Cow::Owned(args.to_string()))
+        });
     match text.split_once('\t') {
         Some((tool, rest)) => ToolLine {
             tool: Some(Cow::Owned(tool.trim().to_string())),
             text: Cow::Owned(rest.trim().to_string()),
+            args,
         },
         None => ToolLine {
             tool: None,
             text: Cow::Owned(text.trim().to_string()),
+            args,
         },
     }
 }
@@ -500,6 +526,7 @@ mod tests {
             LogEvent::ToolCall(ToolLine {
                 tool: Some(b("run_command")),
                 text: b("运行命令 · ls"),
+                args: None,
             })
         );
         assert_eq!(
@@ -507,6 +534,7 @@ mod tests {
             LogEvent::Preparing(ToolLine {
                 tool: Some(b("edit")),
                 text: b("准备编辑"),
+                args: None,
             })
         );
     }
@@ -520,6 +548,7 @@ mod tests {
             LogEvent::ToolCall(ToolLine {
                 tool: None,
                 text: b("编辑文件 · /tmp/a.txt"),
+                args: None,
             })
         );
         // 老日志的思考也没有耗时。
@@ -717,10 +746,42 @@ mod tests {
             // 第一行（`[结果]`）。
             let first = written.lines().next().unwrap_or_default();
             let via_log = parse_log_line(first);
+            // **参数是例外**：标记流带得过来，日志行上只留了拼好的抬头（浮层画
+            // diff 要用它，见 `ToolLine::args`）。比的时候把它摘出去——除了它，
+            // 两条路必须一个字节都不差。
+            let (direct_args, direct) = strip_args(direct);
+            let (log_args, via_log) = strip_args(via_log);
             assert_eq!(
                 direct, via_log,
                 "{marker} 在两条路上解出来不一样\n  直接: {direct:?}\n  过日志: {via_log:?}"
             );
+            assert!(log_args.is_none(), "日志行上不该有参数: {log_args:?}");
+            if matches!(*marker, "__subtool_call__" | "__subtool_result__") {
+                assert!(direct_args.is_some(), "{marker} 该把参数带过来");
+            }
+        }
+    }
+
+    /// 把 `ToolLine::args` 摘出来（比两条路时它是例外，见调用处）。
+    fn strip_args(event: LogEvent<'_>) -> (Option<String>, LogEvent<'_>) {
+        fn take(mut line: ToolLine<'_>) -> (Option<String>, ToolLine<'_>) {
+            let args = line.args.take().map(|args| args.into_owned());
+            (args, line)
+        }
+        match event {
+            LogEvent::ToolCall(line) => {
+                let (args, line) = take(line);
+                (args, LogEvent::ToolCall(line))
+            }
+            LogEvent::Preparing(line) => {
+                let (args, line) = take(line);
+                (args, LogEvent::Preparing(line))
+            }
+            LogEvent::ToolResult { line, ok } => {
+                let (args, line) = take(line);
+                (args, LogEvent::ToolResult { line, ok })
+            }
+            other => (None, other),
         }
     }
 

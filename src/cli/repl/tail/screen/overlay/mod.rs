@@ -109,6 +109,12 @@ pub(in crate::cli) struct Overlay {
     /// `Screen::set_display_expand`）。面板自己是从日志/标记流攒步的，手上没有
     /// 配置入口。
     display_expand: (bool, bool),
+    /// `过程收起成 Worked for`。见 `display_expand` 那段——同一条路交进来。
+    display_fold: bool,
+    /// 鼠标停在面板里哪一块上。可点的东西要看得出来「这里能点」——正文那侧
+    /// 一直有（`Screen::hover`），面板这侧原来整个没有：`Moved` 和别的鼠标事件
+    /// 一起被吞掉了（用户 09-17：「浮层的 tag 行没有悬浮变色的效果」）。
+    hover: Option<u64>,
     /// 面板里的选区。行号是**面板自己的内容行**（`Overlay::row` 那套），不是
     /// 正文缓冲的绝对行——面板是另一张画布，滚动也是自己的。
     ///
@@ -147,6 +153,8 @@ impl Overlay {
             expanded: Expanded::new(),
             open_seeded: std::collections::HashSet::new(),
             display_expand: (false, false),
+            display_fold: true,
+            hover: None,
             selection: None,
             scroll: 0,
             follow: true,
@@ -165,6 +173,7 @@ impl Overlay {
         // 第一次排版就要按档位来：构造函数里已经读了一遍日志，晚一步交进来的话
         // 面板刚打开那一帧是收着的，下一帧才展开——闪一下。
         display_expand: (bool, bool),
+        display_fold: bool,
     ) -> Self {
         let mut panel = Self {
             source: Source::File {
@@ -180,6 +189,8 @@ impl Overlay {
             expanded: Expanded::new(),
             open_seeded: std::collections::HashSet::new(),
             display_expand,
+            display_fold,
+            hover: None,
             selection: None,
             scroll: 0,
             follow: true,
@@ -271,7 +282,7 @@ impl Overlay {
                 let events = markers.iter().filter_map(|marker| {
                     miyu_engine::tools::subagent::protocol::from_marker(marker)
                 });
-                let steps = log::steps_from_events(events);
+                let steps = log::steps_from_events(events, self.display_fold);
                 self.render_steps(steps)
             }
             // 退路（路 A）：daemon 重启后内存里的 trace 就没了，老任务也只有日志;
@@ -344,7 +355,7 @@ impl Overlay {
                 }))
                 .collect();
         }
-        self.render_steps(log_steps(text))
+        self.render_steps(log_steps(text, self.display_fold))
     }
 
     /// 把已经攒好的那几步排成行。两条进料口（读日志 / 订标记流）共用。

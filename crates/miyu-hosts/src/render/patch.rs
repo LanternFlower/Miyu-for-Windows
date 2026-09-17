@@ -38,19 +38,7 @@ pub(crate) fn write_patch_result(stdout: &mut impl Write, output: &str) -> Resul
 /// 几个文件时**合计**(抬头上的路径已经是「第一个 +2 项」的合计口径,统计跟着
 /// 合计才自洽;用户 09-17 裁定)。
 pub(crate) fn diff_stat(diff: &str) -> Option<(usize, usize)> {
-    let mut added = 0usize;
-    let mut removed = 0usize;
-    for line in diff.lines() {
-        if line.starts_with("+++") || line.starts_with("---") {
-            continue;
-        }
-        if line.starts_with('+') {
-            added += 1;
-        } else if line.starts_with('-') {
-            removed += 1;
-        }
-    }
-    (added + removed > 0).then_some((added, removed))
+    miyu_engine::tools::diff_stat(diff)
 }
 
 /// 补丁预览 JSON(`{path, diff}`)里的加减行数。
@@ -100,18 +88,9 @@ fn trim_blank_edges(rendered: String) -> Vec<String> {
 /// 子代理浮层拿不到 `__patch_preview__` 的真 diff,只有这份信封;信封本身就是
 /// `+`/`-` 的形状,数出来的量和真 diff 一致(除非补丁应用后被上下文吸收)。
 pub(crate) fn envelope_diff_stat(tool: &str, arguments: &str) -> Option<(usize, usize)> {
-    if !matches!(
-        crate::render::tool_event_base_name(tool),
-        "edit" | "kb" | "artifact" | "apply_patch" | "apply_artifact_patch"
-    ) {
-        return None;
-    }
-    let args = serde_json::from_str::<Value>(arguments.trim()).ok()?;
-    let patch = args
-        .get("patchText")
-        .or_else(|| args.get("patch_text"))
-        .and_then(Value::as_str)?;
-    diff_stat(patch)
+    // 事实那一半住在 engine：写流水账那一侧也要用它（抬头上的 `+3 -1`），而
+    // 那一侧够不着渲染层。见 `miyu_engine::tools::envelope_diff_stat`。
+    miyu_engine::tools::envelope_diff_stat(tool, arguments)
 }
 
 /// apply_patch 的**信封**（`*** Begin Patch … *** End Patch`）渲染成 diff。
@@ -123,7 +102,7 @@ pub(crate) fn envelope_diff_stat(tool: &str, arguments: &str) -> Option<(usize, 
 ///
 /// 一个信封可以改好几个文件，逐段渲染。
 /// 调用参数里带着 apply_patch 信封吗——带就画成 diff。
-pub(crate) fn patch_envelope_lines_from_args(
+pub fn patch_envelope_lines_from_args(
     tool: &str,
     arguments: &str,
     width: usize,

@@ -102,6 +102,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
         live.set_display_expand(
             config.display.expand_reasoning,
             config.display.expand_tool_calls,
+            config.display.fold_timeline,
         );
         renderer.use_external_cursor_control();
         renderer.use_buffered_output();

@@ -55,6 +55,13 @@ pub(super) struct LogStep {
     /// 这一步的主题（命令全文、路径、检索词——`[工具] 运行命令 · ls` 里 ` · ` 后面
     /// 那段）。点开之后正文第一段是它，不是把抬头再说一遍。
     pub(super) subject: Option<String>,
+    /// 这次调用的参数原文。**只有标记流那条路有**（日志行上只留了拼好的抬头）。
+    ///
+    /// 编辑类工具靠它画 diff：子代理内层的编辑拿不到 `__patch_preview__` 的真
+    /// diff，只有参数里那份信封（用户 09-17：「展开后的 diff 渲染也没有」）。
+    pub(super) args: Option<String>,
+    /// 这一步是哪个工具（`edit` / `run_command` …）。画 diff 要按它判。
+    pub(super) tool: Option<String>,
 }
 
 /// `运行命令 · ls` → `ls`：抬头里 ` · ` 后面那段是主题。
@@ -180,8 +187,8 @@ fn is_tool_step(step: &LogStep) -> bool {
 ///
 /// 这里把它折成"步"：工具的调用与结果合成一条（结果只是给它盖个 ok/err），
 /// 续行归到上一步的正文里。每一步都是一行窥视，点开才看全文——和主线一个规矩。
-pub(super) fn log_steps(text: &str) -> Vec<LogStep> {
-    steps_from_events(text.lines().map(parse_log_line))
+pub(super) fn log_steps(text: &str, fold: bool) -> Vec<LogStep> {
+    steps_from_events(text.lines().map(parse_log_line), fold)
 }
 
 /// 同上，但**事件从哪来不管**——日志行解出来的，还是进度标记解出来的，都行。
@@ -190,7 +197,12 @@ pub(super) fn log_steps(text: &str) -> Vec<LogStep> {
 /// `parse_log_line`），和直接订 `job.trace` 里的原始标记（走 `from_marker`）。
 /// 两条路解出的是**同一个** `LogEvent`（`subagent/protocol.rs` 有一条测试钉着
 /// 它们等价），所以攒步这一段只写一份。
-pub(super) fn steps_from_events<'a>(events: impl Iterator<Item = LogEvent<'a>>) -> Vec<LogStep> {
+pub(super) fn steps_from_events<'a>(
+    events: impl Iterator<Item = LogEvent<'a>>,
+    // 「过程收起成 Worked for」。关掉就每一步就地留着——面板原来是无条件收的，
+    // 于是那个开关在浮层里等于不存在（用户 09-17）。
+    fold: bool,
+) -> Vec<LogStep> {
     let mut steps: Vec<LogStep> = Vec::new();
     for event in events {
         match event {
@@ -286,7 +298,9 @@ pub(super) fn steps_from_events<'a>(events: impl Iterator<Item = LogEvent<'a>>) 
                         _ => last.body.push(text.to_string()),
                     },
                     _ => {
-                        collapse_log_segment(&mut steps);
+                        if fold {
+                            collapse_log_segment(&mut steps);
+                        }
                         steps.push(LogStep {
                             // 正文没有抬头也没有图标——整段就是内容。
                             kind: StepKind::Speech,
@@ -312,6 +326,8 @@ pub(super) fn steps_from_events<'a>(events: impl Iterator<Item = LogEvent<'a>>) 
                 head: call.text.to_string(),
                 status: None,
                 body: Vec::new(),
+                tool: call.tool.as_deref().map(str::to_string),
+                args: call.args.as_deref().map(str::to_string),
                 ..Default::default()
             }),
             LogEvent::ToolResult { line: result, ok } => {
@@ -330,6 +346,13 @@ pub(super) fn steps_from_events<'a>(events: impl Iterator<Item = LogEvent<'a>>) 
                         // 是把抬头又说一遍（用户实测：展开之后第一行和标题一模
                         // 一样）。
                         step.status = Some(if ok { "ok" } else { "err" });
+                        // 调用行没带参数（老日志）时，结果那条里也有一份。
+                        if step.args.is_none() {
+                            step.args = result.args.as_deref().map(str::to_string);
+                        }
+                        if step.tool.is_none() {
+                            step.tool = result.tool.as_deref().map(str::to_string);
+                        }
                         if !ok {
                             step.glyph = glyph_err().to_string();
                         }
@@ -350,6 +373,8 @@ pub(super) fn steps_from_events<'a>(events: impl Iterator<Item = LogEvent<'a>>) 
                         } else {
                             glyph_err().to_string()
                         },
+                        tool: result.tool.as_deref().map(str::to_string),
+                        args: result.args.as_deref().map(str::to_string),
                         subject: subject_of(&text),
                         head: match elapsed {
                             Some(elapsed) => with_elapsed(&text, elapsed),
@@ -444,6 +469,13 @@ fn with_elapsed(head: &str, elapsed: std::time::Duration) -> String {
 /// 进 `Step`——前台那边是在攒步的时候就做好的，两边的差别只有「什么时候做」。
 pub(super) fn log_detail_body(step: &LogStep) -> Vec<String> {
     let inner = miyu_hosts::render::timeline::panel_detail_width();
+    // 编辑类工具：正文给 **diff**，不给那份结果 JSON——和前台浮层同一条规矩
+    //（`timeline::subagent::subagent_tool`）。参数只有标记流那条路带得过来。
+    if let (Some(tool), Some(args)) = (step.tool.as_deref(), step.args.as_deref()) {
+        if let Some(lines) = miyu_hosts::render::patch_envelope_lines_from_args(tool, args, inner) {
+            return lines;
+        }
+    }
     let color = if step.kind == StepKind::Thought {
         "\x1b[38;5;10m"
     } else {
@@ -493,8 +525,40 @@ mod tests {
             "__subtool_preparing__run_command",
             "__subtool_preparing__run_command",
         ];
-        let steps = steps_from_events(markers.iter().filter_map(|m| from_marker(m)));
+        let steps = steps_from_events(markers.iter().filter_map(|m| from_marker(m)), true);
         assert_eq!(steps.len(), 1, "准备执行攒了一堆: {steps:?}");
+    }
+
+    /// 编辑那一步要有 diff：抬头上 `+N -M`，点开是渲染好的 diff。
+    ///
+    /// 子代理内层的编辑拿不到 `__patch_preview__` 的真 diff，只有调用参数里那份
+    /// 信封。抬头那半由写的那一侧拼进文本（两条路都有），正文那半靠标记流把参数
+    /// 带过来（用户 09-17：「子代理浮层的编辑文件没有 diff 信息」）。
+    #[test]
+    fn an_edit_step_shows_its_diff() {
+        let patch = "*** Begin Patch\n*** Update File: /tmp/a.txt\n-旧的一行\n+新的一行\n+又一行\n*** End Patch";
+        let args = serde_json::json!({ "patchText": patch }).to_string();
+        let call = serde_json::json!({
+            "name": "edit",
+            "display": "编辑文件",
+            "args": args,
+        })
+        .to_string();
+        let steps = steps_from_events(
+            std::iter::once(format!("__subtool_call__{call}")).filter_map(|m| from_marker(&m)),
+            true,
+        );
+        assert_eq!(steps.len(), 1, "{steps:#?}");
+        assert!(
+            steps[0].head.contains("+2 -1"),
+            "抬头上没有加减行数: {:?}",
+            steps[0].head
+        );
+        let body = log_detail_body(&steps[0]).join("\n");
+        assert!(
+            body.contains("新的一行") && body.contains("旧的一行"),
+            "点开不是 diff: {body}"
+        );
     }
 
     /// 收段的时候，卷进去的那些「准备执行」要扔掉。
@@ -519,7 +583,7 @@ mod tests {
         // 它开口说话 = 前面那一段收成 `Worked for …`。
         markers.push("__subagent_content__跑完了。".to_string());
 
-        let steps = steps_from_events(markers.iter().filter_map(|m| from_marker(m)));
+        let steps = steps_from_events(markers.iter().filter_map(|m| from_marker(m)), true);
         let fold = steps
             .iter()
             .find(|step| step.kind == StepKind::Fold)
@@ -557,7 +621,7 @@ mod tests {
         for _ in 0..4 {
             markers.push("__subtool_preparing__run_command".to_string());
         }
-        let steps = steps_from_events(markers.iter().filter_map(|m| from_marker(m)));
+        let steps = steps_from_events(markers.iter().filter_map(|m| from_marker(m)), true);
         let preparing = steps.iter().filter(|step| step.preparing).count();
         assert_eq!(preparing, 1, "准备执行攒了一堆: {steps:#?}");
     }
@@ -574,7 +638,10 @@ mod tests {
             "__subagent_reasoning__再决定怎么下手。",
             "__subagent_reasoning_done__1234",
         ];
-        let steps = steps_from_events(markers.iter().filter_map(|message| from_marker(message)));
+        let steps = steps_from_events(
+            markers.iter().filter_map(|message| from_marker(message)),
+            true,
+        );
         assert_eq!(steps.len(), 1, "逐 delta 的思考该并成一步: {steps:?}");
         assert_eq!(steps[0].kind, StepKind::Thought);
         assert_eq!(steps[0].head, "先看一眼再决定怎么下手。", "没粘回一段");

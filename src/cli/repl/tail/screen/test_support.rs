@@ -22,6 +22,7 @@ impl Screen {
             expanded: std::collections::HashMap::new(),
             open_seeded: std::collections::HashSet::new(),
             display_expand: (false, false),
+            display_fold: true,
             overlay: None,
             hover: None,
             input_rows: Vec::new(),

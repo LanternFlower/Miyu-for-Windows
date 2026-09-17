@@ -16,6 +16,7 @@ impl Screen {
             return false;
         };
         panel.display_expand = self.display_expand;
+        panel.display_fold = self.display_fold;
         self.overlay = Some(panel);
         self.invalidate();
         self.needs_clear = true;
@@ -44,8 +45,10 @@ impl Screen {
             command,
             panel_inner_width(self.cols),
             self.display_expand,
+            self.display_fold,
         );
         panel.display_expand = self.display_expand;
+        panel.display_fold = self.display_fold;
         self.overlay = Some(panel);
         self.invalidate();
         self.needs_clear = true;
@@ -174,14 +177,16 @@ impl Screen {
     /// 把当前的两个显示开关交给后台面板。见 `Screen::display_expand`。
     ///
     /// 每轮都交一次：`/config` 改完下一轮就该生效，和渲染器那侧同一个节奏。
-    pub(in crate::cli) fn set_display_expand(&mut self, reasoning: bool, tools: bool) {
-        if self.display_expand == (reasoning, tools) {
+    pub(in crate::cli) fn set_display_expand(&mut self, reasoning: bool, tools: bool, fold: bool) {
+        if self.display_expand == (reasoning, tools) && self.display_fold == fold {
             return;
         }
         self.display_expand = (reasoning, tools);
+        self.display_fold = fold;
         // 档位变了：已经排好的那份要按新档位重排一次，不然要等下一次日志变动。
         if let Some(panel) = &mut self.overlay {
             panel.display_expand = (reasoning, tools);
+            panel.display_fold = fold;
             panel.force_reload();
         }
         self.invalidate();
@@ -202,6 +207,26 @@ impl Screen {
             return None;
         }
         Some((panel.scroll + usize::from(row - first)).min(panel.len().saturating_sub(1)))
+    }
+
+    /// 鼠标移到了面板里第 `row` 行。返回真表示悬浮目标变了，要重画。
+    ///
+    /// 和正文那侧同一条规矩（`Screen::hover_at`）：提亮的是**整块**，不是一行
+    /// ——一步的抬头和它露出来的几行是同一件事，只亮一行看着像断了。
+    pub(in crate::cli) fn overlay_hover_at(&mut self, row: u16) -> bool {
+        let index = self.overlay_content_index(row);
+        let Some(panel) = &mut self.overlay else {
+            return false;
+        };
+        let next = index.and_then(|index| {
+            layer_hit(&Layer::Body(&panel.body), &panel.expanded, index).map(|(id, _)| id)
+        });
+        if next == panel.hover {
+            return false;
+        }
+        panel.hover = next;
+        self.invalidate();
+        true
     }
 
     /// 屏幕列 → 面板内容列。内容画在 `PANEL_MARGIN` 那一列起。
@@ -379,6 +404,7 @@ impl Screen {
         }
         let scroll = panel.scroll;
         let selection = panel.selection;
+        let hover = panel.hover;
         let title = panel.title.clone();
         let stoppable = panel.job_id.is_some();
         // 左右各留 `PANEL_MARGIN` 列。没有竖线，这一列留白就是边界。
@@ -400,6 +426,17 @@ impl Screen {
                     } else {
                         spans
                     };
+                // 鼠标停在这一块上：整块提亮（去掉暗色），和正文那侧一样。
+                let spans = match hover {
+                    Some(id)
+                        if layer_hit(&Layer::Body(&panel.body), &panel.expanded, index)
+                            .map(|(hit, _)| hit)
+                            == Some(id) =>
+                    {
+                        undim(spans)
+                    }
+                    _ => spans,
+                };
                 // 选区反显。只反显可复制的那几列——左边的装饰亮起来会让人以为
                 // 竖条也复制进去了（和正文那侧同一条规矩）。
                 let spans = match selection {
@@ -559,4 +596,15 @@ fn highlight_row(
     };
     let to = if index == end.0 { end.1 } else { u16::MAX };
     super::super::select::highlight_columns(spans, from, to)
+}
+
+/// 去掉暗色 = 提亮。悬浮那一块用它。
+fn undim(spans: Vec<super::super::ansi::AnsiSpan>) -> Vec<super::super::ansi::AnsiSpan> {
+    spans
+        .into_iter()
+        .map(|span| super::super::ansi::AnsiSpan {
+            style: span.style.remove_modifier(ratatui::style::Modifier::DIM),
+            ..span
+        })
+        .collect()
 }

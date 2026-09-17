@@ -724,11 +724,17 @@ impl StreamRenderer {
             return;
         }
         let expand_thought = self.reasoning_mode == ReasoningDisplayMode::Full;
+        // 收不收段跟着「过程收起成 Worked for」走——浮层原来是无条件收的，于是
+        // 那个开关在浮层里等于不存在（用户 09-17：「子代理浮层也不受这个开关的
+        // 影响」）。
+        let fold = self.fold_timeline;
         let log = self.subagent_logs.entry(name.to_string()).or_default();
         log.started.get_or_insert_with(Instant::now);
         if log.speech.is_empty() {
             flush_subagent_thought(log, expand_thought);
-            collapse_subagent_segment(log);
+            if fold {
+                collapse_subagent_segment(log);
+            }
         }
         log.speech.push_str(text);
         self.publish_subagent(name);

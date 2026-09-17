@@ -153,6 +153,8 @@ pub(in crate::cli) struct Screen {
     /// 永远收着（用户 09-17：「子代理浮层中的流式输出不受我们之前做的三个开关
     /// 影响」）。由 REPL 每轮把当前配置交进来。
     display_expand: (bool, bool),
+    /// `过程收起成 Worked for`。同 `display_expand`。
+    display_fold: bool,
     /// 盖在正文上的详情面板（子代理）。开着时正文与活动区都不画。
     overlay: Option<overlay::Overlay>,
     /// 鼠标停在哪一块上。可交互的东西要看得出来「这里能点」。
@@ -268,6 +270,7 @@ impl Screen {
             expanded: std::collections::HashMap::new(),
             open_seeded: std::collections::HashSet::new(),
             display_expand: (false, false),
+            display_fold: true,
             overlay: None,
             hover: None,
             input_rows: Vec::new(),
