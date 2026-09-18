@@ -957,6 +957,27 @@
           default: true,
         },
         {
+          path: "notifications.sound",
+          label: "通知带提示音",
+          hint: "回复完成/等你回答各响一声;kitty 里还能点通知跳回那个窗口",
+          kind: "toggle",
+          default: true,
+        },
+        {
+          path: "notifications.sound_file",
+          label: "提示音文件",
+          hint: "换成自己的音频文件,wav/ogg/flac(留空=Miyu 内置的那一声);~/ 会展开,文件不存在就退回内置音",
+          kind: "text",
+          default: "",
+        },
+        {
+          path: "notifications.question_sound_file",
+          label: "提问时的提示音文件",
+          hint: "她提问、等你回答时单独用的那个;留空=和上面一样",
+          kind: "text",
+          default: "",
+        },
+        {
           path: "notifications.job_writeback_to_terminal",
           label: "后台任务写回终端",
           hint: "shellhook 触发的任务完成后写回原终端,写不了退化为通知",

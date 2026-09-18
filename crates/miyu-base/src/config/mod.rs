@@ -210,6 +210,17 @@ pub struct NotificationsConfig {
     /// Notify when a reply finishes and Miyu is waiting on you again.
     #[serde(default = "default_true")]
     pub on_turn_complete: bool,
+    /// 通知带一声提示音（默认是 Miyu 内置的木琴音，见 [`Self::tone`]）。
+    #[serde(default = "default_true")]
+    pub sound: bool,
+    /// 换成自己的音频文件（`~/` 会展开）。留空 = 用 Miyu 内置的那一声。
+    /// 指到不存在的文件也退回内置音，不会变成哑的。播放器认 wav/ogg/flac；
+    /// mp3 得机器上有 ffplay。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sound_file: String,
+    /// 她提问、等你回答时单独用的那个文件。留空 = 跟 `sound_file` 一样。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub question_sound_file: String,
     /// shellhook/单次 CLI 触发的后台任务完成后,把跟进回复写回触发它的那个
     /// 终端。仅在该 shell 仍活着、停在同一 tty 的前台提示符时才写;写不了退化
     /// 为桌面通知。
@@ -217,11 +228,56 @@ pub struct NotificationsConfig {
     pub job_writeback_to_terminal: bool,
 }
 
+impl NotificationsConfig {
+    /// 这一声响什么。顺序是：关了就静音 → 配了文件就放那个文件 → 内置的那两段
+    /// 木琴音 → 系统声音主题（前面全落空才轮到它，比如连家目录都取不到）。
+    ///
+    /// 会碰盘：内置音是内嵌字节，外挂播放器只认文件，第一次用时落到
+    /// `<家>/cache/sounds/` 下。
+    pub fn tone(&self, sound: crate::notify::NotifySound) -> crate::notify::NotifyTone {
+        use crate::notify::{NotifySound, NotifyTone};
+        if !self.sound {
+            return NotifyTone::Silent;
+        }
+        let configured = match sound {
+            // 提问那一声没单配就跟着完成那一声走——大多数人只想换一个音。
+            NotifySound::Question if !self.question_sound_file.is_empty() => {
+                &self.question_sound_file
+            }
+            _ => &self.sound_file,
+        };
+        if !configured.is_empty() {
+            let path = expand_home(configured);
+            if path.is_file() {
+                return NotifyTone::File(path);
+            }
+            // 配了个不存在的路径不该变成哑的，往下退到内置音。
+        }
+        crate::notify::builtin_sound_file(sound)
+            .map(NotifyTone::File)
+            .unwrap_or(NotifyTone::Theme(sound))
+    }
+}
+
+/// `~/` 开头展开成家目录。配置里的路径都是人手写的，写 `~` 比写全路径顺手。
+fn expand_home(value: &str) -> std::path::PathBuf {
+    let value = value.trim();
+    if let Some(rest) = value.strip_prefix("~/") {
+        if let Some(dirs) = directories::BaseDirs::new() {
+            return dirs.home_dir().join(rest);
+        }
+    }
+    std::path::PathBuf::from(value)
+}
+
 impl Default for NotificationsConfig {
     fn default() -> Self {
         Self {
             enabled: true,
             on_turn_complete: true,
+            sound: true,
+            sound_file: String::new(),
+            question_sound_file: String::new(),
             job_writeback_to_terminal: true,
         }
     }

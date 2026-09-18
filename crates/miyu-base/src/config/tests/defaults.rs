@@ -194,3 +194,78 @@ fn an_older_config_still_migrates_to_the_current_version() {
     assert_eq!(config.config_version, CURRENT_CONFIG_VERSION);
     assert!(config.extra.is_empty());
 }
+
+/// 通知提示音选哪一声：关了静音、配了文件放文件、文件没了退回内置音。
+/// 「退回」这条是要紧的——路径写错变成哑的，人只会以为功能坏了。
+#[test]
+fn notification_tone_falls_back_to_the_builtin_sound() {
+    use crate::notify::{NotifySound, NotifyTone};
+
+    let builtin = |sound| match NotificationsConfig::default().tone(sound) {
+        // 取不到家目录的机器上退到主题音,那台机器上这条断言不成立也正常。
+        NotifyTone::File(path) => Some(path),
+        _ => None,
+    };
+    let mut notifications = NotificationsConfig::default();
+    if let Some(path) = builtin(NotifySound::TurnDone) {
+        assert!(
+            path.ends_with("cache/sounds/wake.wav"),
+            "默认走内置音,落在缓存里: {}",
+            path.display()
+        );
+        assert!(path.is_file(), "内置音得真的落到盘上,播放器只认文件");
+        // 用户 09-18 拍板:回复完成和提问都用 wake 那一声,盘上只落一份。
+        assert_eq!(builtin(NotifySound::Question), Some(path));
+    }
+
+    notifications.sound = false;
+    assert_eq!(
+        notifications.tone(NotifySound::TurnDone),
+        NotifyTone::Silent
+    );
+
+    notifications.sound = true;
+    notifications.sound_file = "/nonexistent/miyu-ding.wav".into();
+    assert_eq!(
+        notifications.tone(NotifySound::TurnDone),
+        NotificationsConfig::default().tone(NotifySound::TurnDone),
+        "路径写错了也得响,退回默认那一声,不能变哑的"
+    );
+
+    let existing = std::env::temp_dir().join("miyu-tone-test.wav");
+    std::fs::write(&existing, b"RIFF").unwrap();
+    notifications.sound_file = existing.to_string_lossy().into_owned();
+    assert_eq!(
+        notifications.tone(NotifySound::TurnDone),
+        NotifyTone::File(existing.clone())
+    );
+    // 提问没单配就跟着完成那一声走。
+    assert_eq!(
+        notifications.tone(NotifySound::Question),
+        NotifyTone::File(existing.clone())
+    );
+
+    let other = std::env::temp_dir().join("miyu-tone-test-question.wav");
+    std::fs::write(&other, b"RIFF").unwrap();
+    notifications.question_sound_file = other.to_string_lossy().into_owned();
+    assert_eq!(
+        notifications.tone(NotifySound::Question),
+        NotifyTone::File(other.clone())
+    );
+    assert_eq!(
+        notifications.tone(NotifySound::TurnDone),
+        NotifyTone::File(existing.clone()),
+        "单配的只管提问那一声"
+    );
+    let _ = std::fs::remove_file(existing);
+    let _ = std::fs::remove_file(other);
+}
+
+/// 关掉提示音不该把通知本身也关掉,而且老配置读上来是开的。
+#[test]
+fn notification_sound_defaults_to_on() {
+    let notifications: NotificationsConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert!(notifications.sound);
+    assert!(notifications.enabled);
+    assert!(notifications.sound_file.is_empty());
+}

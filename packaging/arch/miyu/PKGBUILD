@@ -17,6 +17,8 @@ depends=('alsa-lib' 'chafa' 'gcc-libs' 'glibc' 'onnxruntime' 'python' 'ripgrep')
 optdepends=(
   'miyu-voice: voice wake word + speech recognition front end'
   'git: update default Shorin Wiki knowledge base'
+  'libnotify: 桌面通知(kitty 以外的终端由它弹)'
+  'libcanberra: 通知提示音(没有时退到 pw-play/paplay)'
   'fish: fish shell integration support'
   'bash: bash shell integration support'
   'zsh: zsh shell integration support'

@@ -12,5 +12,9 @@
     "chafa",
     "ca-certificates",
     "python3"
+  ],
+  "recommends": [
+    "libnotify-bin",
+    "pulseaudio-utils"
   ]
 }

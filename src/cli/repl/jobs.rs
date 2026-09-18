@@ -96,16 +96,35 @@ pub(in crate::cli) fn job_wake_headline(headline: &str) -> String {
 ///
 /// `focused` is `None` when there is no live tail — a one-shot `miyu ask` has
 /// no window to be away from, so it stays quiet.
+///
+/// kitty 那条路由终端自己弹（09-18）：只有终端自己能在点击时把自己的窗口拉到
+/// 前面，顺带按声音主题响一声。它也自己判焦点（`o=unfocused`），比终端上报的
+/// `focused` 准——终端不上报焦点时那个标志会一直钉在 `true`，本来会一声不响。
 pub(in crate::cli) fn notify_if_unfocused(
     config: &AppConfig,
     focused: Option<bool>,
     title: &str,
     body: &str,
+    sound: miyu_base::notify::NotifySound,
 ) {
-    if !config.notifications.enabled || focused != Some(false) {
+    if !config.notifications.enabled || focused.is_none() {
         return;
     }
-    miyu_base::notify::notify(title, &miyu_base::notify::clip_body(body, 120));
+    let tone = config.notifications.tone(sound);
+    let body = miyu_base::notify::clip_body(body, 120);
+    if miyu_base::notify::notify_via_kitty(title, &body, &tone) {
+        // 自定义音频文件 kitty 放不了（`s=` 只认声音主题里的名字），得我们自己
+        // 放；而它是不是该响就得自己判了——kitty 有焦点时会把通知整条扣下，
+        // 声音不跟着扣就成了「人对着屏幕坐着，它自己叮一声」。
+        if matches!(tone, miyu_base::notify::NotifyTone::File(_)) && focused == Some(false) {
+            miyu_base::notify::play_tone(&tone);
+        }
+        return;
+    }
+    if focused != Some(false) {
+        return;
+    }
+    miyu_base::notify::notify_with_sound(title, &body, &tone);
 }
 
 /// Shared feed state between the remote REPL and its IPC poll thread.

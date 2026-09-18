@@ -627,6 +627,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                     t("Miyu is waiting on you", "Miyu 在等你回答"),
                     // 问题正文同样不外泄，理由同上。
                     t("waiting for you", "正在等待处理"),
+                    miyu_base::notify::NotifySound::Question,
                 );
                 // A panel that cannot be shown is not a reason to abort the
                 // turn: fall through to the same path a closed panel takes, so
@@ -887,6 +888,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
             // 正文不往通知里放：桌面通知是给**别人也可能看见的屏幕**发的，
             // 而且回复本身在窗口里就摆着，通知只需要说"该回来看了"。
             t("waiting for you", "正在等待处理"),
+            miyu_base::notify::NotifySound::TurnDone,
         );
     }
     print_mixed_model_endpoint(show_endpoint && !interactive, &result, None);
