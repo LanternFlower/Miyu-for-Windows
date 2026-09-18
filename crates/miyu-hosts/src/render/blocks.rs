@@ -235,6 +235,15 @@ pub const TURN_START_MARKER: &str = "\x1b]1337;miyu-turn-start\x07";
 /// (会把前一轮真正的对话一起截掉),也不能留着(用户 09-18:撤了它还在,还能点开)。
 pub const COMPACT_START_MARKER: &str = "\x1b]1337;miyu-compact-start\x07";
 
+/// 「下面这个换行是**折出来的**，不是作者断的」。
+///
+/// 正文的折行由渲染器自己折（续行要自带装订边的两格缩进，交给缓冲硬折的话续行
+/// 从第 0 列起，左边会莫名冒出半句话）。可这么一来缓冲就分不清「折的」和
+/// 「`\n` 断的」，窗口一改宽度就没法把它们并回一条逻辑行重排——拉宽了右边空着、
+/// 收窄了右边被切掉（用户 09-18）。埋这个标记，缓冲才知道哪一处可以并。
+/// 真终端不认得就整条吞掉。
+pub const SOFT_WRAP_MARKER: &str = "\x1b]1337;miyu-soft-wrap\x07";
+
 /// OSC 载荷 → 块 id。`Term` 解析时用。
 pub fn parse_marker(payload: &str) -> Option<BlockMarker> {
     if payload == "miyu-block-end" {
@@ -245,6 +254,9 @@ pub fn parse_marker(payload: &str) -> Option<BlockMarker> {
     }
     if payload == "miyu-compact-start" {
         return Some(BlockMarker::CompactStart);
+    }
+    if payload == "miyu-soft-wrap" {
+        return Some(BlockMarker::SoftWrap);
     }
     if let Some(id) = payload.strip_prefix("miyu-block-open=") {
         return id
@@ -269,6 +281,8 @@ pub enum BlockMarker {
     TurnStart,
     /// 一块压缩结果从这儿开始。见 [`COMPACT_START_MARKER`]。
     CompactStart,
+    /// 紧跟着的那个换行是折出来的。见 [`SOFT_WRAP_MARKER`]。
+    SoftWrap,
 }
 
 /// 一段纯文本按块的样式切成行。空块返回空 `Vec`，`register` 那边会当作

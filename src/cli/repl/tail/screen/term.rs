@@ -68,7 +68,7 @@ const LIVE_ROWS: usize = 256;
 ///
 /// 两段式：`archive` 是压好的只读历史，`live` 是还可能被光标回头改写的尾巴。
 pub(in crate::cli) struct Term {
-    archive: Vec<Vec<AnsiSpan>>,
+    archive: Vec<ArchivedRow>,
     lines: Vec<Vec<Cell>>,
     row: usize,
     col: usize,
@@ -87,6 +87,13 @@ pub(in crate::cli) struct Term {
     /// 还是上一帧那一行"，直接跳过——AI 输出时拖选发涩就是这几十行的重排在和
     /// 鼠标抢时间。
     stamps: Vec<u64>,
+    /// 这一行是怎么断的（和 `lines` 平行，和 `stamps` 一样按需长）。只有软换行
+    /// 连起来的行才能在改宽度时并回一条逻辑行重排；`\n` 断的行是作者自己断的，
+    /// 重排就把版式毁了。
+    wraps: Vec<bool>,
+    /// 正文区有多宽（`Screen` 报进来）。渲染器折的正文按它重排，才和新写进来的
+    /// 内容一样宽——缓冲自己折的是按屏幕物理宽度折的，那些按 `cols` 重排。
+    content_cols: usize,
     clock: u64,
     /// 已经收好的可展开块，按起始行升序。
     blocks: Vec<BlockSpan>,
@@ -95,12 +102,26 @@ pub(in crate::cli) struct Term {
     /// 那一刻光标还停在块的**下面**。
     /// 下一个字符落下时要开的块：id + 「默认开着吗」。
     pending_block: Option<(u64, bool)>,
+    /// 刚收到软换行标记：紧接着的那个 `\n` 是折出来的，不是作者断的。
+    pending_soft_wrap: bool,
     /// 每一轮从第几行开始（提交回显、回放里每轮开头埋的 `TURN_START_MARKER`），
     /// 升序。`/undo` 把缓冲截回最后一个标记处，见 [`Term::truncate_rows`]。
     turn_starts: Vec<usize>,
     /// 各块压缩结果的起始行(`COMPACT_START_MARKER`),撤压缩时按它截。
     compact_starts: Vec<usize>,
 }
+
+/// 压进存档的一行：压好的 span + 「它是折下来的吗」。
+///
+/// 存档段不再被光标改写，但改宽度时还要参与重排，所以那个标志得跟着一起存。
+struct ArchivedRow {
+    spans: Vec<AnsiSpan>,
+    wrapped: bool,
+}
+
+/// kitty 图片的 Unicode 占位符。带它的行整行不动：每一格是
+/// `U+10EEEE + 行号记号 + 列号记号`，按新宽度重排等于把图撕了。
+const IMAGE_PLACEHOLDER: char = '\u{10eeee}';
 
 /// 一块可展开内容在缓冲里占的行。
 #[derive(Clone, Copy, Debug)]
@@ -119,6 +140,8 @@ impl Default for Term {
             archive: Vec::new(),
             lines: vec![Vec::new()],
             stamps: vec![0],
+            wraps: Vec::new(),
+            content_cols: 80,
             clock: 0,
             row: 0,
             col: 0,
@@ -127,6 +150,7 @@ impl Default for Term {
             parser: Parser::new(),
             blocks: Vec::new(),
             pending_block: None,
+            pending_soft_wrap: false,
             turn_starts: Vec::new(),
             compact_starts: Vec::new(),
             cols: 80,
@@ -192,7 +216,7 @@ impl Term {
     /// 第 `index` 行的 span。
     pub(in crate::cli) fn row_spans(&self, index: usize) -> Vec<AnsiSpan> {
         if index < self.archive.len() {
-            return self.archive[index].clone();
+            return self.archive[index].spans.clone();
         }
         let Some(line) = self.lines.get(index - self.archive.len()) else {
             return Vec::new();
@@ -249,6 +273,7 @@ impl Term {
         if rest > 0 {
             let rest = rest.min(self.lines.len());
             self.lines.drain(..rest);
+            self.wraps.drain(..rest.min(self.wraps.len()));
             let rest = rest.min(self.stamps.len());
             self.stamps.drain(..rest);
             self.row = self.row.saturating_sub(rest);
@@ -299,11 +324,13 @@ impl Term {
             self.archive.truncate(keep);
             self.lines = vec![Vec::new()];
             self.stamps.clear();
+            self.wraps.clear();
             self.row = 0;
         } else {
             let live = keep - self.archive.len();
             self.lines.truncate(live);
             self.stamps.truncate(live);
+            self.wraps.truncate(live.min(self.wraps.len()));
             self.lines.push(Vec::new());
             self.row = live;
         }
@@ -334,10 +361,342 @@ impl Term {
         }
     }
 
-    /// 画面宽度变了：之后写进来的内容按新宽度折。已经落下的行不重排——
-    /// 重排要把每行拆回逻辑段再重走一遍，代价远大于收益。
+    /// 画面宽度变了：已经落下的行**按新宽度重排一遍**。
+    ///
+    /// 09-18 之前这里只改 `self.cols`、落下的行一律不动，于是拉宽窗口时正文还
+    /// 按旧宽度断着、右边整片空着；收窄时超出新宽度的那一截被画面直接切掉
+    /// （用户实测两样都撞上了）。
+    ///
+    /// 只并**软换行**（写到边上自己折的那一下）：`\n` 断的行是作者自己断的，
+    /// 并起来重排等于把版式毁了。带 kitty 图片占位符的行整行不动，理由见
+    /// [`IMAGE_PLACEHOLDER`]。
     pub(in crate::cli) fn set_cols(&mut self, cols: usize) {
-        self.cols = cols.max(1);
+        let cols = cols.max(1);
+        if cols == self.cols {
+            return;
+        }
+        self.cols = cols;
+        self.reflow();
+    }
+
+    /// 这一行是折下来的（下一行是它的续行）。
+    fn row_wrapped(&self, index: usize) -> bool {
+        if index < self.archive.len() {
+            return self.archive[index].wrapped;
+        }
+        self.wraps
+            .get(index - self.archive.len())
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// 活动段第 `row` 行的折行标志。
+    fn set_wrapped(&mut self, row: usize, wrapped: bool) {
+        while self.wraps.len() <= row {
+            self.wraps.push(false);
+        }
+        self.wraps[row] = wrapped;
+    }
+
+    /// 正文区宽度（`Screen` 每帧报一次）。渲染器折的正文按它重排。
+    pub(in crate::cli) fn set_content_cols(&mut self, cols: usize) {
+        self.content_cols = cols.max(1);
+    }
+
+    /// 整行不参与重排（kitty 图片占位符）。
+    fn row_is_atomic(&self, index: usize) -> bool {
+        self.row_spans(index)
+            .iter()
+            .any(|span| span.text.contains(IMAGE_PLACEHOLDER))
+    }
+
+    /// 按当前 `cols` 把所有行重排一遍。
+    fn reflow(&mut self) {
+        let total = self.line_count();
+        if total == 0 {
+            return;
+        }
+        // 光标落在逻辑行的第几**显示列**上——重排完要把它放回同一个字上，
+        // 否则渲染器接着发的「上移 N 行重画」会打偏。
+        let cursor_row = self.cursor_row();
+        let cursor_offset = self.cursor_logical_offset(cursor_row);
+
+        // 1. 软换行连起来的行并成一条逻辑行：`[起始旧行, 结束旧行)` + 内容 +
+        //    续行的悬挂缩进（正文的续行自带装订边那两格，并的时候要摘掉、
+        //    重排的时候再补回去，否则每折一次就多缩进两格）。
+        let mut logical: Vec<(std::ops::Range<usize>, Vec<AnsiSpan>, usize, usize, bool)> =
+            Vec::new();
+        let mut index = 0;
+        while index < total {
+            let start = index;
+            if self.row_is_atomic(index) {
+                logical.push((start..index + 1, self.row_spans(index), 0, self.cols, true));
+                index += 1;
+                continue;
+            }
+            let mut spans = self.row_spans(index);
+            let indent = Self::leading_spaces(&spans);
+            while self.row_wrapped(index) && index + 1 < total && !self.row_is_atomic(index + 1) {
+                index += 1;
+                let mut next = self.row_spans(index);
+                Self::strip_leading(&mut next, indent);
+                spans.extend(next);
+            }
+            // 悬挂缩进按**首行的缩进**算,而不是「这条逻辑行现在占了几行」:
+            // 一旦在宽窗口里并成一行,后者就永远是 0,再收窄回去装订边就没了。
+            // 缩进宽到没地方放字时（几乎不可能）退回不缩进，免得断不动。
+            let indent = if indent + 1 >= self.cols { 0 } else { indent };
+            // 带装订边的是正文（渲染器按正文区宽度折的），重排也得按那个宽度，
+            // 才和resize 之后新写进来的内容一样宽；没有装订边的是缓冲自己按屏幕
+            // 边折的，按屏幕宽度重排。判据用缩进而不用「当初是谁折的」：一条
+            // 逻辑行在宽窗口里并成一行之后，后者就丢了，再收窄回去宽度会不一致。
+            let budget = if indent > 0 {
+                (indent + self.content_cols).min(self.cols)
+            } else {
+                self.cols
+            };
+            logical.push((start..index + 1, spans, indent, budget, false));
+            index += 1;
+        }
+
+        // 2. 按新宽度重新断行，同时记「旧行 → 新行」。一条逻辑行里的旧行全部
+        //    指到它重排后的第一行：块的起止、轮标记只要落在同一段内容上就够。
+        let mut rows: Vec<(Vec<AnsiSpan>, bool)> = Vec::new();
+        let mut old_to_new = vec![0usize; total + 1];
+        let mut cursor_at = None;
+        for (range, spans, indent, budget, atomic) in logical {
+            let logical_start = rows.len();
+            for old in range.clone() {
+                old_to_new[old] = logical_start;
+            }
+            if atomic {
+                rows.push((spans, false));
+            } else {
+                let split = Self::split_spans(&spans, budget, indent);
+                let last = split.len().saturating_sub(1);
+                for (offset, row) in split.into_iter().enumerate() {
+                    rows.push((row, offset < last));
+                }
+            }
+            if let Some(offset) = cursor_offset.filter(|_| range.contains(&cursor_row)) {
+                cursor_at = Self::locate(&rows[logical_start..], offset, budget, indent)
+                    .map(|(row, col)| (logical_start + row, col));
+            }
+        }
+        old_to_new[total] = rows.len();
+
+        // 3. 重建两段缓冲：最近 LIVE_ROWS 行留成可写的格子，其余压进存档。
+        let live_from = rows.len().saturating_sub(LIVE_ROWS.max(1));
+        let (archived, live) = rows.split_at(live_from);
+        self.archive = archived
+            .iter()
+            .map(|(spans, wrapped)| ArchivedRow {
+                spans: spans.clone(),
+                wrapped: *wrapped,
+            })
+            .collect();
+        self.lines = live
+            .iter()
+            .map(|(spans, _)| Self::to_cells(spans))
+            .collect();
+        self.wraps = live.iter().map(|(_, wrapped)| *wrapped).collect();
+        if self.lines.is_empty() {
+            self.lines.push(Vec::new());
+            self.wraps.push(false);
+        }
+        // 每一行都变了，画面得整片重画（`Screen::resize` 也会整屏擦一次）。
+        self.stamps = Vec::new();
+        for row in 0..self.lines.len() {
+            self.touch(row);
+        }
+
+        // 4. 行号全变了：块、轮标记、压缩标记、光标跟着搬。
+        let remap = |index: &usize| old_to_new.get(*index).copied().unwrap_or(rows.len());
+        for block in &mut self.blocks {
+            block.start = remap(&block.start);
+            block.end = remap(&block.end).max(block.start);
+        }
+        for start in &mut self.turn_starts {
+            *start = remap(start);
+        }
+        for start in &mut self.compact_starts {
+            *start = remap(start);
+        }
+        let (row, col) = cursor_at.unwrap_or((rows.len().saturating_sub(1), 0));
+        self.row = row.saturating_sub(self.archive.len());
+        self.col = col;
+    }
+
+    /// 光标那一格在它所属逻辑行里的第几显示列（`None` = 缓冲里没这一行）。
+    fn cursor_logical_offset(&self, cursor_row: usize) -> Option<usize> {
+        if cursor_row >= self.line_count() {
+            return None;
+        }
+        let mut start = cursor_row;
+        while start > 0 && self.row_wrapped(start - 1) && !self.row_is_atomic(start) {
+            start -= 1;
+        }
+        let mut offset = 0;
+        for index in start..cursor_row {
+            offset += Self::spans_width(&self.row_spans(index));
+        }
+        Some(offset + self.col)
+    }
+
+    /// 重排后的若干行里，第 `offset` 显示列（按摘掉悬挂缩进的逻辑坐标算）落在
+    /// 第几行第几列。
+    fn locate(
+        rows: &[(Vec<AnsiSpan>, bool)],
+        offset: usize,
+        cols: usize,
+        indent: usize,
+    ) -> Option<(usize, usize)> {
+        let mut seen = 0;
+        for (index, (spans, _)) in rows.iter().enumerate() {
+            let hang = if index == 0 { 0 } else { indent };
+            // 满行按整宽算：行尾被宽字符挤掉的那一列也算在里头，不然偏一格。
+            let width = if index + 1 < rows.len() {
+                cols.saturating_sub(hang)
+            } else {
+                Self::spans_width(spans).saturating_sub(hang)
+            };
+            if offset < seen + width || index + 1 == rows.len() {
+                return Some((index, hang + offset - seen));
+            }
+            seen += width;
+        }
+        None
+    }
+
+    /// 这一行开头有几个空格（续行的悬挂缩进就是按它算的）。
+    fn leading_spaces(spans: &[AnsiSpan]) -> usize {
+        let mut count = 0;
+        for span in spans {
+            for ch in span.text.chars() {
+                if ch == ' ' {
+                    count += 1;
+                } else {
+                    return count;
+                }
+            }
+        }
+        count
+    }
+
+    /// 摘掉行首最多 `count` 个空格。
+    fn strip_leading(spans: &mut Vec<AnsiSpan>, mut count: usize) {
+        while count > 0 {
+            let Some(first) = spans.first_mut() else {
+                return;
+            };
+            let take = first
+                .text
+                .chars()
+                .take_while(|ch| *ch == ' ')
+                .count()
+                .min(count);
+            if take == 0 {
+                return;
+            }
+            first.text.drain(..take);
+            count -= take;
+            if first.text.is_empty() {
+                spans.remove(0);
+            }
+        }
+    }
+
+    fn spans_width(spans: &[AnsiSpan]) -> usize {
+        spans
+            .iter()
+            .flat_map(|span| span.text.chars())
+            .map(|ch| ch.width().unwrap_or(0))
+            .sum()
+    }
+
+    /// 一条逻辑行按 `cols` 断成若干行，续行前面补 `indent` 个空格（正文的装订
+    /// 边）。零宽的组合记号跟着前一个字走。
+    fn split_spans(spans: &[AnsiSpan], cols: usize, indent: usize) -> Vec<Vec<AnsiSpan>> {
+        let hang = || AnsiSpan {
+            text: " ".repeat(indent),
+            style: Style::new(),
+            link: None,
+        };
+        let mut rows: Vec<Vec<AnsiSpan>> = Vec::new();
+        let mut current: Vec<AnsiSpan> = Vec::new();
+        let mut width = 0;
+        for span in spans {
+            let mut text = String::new();
+            for ch in span.text.chars() {
+                let ch_width = ch.width().unwrap_or(0);
+                if ch_width > 0 && width + ch_width > cols {
+                    if !text.is_empty() {
+                        current.push(AnsiSpan {
+                            text: std::mem::take(&mut text),
+                            style: span.style,
+                            link: span.link.clone(),
+                        });
+                    }
+                    rows.push(std::mem::take(&mut current));
+                    width = indent;
+                    if indent > 0 {
+                        current.push(hang());
+                    }
+                }
+                text.push(ch);
+                width += ch_width;
+            }
+            if !text.is_empty() {
+                current.push(AnsiSpan {
+                    text,
+                    style: span.style,
+                    link: span.link.clone(),
+                });
+            }
+        }
+        rows.push(current);
+        rows
+    }
+
+    /// span 还原成格子——活动段要能被光标随机改写，只能是格子形态。
+    fn to_cells(spans: &[AnsiSpan]) -> Vec<Cell> {
+        let mut cells: Vec<Cell> = Vec::new();
+        for span in spans {
+            let link = span.link.as_deref().map(std::sync::Arc::from);
+            for ch in span.text.chars() {
+                let width = ch.width().unwrap_or(0);
+                if width == 0 {
+                    // 组合记号追加到前一格上，理由同 `put`：kitty 的占位格靠它
+                    // 带行列号。
+                    if let Some(cell) = cells.last_mut() {
+                        let mut marks = cell
+                            .marks
+                            .take()
+                            .map_or_else(String::new, |marks| marks.into_string());
+                        marks.push(ch);
+                        cell.marks = Some(marks.into_boxed_str());
+                    }
+                    continue;
+                }
+                cells.push(Cell {
+                    ch,
+                    marks: None,
+                    link: link.clone(),
+                    style: span.style,
+                    continuation: false,
+                });
+                for _ in 1..width {
+                    cells.push(Cell {
+                        ch: ' ',
+                        marks: None,
+                        link: link.clone(),
+                        style: span.style,
+                        continuation: true,
+                    });
+                }
+            }
+        }
+        cells
     }
 
     pub fn blocks(&self) -> &[BlockSpan] {
@@ -351,7 +710,15 @@ impl Term {
             if !self.stamps.is_empty() {
                 self.stamps.remove(0);
             }
-            self.archive.push(Self::compress(&line));
+            let wrapped = if self.wraps.is_empty() {
+                false
+            } else {
+                self.wraps.remove(0)
+            };
+            self.archive.push(ArchivedRow {
+                spans: Self::compress(&line),
+                wrapped,
+            });
             self.row -= 1;
         }
     }
@@ -391,6 +758,10 @@ impl Term {
         // 到边就折。真终端写满最后一格只是挂起「待折行」标志，下一个字符才
         // 真的换行；这里按「放不下就先换」处理，对纯输出流等价。
         if self.col + width > self.cols {
+            // 这一下是**自己折**的，不是作者断的：记一笔，改宽度时这两行要并
+            // 回一条逻辑行重排（见 `reflow`）。
+            let row = self.row;
+            self.set_wrapped(row, true);
             self.newline();
             self.col = 0;
         }
@@ -442,11 +813,17 @@ impl Term {
         let col = self.col;
         let line = self.line_mut();
         line.truncate(col.min(line.len()));
+        // 这一行不再顶到右边了，下一行也就不再是它的续行（spinner 每帧都是
+        // 「上移 → 清行 → 重画」，标志不清掉会把两行错并成一条）。
+        let row = self.row;
+        self.set_wrapped(row, false);
     }
 
     fn clear_line(&mut self) {
         let line = self.line_mut();
         line.clear();
+        let row = self.row;
+        self.set_wrapped(row, false);
     }
 
     fn param(params: &Params, index: usize, default: usize) -> usize {
@@ -592,6 +969,10 @@ impl Perform for Term {
     fn execute(&mut self, byte: u8) {
         match byte {
             b'\n' | 0x0b | 0x0c => {
+                if std::mem::take(&mut self.pending_soft_wrap) {
+                    let row = self.row;
+                    self.set_wrapped(row, true);
+                }
                 self.newline();
                 self.col = 0;
             }
@@ -664,6 +1045,10 @@ impl Perform for Term {
                         self.cursor_row().saturating_add(1)
                     };
                     self.turn_starts.push(start);
+                }
+                // 渲染器自己折的那一下：下一个换行按「折出来的」记。
+                Some(miyu_hosts::render::blocks::BlockMarker::SoftWrap) => {
+                    self.pending_soft_wrap = true;
                 }
                 Some(miyu_hosts::render::blocks::BlockMarker::CompactStart) => {
                     let start = if self.col == 0 {

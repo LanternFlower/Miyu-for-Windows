@@ -175,6 +175,15 @@ fn push_wrapped(out: &mut String, line: &str, width: usize) {
         .enumerate()
     {
         if index > 0 {
+            // 折出来的换行埋个标记：全屏缓冲靠它知道这两行可以并回一条逻辑行，
+            // 改窗口宽度时才重排得了（见 `SOFT_WRAP_MARKER`）。
+            //
+            // 只在全屏那条路上埋。inline 下字节流必须逐字节和以前一样——全屏是
+            // 可选项，为它往所有人的终端里塞标记是不能接受的（`tui_blocks` 的
+            // 最后一组测试钉的就是这条）。
+            if crate::render::blocks::enabled() {
+                out.push_str(crate::render::blocks::SOFT_WRAP_MARKER);
+            }
             out.push('\n');
         }
         out.push_str(INDENT);

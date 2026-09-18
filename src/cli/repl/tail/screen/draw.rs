@@ -130,7 +130,7 @@ impl Screen {
         // 左右各两列边距：左边那条是装订边（`indent_body` 加的），右边留着是为了
         // 让折行有个落点——正好顶到最后一列的话，看着像是被屏幕切掉的。
         miyu_base::terminal::set_content_viewport(Some((
-            self.cols.saturating_sub(4).max(20),
+            super::content_cols(self.cols) as u16,
             body.saturating_sub(1).max(4),
         )));
         let max = self.follow_target();

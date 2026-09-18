@@ -224,6 +224,12 @@ pub(in crate::cli) fn trace_rss(tag: &str) {
     }
 }
 
+/// 正文区有多宽：左右各两列边距（左边那条是装订边）。`draw` 报给渲染器的、
+/// 缓冲重排正文时用的，都是这个数。
+pub(in crate::cli) fn content_cols(cols: u16) -> usize {
+    usize::from(cols.saturating_sub(4).max(20))
+}
+
 impl Screen {
     pub(in crate::cli) fn enter() -> Result<Self> {
         trace_rss("screen-enter-before");
@@ -252,6 +258,7 @@ impl Screen {
         // 宽度要在这儿就交给缓冲：`resize` 只在**尺寸变化**时才设，而初值
         // 就是真实尺寸，于是它一次都不会被调到，缓冲会一直按默认 80 折行。
         let mut term = Term::default();
+        term.set_content_cols(content_cols(cols));
         term.set_cols(usize::from(cols));
         // 正文区的尺寸也得**现在**就登记。原来只在第一次 `paint` 时才存，而开
         // 全屏之后紧接着就是历史回放——那时 `content_viewport()` 还是 None，
@@ -259,7 +266,7 @@ impl Screen {
         // 行的第 0 列（用户实测：真 TUI 里表格没有 inline 的效果好）。行数先按
         // 整屏减活动区估，第一帧 `paint` 会用真实的正文高度盖掉它。
         miyu_base::terminal::set_content_viewport(Some((
-            cols.saturating_sub(4).max(20),
+            content_cols(cols) as u16,
             rows.saturating_sub(6).max(4),
         )));
         Ok(Self {
@@ -390,6 +397,10 @@ impl Screen {
         if (self.cols, self.rows) != (cols, rows) {
             self.cols = cols;
             self.rows = rows;
+            // 先报正文区宽度再改屏幕宽度：`set_cols` 当场就会按新宽度重排，正文
+            // 那几行要按正文区的宽度折（和 `draw` 里报给渲染器的是同一个数），
+            // 不然重排出来的正文比新写进来的宽两格。
+            self.term.set_content_cols(content_cols(cols));
             self.term.set_cols(usize::from(cols));
             self.resize_overlay(cols);
             self.invalidate();
