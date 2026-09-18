@@ -14,6 +14,7 @@ mod pruning;
 mod reasoning;
 mod reports;
 mod setup;
+pub use setup::AgentProfile;
 mod tool_report;
 mod turn_state;
 use artifacts::*;

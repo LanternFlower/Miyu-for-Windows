@@ -264,7 +264,11 @@ pub(in crate::agent) fn tool_event_name(name: &str, arguments: &str) -> String {
                 let truncated: String = description.chars().take(32).collect();
                 // 开发模式单列一类：渲染那边靠这个前缀把抬头写成「开发中」，
                 // 和后台任务状态行一个口径。
-                if args.get("dev").and_then(Value::as_bool).unwrap_or(false) {
+                // 开发模式会话开的子代理不管传没传 dev 都是开发模式(09-18 会话化:
+                // 人格跟父),抬头按实际模式写。
+                let dev = args.get("dev").and_then(Value::as_bool).unwrap_or(false)
+                    || miyu_base::workspace::current_turn_lane().is_some_and(|lane| lane.is_dev());
+                if dev {
                     format!("subagent:dev:{truncated}")
                 } else {
                     format!("subagent:{truncated}")

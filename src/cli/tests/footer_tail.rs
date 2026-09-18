@@ -493,6 +493,7 @@ fn spinner_does_not_resume_tail_during_external_output() {
         tail_rows: 0,
         job_strip_start: 0,
         job_strip_rows: 0,
+        job_hover: None,
         pending_stop_job: None,
         input_cursor: (0, 0),
         rendered: false,
@@ -539,6 +540,7 @@ fn live_tail_coalesces_adjacent_stream_chunks_and_can_discard_them() {
         tail_rows: 0,
         job_strip_start: 0,
         job_strip_rows: 0,
+        job_hover: None,
         pending_stop_job: None,
         input_cursor: (0, 0),
         rendered: false,
@@ -758,6 +760,7 @@ fn the_job_strip_reports_tokens_left_of_the_timer() {
         kind: "subagent".into(),
         dev: false,
         session_id: None,
+        root_session_id: None,
         status: "running".into(),
         running: true,
         runtime_seconds: 12,
@@ -766,7 +769,7 @@ fn the_job_strip_reports_tokens_left_of_the_timer() {
         metric_tokens: None,
     };
     let row = |metric: Option<&str>| {
-        let lines = crate::cli::repl::jobs::background_job_lines(&[job(metric)], 0, 60);
+        let lines = crate::cli::repl::jobs::background_job_lines(&[job(metric)], 0, 60, None);
         strip_terminal_control_sequences(&lines[1])
             .trim_end()
             .to_string()
@@ -799,6 +802,7 @@ fn the_job_panel_title_carries_the_token_figure() {
         kind: "subagent".into(),
         dev: false,
         session_id: None,
+        root_session_id: None,
         status: "running".into(),
         running: true,
         runtime_seconds: 4,

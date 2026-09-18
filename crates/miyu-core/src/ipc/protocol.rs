@@ -269,6 +269,11 @@ pub enum Command {
         #[serde(default)]
         mode: Option<String>,
     },
+    /// 某会话名下的子代理会话(09-18 会话化):直系子级,带任务状态、深度、上下文、
+    /// 正在跑的 run id。`/subagent` 面板与任务条用它;子会话进不了 `ListSessions`。
+    ListSubagentSessions {
+        session_id: String,
+    },
     CreateSession {
         #[serde(default)]
         name: Option<String>,

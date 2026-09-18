@@ -1,13 +1,16 @@
 use super::subagent_runner::{ProgressMode, SubagentProgress, SubagentRunner, SubagentStats};
 use super::{ToolRegistry, ToolSpec};
-use anyhow::{bail, Result};
+use anyhow::{bail, Context as _, Result};
 use miyu_base::config::PersonaLane;
 use miyu_base::config::{AppConfig, ModelTier};
+use miyu_base::host_ports::{
+    ChildOutcome, ContinueChildRequest, SpawnChildRequest, SubagentHostPort, SubagentProgressSink,
+};
 use miyu_base::paths::MiyuPaths;
 use miyu_core::llm::OpenAiCompatibleClient;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod audit;
@@ -20,6 +23,31 @@ use self::audit::*;
 use self::log::*;
 
 const SUBAGENT_SYSTEM_PROMPT: &str = include_str!("../../../../../src/prompts/subagent-general.md");
+
+/// 会话化的子代理(09-18)在标记流开头报自己的子会话 id。`tool_report` 把它落进
+/// `ToolFlowCall.child_session_id`,前端据此把状态行链到那条会话;老渲染层不认识
+/// 这个前缀,照旧丢掉。
+pub const SUBAGENT_SESSION_MARKER: &str = "__subagent_session__";
+
+/// 子代理树深度上限(用户 09-18 拍板写死):0 主会话、1 子代理、2 孙代理;孙代理面上
+/// 没有 subagent 工具,这里是第二道闸。
+const MAX_SUBAGENT_DEPTH: u32 = 2;
+
+/// 后台子代理的镜像任务 id → 子会话 id。模型从 `background=true` 的返回里拿到的是
+/// job_id,给它追话(`send_subagent_message` / `subagent(session_id=…)`)时两种 id 都认。
+fn background_children() -> &'static Mutex<HashMap<String, String>> {
+    static MAP: std::sync::OnceLock<Mutex<HashMap<String, String>>> = std::sync::OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn resolve_child_session(id: &str) -> String {
+    background_children()
+        .lock()
+        .unwrap()
+        .get(id)
+        .cloned()
+        .unwrap_or_else(|| id.to_string())
+}
 
 /// 前台子代理的原始进度标记流,按工具调用 id 暂存。回合收尾 derive_tool_flow 时取走
 /// 挂到那次调用上落库,网页端刷新/回看时回放子过程时间线(#9:刷新丢内容)。
@@ -105,6 +133,20 @@ pub(in crate::tools) const SUBAGENT_EXCLUDED: &[&str] = &[
     "divine",
 ];
 
+/// 会话化子代理(09-18)的工具面排除表:与 [`SUBAGENT_EXCLUDED`] 同一份口径,只是
+/// 不摘 subagent 本身——子会话能再开一层,孙代理由场所按深度摘(`web/turns/task.rs`)。
+pub const SUBAGENT_SESSION_EXCLUDED: &[&str] = &[
+    "load_skill",
+    "manage_skill",
+    "alarm",
+    "use_meme",
+    "manage_meme",
+    "generate_image",
+    "print_image",
+    "search_web_images",
+    "divine",
+];
+
 const SUBAGENT_TOOL_TIMEOUT: u64 = 120;
 
 #[derive(Clone)]
@@ -151,6 +193,10 @@ pub fn register(
                     "type": "boolean",
                     "description": "Run the subagent detached in the background: returns a job_id immediately; check with job(action=status) (its log holds live progress) and you are woken automatically on completion. Use for long research/tasks that should not block the conversation."
                 },
+                "session_id": {
+                    "type": "string",
+                    "description": "Optional. Continue an existing subagent session (the session id from a previous result, or the job_id of a background subagent): if it is still running your prompt is queued into it as a follow-up; otherwise it starts a new turn there with your prompt. Use it to steer a running subagent or to resume one that was interrupted."
+                },
                 "resume_id": {
                     "type": "string",
                     "description": "Optional. When a previous task failed with a resume_id in its error, pass it here to continue that subagent from its last completed tool round instead of starting over (checkpoints persist on disk and survive a daemon restart, kept 2h)."
@@ -172,7 +218,7 @@ pub fn register(
 
     // 给正在运行的后台子代理发一条 follow-up 排队指令(像给主会话排队消息),
     // 子代理下一步开始前取走、并入对话——用于运行途中调整任务目标。
-    registry.register(ToolSpec::new(
+    registry.register(ToolSpec::new_with_progress(
         "send_subagent_message",
         "Queue a follow-up instruction to a RUNNING background subagent (one you started with task(background=true)). It works like queuing a message to the main agent mid-run: the subagent picks it up before its next step, so you can steer or adjust its goal while it works. Pass the job_id from the background task's result. Only works while that subagent is still running.",
         json!({
@@ -190,11 +236,14 @@ pub fn register(
             "required": ["job_id", "message"],
             "additionalProperties": false
         }),
-        move |args| async move { send_subagent_message(args) },
+        move |args, progress| async move { send_subagent_message(args, progress).await },
     ));
 }
 
-fn send_subagent_message(args: Value) -> Result<String> {
+async fn send_subagent_message(
+    args: Value,
+    progress: crate::tools::ToolProgress,
+) -> Result<String> {
     let job_id = args
         .get("job_id")
         .and_then(Value::as_str)
@@ -212,6 +261,22 @@ fn send_subagent_message(args: Value) -> Result<String> {
     }
     if message.is_empty() {
         bail!("message is required");
+    }
+    // 会话化(09-18):追话 = 往子会话排 follow-up(跑着)或起新一轮(闲着,后台等)。
+    if let Some(port) = miyu_base::host_ports::subagent_port() {
+        let params = SubagentParams {
+            description: format!(
+                "follow-up · {}",
+                message.chars().take(24).collect::<String>()
+            ),
+            prompt: message,
+            session_id: Some(resolve_child_session(&job_id)),
+            resume_id: None,
+            max_steps: 0,
+            tier: ModelTier::Standard,
+            dev: false,
+        };
+        return run_via_host(port, params, true, progress).await;
     }
     if crate::tools::subagent_runner::deliver_to_subagent(&job_id, &message) {
         Ok(serde_json::to_string_pretty(&json!({
@@ -237,6 +302,8 @@ fn send_subagent_message(args: Value) -> Result<String> {
 struct SubagentParams {
     description: String,
     prompt: String,
+    /// 续接已有子会话(会话化,09-18);老循环不认。
+    session_id: Option<String>,
     resume_id: Option<String>,
     max_steps: usize,
     tier: ModelTier,
@@ -277,6 +344,12 @@ fn parse_params(args: &Value) -> Result<SubagentParams> {
         .map(str::trim)
         .filter(|id| !id.is_empty())
         .map(str::to_string);
+    let session_id = args
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
     // 0 = 不限步数(runner 语义):默认让子代理自然结束,预算仅在调用方
     // 显式给出 max_steps 时生效。
     let max_steps = args
@@ -293,6 +366,7 @@ fn parse_params(args: &Value) -> Result<SubagentParams> {
     Ok(SubagentParams {
         description,
         prompt,
+        session_id,
         resume_id,
         max_steps,
         tier,
@@ -306,21 +380,239 @@ async fn run_subagent(
     progress: crate::tools::ToolProgress,
 ) -> Result<String> {
     let params = parse_params(&args)?;
+    let background = args
+        .get("background")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    // 会话化(09-18):daemon 里子代理是一条真会话——建会话、起回合、等任务终态都在
+    // 场所层(`web::subagent_host`),这里只剩把结果整理成工具输出。
+    if let Some(port) = miyu_base::host_ports::subagent_port() {
+        return run_via_host(port, params, background, progress).await;
+    }
+    // daemon 之外(REPL 直连、`miyu tool-call`)没人装端口:沿用进程内的老循环。
+    if params.session_id.is_some() {
+        bail!("session_id continuation needs the daemon; start a fresh subagent instead");
+    }
     let anchor = AuditAnchor {
         parent: miyu_base::workspace::try_session().map(|session| session.to_string()),
         persona: context.config.active_persona_scope(),
     };
-    if args
-        .get("background")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
+    if background {
         return spawn_background(context, params, anchor, progress).await;
     }
     // 前台子代理阻塞在本次调用里,主体无从中途插话,不开收件箱(None)。
     Ok(run_core(context, progress, params, anchor, None)
         .await?
         .output)
+}
+
+fn progress_sink(progress: crate::tools::ToolProgress) -> SubagentProgressSink {
+    Arc::new(move |message| progress.report(message))
+}
+
+/// 会话化路径(09-18):前台就在本次调用里等子会话的任务终态;后台包进后台任务
+/// 注册表的镜像任务里等——任务条、`job(action=stop)`、完成唤醒全走后台命令那一套,
+/// 唤醒报告里带的是子会话最后一轮的正文。父回合被停时前台那条 future 被 drop,
+/// 宿主端口的 Drop 守卫会顺手取消子会话的活动回合(级联到孙代理)。
+async fn run_via_host(
+    port: Arc<dyn SubagentHostPort>,
+    params: SubagentParams,
+    background: bool,
+    progress: crate::tools::ToolProgress,
+) -> Result<String> {
+    let depth = miyu_base::workspace::current_subagent_depth();
+    if depth >= MAX_SUBAGENT_DEPTH {
+        bail!(
+            "subagent depth limit reached (this is already a depth-{depth} subagent): \
+             do the work yourself instead of delegating further"
+        );
+    }
+    let parent = miyu_base::workspace::try_session()
+        .map(|session| session.to_string())
+        .context("subagent needs a session to attach to")?;
+    let workdir = miyu_base::workspace::try_workspace();
+    // 开发模式的会话开的子代理不管传没传 dev 都是开发模式(人格跟父):标签按实际来。
+    let dev =
+        params.dev || miyu_base::workspace::current_turn_lane().is_some_and(|lane| lane.is_dev());
+    let child = params.session_id.as_deref().map(resolve_child_session);
+    // 跑着的子会话:话排进它当前那一轮,立刻返回,不管前后台。
+    if let Some(child) = child.as_deref().filter(|child| port.is_running(child)) {
+        let outcome = port
+            .continue_child(ContinueChildRequest {
+                parent_session: parent,
+                child_session: child.to_string(),
+                message: params.prompt,
+                workdir,
+                progress: progress_sink(progress),
+            })
+            .await?;
+        return format_child_outcome(&params.description, params.tier, outcome);
+    }
+    if background {
+        let description = params.description.clone();
+        let prompt = params.prompt.clone();
+        return crate::tools::jobs::spawn_background_subagent(
+            None,
+            &description,
+            dev,
+            &progress,
+            move |job_id, log_path| async move {
+                write_subagent_prompt_header(&log_path, &prompt);
+                let bridge = spawn_subagent_log_bridge(job_id.clone(), log_path.clone());
+                // 子会话 id 一报上来就登记到镜像任务名下:模型追话时拿的是 job_id。
+                let sink: SubagentProgressSink = {
+                    let job_id = job_id.clone();
+                    Arc::new(move |message: String| {
+                        if let Some(session) = message.strip_prefix(SUBAGENT_SESSION_MARKER) {
+                            background_children()
+                                .lock()
+                                .unwrap()
+                                .insert(job_id.clone(), session.to_string());
+                        }
+                        bridge.report(message);
+                    })
+                };
+                let outcome = match child {
+                    Some(child) => {
+                        port.continue_child(ContinueChildRequest {
+                            parent_session: parent,
+                            child_session: child,
+                            message: params.prompt,
+                            workdir,
+                            progress: sink,
+                        })
+                        .await
+                    }
+                    None => {
+                        port.spawn(SpawnChildRequest {
+                            parent_session: parent,
+                            description: params.description,
+                            prompt: params.prompt,
+                            dev,
+                            tier: params.tier,
+                            background: true,
+                            max_steps: params.max_steps,
+                            spawned_by_turn: None,
+                            workdir,
+                            progress: sink,
+                        })
+                        .await
+                    }
+                };
+                let (state_label, tail) = match &outcome {
+                    Ok(ChildOutcome::Finished(result)) => (
+                        result.state.as_str(),
+                        format!(
+                            "\n{}\nsession: {}\n{}\n",
+                            crate::tools::jobs::SUBAGENT_RESULT_MARKER,
+                            result.session_id,
+                            result.final_text
+                        ),
+                    ),
+                    Ok(ChildOutcome::Queued { session_id }) => (
+                        "done",
+                        format!(
+                            "\n{}\nsession: {session_id}\n(follow-up queued)\n",
+                            crate::tools::jobs::SUBAGENT_RESULT_MARKER
+                        ),
+                    ),
+                    Err(error) => (
+                        "error",
+                        format!("\n{}\n{error}\n", crate::tools::jobs::SUBAGENT_ERROR_MARKER),
+                    ),
+                };
+                let _ = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&log_path)
+                    .and_then(|mut file| {
+                        use std::io::Write as _;
+                        file.write_all(tail.as_bytes())
+                    });
+                tracing::debug!(job_id = %job_id, state = %state_label, "background subagent session finished");
+                match state_label {
+                    "done" => crate::tools::jobs::JobState::Exited { code: Some(0) },
+                    _ => crate::tools::jobs::JobState::Exited { code: None },
+                }
+            },
+        )
+        .await;
+    }
+    let sink = progress_sink(progress);
+    let outcome = match child {
+        Some(child) => {
+            port.continue_child(ContinueChildRequest {
+                parent_session: parent,
+                child_session: child,
+                message: params.prompt.clone(),
+                workdir,
+                progress: sink,
+            })
+            .await?
+        }
+        None => {
+            port.spawn(SpawnChildRequest {
+                parent_session: parent,
+                description: params.description.clone(),
+                prompt: params.prompt.clone(),
+                dev,
+                tier: params.tier,
+                background: false,
+                max_steps: params.max_steps,
+                spawned_by_turn: None,
+                workdir,
+                progress: sink,
+            })
+            .await?
+        }
+    };
+    format_child_outcome(&params.description, params.tier, outcome)
+}
+
+/// 会话化子代理的工具输出。成功路径沿用 08-21 的文本形态(`result:` 之后是结论
+/// 本体,`tool_report` 按它提取);终态不是 done 时多一句提示,告诉模型这条会话还在、
+/// 拿 session_id 能续。
+fn format_child_outcome(
+    description: &str,
+    tier: ModelTier,
+    outcome: ChildOutcome,
+) -> Result<String> {
+    match outcome {
+        ChildOutcome::Queued { session_id } => Ok(serde_json::to_string_pretty(&json!({
+            "ok": true,
+            "kind": "subagent_followup",
+            "session_id": session_id,
+            "note": "The message was queued into the running subagent; it picks it up before its next step and you are woken when it finishes.",
+        }))?),
+        ChildOutcome::Finished(result) => {
+            let state = match result.state.as_str() {
+                "done" => "completed",
+                other => other,
+            };
+            let mut output = format!(
+                "subagent {state} (tier {}, session {}): {description}\n",
+                tier.label(),
+                result.session_id
+            );
+            output.push_str(&format!(
+                "stats: {}\n",
+                json!({
+                    "turns": result.turns,
+                    "total_tokens": result.total_tokens,
+                    "provider_id": result.provider_id,
+                    "model": result.model,
+                })
+            ));
+            if state != "completed" {
+                output.push_str(&format!(
+                    "note: the subagent ended in state '{state}'; its session is kept — call subagent again with session_id=\"{}\" to continue it.\n",
+                    result.session_id
+                ));
+            }
+            output.push_str("result:\n");
+            output.push_str(result.final_text.trim());
+            Ok(output)
+        }
+    }
 }
 
 /// 一次子代理运行的结果。
@@ -463,6 +755,7 @@ async fn run_core(
     let SubagentParams {
         description,
         prompt,
+        session_id: _,
         resume_id,
         max_steps,
         tier,

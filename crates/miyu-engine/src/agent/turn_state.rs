@@ -23,6 +23,10 @@ pub(in crate::agent) struct CoreTurnSnapshot {
     /// 场所传进来的 [`PersonaLane`] 在构造 / `switch_lane` 边界折成这一位布尔;回合引擎
     /// 内部没有「模式」这个概念,dev 只是一张启用集为空的内置人格(09-16 退役)。
     pub(in crate::agent) dev: bool,
+    /// 这一会话是不是子代理会话(09-18 会话化,`AgentProfile::Subagent`):非 dev 时
+    /// 系统提示词换成通用子代理那份,子系统整套不构造,预设对话跳过。dev 子代理
+    /// 就是 dev 人格本身,这一位只影响「非 dev」那半。
+    pub(in crate::agent) subagent: bool,
     pub(in crate::agent) prompt_audience: PromptAudience,
     pub(in crate::agent) config: AppConfig,
     pub(in crate::agent) paths: MiyuPaths,

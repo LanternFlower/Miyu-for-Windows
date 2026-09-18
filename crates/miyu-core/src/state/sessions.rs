@@ -269,6 +269,50 @@ impl StateStore {
             .create_session(persona, name, kind, parent_session_id, owner)
     }
 
+    /// 子代理会话(09-18 会话化),见 `ConversationDb::create_subagent_session`。
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_subagent_session(
+        &self,
+        persona: &str,
+        name: &str,
+        parent_session_id: &str,
+        owner: &str,
+        depth: i64,
+        spawned_by_turn: Option<&str>,
+        background: bool,
+    ) -> Result<SessionRecord> {
+        self.conv_db.create_subagent_session(
+            persona,
+            name,
+            parent_session_id,
+            owner,
+            depth,
+            spawned_by_turn,
+            background,
+        )
+    }
+
+    pub fn child_sessions(&self, parent_session_id: &str) -> Result<Vec<SessionOverview>> {
+        self.conv_db.child_sessions(parent_session_id)
+    }
+
+    pub fn descendant_session_ids(&self, root: &str) -> Result<Vec<String>> {
+        self.conv_db.descendant_session_ids(root)
+    }
+
+    pub fn pending_child_sessions(&self, parent_session_id: &str) -> Result<i64> {
+        self.conv_db.pending_child_sessions(parent_session_id)
+    }
+
+    pub fn set_session_task_state(&self, session_id: &str, state: SubagentTaskState) -> Result<()> {
+        self.conv_db
+            .set_session_task_state(session_id, state.as_str())
+    }
+
+    pub fn mark_subagent_tasks_interrupted(&self) -> Result<usize> {
+        self.conv_db.mark_subagent_tasks_interrupted()
+    }
+
     pub fn create_or_get_platform_session(
         &self,
         key: &PlatformSessionBindingKey,

@@ -22,10 +22,13 @@ pub(in crate::cli) fn format_job_duration(seconds: u64) -> String {
 /// Status strip under the footer: a leading blank line, then one line per
 /// background command with a blank line between entries. Timers are
 /// right-aligned to the terminal width.
+/// `hovered`:鼠标正悬在哪一条上(下标),那一行不 dim——和正文里可点的块一个规矩:
+/// 悬浮提亮,好让人知道这行能点(用户 09-18:任务条行悬浮没有高亮)。
 pub(in crate::cli) fn background_job_lines(
     jobs: &[miyu_engine::tools::jobs::JobOverview],
     spinner_phase: usize,
     cols: usize,
+    hovered: Option<usize>,
 ) -> Vec<String> {
     if jobs.is_empty() {
         return Vec::new();
@@ -45,13 +48,20 @@ pub(in crate::cli) fn background_job_lines(
         .max()
         .unwrap_or(0);
     let mut lines = vec![String::new()];
-    for job in jobs.iter() {
+    for (index, job) in jobs.iter().enumerate() {
         let marker = JOB_SPINNER_FRAMES[spinner_phase % JOB_SPINNER_FRAMES.len()];
         let kind_word = kind_label(job);
         let kind_pad = " ".repeat(kind_col.saturating_sub(visible_width(kind_word)));
+        // 后代的任务(子代理开的后台命令、后台孙代理)前面挂个 ↳,看得出不是这一层开的。
+        let nested = job
+            .root_session_id
+            .as_deref()
+            .is_some_and(|root| job.session_id.as_deref() != Some(root));
         let mut left = format!(
-            "{marker} {kind_word}{kind_pad} {} · {}",
-            job.job_id, job.title
+            "{marker} {kind_word}{kind_pad} {}{} · {}",
+            if nested { "↳ " } else { "" },
+            job.job_id,
+            job.title
         );
         // 时间左边先报量：一条子代理跑五分钟，光有秒数看不出它是在干活还是
         // 卡住了（用户：这里时间左侧应该有一个 token 记述）。命令类任务没有
@@ -76,7 +86,12 @@ pub(in crate::cli) fn background_job_lines(
             .saturating_sub(left_width)
             .saturating_sub(timer_width)
             .max(1);
-        lines.push(format!("\x1b[2m{left}{}{timer}\x1b[0m", " ".repeat(pad)));
+        let dim = if hovered == Some(index) {
+            ""
+        } else {
+            "\x1b[2m"
+        };
+        lines.push(format!("{dim}{left}{}{timer}\x1b[0m", " ".repeat(pad)));
     }
     lines
 }
@@ -182,7 +197,13 @@ pub(in crate::cli) fn retain_session_jobs(
     session: Option<&str>,
 ) {
     if let Some(session) = session {
-        jobs.retain(|job| job.session_id.is_none() || job.session_id.as_deref() == Some(session));
+        // 后代(子代理/孙代理)的后台任务也列:它们归自己的会话,树根是当前会话
+        // (09-18 会话化;用户:主会话里看不见孙代理)。
+        jobs.retain(|job| {
+            job.session_id.is_none()
+                || job.session_id.as_deref() == Some(session)
+                || job.root_session_id.as_deref() == Some(session)
+        });
     }
 }
 

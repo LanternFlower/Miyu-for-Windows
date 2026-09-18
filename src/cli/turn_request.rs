@@ -124,9 +124,37 @@ pub fn find_session<'a>(
 /// 管理面的目标解析:编号/名字/id → 会话 id;找不到退出码 3。
 pub async fn resolve_managed_session(paths: &MiyuPaths, target: &str) -> Result<SessionListEntry> {
     let entries = list_managed_sessions(paths).await?;
-    find_session(&entries, target)
-        .cloned()
-        .ok_or_else(|| session_not_found(target))
+    if let Some(entry) = find_session(&entries, target) {
+        return Ok(entry.clone());
+    }
+    // 子代理会话(09-18 会话化)不进列表,只能按 id 直取:daemon 的 GetSessionState
+    // 认子会话。给中断的子代理回复(`miyu ask --session <子会话 id>`)走这条。
+    let trimmed = target.trim();
+    if trimmed.starts_with("sess_") {
+        if let Ok((state, _)) = session_admin(
+            paths,
+            IpcCommand::GetSessionState {
+                target: miyu_core::ipc::SessionRef::Id {
+                    id: trimmed.to_string(),
+                },
+            },
+        )
+        .await
+        {
+            return Ok(SessionListEntry {
+                id: state.session_id,
+                name: state.session_name,
+                is_current: false,
+                turns: 0,
+                snippet: String::new(),
+                sandbox: state.sandbox,
+                sandbox_read_all: false,
+                mode: state.mode,
+                context_tokens: Some(state.context_tokens),
+            });
+        }
+    }
+    Err(session_not_found(target))
 }
 
 pub async fn create_named_session(
@@ -179,6 +207,15 @@ pub async fn resolve_turn_session(
                 session_id: Some(entry.id.clone()),
                 ephemeral: false,
             });
+        }
+        // 子代理会话(09-18 会话化)不进列表,按 id 直取(给中断的子代理回复走这条)。
+        if target.trim().starts_with("sess_") {
+            if let Ok(entry) = resolve_managed_session(paths, target).await {
+                return Ok(ResolvedSession {
+                    session_id: Some(entry.id),
+                    ephemeral: false,
+                });
+            }
         }
         if !options.create {
             return Err(session_not_found(target));

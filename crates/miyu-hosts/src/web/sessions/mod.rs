@@ -184,11 +184,20 @@ pub(in crate::web) fn resolve_available_local_session_ref(
     resolve_local_session_ref(state, target)
 }
 
-/// Turn targets and deletions additionally accept one-shot `ask` sessions.
+/// Turn targets and deletions additionally accept one-shot `ask` sessions,
+/// and (09-18 会话化) subagent sessions: 访问子会话时给它发消息、删掉它都走这里。
+/// `SetReplSession` 不用这张表,车道指针永远指不到子会话。
 pub(in crate::web) const TURN_TARGET_KINDS: &[&str] = &[
     miyu_core::state::USER_SESSION_KIND,
     miyu_core::state::ASK_SESSION_KIND,
     miyu_core::state::VOICE_SESSION_KIND,
+    miyu_core::state::SUBAGENT_SESSION_KIND,
+];
+
+/// 可以「看」的会话:主会话 + 子代理会话(`GetSessionState`、回放)。
+pub(in crate::web) const VISITABLE_KINDS: &[&str] = &[
+    miyu_core::state::USER_SESSION_KIND,
+    miyu_core::state::SUBAGENT_SESSION_KIND,
 ];
 
 /// Most recently updated other user session, or a fresh default session when

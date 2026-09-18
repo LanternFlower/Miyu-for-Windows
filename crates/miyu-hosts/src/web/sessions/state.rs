@@ -144,6 +144,8 @@ pub(in crate::web) async fn reset_conversation(
             "a conversation turn is already running",
         ));
     }
+    // reset = 从头来过:子代理树连根拔(09-18 会话化,用户拍板)。
+    teardown_subagent_tree(&state, &session_id).await;
     reserve_admin_for_session(&state.manager, &session_id)?;
     let (reply, receiver) = oneshot::channel();
     if state

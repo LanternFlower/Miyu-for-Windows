@@ -405,6 +405,54 @@ fn turn_chars(turn: &Turn) -> usize {
 /// 三处都得对着同一份写——原来各抄各的，历史那条路压根没抄（用户 09-17：「后台
 /// 任务的完成报告居然会出现在上方向键可以调出来的历史输入里」）。
 pub const BACKGROUND_JOB_REPORT_TAG: &str = "<background-job-report>";
+
+/// 子代理会话的 `kind`(09-18 会话化):挂在父会话下、有自己的 turns、进不了 `user` 列表。
+pub const SUBAGENT_SESSION_KIND: &str = "subagent";
+
+/// 子代理会话的任务状态(`sessions.task_state`,v39)。
+///
+/// 「任务完成」不等于「一轮结束」:子代理起了后台命令或后台孙代理再结束回合,
+/// 它是 `Waiting`,等名下的后台任务全部回来、再跑完一轮、名下为空,才进终态。
+/// `Interrupted` 是停止或 daemon 重启打断,历史都在库里,回复它就接着跑。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubagentTaskState {
+    Running,
+    Waiting,
+    Done,
+    Failed,
+    Cancelled,
+    Interrupted,
+}
+
+impl SubagentTaskState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Waiting => "waiting",
+            Self::Done => "done",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "running" => Self::Running,
+            "waiting" => Self::Waiting,
+            "done" => Self::Done,
+            "failed" => Self::Failed,
+            "cancelled" => Self::Cancelled,
+            "interrupted" => Self::Interrupted,
+            _ => return None,
+        })
+    }
+
+    /// 还在算「未完成」的两个状态:父会话等的就是它们翻成终态。
+    pub fn is_pending(self) -> bool {
+        matches!(self, Self::Running | Self::Waiting)
+    }
+}
 pub const GOAL_ROUND_TAG: &str = "<goal_round>";
 
 /// 这条「用户消息」是不是 daemon 合成的（后台任务唤醒 / 目标续轮），不是谁敲的。

@@ -146,6 +146,11 @@ pub struct JobOverview {
     /// Owning turn session; UIs only strip-display jobs of their own session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// 归属会话所在子代理树的根(主会话),09-18 会话化:子代理/孙代理开的后台任务
+    /// 归它们自己的会话,主会话的任务条按这个根把整棵树的任务都列出来。daemon 侧
+    /// 按会话记录回填(`web::annotate_job_roots`);这里不知道树,一律 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_session_id: Option<String>,
     pub status: String,
     pub running: bool,
     pub runtime_seconds: u64,
@@ -286,6 +291,19 @@ pub fn job_trace_after(job_id: &str, after: u64) -> Option<(Vec<String>, u64, bo
     Some((job.trace[from..].to_vec(), end, reset))
 }
 
+/// 某会话名下还在跑的后台任务数(命令 + 后台子代理的镜像任务)。子代理会话
+/// 「任务完成」的判据之一(09-18):一轮结束时名下还有任务就是 waiting,不是 done。
+pub fn running_job_count_for_session(session_id: &str) -> usize {
+    jobs()
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|job| {
+            job.state == JobState::Running && job.session_id.as_deref() == Some(session_id)
+        })
+        .count()
+}
+
 /// 某后台任务归属的会话 id(事件按它做归属过滤:成员只收到自己那份)。
 pub fn job_session_id(job_id: &str) -> Option<String> {
     jobs()
@@ -317,6 +335,7 @@ fn overview_of(job: &JobEntry) -> JobOverview {
         dev: matches!(job.kind, JobKind::Subagent { dev: true, .. }),
         log_path: Some(job.log_path.display().to_string()),
         session_id: job.session_id.as_deref().map(str::to_string),
+        root_session_id: None,
         status: job.state.label(),
         metric: job.metric.clone(),
         metric_tokens: job.metric_tokens,

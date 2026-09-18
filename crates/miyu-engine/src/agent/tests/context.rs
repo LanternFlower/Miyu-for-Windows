@@ -28,6 +28,7 @@ fn consecutive_identical_history_rounds_collapse_on_replay() {
             started_ms: None,
             finished_ms: None,
             sub_trace: None,
+            child_session_id: None,
         }],
     };
     state
@@ -87,6 +88,7 @@ fn seed_inline_media_turn(state: &StateStore) {
                         started_ms: None,
                         finished_ms: None,
                         sub_trace: None,
+                        child_session_id: None,
                     },
                     miyu_core::state::ToolFlowCall {
                         id: "c2".to_string(),
@@ -96,6 +98,7 @@ fn seed_inline_media_turn(state: &StateStore) {
                         started_ms: None,
                         finished_ms: None,
                         sub_trace: None,
+                        child_session_id: None,
                     },
                 ],
             }],
@@ -1260,6 +1263,7 @@ async fn compaction_restores_recent_files_behind_the_checkpoint() {
                     started_ms: None,
                     finished_ms: None,
                     sub_trace: None,
+                    child_session_id: None,
                 }],
             }],
         )

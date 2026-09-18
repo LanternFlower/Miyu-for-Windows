@@ -177,6 +177,8 @@ pub(in crate::cli) struct LiveReplTail {
     /// 后台状态行在屏幕上的起始行与行数。全屏下点它要能对上是哪一个任务。
     pub(in crate::cli) job_strip_start: u16,
     pub(in crate::cli) job_strip_rows: u16,
+    /// 鼠标正悬在任务条的哪一条上(`jobs` 的下标),那一行画成不 dim。
+    pub(in crate::cli) job_hover: Option<usize>,
     /// 用户在详情面板里按了 x：这个任务该停了。事件层不发 IPC（它没有
     /// 异步上下文），攒在这儿由主循环取走。
     pub(in crate::cli) pending_stop_job: Option<String>,
@@ -599,6 +601,7 @@ impl LiveReplTail {
             tail_rows: 0,
             job_strip_start: 0,
             job_strip_rows: 0,
+            job_hover: None,
             pending_stop_job: None,
             input_cursor: (0, 0),
             rendered: false,
@@ -917,7 +920,12 @@ impl LiveReplTail {
         }
         self.job_spinner = self.job_spinner_frame();
         let (cols, _) = terminal::size().unwrap_or((80, 24));
-        let lines = background_job_lines(&self.jobs, self.job_spinner, usize::from(cols));
+        let lines = background_job_lines(
+            &self.jobs,
+            self.job_spinner,
+            usize::from(cols),
+            self.job_hover,
+        );
         let rows = lines.len().min(u16::MAX as usize) as u16;
         if rows > self.tail_rows {
             return Ok(());

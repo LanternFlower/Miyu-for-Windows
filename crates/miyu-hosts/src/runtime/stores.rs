@@ -47,6 +47,9 @@ impl StoreRegistry {
             .with_context(|| format!("unknown account {owner}"))?;
         let store = StateStore::open_member(&self.paths, &account.username)?;
         let _ = store.recover_stale_turns();
+        // 成员库第一次打开就在本进程:里面还标着 running/waiting 的子代理任务只能是
+        // 上个进程留下的(本进程跑过的子会话早把库打开了),一律标 interrupted。
+        let _ = store.mark_subagent_tasks_interrupted();
         let mut members = self.members.lock().unwrap();
         Ok(members.entry(owner.to_string()).or_insert(store).clone())
     }

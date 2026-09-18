@@ -15,18 +15,25 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
     tools::subagent_runner::init_checkpoint_dir(&paths);
     let state_store = StateStore::new(&paths)?;
     state_store.init_files()?;
+    // 子代理会话化(09-18):上个进程里没跑完的子代理任务标 interrupted,不自动续——
+    // 用户到任务条里点进去回复即续。成员库在第一次打开时各标各的(StoreRegistry)。
+    match state_store.mark_subagent_tasks_interrupted() {
+        Ok(0) | Err(_) => {}
+        Ok(count) => tracing::info!(
+            count,
+            "subagent tasks left over from the last run marked interrupted"
+        ),
+    }
     let persona = config.active_persona_scope();
     state_store.adopt_sessions_for_persona(&persona)?;
     // 终端集成车道按配置跑普通/开发模式：掰终端集成会话的人格 + 校正指针。
     // 指针缺失/指向不可用会话时的自举也在里面（原来的 ensure_local_current_session）。
     sessions::apply_terminal_session_mode(&config, &state_store)?;
-    // Subagent audit sessions are kept for a week, cleaned at startup and
-    // then daily while the daemon runs. One-shot `ask` sessions delete
-    // themselves as their turn ends, so the hour-old survivors swept here are
-    // strictly orphans from a client that died mid-turn.
-    const SUBAGENT_AUDIT_RETENTION_DAYS: i64 = 7;
+    // One-shot `ask` sessions delete themselves as their turn ends, so the
+    // hour-old survivors swept here (at startup, then daily) are strictly
+    // orphans from a client that died mid-turn. 子代理会话(09-18 会话化)不再按
+    // 天回收:它们是真会话,只在主会话 reset / 删除时随树清掉(用户拍板)。
     const ASK_SESSION_RETENTION_HOURS: i64 = 1;
-    let _ = state_store.delete_subagent_sessions_older_than(SUBAGENT_AUDIT_RETENTION_DAYS);
     let _ = state_store.delete_ask_sessions_older_than(ASK_SESSION_RETENTION_HOURS);
     {
         let store = state_store.clone();
@@ -35,7 +42,6 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
             interval.tick().await;
             loop {
                 interval.tick().await;
-                let _ = store.delete_subagent_sessions_older_than(SUBAGENT_AUDIT_RETENTION_DAYS);
                 let _ = store.delete_ask_sessions_older_than(ASK_SESSION_RETENTION_HOURS);
             }
         });
@@ -163,6 +169,10 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
     // 不反向引用 web(09-16)。
     crate::runtime::install_voice_port(std::sync::Arc::new(voice_bridge::VoiceBridgePort));
     crate::platforms::onebot::proactive::install_outreach_port(&state);
+    // 子代理会话化(09-18):工具层经端口请 daemon 建子会话、起回合、等任务终态;
+    // 监督器盯着子会话每轮结束判「任务完没完」。
+    install_subagent_host(&state);
+    spawn_subagent_supervisor(state.clone());
     // 脚本查宿主信息的一次性令牌只由 daemon 签发。
     crate::runtime::enable_host_grants();
     voice_bridge::spawn_if_enabled(&state);

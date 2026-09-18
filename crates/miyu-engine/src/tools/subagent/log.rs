@@ -342,6 +342,11 @@ pub(super) fn readable_subagent_log_line_timed(message: &str, elapsed: Option<Du
     if message.starts_with(super::protocol::REASONING_DONE_MARKER) {
         return String::new();
     }
+    // 会话化子代理(09-18)报的子会话 id 是给父回合落库用的,不是过程;结果段里
+    // 已经带 `session: …`,流水账不重复写。
+    if message.starts_with(super::SUBAGENT_SESSION_MARKER) {
+        return String::new();
+    }
     // 原始标记是**逐 delta** 的一截，不是一行：写成 `+` 标签，读那侧才会粘回去
     // 而不是一句一个台阶。也不 trim——两头的空白就是词边界。
     if let Some(text) = message.strip_prefix("__subagent_reasoning__") {

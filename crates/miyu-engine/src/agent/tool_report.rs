@@ -513,7 +513,7 @@ pub(in crate::agent) fn derive_tool_flow(
                         .map(|call| {
                             // 子代理调用:取走这次调用暂存的子过程标记流,挂上去落库,
                             // 刷新/回看时回放(#9)。别的工具没有,为 None。
-                            let sub_trace = if call.function.name == "subagent"
+                            let (sub_trace, child_session_id) = if call.function.name == "subagent"
                                 || call.function.name == "task"
                             {
                                 let trace = if drain_sub_trace {
@@ -521,9 +521,17 @@ pub(in crate::agent) fn derive_tool_flow(
                                 } else {
                                     crate::tools::peek_subagent_trace(&call.id)
                                 };
-                                (!trace.is_empty()).then_some(trace)
+                                // 会话化的子代理在标记流开头报自己的子会话 id(09-18):
+                                // 落库后前端据它把状态行链到那条会话。
+                                let child = trace
+                                    .iter()
+                                    .find_map(|marker| {
+                                        marker.strip_prefix(crate::tools::SUBAGENT_SESSION_MARKER)
+                                    })
+                                    .map(str::to_string);
+                                ((!trace.is_empty()).then_some(trace), child)
                             } else {
-                                None
+                                (None, None)
                             };
                             miyu_core::state::ToolFlowCall {
                                 id: call.id.clone(),
@@ -533,6 +541,7 @@ pub(in crate::agent) fn derive_tool_flow(
                                 started_ms: None,
                                 finished_ms: None,
                                 sub_trace,
+                                child_session_id,
                             }
                         })
                         .collect(),

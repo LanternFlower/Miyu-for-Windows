@@ -283,7 +283,27 @@ async fn run_turn_task_inner(
             normal_tools.unregister("remember_fact");
             dev_tools.unregister("remember_fact");
         }
-        if platform_context.is_none() && config.tools.enabled {
+        // 子会话的工具面(09-18 会话化):父车道那张表减排除表——与老循环里模型看到
+        // 的一致;孙代理再摘掉 subagent 本身(深度写死到 2)。ask_question 也不给:
+        // 子代理的回话对象是父回合,没有人来答。
+        let subagent_record = store
+            .session_record(&session_id)
+            .ok()
+            .flatten()
+            .filter(|record| record.kind == miyu_core::state::SUBAGENT_SESSION_KIND);
+        if let Some(record) = subagent_record.as_ref() {
+            for name in tools::SUBAGENT_SESSION_EXCLUDED {
+                normal_tools.unregister(name);
+                dev_tools.unregister(name);
+            }
+            if record.depth >= 2 {
+                for name in ["subagent", "send_subagent_message"] {
+                    normal_tools.unregister(name);
+                    dev_tools.unregister(name);
+                }
+            }
+        }
+        if platform_context.is_none() && config.tools.enabled && subagent_record.is_none() {
             tools::register_ask_question(&mut normal_tools);
             tools::register_ask_question(&mut dev_tools);
         }
@@ -348,7 +368,12 @@ async fn run_turn_task_inner(
             // 模型默认档),不改共享 client、不影响别的成员/管理员。
             turn_client.reload_thinking_variants(&paths.member_thinking_view(username));
         }
-        let mut agent = Agent::new_for_audience(
+        let agent_profile = if subagent_record.is_some() {
+            miyu_engine::agent::AgentProfile::Subagent
+        } else {
+            miyu_engine::agent::AgentProfile::Persona
+        };
+        let mut agent = Agent::new_with_profile(
             agent_config,
             &paths,
             store.clone(),
@@ -356,6 +381,7 @@ async fn run_turn_task_inner(
             active_tools,
             mode,
             audience,
+            agent_profile,
         )?
         .with_headless_pacing();
         let mut runtime_system_context = profile

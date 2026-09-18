@@ -44,6 +44,7 @@ mod server;
 mod session_cmds;
 mod sessions;
 mod shared_files;
+mod subagent_host;
 #[cfg(test)]
 mod tests;
 mod tty;
@@ -90,6 +91,7 @@ use server::*;
 use session_cmds::*;
 use sessions::*;
 use shared_files::*;
+use subagent_host::*;
 use tty::*;
 use turns::*;
 use ui_prefs::*;

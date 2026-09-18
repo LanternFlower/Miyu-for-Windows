@@ -68,6 +68,14 @@ pub(in crate::web) async fn actor_loop(
                     .as_ref()
                     .and_then(|profile| profile.platform.as_ref())
                     .map(|platform| platform.sender_id.clone());
+                // 子会话的回合(09-18 会话化)套上树深度:`subagent` 工具据它拒孙代理再往下
+                // 开;`in_subagent` 让 vision_analyze 走旁路转写(与老循环一致)。
+                let subagent_depth = session_store
+                    .session_record(&session_id)
+                    .ok()
+                    .flatten()
+                    .filter(|record| record.kind == miyu_core::state::SUBAGENT_SESSION_KIND)
+                    .map(|record| record.depth.max(0) as u32);
                 let task = run_turn_task(
                     config.clone(),
                     paths.clone(),
@@ -93,6 +101,15 @@ pub(in crate::web) async fn actor_loop(
                     turn_engine.clone(),
                     memory_organizer.clone(),
                 );
+                let task = miyu_base::workspace::with_turn_lane(mode, task);
+                let task: std::pin::Pin<Box<dyn std::future::Future<Output = ()>>> =
+                    match subagent_depth {
+                        Some(depth) => Box::pin(miyu_base::workspace::with_subagent_depth(
+                            depth,
+                            miyu_base::workspace::with_subagent(task),
+                        )),
+                        None => Box::pin(task),
+                    };
                 tokio::task::spawn_local(miyu_base::sandbox::with_sandbox(
                     sandbox,
                     miyu_base::workspace::with_workspace(
@@ -148,7 +165,10 @@ pub(in crate::web) async fn actor_loop(
                     sandbox,
                     miyu_base::workspace::with_workspace(
                         workspace,
-                        miyu_base::workspace::with_session(session_id, task),
+                        miyu_base::workspace::with_session(
+                            session_id,
+                            miyu_base::workspace::with_turn_lane(mode, task),
+                        ),
                     ),
                 ));
             }

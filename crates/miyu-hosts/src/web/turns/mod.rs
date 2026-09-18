@@ -530,7 +530,9 @@ pub(in crate::web) async fn list_jobs_http(
     headers: HeaderMap,
 ) -> std::result::Result<Response, ApiError> {
     require_auth(&headers, &state)?;
-    Ok(Json(json!({ "jobs": tools::jobs::overview() })).into_response())
+    let mut jobs = tools::jobs::overview();
+    annotate_job_roots(&state, &mut jobs);
+    Ok(Json(json!({ "jobs": jobs })).into_response())
 }
 
 /// 后台子代理到目前为止的原始进度标记流,网页端刷新后据它回放子过程时间线(#9)。

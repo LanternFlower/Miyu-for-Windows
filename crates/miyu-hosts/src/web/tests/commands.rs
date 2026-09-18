@@ -195,6 +195,7 @@ fn turn_payload_carries_the_tools_that_ran() {
                     started_ms: None,
                     finished_ms: None,
                     sub_trace: None,
+                    child_session_id: None,
                 }],
             }],
         )

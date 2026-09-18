@@ -23,6 +23,14 @@ fn situational_tool_specs(tools: &ToolRegistry, dev: bool) -> Vec<Arc<crate::too
         .collect()
 }
 
+/// Agent 的装配档位(09-18 子代理会话化)。`Persona` 是普通会话;`Subagent` 是子会话
+/// 的素档,见 [`Agent::new_with_profile`]。dev 不在这根轴上——它由 [`PersonaLane`] 折出。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentProfile {
+    Persona,
+    Subagent,
+}
+
 impl Agent {
     pub fn new(
         config: AppConfig,
@@ -52,6 +60,35 @@ impl Agent {
         lane: PersonaLane,
         prompt_audience: PromptAudience,
     ) -> Result<Self> {
+        Self::new_with_profile(
+            config,
+            paths,
+            state,
+            client,
+            tools,
+            lane,
+            prompt_audience,
+            AgentProfile::Persona,
+        )
+    }
+
+    /// 带档位的构造(09-18 子代理会话化):`AgentProfile::Subagent` 是子会话的素档——
+    /// 非 dev 时系统提示词换成通用子代理那份、五个子系统整套不构造(记忆不建库、
+    /// 不注入、不写日记;人格提醒/语音/情绪关;技能不注册)、预设对话跳过。工具面
+    /// 由场所按父会话的车道减排除表给,这里不管。dev 子代理 = dev 人格,与 dev 会话
+    /// 逐字节同源,前缀缓存共享。
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_profile(
+        config: AppConfig,
+        paths: &MiyuPaths,
+        state: StateStore,
+        client: OpenAiCompatibleClient,
+        tools: ToolRegistry,
+        lane: PersonaLane,
+        prompt_audience: PromptAudience,
+        profile: AgentProfile,
+    ) -> Result<Self> {
+        let subagent = profile == AgentProfile::Subagent;
         // Construction is side-effect free (aside from idempotent memory
         // init) so concurrent turns can each build their own Agent; startup
         // maintenance (prompt-change reset, stale-turn recovery) lives in
@@ -69,12 +106,19 @@ impl Agent {
             &config,
             paths,
             dev,
+            subagent,
             prompt_audience,
             user_profile_applies(prompt_audience, false),
         )?;
         // 子系统启用快照:人格清单 × 机器配置,构造期折一次,各挂接点只看它。
-        let subsystems = PersonaManifest::load(&config, paths, &config.active_persona_scope())
-            .enabled_subsystems(&config);
+        // 子会话档一位不开:子代理的记忆/人格提醒/语音/情绪都不该有(老循环本就没有,
+        // 而且它写进记忆库的东西会污染主会话的记忆)。
+        let subsystems = if subagent {
+            miyu_base::config::EnabledSubsystems::default()
+        } else {
+            PersonaManifest::load(&config, paths, &config.active_persona_scope())
+                .enabled_subsystems(&config)
+        };
         let system_prompt = with_memory_preamble(
             with_host_environment(
                 base_system_prompt,
@@ -89,8 +133,8 @@ impl Agent {
         );
         let tools_enabled = config.tools.enabled;
         let max_tool_rounds = config.tools.max_rounds;
-        // dev 无人格:预设对话整套跳过。
-        let preset_dialogs = if dev {
+        // dev 无人格:预设对话整套跳过。子会话档同理。
+        let preset_dialogs = if dev || subagent {
             Vec::new()
         } else {
             persona_hint::load_dialogs(&config, paths, &config.active_persona_scope())
@@ -132,6 +176,7 @@ impl Agent {
             },
             core: CoreTurnSnapshot {
                 dev,
+                subagent,
                 prompt_audience,
                 paths: paths.clone(),
                 subsystems,
@@ -249,6 +294,7 @@ impl Agent {
             &self.core.config,
             &self.core.paths,
             self.core.dev,
+            self.core.subagent,
             self.core.prompt_audience,
             user_profile_applies(
                 self.core.prompt_audience,
@@ -258,7 +304,7 @@ impl Agent {
         {
             // 指纹永远按人格提示词算,不看整体替换的覆盖:覆盖是回合级
             // 瞬态,进指纹会让每个带覆盖的回合都翻转一次指纹文件。
-            let fingerprint_prompt = if self.core.dev {
+            let fingerprint_prompt = if self.core.dev || self.core.subagent {
                 persona_prompt.clone()
             } else {
                 self.core.config.base_system_prompt(&self.core.paths)?
@@ -459,6 +505,7 @@ impl Agent {
             &self.core.config,
             &self.core.paths,
             self.core.dev,
+            self.core.subagent,
             self.core.prompt_audience,
             user_profile_applies(
                 self.core.prompt_audience,
@@ -527,8 +574,8 @@ impl Agent {
     }
 
     pub(in crate::agent) fn refresh_preset_dialogs(&mut self) {
-        // dev 无人格:预设对话整套跳过(与构造期一致)。
-        self.preset_dialogs = if self.core.dev {
+        // dev 无人格:预设对话整套跳过(与构造期一致);子会话档同理。
+        self.preset_dialogs = if self.core.dev || self.core.subagent {
             Vec::new()
         } else {
             persona_hint::load_dialogs(

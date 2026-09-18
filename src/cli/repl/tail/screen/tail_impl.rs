@@ -147,6 +147,16 @@ impl super::super::LiveReplTail {
             }
             // 悬浮：鼠标扫过可点的行就提亮它。不提亮的话「哪儿能点」全靠猜。
             if matches!(mouse.kind, MouseEventKind::Moved) {
+                // 底部任务条那几行在正文区之外,单独判:悬在哪一条上那一条就不 dim
+                // (用户 09-18:任务条行悬浮没有高亮)。
+                let strip_hover = (self.job_strip_rows > 0 && row >= self.job_strip_start)
+                    .then(|| usize::from(row - self.job_strip_start).checked_sub(1))
+                    .flatten()
+                    .filter(|index| *index < self.jobs.len());
+                if strip_hover != self.job_hover {
+                    self.job_hover = strip_hover;
+                    self.tick_job_strip()?;
+                }
                 let index = self
                     .screen
                     .as_ref()

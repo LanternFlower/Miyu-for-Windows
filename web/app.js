@@ -9294,8 +9294,10 @@
 
   function visibleBackgroundJobs() {
     // 会话隔离: 状态条只显示当前查看会话的任务(无会话标记的旧任务保持可见)。
+    // 后代(子代理/孙代理)的后台任务也列:它们归自己的会话,树根是当前会话(09-18 会话化)。
     return Array.from(state.backgroundJobs.values()).filter(
-      (job) => !job.session_id || !state.viewSessionId || job.session_id === state.viewSessionId
+      (job) => !job.session_id || !state.viewSessionId
+        || job.session_id === state.viewSessionId || job.root_session_id === state.viewSessionId
     );
   }
 
@@ -9444,7 +9446,10 @@
     const showRows = !collapsible || state.jobsStripOpen;
     for (const job of showRows ? jobs : []) {
       const jid = String(job.job_id);
-      const isSubagent = job.kind === "subagent";
+      // kind 是 "subagent" 或 "dev"(开发模式子代理单列一类,见 jobs::kind_label);
+      // 原来只认前者,开发模式的后台子代理被当成命令画:标签「命令」、点开是日志
+      // 面板而不是子过程时间线(用户 09-18 截图)。
+      const isSubagent = job.kind === "subagent" || job.kind === "dev";
       const row = document.createElement("div");
       row.className = "job-chip is-expandable";
       row.dataset.jobId = jid;
@@ -9452,7 +9457,9 @@
       const label = document.createElement("span");
       label.className = "job-chip-label";
       const kindWord = isSubagent ? (job.dev ? "开发中" : "子代理") : "命令";
-      label.textContent = `${kindWord} ${job.job_id} · ${job.title}`;
+      // 后代的任务前面挂个 ↳,看得出不是这一层开的。
+      const nested = job.root_session_id && job.session_id && job.root_session_id !== job.session_id;
+      label.textContent = `${kindWord} ${nested ? "↳ " : ""}${job.job_id} · ${job.title}`;
       label.title = label.textContent;
 
       // 行窥视:跑到工具显示工具、跑到思考窥思考,单行滚动刷新(仅子代理有进度流,
@@ -9571,7 +9578,7 @@
         // 刷新后子代理展开区是空的(子过程只在内存里,#9)。补拉这个任务到目前为止的
         // 原始标记流回放进它的 sink,展开就能看到之前的思考/工具/正文;之后的实时进度
         // 继续往同一个 sink 追加。每个 sink 只回放一次。
-        if (job.kind === "subagent") seedJobTrace(jid);
+        if (job.kind === "subagent" || job.kind === "dev") seedJobTrace(jid);
       }
       renderJobsStrip();
     } catch {

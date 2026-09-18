@@ -349,3 +349,20 @@ pub(in crate::state) fn apply_v37_sandbox_read_all(conn: &Connection) -> Result<
         "INTEGER NOT NULL DEFAULT 0",
     )
 }
+
+/// v39: 子代理会话化(09-18)。子代理不再是一行审计记录,而是真会话:`depth`(0 主会话
+/// / 1 子代理 / 2 孙代理)、`task_state`(running / waiting / done / failed / cancelled /
+/// interrupted;主会话为 NULL)、`spawned_by_turn`(父会话里开它的那一轮)、`background`
+/// (开的时候是不是后台)。升级前的审计行 depth 记 1、task_state 留 NULL——Σ 汇总据
+/// NULL 认出「用量记在行上、不在 turns 里」的老行,两代数据各算各的不重复计。
+pub(in crate::state) fn apply_v39_subagent_sessions(conn: &Connection) -> Result<()> {
+    add_column_if_missing(conn, "sessions", "depth", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(conn, "sessions", "task_state", "TEXT")?;
+    add_column_if_missing(conn, "sessions", "spawned_by_turn", "TEXT")?;
+    add_column_if_missing(conn, "sessions", "background", "INTEGER NOT NULL DEFAULT 0")?;
+    conn.execute(
+        "UPDATE sessions SET depth = 1 WHERE kind = 'subagent' AND depth = 0",
+        [],
+    )?;
+    Ok(())
+}

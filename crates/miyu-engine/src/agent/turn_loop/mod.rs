@@ -286,6 +286,7 @@ pub(in crate::agent) fn record_remote_tool_chunk(
                     started_ms: None,
                     finished_ms: None,
                     sub_trace: None,
+                    child_session_id: None,
                 });
             None
         }

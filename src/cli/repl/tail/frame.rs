@@ -176,8 +176,12 @@ impl LiveReplTail {
             clipped.extend(queue_lines.split_off(queue_lines.len().saturating_sub(keep)));
             queue_lines = clipped;
         }
-        let job_lines =
-            background_job_lines(&self.jobs, self.job_spinner_frame(), usize::from(cols));
+        let job_lines = background_job_lines(
+            &self.jobs,
+            self.job_spinner_frame(),
+            usize::from(cols),
+            self.job_hover,
+        );
         let job_rows = job_lines.len().min(u16::MAX as usize) as u16;
         // 空会话 banner:inline 下占活动区顶上几行;全屏下画进正文区(见下面)。
         // 终端太矮就不挂:banner 要十几行,把输入框挤出屏幕就本末倒置了。

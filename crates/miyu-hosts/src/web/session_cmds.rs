@@ -95,6 +95,44 @@ pub(in crate::web) async fn handle_session_command(
                 }
             }
         }
+        IpcCommand::ListSubagentSessions { session_id } => {
+            // 子会话按 id 直取(id 是不可猜的能力凭据),父会话本身也得是能看的会话。
+            let parent = resolve_local_session_ref_with_kinds(
+                state,
+                &ipc::SessionRef::Id {
+                    id: session_id.clone(),
+                },
+                VISITABLE_KINDS,
+                None,
+            )?;
+            let children = state
+                .stores
+                .for_session(&parent.session_id)
+                .child_sessions(&parent.session_id)
+                .map_err(|error| safe_error_message(&error))?;
+            let manager = state.manager.lock().unwrap();
+            let sessions: Vec<Value> = children
+                .iter()
+                .map(|overview| {
+                    let record = &overview.record;
+                    json!({
+                        "session_id": record.session_id,
+                        "name": record.name,
+                        "depth": record.depth,
+                        "task_state": record.task_state,
+                        "background": record.background,
+                        "dev": record.persona == miyu_core::state::DEV_PERSONA,
+                        "spawned_by_turn": record.spawned_by_turn,
+                        "turn_count": overview.turn_count,
+                        "context_tokens": overview.context_tokens,
+                        "active_run_id": manager.run_in_session(&record.session_id),
+                        "created_at": record.created_at,
+                        "updated_at": record.updated_at,
+                    })
+                })
+                .collect();
+            Ok(json!({ "session_id": parent.session_id, "sessions": sessions }))
+        }
         IpcCommand::ListSessions { mode } => {
             // dev 列表以 dev REPL 指针为"当前":全局指针指向普通会话,
             // 用它高亮永远落空。"all" 是管理面(miyu session):普通+dev
@@ -473,6 +511,8 @@ pub(in crate::web) async fn handle_session_command(
                 )
                 .await;
             }
+            // 子代理树先拆(09-18 会话化):停回合、停后台任务、收中转进程、删行。
+            teardown_subagent_tree(state, &record.session_id).await;
             reserve_admin_for_session(&state.manager, &record.session_id)
                 .map_err(|error| error.message)?;
             if &*store.session_id() == record.session_id.as_str() {

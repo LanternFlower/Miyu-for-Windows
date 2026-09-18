@@ -20,7 +20,9 @@ use crate::web::*;
 /// 取消→pause 的语义在 ipc Cancel 处理器里(那里能拿到被取消 run 的来源)。
 pub(in crate::web) fn install_background_job_hook(state: &DaemonState) {
     let started_state = state.clone();
-    tools::jobs::set_started_hook(Arc::new(move |overview| {
+    tools::jobs::set_started_hook(Arc::new(move |mut overview| {
+        // 子代理树的根(09-18 会话化):主会话的任务条按它把后代的任务也列出来。
+        annotate_job_roots(&started_state, std::slice::from_mut(&mut overview));
         // session_id 放**顶层**:事件归属过滤(EventOwnerFilter)只认顶层的
         // session_id/run_id,没有就只发给管理员——成员的后台任务因此在成员端
         // 完全不显示(09-11 用户报「后台任务 UI 没了」)。带上归属会话即可让

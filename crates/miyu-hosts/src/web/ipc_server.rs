@@ -153,11 +153,13 @@ async fn dispatch_ipc_connection(
                     })
                     .collect::<Vec<_>>()
             };
+            let mut jobs = tools::jobs::overview();
+            annotate_job_roots(&state, &mut jobs);
             ipc::send(
                 &mut stream,
                 &IpcFrame::AdminResult {
                     state: session_state(&state.manager, &state.state_store)?,
-                    data: json!({ "jobs": tools::jobs::overview(), "wake_runs": wake_runs }),
+                    data: json!({ "jobs": jobs, "wake_runs": wake_runs }),
                 },
             )
             .await?;
@@ -305,7 +307,13 @@ async fn dispatch_ipc_connection(
             .await?;
         }
         IpcCommand::GetSessionState { target } => {
-            let record = match resolve_available_local_session_ref(&state, &target) {
+            // 子代理会话也能看(09-18 会话化):访问子会话时 footer / 回放靠它。
+            let record = match resolve_local_session_ref_with_kinds(
+                &state,
+                &target,
+                VISITABLE_KINDS,
+                None,
+            ) {
                 Ok(record) => record,
                 Err(message) => {
                     ipc::send(&mut stream, &IpcFrame::error(message)).await?;
@@ -442,6 +450,8 @@ async fn dispatch_ipc_connection(
                 }
             };
             let session_id: Arc<str> = target_record.session_id.into();
+            // reset = 从头来过:子代理树连根拔(09-18 会话化,用户拍板)。
+            teardown_subagent_tree(&state, &session_id).await;
             reserve_admin_for_session(&state.manager, &session_id)
                 .map_err(|error| anyhow::anyhow!(error.message))?;
             let (reply, receiver) = oneshot::channel();

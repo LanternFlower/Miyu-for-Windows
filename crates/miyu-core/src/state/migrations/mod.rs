@@ -217,10 +217,15 @@ const MIGRATIONS: &[Migration] = &[
         name: "session_context_tokens",
         apply: apply_v38_session_context_tokens,
     },
+    Migration {
+        version: 39,
+        name: "subagent_sessions",
+        apply: apply_v39_subagent_sessions,
+    },
 ];
 
 /// Latest schema version this build produces.
-pub const LATEST_VERSION: i64 = 38;
+pub const LATEST_VERSION: i64 = 39;
 
 /// Returns the schema version currently recorded in the database.
 pub fn current_version(conn: &Connection) -> Result<i64> {

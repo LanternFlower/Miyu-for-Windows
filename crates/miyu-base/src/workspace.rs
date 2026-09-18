@@ -156,6 +156,8 @@ pub enum TurnOrigin {
         revision: i64,
         round: i64,
     },
+    /// 父会话的 subagent 工具开的子会话回合(09-18 会话化)。带父会话 id。
+    Subagent { parent_session: String },
 }
 
 tokio::task_local! {
@@ -193,6 +195,44 @@ where
 
 pub fn current_bridge_depth() -> u32 {
     BRIDGE_DEPTH.try_with(|depth| *depth).unwrap_or(0)
+}
+
+tokio::task_local! {
+    /// 子代理树深度(09-18 会话化):0 主会话,1 子代理,2 孙代理。子会话的回合由
+    /// actor 套上;`subagent` 工具据它拒掉孙代理再往下开(工具面上本就摘掉了,
+    /// 这是第二道闸)。
+    static SUBAGENT_DEPTH: u32;
+}
+
+pub async fn with_subagent_depth<F>(depth: u32, future: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    SUBAGENT_DEPTH.scope(depth, future).await
+}
+
+/// 缺省 0:直连 CLI / 测试没有包装层,那就是主会话。
+pub fn current_subagent_depth() -> u32 {
+    SUBAGENT_DEPTH.try_with(|depth| *depth).unwrap_or(0)
+}
+
+tokio::task_local! {
+    /// 本回合跑在哪条人格车道上(daemon 的 actor 套)。`subagent` 工具据它判「这一层
+    /// 已经是开发模式」:开发子代理开的孙代理不管传没传 dev 都是开发模式(人格跟父),
+    /// 任务条与状态行的标签要按实际模式写,不能只看模型传的那个布尔(用户 09-18)。
+    static TURN_LANE: crate::config::PersonaLane;
+}
+
+pub async fn with_turn_lane<F>(lane: crate::config::PersonaLane, future: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    TURN_LANE.scope(lane, future).await
+}
+
+/// 回合外(直连 CLI / 测试)为 None。
+pub fn current_turn_lane() -> Option<crate::config::PersonaLane> {
+    TURN_LANE.try_with(|lane| *lane).ok()
 }
 
 /// 平台回合的生图配额。计数器挂在 turn future 的 task-local 上而不是共享

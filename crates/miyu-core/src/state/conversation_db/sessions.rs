@@ -398,6 +398,137 @@ impl ConversationDb {
             .expect("session row just inserted"))
     }
 
+    /// 建一条子代理会话(09-18 会话化):挂在父会话下,深度 = 父 + 1,归属跟父。
+    /// 不参与侧栏排序(sort_key 0),也进不了任何 `kind = 'user'` 的列表;
+    /// `task_state` 一落地就是 running,好和升级前「用量记在行上」的审计行区分开。
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_subagent_session(
+        &self,
+        persona: &str,
+        name: &str,
+        parent_session_id: &str,
+        owner: &str,
+        depth: i64,
+        spawned_by_turn: Option<&str>,
+        background: bool,
+    ) -> Result<SessionRecord> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        let session_id = format!(
+            "sess_{}_{:08x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis())
+                .unwrap_or(0),
+            rand::random::<u32>()
+        );
+        conn.execute(
+            "INSERT INTO sessions (session_id, persona, name, kind, parent_session_id, created_at,
+                                   updated_at, sort_key, owner, depth, task_state, spawned_by_turn,
+                                   background)
+             VALUES (?1, ?2, ?3, 'subagent', ?4, ?5, ?5, 0, ?6, ?7, 'running', ?8, ?9)",
+            params![
+                session_id,
+                persona,
+                name,
+                parent_session_id,
+                now,
+                owner,
+                depth,
+                spawned_by_turn,
+                background
+            ],
+        )?;
+        drop(conn);
+        Ok(self
+            .session_record(&session_id)?
+            .expect("session row just inserted"))
+    }
+
+    /// 某会话的直系子代理会话,按创建先后(09-18)。带 turn_count / 上下文,
+    /// 好让 `/subagent` 面板与任务条一次拿齐。
+    pub fn child_sessions(&self, parent_session_id: &str) -> Result<Vec<SessionOverview>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {SESSION_COLUMNS},
+                    (SELECT count(*) FROM turns
+                      WHERE turns.session_id = sessions.session_id
+                        AND hidden = 0 AND is_summary = 0) AS turn_count,
+                    (SELECT display_content FROM turns
+                      WHERE turns.session_id = sessions.session_id
+                        AND hidden = 0 AND is_summary = 0
+                      ORDER BY seq DESC LIMIT 1) AS last_user_content,
+                    sessions.context_tokens AS context_tokens
+             FROM sessions
+             WHERE parent_session_id = ?1 AND kind = 'subagent'
+             ORDER BY created_at ASC, session_id ASC"
+        ))?;
+        let rows = stmt.query_map(params![parent_session_id], |row| {
+            Ok(SessionOverview {
+                record: session_record_from_row(row)?,
+                turn_count: row.get("turn_count")?,
+                last_user_content: row.get("last_user_content")?,
+                context_tokens: row
+                    .get::<_, Option<i64>>("context_tokens")?
+                    .filter(|value| *value >= 0)
+                    .map(|value| value as u64),
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// 某会话名下整棵子代理树的 id(递归,不含自己;先父后子)。reset / 删除时沿它
+    /// 停回合、停后台任务、收中转进程。**不按人格过滤**:普通主会话开的 dev 子代理
+    /// 人格是 `dev`,按人格过滤会漏掉它(`persona_reset_session_ids` 那条就是这么漏的)。
+    pub fn descendant_session_ids(&self, root: &str) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "WITH RECURSIVE tree(session_id, level) AS (
+                 SELECT session_id, 1 FROM sessions
+                  WHERE parent_session_id = ?1 AND kind = 'subagent'
+                 UNION ALL
+                 SELECT child.session_id, tree.level + 1
+                   FROM sessions child JOIN tree ON child.parent_session_id = tree.session_id
+                  WHERE child.kind = 'subagent'
+             )
+             SELECT session_id FROM tree ORDER BY level ASC, session_id ASC",
+        )?;
+        let rows = stmt.query_map(params![root], |row| row.get(0))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// 直系子代理里还没到终态(running / waiting)的有几条。子代理「任务完成」的判据之一。
+    pub fn pending_child_sessions(&self, parent_session_id: &str) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM sessions
+              WHERE parent_session_id = ?1 AND kind = 'subagent'
+                AND task_state IN ('running', 'waiting')",
+            params![parent_session_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn set_session_task_state(&self, session_id: &str, state: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sessions SET task_state = ?2, updated_at = ?3 WHERE session_id = ?1",
+            params![session_id, state, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// daemon 启动:上个进程里没跑完的子代理任务一律标 interrupted。不自动续跑——
+    /// 崩溃重启后自动重开一棵树容易滚雪球;用户到任务条里点进去回复即续。
+    pub fn mark_subagent_tasks_interrupted(&self) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.execute(
+            "UPDATE sessions SET task_state = 'interrupted'
+              WHERE kind = 'subagent' AND task_state IN ('running', 'waiting')",
+            [],
+        )?)
+    }
+
     /// 会话手动排序:按给定顺序重写 sort_key(间隔 1024)。只动 user 会话,
     /// 未列出的行保持原 key(组内拖拽只发本组也不破坏另一组)。
     pub fn reorder_sessions(&self, ordered_ids: &[String]) -> Result<()> {
@@ -490,6 +621,10 @@ impl ConversationDb {
             updated_at: now,
             sort_key: 0,
             owner: String::new(),
+            depth: 0,
+            task_state: None,
+            spawned_by_turn: None,
+            background: false,
         };
         tx.commit()?;
         Ok((record, true))
@@ -689,27 +824,36 @@ impl ConversationDb {
     /// Session-lifetime sums behind the Σ meter. Returned together because the
     /// cumulative cache rate is `cache_read / prompt` and reading the two
     /// halves through separate locks could straddle a turn commit.
+    ///
+    /// 子代理记到发起它的会话上:会话化之后(v39)子/孙会话的用量在各自的 `turns`
+    /// 行里,这里沿 `parent_session_id` 递归把整棵树加进来;升级前的审计行
+    /// (`task_state IS NULL`)用量只在会话行上,单独加一层、不重复计。
+    /// Estimated runs land in `total_tokens` only — `prompt_tokens` stays 0 when
+    /// the provider reported nothing — so a guessed number can inflate Σ but
+    /// never reaches the cache rate's denominator.
     pub fn session_token_totals(&self, session_id: &str) -> Result<TurnTokens> {
         let conn = self.conn.lock().unwrap();
         let (total, prompt, cache_read): (i64, i64, i64) = conn.query_row(
-            "SELECT COALESCE(SUM(token_total), 0), COALESCE(SUM(token_prompt), 0),
+            "WITH RECURSIVE tree(session_id) AS (
+                 SELECT ?1
+                 UNION ALL
+                 SELECT child.session_id
+                   FROM sessions child JOIN tree ON child.parent_session_id = tree.session_id
+                  WHERE child.kind = 'subagent' AND child.task_state IS NOT NULL
+             )
+             SELECT COALESCE(SUM(token_total), 0), COALESCE(SUM(token_prompt), 0),
                     COALESCE(SUM(token_cache_read), 0)
-             FROM turns WHERE session_id = ?1",
+               FROM turns WHERE session_id IN (SELECT session_id FROM tree)",
             rusqlite::params![session_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
-        // Subagents bill to the session that launched them: their audit
-        // sessions hang off this one, and a Σ that ignored them would hide the
-        // single biggest thing a turn can spend. Estimated runs land in
-        // `total_tokens` only — `prompt_tokens` stays 0 when the provider
-        // reported nothing — so a guessed number can inflate Σ but never
-        // reaches the cache rate's denominator.
         let (sub_total, sub_prompt, sub_cache): (i64, i64, i64) = conn.query_row(
             "SELECT COALESCE(SUM(total_tokens), 0),
                     COALESCE(SUM(CASE WHEN cache_read_tokens IS NULL THEN 0
                                       ELSE prompt_tokens END), 0),
                     COALESCE(SUM(cache_read_tokens), 0)
-             FROM sessions WHERE parent_session_id = ?1 AND kind = 'subagent'",
+             FROM sessions WHERE parent_session_id = ?1 AND kind = 'subagent'
+               AND task_state IS NULL",
             rusqlite::params![session_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;

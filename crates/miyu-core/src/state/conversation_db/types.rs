@@ -170,6 +170,10 @@ pub struct ToolFlowCall {
     /// 时间线(#9:刷新丢内容)。只有 subagent 调用有;旧记录/别的工具为 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sub_trace: Option<Vec<String>>,
+    /// 这次 subagent 调用开出的子会话 id(09-18 会话化)。前端据它把状态行链到那条
+    /// 会话;旧记录/别的工具为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -461,6 +465,14 @@ pub struct SessionRecord {
     pub sort_key: i64,
     /// 归属账号 id(v34);空串 = 遗留/管理员所有。
     pub owner: String,
+    /// 子代理树深度(v39):0 主会话,1 子代理,2 孙代理。
+    pub depth: i64,
+    /// 子代理任务状态(v39,见 `state::SubagentTaskState`);主会话与升级前的审计行为 None。
+    pub task_state: Option<String>,
+    /// 父会话里开它的那一轮 turn_id(v39);回放时据它把状态行链到子会话。
+    pub spawned_by_turn: Option<String>,
+    /// 开的时候是不是后台(v39)。
+    pub background: bool,
 }
 
 #[derive(Debug, Clone)]

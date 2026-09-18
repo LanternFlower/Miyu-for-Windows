@@ -14,6 +14,7 @@ fn call(name: &str, arguments: &str) -> ToolFlowCall {
         started_ms: None,
         finished_ms: None,
         sub_trace: None,
+        child_session_id: None,
     }
 }
 

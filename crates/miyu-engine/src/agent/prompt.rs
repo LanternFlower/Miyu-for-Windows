@@ -31,18 +31,38 @@ pub(in crate::agent) fn with_runtime_system_context(
 /// 极简原则);其他人格=人格提示词(按 audience 附用户档案)。
 /// `with_user_profile`:属主档案进不进提示词——终端/WebUI 回合进,通讯平台
 /// 回合不进(阶段 6:成员的 WebUI 回合带的是成员自己的档案)。
+/// 通用子代理的系统提示词(09-18 会话化):子会话档(`AgentProfile::Subagent`)且非 dev
+/// 时用它——与工具层老循环里那份是同一个文件,两条路看到的字节一致。
+pub const SUBAGENT_GENERAL_PROMPT: &str =
+    include_str!("../../../../src/prompts/subagent-general.md");
+
+/// 子会话(dev 与通用都加)的交付约定:回话对象是父回合、没有第二轮、后台任务完成
+/// 会自动唤醒不要轮询。dev 提示词里没有这些,老循环也是拿一句约定钉在末尾的;
+/// 「不要轮询」是用户 09-18 真机看到 dev 子代理反复调 job status 烧词元后要求加的,
+/// 后台命令与后台子代理一并管到。字节常量,子会话之间前缀缓存照样命中。
+pub const SUBAGENT_SESSION_CONTRACT: &str = "Your reply goes back to the agent that delegated this task, not to a user, and there is no second round: finish the work yourself and end with what you did, what the result was, and anything the caller must know. Background jobs you start (background commands, background subagents) wake you automatically when they finish: do not poll job(action=status) to wait for them — end your turn and carry on when you are woken.";
+
 pub(in crate::agent) fn persona_system_prompt(
     config: &AppConfig,
     paths: &MiyuPaths,
     dev: bool,
+    subagent: bool,
     audience: PromptAudience,
     with_user_profile: bool,
 ) -> Result<String> {
-    if dev {
-        config.dev_system_prompt(paths)
+    let mut prompt = if dev {
+        config.dev_system_prompt(paths)?
+    } else if subagent {
+        // 子会话档:任务由父会话布置,没有人格全家、没有用户档案(与老循环同源)。
+        SUBAGENT_GENERAL_PROMPT.to_string()
     } else {
-        config.system_prompt_with(paths, audience, with_user_profile)
+        config.system_prompt_with(paths, audience, with_user_profile)?
+    };
+    if subagent {
+        prompt.push_str("\n\n");
+        prompt.push_str(SUBAGENT_SESSION_CONTRACT);
     }
+    Ok(prompt)
 }
 
 /// 联想记忆块的前言常量上提到 system 提示词(08-17)。
