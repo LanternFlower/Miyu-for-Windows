@@ -56,6 +56,21 @@ pub(in crate::config_tui) fn edit_antigravity_provider_form(
             ),
             plugin.print_timeout_seconds.to_string(),
         ),
+        Field::new(
+            t(
+                "Reuse the agy process across turns",
+                "同会话连续轮复用 agy 进程",
+            ),
+            plugin.reuse_process.to_string(),
+        )
+        .choices(&["true", "false"]),
+        Field::new(
+            t(
+                "Idle seconds before a reused process is reaped",
+                "常驻进程闲置回收(秒)",
+            ),
+            plugin.reuse_idle_seconds.to_string(),
+        ),
     ];
     loop {
         if !run_form(
@@ -85,6 +100,8 @@ pub(in crate::config_tui) fn edit_antigravity_provider_form(
         plugin.miyu_tools_eager = eager;
         plugin.idle_timeout_seconds = fields[6].value.trim().parse().unwrap_or(300);
         plugin.print_timeout_seconds = fields[7].value.trim().parse().unwrap_or(24 * 60 * 60);
+        plugin.reuse_process = parse_bool_field(&fields[8].value).unwrap_or(true);
+        plugin.reuse_idle_seconds = fields[9].value.trim().parse().unwrap_or(600);
         if !enabled {
             // 关掉即清理 agy 侧落盘物:代理目录与全局 mcp_config 的桥条目,
             // 否则用户交互式开 agy 还会一直挂着一个指向旧二进制的 miyu 服务器。

@@ -2,10 +2,14 @@
 //! 收 stderr 尾巴、收尾等待/击杀。三条线的事件语法各不相同,但进程这一层
 //! 完全一样——尤其是「超时/出错必须显式杀进程组:drop future 只是弃 promise,
 //! 不杀子进程」这条,三处各抄一遍就会有一处漏。
+//!
+//! 09-18 起 stdin 有两种姿态:一次性(写完就关,本轮输入结束,进程跑完退出——
+//! claude / codex 与不复用时的 agy)与常驻(写完把写端留着,下一轮接着写——agy
+//! 的进程复用,见 `antigravity::pool`)。
 
 use crate::llm::openai_compatible::*;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{Child, ChildStdout};
+use tokio::process::{Child, ChildStdin, ChildStdout};
 
 pub(in crate::llm::openai_compatible) fn kill_process_group(pid: u32) {
     signal_process_group(pid, libc::SIGKILL);
@@ -21,17 +25,27 @@ fn signal_process_group(pid: u32, signal: libc::c_int) {
 /// 实测在 5 秒内;超时的走 SIGKILL 兜底。
 const TERMINATE_GRACE: Duration = Duration::from_secs(5);
 
+/// stdin 写端的归宿。写入在独立任务里进行:先读 stdout 再等写完。CLI 在读
+/// stdin 之前就退出(续传目标丢失、登录失败)时,大于管道缓冲的载荷会让同步
+/// write_all 永远等不到人读,或者拿到一个没有 stderr 尾巴的 EPIPE——两种都盖
+/// 住了真正的报错措辞(评审 09-03)。
+enum StdinSlot {
+    /// 一次性:写完就关。
+    OneShot(tokio::task::JoinHandle<()>),
+    /// 常驻:写完把写端交回,下一轮 [`RelayProcess::write_payload`] 接着写;
+    /// `None` = 写端已坏(EPIPE),进程不能再复用。
+    Held(tokio::task::JoinHandle<Option<ChildStdin>>),
+    /// 已关(收尾时)。
+    Closed,
+}
+
 pub(in crate::llm::openai_compatible) struct RelayProcess {
     child: Child,
     pid: u32,
     lines: Lines<BufReader<ChildStdout>>,
     stderr_tail: Arc<Mutex<String>>,
     stderr_task: tokio::task::JoinHandle<()>,
-    /// stdin 写入在独立任务里进行:先读 stdout 再等写完。CLI 在读 stdin 之前
-    /// 就退出(续传目标丢失、登录失败)时,大于管道缓冲的载荷会让同步 write_all
-    /// 永远等不到人读,或者拿到一个没有 stderr 尾巴的 EPIPE——两种都盖住了
-    /// 真正的报错措辞(评审 09-03)。
-    stdin_task: tokio::task::JoinHandle<()>,
+    stdin: StdinSlot,
     idle_timeout: Duration,
     /// 看门狗报错里的阶段名(`claude-code.stream` 这种)。
     stage: &'static str,
@@ -54,6 +68,33 @@ fn relay_config_grants() -> Vec<std::path::PathBuf> {
     grants
 }
 
+fn spawn_writer(
+    mut stdin: ChildStdin,
+    payload: Vec<u8>,
+    label: &'static str,
+    keep: bool,
+) -> StdinSlot {
+    if keep {
+        StdinSlot::Held(tokio::spawn(async move {
+            match stdin.write_all(&payload).await {
+                Ok(()) => Some(stdin),
+                Err(error) => {
+                    tracing::debug!(%error, "{label} closed stdin before the payload was written");
+                    None
+                }
+            }
+        }))
+    } else {
+        StdinSlot::OneShot(tokio::spawn(async move {
+            if let Err(error) = stdin.write_all(&payload).await {
+                // 子进程先退出(EPIPE)属正常:真正的原因在 stdout/stderr 里。
+                tracing::debug!(%error, "{label} closed stdin before the payload was written");
+            }
+            drop(stdin);
+        }))
+    }
+}
+
 impl RelayProcess {
     /// 拉起子进程并把整段 stdin 载荷写完、关写端(本轮输入结束)。
     /// `env` 里 `None` 表示从子进程环境里抹掉该变量。
@@ -68,6 +109,64 @@ impl RelayProcess {
         stage: &'static str,
         label: &'static str,
         not_found: impl FnOnce() -> String,
+    ) -> Result<Self> {
+        Self::launch(
+            binary,
+            args,
+            workdir,
+            env,
+            stdin_payload,
+            idle_timeout,
+            stage,
+            label,
+            not_found,
+            false,
+        )
+        .await
+    }
+
+    /// 同 [`spawn`](Self::spawn),但 stdin 写完不关:进程留着给下一轮
+    /// [`write_payload`](Self::write_payload)。收尾走 [`finish`](Self::finish)
+    /// 时才关写端。
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::llm::openai_compatible) async fn spawn_persistent(
+        binary: &std::path::Path,
+        args: &[String],
+        workdir: &std::path::Path,
+        env: &[(String, Option<String>)],
+        stdin_payload: &str,
+        idle_timeout: Duration,
+        stage: &'static str,
+        label: &'static str,
+        not_found: impl FnOnce() -> String,
+    ) -> Result<Self> {
+        Self::launch(
+            binary,
+            args,
+            workdir,
+            env,
+            stdin_payload,
+            idle_timeout,
+            stage,
+            label,
+            not_found,
+            true,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn launch(
+        binary: &std::path::Path,
+        args: &[String],
+        workdir: &std::path::Path,
+        env: &[(String, Option<String>)],
+        stdin_payload: &str,
+        idle_timeout: Duration,
+        stage: &'static str,
+        label: &'static str,
+        not_found: impl FnOnce() -> String,
+        keep_stdin: bool,
     ) -> Result<Self> {
         let mut command = tokio::process::Command::new(binary);
         command
@@ -99,7 +198,7 @@ impl RelayProcess {
             }
         })?;
         let pid = child.id().unwrap_or_default();
-        let mut stdin = child
+        let stdin = child
             .stdin
             .take()
             .with_context(|| format!("{label} stdin unavailable"))?;
@@ -134,27 +233,62 @@ impl RelayProcess {
                 }
             })
         };
-        let stdin_task = {
-            let payload = stdin_payload.as_bytes().to_vec();
-            tokio::spawn(async move {
-                if let Err(error) = stdin.write_all(&payload).await {
-                    // 子进程先退出(EPIPE)属正常:真正的原因在 stdout/stderr 里。
-                    tracing::debug!(%error, "{label} closed stdin before the payload was written");
-                }
-                drop(stdin);
-            })
-        };
+        let stdin = spawn_writer(stdin, stdin_payload.as_bytes().to_vec(), label, keep_stdin);
         Ok(Self {
             child,
             pid,
             lines: BufReader::new(stdout).lines(),
             stderr_tail,
             stderr_task,
-            stdin_task,
+            stdin,
             idle_timeout,
             stage,
             label,
         })
+    }
+
+    pub(in crate::llm::openai_compatible) fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// 进程还活着(没退出)。常驻复用前先问一句,别往死进程里写。
+    pub(in crate::llm::openai_compatible) fn is_alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// 常驻进程:再写一段载荷(下一轮的输入)。上一段还没写完就先等它写完;
+    /// 写端已坏(进程关了 stdin / 退出)报错,调用方换新进程。
+    pub(in crate::llm::openai_compatible) async fn write_payload(
+        &mut self,
+        payload: &str,
+    ) -> Result<()> {
+        let slot = std::mem::replace(&mut self.stdin, StdinSlot::Closed);
+        let stdin = match slot {
+            StdinSlot::Held(handle) => handle.await.ok().flatten(),
+            StdinSlot::OneShot(_) | StdinSlot::Closed => None,
+        };
+        let Some(stdin) = stdin else {
+            bail!(
+                "{} stdin is closed; the process cannot take another turn",
+                self.label
+            );
+        };
+        self.stdin = spawn_writer(stdin, payload.as_bytes().to_vec(), self.label, true);
+        Ok(())
+    }
+
+    /// 关写端:一次性的写任务本来就会关;常驻的把写端拿回来丢掉。等一小会儿
+    /// 让在途的写完,别在收尾这一步把半截载荷截断。
+    async fn close_stdin(&mut self) {
+        match std::mem::replace(&mut self.stdin, StdinSlot::Closed) {
+            StdinSlot::Held(handle) => {
+                if let Ok(Ok(stdin)) = tokio::time::timeout(Duration::from_secs(5), handle).await {
+                    drop(stdin);
+                }
+            }
+            StdinSlot::OneShot(handle) => handle.abort(),
+            StdinSlot::Closed => {}
+        }
     }
 
     /// 下一行 stdout;空闲超过看门狗就收掉进程组并报 Timeout 类传输失败。
@@ -205,6 +339,30 @@ impl RelayProcess {
         }
     }
 
+    /// 同步版的收尾(没有异步上下文时用:配置重载在 actor 线程上):先 SIGTERM,
+    /// 起一根线程等宽限期,还不退就靠 drop 的 SIGKILL 兜底。
+    pub(in crate::llm::openai_compatible) fn retire(mut self) {
+        signal_process_group(self.pid, libc::SIGTERM);
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + TERMINATE_GRACE;
+            while std::time::Instant::now() < deadline {
+                if !matches!(self.child.try_wait(), Ok(None)) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            self.stderr_task.abort();
+            // 写任务一并撤掉:常驻的写端在任务里,撤了就关。
+            match std::mem::replace(&mut self.stdin, StdinSlot::Closed) {
+                StdinSlot::OneShot(handle) => handle.abort(),
+                StdinSlot::Held(handle) => handle.abort(),
+                StdinSlot::Closed => {}
+            }
+            // 还活着就靠 kill_on_drop 的 SIGKILL。
+            drop(self);
+        });
+    }
+
     pub(in crate::llm::openai_compatible) fn stderr_tail(&self) -> String {
         self.stderr_tail
             .lock()
@@ -213,7 +371,9 @@ impl RelayProcess {
     }
 
     /// 终态帧到手后进程应当自然退出;不给它耗着的机会。返回退出码文本。
+    /// 常驻的先关写端(它等的就是下一段输入)。
     pub(in crate::llm::openai_compatible) async fn finish(mut self) -> (String, String) {
+        self.close_stdin().await;
         let exit = match tokio::time::timeout(Duration::from_secs(10), self.child.wait()).await {
             Ok(status) => status.ok(),
             Err(_) => {
@@ -224,7 +384,6 @@ impl RelayProcess {
             }
         };
         self.stderr_task.abort();
-        self.stdin_task.abort();
         let code = exit
             .and_then(|status| status.code())
             .map(|code| code.to_string())

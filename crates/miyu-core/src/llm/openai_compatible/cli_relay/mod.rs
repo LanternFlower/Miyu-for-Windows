@@ -229,6 +229,11 @@ impl ResumePlan {
         self.ephemeral
     }
 
+    /// 本轮的工具面档位(进程复用的钥匙要带它:换脸就换进程)。
+    pub(in crate::llm::openai_compatible) fn host_tools(&self) -> bool {
+        self.host_tools
+    }
+
     /// 命中的 CLI 会话 id(要 `--resume`/`--conversation`/`resume` 的目标)。
     pub(in crate::llm::openai_compatible) fn resume_id(&self) -> Option<&str> {
         self.resumable.as_ref().map(|(id, _)| id.as_str())
@@ -307,6 +312,8 @@ impl ResumePlan {
 /// 只记日志不报错——映射已丢弃,该会话无论如何不会再被续传。会话 id 都是
 /// 全局唯一,每家都试一遍不会误删。
 pub fn forget_relay_sessions(miyu_session: &str) {
+    // 常驻的 agy 进程手里就是这条会话,一并收掉。
+    super::antigravity::pool::forget_session(miyu_session);
     let removed = session::forget_miyu_session(miyu_session);
     if removed.is_empty() {
         return;

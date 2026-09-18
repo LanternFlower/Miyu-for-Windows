@@ -1786,6 +1786,23 @@
           unit: "秒",
           default: 86400,
         },
+        {
+          key: "reuse_process",
+          label: "同会话连续轮复用 agy 进程",
+          hint: "省掉每轮约 5 秒的冷启动(登录 + 挂会话);工具面/人格/模型一变就换新进程",
+          kind: "toggle",
+          default: true,
+        },
+        {
+          key: "reuse_idle_seconds",
+          label: "常驻进程闲置回收",
+          hint: "闲置这么久没有下一轮就把 agy 进程收掉;删会话、重载配置、关停 daemon 也会收",
+          kind: "number",
+          integer: true,
+          min: 5,
+          unit: "秒",
+          default: 600,
+        },
       ],
     },
     codex: {

@@ -215,6 +215,9 @@ pub(in crate::web) async fn actor_loop(
                     reset_conversation,
                 );
                 if result.is_ok() {
+                    // 人格文件 / MCP 注册 / 模型都可能变了:常驻的 agy 进程手里是旧世界,
+                    // 全收掉,下一轮起新的。
+                    miyu_core::llm::retire_relay_processes("configuration reloaded");
                     // 「终端集成会话默认模式」改了就当场换人格，下一轮生效。
                     if let Err(error) =
                         crate::web::sessions::apply_terminal_session_mode(&config, &state_store)

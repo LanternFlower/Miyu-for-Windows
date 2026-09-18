@@ -4,8 +4,8 @@ pub(crate) mod provider_capabilities;
 pub mod request_log;
 
 pub use openai_compatible::{
-    forget_relay_sessions, remove_antigravity_relay_files, thinking_variant_options_for_model,
-    ThinkingVariantPreferences,
+    forget_relay_sessions, remove_antigravity_relay_files, retire_relay_processes,
+    shutdown_relay_processes, thinking_variant_options_for_model, ThinkingVariantPreferences,
 };
 pub use openai_compatible::{OpenAiCompatibleClient, ThinkingVariantOptions};
 pub use openai_compatible::{

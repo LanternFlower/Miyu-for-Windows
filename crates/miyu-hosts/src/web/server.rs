@@ -212,6 +212,8 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
     let _ = actor_tx.send(ActorCommand::Shutdown);
     tools::jobs::shutdown_all();
     voice_bridge::shutdown();
+    // 常驻的 agy 进程各在自己的进程组里,不收就成孤儿。
+    miyu_core::llm::shutdown_relay_processes().await;
     state.platforms.qq_listener.shutdown(&state).await;
     ipc_task.abort();
     let _ = ipc_task.await;

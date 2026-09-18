@@ -105,6 +105,8 @@ fn antigravity_client(
         idle_timeout: Duration::from_secs(30),
         print_timeout: Duration::from_secs(600),
         config_dir: dir.join("agyconfig"),
+        reuse_process: false,
+        reuse_idle: Duration::from_secs(5),
     }));
     client
 }

@@ -115,6 +115,13 @@ pub struct AntigravityPluginConfig {
     /// 这里给 24 小时,真正的活性判定交给看门狗。
     #[serde(default = "default_antigravity_print_timeout_seconds")]
     pub print_timeout_seconds: u64,
+    /// 同一条会话连续几轮复用一个 agy 进程(省掉每轮 5 秒左右的冷启动:登录 +
+    /// 挂会话)。工具面/人格/模型一变就换新进程;关掉则每轮一个新进程。
+    #[serde(default = "default_true")]
+    pub reuse_process: bool,
+    /// 常驻的 agy 进程闲置多久回收(秒)。
+    #[serde(default = "default_antigravity_reuse_idle_seconds")]
+    pub reuse_idle_seconds: u64,
 }
 
 impl Default for AntigravityPluginConfig {
@@ -126,6 +133,8 @@ impl Default for AntigravityPluginConfig {
             miyu_tools_eager: true,
             idle_timeout_seconds: default_antigravity_idle_timeout_seconds(),
             print_timeout_seconds: default_antigravity_print_timeout_seconds(),
+            reuse_process: true,
+            reuse_idle_seconds: default_antigravity_reuse_idle_seconds(),
         }
     }
 }

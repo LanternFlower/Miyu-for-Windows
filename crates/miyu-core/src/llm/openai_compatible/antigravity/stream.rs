@@ -11,7 +11,7 @@
 //!
 //! 超时/出错路径必须显式杀进程组:drop future 只是弃 promise,不杀子进程。
 
-use super::{AntigravityRuntime, ResumeTargetLost, MCP_SERVER_NAME};
+use super::{ResumeTargetLost, MCP_SERVER_NAME};
 use crate::llm::openai_compatible::cli_relay::{
     compact_line, hidden_remote_tool, process::RelayProcess, shape_remote_output, RelayOutcome,
     SessionPoisoned,
@@ -91,41 +91,29 @@ struct StreamState {
     error_text: String,
 }
 
+/// 跑一轮:`process` 已经拉起并写好本轮载荷(新进程)或是借来的常驻进程(已写入
+/// 下一段,`reused`)。`keep_alive` 为真且本轮正常收到终态帧,进程不收尾、原样交回
+/// 调用方入池;其余情况(不复用、出错、进程自己退了)收尾/收掉,交回 `None`。
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_agy_turn<F>(
-    runtime: &AntigravityRuntime,
-    workdir: &std::path::Path,
-    args: &[String],
-    env: &[(String, Option<String>)],
-    stdin_payload: &str,
+    mut process: RelayProcess,
     expected_agent: &str,
     expected_conversation: Option<&str>,
+    reused: bool,
+    keep_alive: bool,
     request_id: &str,
     on_chunk: &mut F,
-) -> Result<RelayOutcome>
+) -> Result<(RelayOutcome, Option<RelayProcess>)>
 where
     F: FnMut(ChatStreamChunk) -> Result<()>,
 {
-    let mut process = RelayProcess::spawn(
-        &runtime.binary,
-        args,
-        workdir,
-        env,
-        stdin_payload,
-        runtime.idle_timeout,
-        "antigravity.stream",
-        "agy",
-        || {
-            t(
-                "Antigravity CLI (agy) not found; install it or set plugins.antigravity.binary",
-                "找不到 Antigravity CLI(agy);请安装它或配置 plugins.antigravity.binary",
-            )
-            .to_string()
-        },
-    )
-    .await?;
     let mut state = StreamState::default();
-    let mut conversation_id: Option<String> = None;
+    // 借来的进程不会再发 init:会话 id 就是借的时候那条。
+    let mut conversation_id: Option<String> = if reused {
+        expected_conversation.map(str::to_string)
+    } else {
+        None
+    };
     let mut final_frame: Option<Value> = None;
     while let Some(line) = process.next_line().await? {
         let trimmed = line.trim();
@@ -178,8 +166,47 @@ where
             _ => {}
         }
     }
-    let (exit_code, stderr_text) = process.finish().await;
+    let (exit_code, stderr_text, live) =
+        if keep_alive && final_frame.is_some() && process.is_alive() {
+            ("running".to_string(), process.stderr_tail(), Some(process))
+        } else {
+            let (code, tail) = process.finish().await;
+            (code, tail, None)
+        };
+    match conclude(
+        state,
+        final_frame,
+        conversation_id,
+        &exit_code,
+        &stderr_text,
+        request_id,
+        on_chunk,
+    ) {
+        Ok(outcome) => Ok((outcome, live)),
+        Err(error) => {
+            // 出错的进程不进池:SIGTERM 收掉(理由见 `RelayProcess::terminate`)。
+            if let Some(process) = live {
+                process.retire();
+            }
+            Err(error)
+        }
+    }
+}
 
+/// 终态帧到手之后的判定:策略拦截、会话级粘性 ERROR、零产出、正文与用量。
+fn conclude<F>(
+    state: StreamState,
+    final_frame: Option<Value>,
+    mut conversation_id: Option<String>,
+    exit_code: &str,
+    stderr_text: &str,
+    request_id: &str,
+    on_chunk: &mut F,
+) -> Result<RelayOutcome>
+where
+    F: FnMut(ChatStreamChunk) -> Result<()>,
+{
+    let mut state = state;
     let Some(final_frame) = final_frame else {
         bail!(
             "agy exited (code {exit_code}) without a result event: {} {}",
@@ -258,7 +285,7 @@ where
         ]
         .into_iter()
         .find(|text| !text.is_empty())
-        .unwrap_or(stderr_text.as_str())
+        .unwrap_or(stderr_text)
         .to_string();
         let classified = classify_agy_failure(&format!("{error_field}\n{detail}"));
         let mut error = anyhow::anyhow!("agy turn failed ({status}): {}", detail.trim());

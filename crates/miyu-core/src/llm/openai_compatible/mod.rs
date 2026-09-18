@@ -17,6 +17,9 @@ mod wire;
 mod zen_headers;
 // 三条中转线的去重名单:断言「名单里都是真工具」的测试住在工具侧
 // (`tools::relay_tests`,拿注册表核),这里按线别名出去(09-16)。
+pub use antigravity::pool::{
+    retire_all as retire_relay_processes, shutdown_all as shutdown_relay_processes,
+};
 pub use antigravity::remove_relay_files_now as remove_antigravity_relay_files;
 use antigravity::AntigravityRuntime;
 pub use antigravity::BRIDGE_DUPLICATE_TOOLS as ANTIGRAVITY_BRIDGE_DUPLICATE_TOOLS;

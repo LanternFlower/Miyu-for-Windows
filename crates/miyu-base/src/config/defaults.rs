@@ -448,6 +448,12 @@ pub(crate) fn default_antigravity_print_timeout_seconds() -> u64 {
     24 * 60 * 60
 }
 
+/// 常驻 agy 进程闲置 10 分钟回收:一次对话里两句话的间隔基本在这之内,再长
+/// 就当这轮对话结束了,别让几百 MB 的进程一直挂着。
+pub(crate) fn default_antigravity_reuse_idle_seconds() -> u64 {
+    600
+}
+
 pub(crate) fn default_codex_native_tools() -> String {
     "all".to_string()
 }
