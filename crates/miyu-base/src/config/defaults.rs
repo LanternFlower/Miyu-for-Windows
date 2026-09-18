@@ -254,8 +254,10 @@ pub(crate) fn default_memes_max_image_mb() -> u64 {
     10
 }
 
+/// 一次返回 5 条候选:只给 1 条时模型常要连搜好几次,每次都重走一遍前缀
+/// (用户 09-18);5 条约多几百 token,换掉一整次工具往返,划算。
 pub(crate) fn default_memes_search_max_results() -> usize {
-    1
+    5
 }
 
 pub(crate) fn default_memes_auto_send_probability() -> f32 {

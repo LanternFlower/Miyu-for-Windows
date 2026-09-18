@@ -212,10 +212,15 @@ const MIGRATIONS: &[Migration] = &[
         name: "sandbox_read_all",
         apply: apply_v37_sandbox_read_all,
     },
+    Migration {
+        version: 38,
+        name: "session_context_tokens",
+        apply: apply_v38_session_context_tokens,
+    },
 ];
 
 /// Latest schema version this build produces.
-pub const LATEST_VERSION: i64 = 37;
+pub const LATEST_VERSION: i64 = 38;
 
 /// Returns the schema version currently recorded in the database.
 pub fn current_version(conn: &Connection) -> Result<i64> {

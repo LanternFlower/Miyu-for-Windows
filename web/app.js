@@ -7345,7 +7345,8 @@
 
   function createTypingIndicator() {
     // AI 输出的「加载中」用编排点动效(用户拍板):三点走三角·顺时针→聚合→三角→
-    // 逆时针→聚合→水平跳动,6s 循环。输入框那份仍是旧的匀速三点。
+    // 逆时针→聚合→三角,6s 循环;没有「水平一行」这个姿态(用户 09-18)。
+    // 输入框那份仍是旧的匀速三点。
     const indicator = document.createElement("div");
     indicator.className = "miyu-run typing-run";
     indicator.setAttribute("aria-hidden", "true");

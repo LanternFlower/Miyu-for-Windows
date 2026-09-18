@@ -193,6 +193,9 @@ fn rank_memes(
         .collect()
 }
 
+/// 表情搜索一次最多返回几条(配置 `plugins.memes.search_max_results` 的上限)。
+pub const MEME_SEARCH_MAX_RESULTS_CAP: usize = 10;
+
 async fn search_meme(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Result<String> {
     let library = selected_library(&args, config);
     let query = args
@@ -204,7 +207,9 @@ async fn search_meme(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Resu
         .get("limit")
         .and_then(Value::as_u64)
         .unwrap_or(config.plugins.memes.search_max_results as u64)
-        .clamp(1, 3) as usize;
+        // 上限 10:一次给够候选,模型不用来回搜(用户 09-18:一次 1 条老是多次调用,
+        // 每次调用都要重走一遍前缀)。配置默认 5,与 io.rs 的校验、设置页上限同源。
+        .clamp(1, MEME_SEARCH_MAX_RESULTS_CAP as u64) as usize;
     let loaded = load_library(paths, &library)?;
     let ids = meme_ids(&loaded);
     // 语义排名是辅助:不可用(没配/没装运行库/超时)时 None,关键词排名独立成立。

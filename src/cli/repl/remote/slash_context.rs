@@ -22,9 +22,14 @@ impl RemoteRepl {
             .get("removed")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
+        // 撤的是一次压缩(最后一条是摘要行,daemon 把折进去的轮放回来,没有可回填
+        // 的提示词):屏上什么都不截——那一块「上下文已压缩」不是一轮,按轮标记截会
+        // 把前一轮真正的对话一起截掉;留着它,底下补一行「已撤销上下文压缩」。
+        let compaction_undone =
+            removed > 0 && data.get("prompt").and_then(|v| v.as_str()).is_none();
         // 先把撤掉的那一轮从屏上拿掉，再打「已撤销」那一行——不然那一行被
         // 重画一起擦掉。
-        if removed > 0 {
+        if removed > 0 && !compaction_undone {
             redraw_after_undo(
                 &self.paths,
                 &self.config,
@@ -33,10 +38,27 @@ impl RemoteRepl {
                 &mut self.live_repl,
             )?;
         }
-        repl_note(
-            &mut self.live_repl,
-            &format!("{}: {removed}\n", t("undone messages", "已撤销消息数")),
-        )?;
+        if compaction_undone {
+            // 全屏:那块「上下文已压缩」从屏上截掉(它还挂着能点开,用户 09-18);
+            // 前一轮对话留着。重开过 TUI 的话屏上本来就没那块,截不到就算了。
+            if crate::cli::in_fullscreen() {
+                synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
+                    self.live_repl.truncate_last_compact()
+                })?;
+            }
+            repl_note(
+                &mut self.live_repl,
+                &format!(
+                    "\x1b[2m{}\x1b[0m\n",
+                    t("context compaction undone", "已撤销上下文压缩")
+                ),
+            )?;
+        } else {
+            repl_note(
+                &mut self.live_repl,
+                &format!("{}: {removed}\n", t("undone messages", "已撤销消息数")),
+            )?;
+        }
         if let Some(prompt) = data.get("prompt").and_then(serde_json::Value::as_str) {
             self.live_repl.editor.input = prompt.to_string();
             self.live_repl.editor.cursor = self.live_repl.editor.input.chars().count();
@@ -135,15 +157,38 @@ impl RemoteRepl {
             ))
         };
         let compacting = t("compacting context…", "正在压缩上下文…");
-        if fullscreen {
-            self.live_repl
-                .apply_output_frame(notice(compacting).as_bytes())?;
-        } else {
-            repl_note(&mut self.live_repl, &format!("\x1b[2m{compacting}\x1b[0m"))?;
-        }
-        // 摘要边生成边转发过来，攒起来压完收成一块。
+        // 摘要边生成边转发过来,攒起来压完收成一块。等的这几十秒 footer 的转轮
+        // 要转着(用户 09-18:正在压缩上下文应该有个 spinner),和回合里一样喂。
         let mut summary = String::new();
-        let outcome = send_ipc_admin_streaming(
+        // 转轮是时间线状态行上 logo 左侧那个点阵(用户 09-18 点名的那个),不是
+        // footer 的声波:起一个渲染器、开等待态、把文案钉成「正在压缩上下文」,
+        // 每帧和回合里一样喂(footer 的声波顺带也转)。
+        let mut renderer = render::StreamRenderer::new(
+            render::ReasoningDisplayMode::from_expand(self.config.display.expand_reasoning),
+            render::ToolCallDisplayMode::from_expand(self.config.display.expand_tool_calls),
+            false,
+            self.config.display.readable_tool_names,
+            self.config.display.command_output_lines,
+        );
+        renderer.fold_timeline = self.config.display.fold_timeline;
+        renderer.thinking_scroll_lines = self.config.display.thinking_scroll_lines;
+        renderer.use_external_cursor_control();
+        renderer.use_buffered_output();
+        renderer.start_waiting()?;
+        renderer.set_custom_waiting_phase(Some(compacting.to_string()));
+        self.live_repl.apply_renderer_frame(&mut renderer)?;
+        // 转轮那一行已经写着「正在压缩上下文…」,再写一行静态的就是重复(用户
+        // 09-18 截图);只有转轮起不来(plain / 非 TTY)才留静态那行。
+        if !renderer.is_waiting() {
+            if fullscreen {
+                self.live_repl
+                    .apply_output_frame(notice(compacting).as_bytes())?;
+            } else {
+                repl_note(&mut self.live_repl, &format!("\x1b[2m{compacting}\x1b[0m"))?;
+            }
+        }
+        let live_repl = &mut self.live_repl;
+        let outcome = send_ipc_admin_streaming_ticked(
             &self.paths,
             IpcCommand::Compact {
                 target: miyu_core::ipc::SessionRef::Id {
@@ -156,8 +201,14 @@ impl RemoteRepl {
                 }
                 Ok(())
             },
+            Duration::from_millis(33),
+            || live_repl.tick_spinner(&mut renderer),
         )
         .await;
+        renderer.set_custom_waiting_phase(None);
+        renderer.finish()?;
+        self.live_repl.apply_renderer_frame(&mut renderer)?;
+        self.live_repl.stop_footer_spinner()?;
         let (state, data) = match outcome {
             Ok(result) => result,
             Err(err) => {
@@ -168,6 +219,11 @@ impl RemoteRepl {
                 return Ok(LoopStep::Continue);
             }
         };
+        // 压完 footer 的上下文读数当场刷新(用户 09-18:压缩后 footer 没刷新)——
+        // 原来只把数写进正文那一行,footer 要等下一轮结束才变。
+        self.cumulative_tokens = state_cumulative(&state);
+        self.footer.update_session_tokens(state.context_tokens);
+        self.footer.update_cumulative_tokens(self.cumulative_tokens);
         if let Some(usage) = data
             .get("usage")
             .cloned()
@@ -191,6 +247,12 @@ impl RemoteRepl {
                 last_request_usage: None,
                 responses_continuation: None,
             };
+            self.footer.update_token_usage(
+                &result,
+                state.context_tokens,
+                state.context_window,
+                self.cumulative_tokens,
+            );
             if fullscreen {
                 let mut head = t("context compacted", "上下文已压缩").to_string();
                 if let Some(usage_line) = chat_token_usage_text(
@@ -204,6 +266,12 @@ impl RemoteRepl {
                     head.push_str(&usage_line);
                 }
                 let mut frame = Vec::new();
+                // 这一块的起点埋个标记:`/undo` 撤压缩时按它把这一块截掉。
+                if miyu_hosts::render::blocks::enabled() {
+                    frame.extend_from_slice(
+                        miyu_hosts::render::blocks::COMPACT_START_MARKER.as_bytes(),
+                    );
+                }
                 miyu_hosts::render::timeline::write_compact_summary(&mut frame, &head, &summary)?;
                 self.live_repl.apply_output_frame(&frame)?;
             } else {
@@ -228,6 +296,7 @@ impl RemoteRepl {
                 repl_note(&mut self.live_repl, &format!("\x1b[2m{nothing}\x1b[0m\n"))?;
             }
         }
+        self.live_repl.refresh_footer(self.footer.clone())?;
         Ok(LoopStep::Continue)
     }
 

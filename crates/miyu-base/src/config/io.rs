@@ -468,8 +468,9 @@ impl AppConfig {
         if self.plugins.memes.height_percent == 0 || self.plugins.memes.height_percent > 100 {
             bail!("plugins.memes.height_percent must be between 1 and 100");
         }
-        if self.plugins.memes.search_max_results == 0 || self.plugins.memes.search_max_results > 3 {
-            bail!("plugins.memes.search_max_results must be between 1 and 3");
+        if self.plugins.memes.search_max_results == 0 || self.plugins.memes.search_max_results > 10
+        {
+            bail!("plugins.memes.search_max_results must be between 1 and 10");
         }
         let mem = self.memory_config();
         if mem.forgetting_half_life_days <= 0.0 {

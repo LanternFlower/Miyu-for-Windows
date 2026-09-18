@@ -4465,9 +4465,11 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   height: 5px;
 }
 
-/* 输入框「加载中」进度点(用户拍板换成编排动效):三颗点走一整套
-   三角·顺时针 → 聚合 → 三角 → 逆时针 → 聚合 → 水平跳动,循环,6s/圈。
-   三色用 Miyu logo 三原色(发金/丝带/瞳蓝)。无光效。 */
+/* AI 输出「加载中」的编排动效(输入框那份是下面 typing-indicator 的旧匀速三点,
+   两套 keyframes 零交集):三颗点摆成三角,顺时针转一圈 → 聚合到中心 → 展开成三角
+   → 逆时针转一圈 → 聚合 → 展开成三角,6s/圈循环。没有「水平一行」这个姿态
+   (用户 09-18:水平展开也不用了,连尾段的水平弹跳一起去掉),100% 与 0% 同姿态,
+   接缝无跳变。三色用 Miyu logo 三原色(发金/丝带/瞳蓝)。无光效。 */
 .miyu-run {
   --mrun: 6s;
   display: inline-block;
@@ -4493,21 +4495,20 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
 .miyu-run .mr1 { background: var(--gold); animation: mr1 var(--mrun) ease-in-out infinite; }
 .miyu-run .mr2 { background: var(--ribbon); animation: mr2 var(--mrun) ease-in-out infinite; }
 .miyu-run .mr3 { background: var(--accent); animation: mr3 var(--mrun) ease-in-out infinite; }
-/* 8-28% 顺时针一圈,28-46% 保持,46-66% 逆时针转回,其余不转 */
-@keyframes mr-spin { 0%,8%{transform:rotate(0)} 28%{transform:rotate(360deg)} 46%{transform:rotate(360deg)} 66%,100%{transform:rotate(0)} }
-/* 行 L(-9,0) M(0,0) R(9,0);三角 TL(-8,5) TOP(0,-7) TR(8,5);聚合 中心 scale .72 */
+/* 0-25% 顺时针一圈(三角展开着),25-50% 保持在 360°(聚合/展开期间不转),
+   50-75% 逆时针转回 0°,75-100% 保持(聚合/展开)。 */
+@keyframes mr-spin { 0%{transform:rotate(0)} 25%{transform:rotate(360deg)} 50%{transform:rotate(360deg)} 75%{transform:rotate(0)} 100%{transform:rotate(0)} }
+/* 三角 TL(-8,5) TOP(0,-7) TR(8,5);聚合 中心 scale .72。
+   0-25% 三角(转圈) → 37% 聚合 → 50% 三角 → 75% 三角(转圈) → 87% 聚合 → 100% 三角 */
 @keyframes mr1 {
-  0%{transform:translate(-9px,0)} 8%{transform:translate(-8px,5px)} 28%{transform:translate(-8px,5px)}
-  38%{transform:translate(0,0) scale(.72)} 46%{transform:translate(-8px,5px)} 66%{transform:translate(-8px,5px)}
-  76%{transform:translate(0,0) scale(.72)} 86%{transform:translate(-9px,0)} 93%{transform:translate(-9px,-5px)} 100%{transform:translate(-9px,0)} }
+  0%,25%{transform:translate(-8px,5px)} 37%{transform:translate(0,0) scale(.72)} 50%,75%{transform:translate(-8px,5px)}
+  87%{transform:translate(0,0) scale(.72)} 100%{transform:translate(-8px,5px)} }
 @keyframes mr2 {
-  0%{transform:translate(0,0)} 8%{transform:translate(0,-7px)} 28%{transform:translate(0,-7px)}
-  38%{transform:translate(0,0) scale(.72)} 46%{transform:translate(0,-7px)} 66%{transform:translate(0,-7px)}
-  76%{transform:translate(0,0) scale(.72)} 86%{transform:translate(0,0)} 94%{transform:translate(0,-5px)} 100%{transform:translate(0,0)} }
+  0%,25%{transform:translate(0,-7px)} 37%{transform:translate(0,0) scale(.72)} 50%,75%{transform:translate(0,-7px)}
+  87%{transform:translate(0,0) scale(.72)} 100%{transform:translate(0,-7px)} }
 @keyframes mr3 {
-  0%{transform:translate(9px,0)} 8%{transform:translate(8px,5px)} 28%{transform:translate(8px,5px)}
-  38%{transform:translate(0,0) scale(.72)} 46%{transform:translate(8px,5px)} 66%{transform:translate(8px,5px)}
-  76%{transform:translate(0,0) scale(.72)} 86%{transform:translate(9px,0)} 95%{transform:translate(9px,-5px)} 100%{transform:translate(9px,0)} }
+  0%,25%{transform:translate(8px,5px)} 37%{transform:translate(0,0) scale(.72)} 50%,75%{transform:translate(8px,5px)}
+  87%{transform:translate(0,0) scale(.72)} 100%{transform:translate(8px,5px)} }
 @media (prefers-reduced-motion: reduce) {
   .miyu-run .mr-spin, .miyu-run i { animation-duration: 0s; }
 }

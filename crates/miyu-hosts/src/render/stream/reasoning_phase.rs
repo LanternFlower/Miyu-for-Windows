@@ -211,7 +211,13 @@ impl StreamRenderer {
             // 时间线里占最后那一行，等真正的工具落下来就被换掉；顶掉整条
             // 时间线的话，已经跑完的那几步会一起消失（用户原话「新出的会
             // 覆盖已经出现的」）。
-            if (self.preparing_question_started_at.is_some() || self.tool_preparing.is_some())
+            if let Some(phase) = self.custom_waiting_phase.clone() {
+                // 钉死的文案(见字段注释)优先于下面所有按状态推的。
+                if self.wait_spinner.is_some() {
+                    self.set_waiting_phase(phase);
+                }
+            } else if (self.preparing_question_started_at.is_some()
+                || self.tool_preparing.is_some())
                 && self.wait_spinner.is_some()
                 && !self.timeline_enabled()
             {
@@ -376,6 +382,20 @@ impl StreamRenderer {
         // Per-chunk sums drift <1% from a full recount (BPE merges across
         // chunk boundaries) — fine for a display estimate.
         self.reasoning_tokens += miyu_base::token_estimate::estimate_tokens(text);
+    }
+
+    /// 等待转轮在不在(plain / 非 TTY 下 `start_waiting` 是空操作)。
+    pub fn is_waiting(&self) -> bool {
+        self.wait_spinner.is_some()
+    }
+
+    /// 钉一段等待文案到转轮上(None = 撤掉,回到按状态推)。压缩上下文时用:
+    /// 它不是回合里的某一步,时间线推不出「正在压缩」。
+    pub fn set_custom_waiting_phase(&mut self, phase: Option<String>) {
+        if let Some(phase) = phase.clone() {
+            self.set_waiting_phase(phase);
+        }
+        self.custom_waiting_phase = phase;
     }
 
     pub(crate) fn set_waiting_phase(&mut self, phase: String) {

@@ -414,6 +414,7 @@ fn session_sandbox_parses_the_allow_read_switch() {
 #[test]
 fn session_selection_defaults_to_the_current_entry() {
     let entry = |id: &str, is_current: bool| SessionListEntry {
+        context_tokens: None,
         id: id.to_string(),
         name: id.to_string(),
         is_current,

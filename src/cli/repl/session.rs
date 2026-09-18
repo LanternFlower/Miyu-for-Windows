@@ -450,6 +450,8 @@ pub(in crate::cli) struct SessionListEntry {
     pub(in crate::cli) sandbox_read_all: bool,
     /// "dev" | "normal",由 daemon 按会话人格推导。
     pub(in crate::cli) mode: String,
+    /// 当前上下文(词元):当前会话是活数,其余是库里最近一轮记的;还没跑过回合为 None。
+    pub(in crate::cli) context_tokens: Option<u64>,
 }
 
 pub(in crate::cli) fn session_list_entries(data: &serde_json::Value) -> Vec<SessionListEntry> {
@@ -494,6 +496,9 @@ pub(in crate::cli) fn session_list_entry(session: &serde_json::Value) -> Session
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false),
         mode: text("mode").unwrap_or_else(|| "normal".to_string()),
+        context_tokens: session
+            .get("context_tokens")
+            .and_then(serde_json::Value::as_u64),
     }
 }
 
@@ -526,18 +531,21 @@ pub(in crate::cli) fn session_select_line(
     } else {
         "  "
     };
-    // 验收三轮定版:「模式：名称 · 摘要」,轮数删掉。
+    // 09-18 定版:「模式 · 当前上下文 · 标题」(用户:上下文只要当前的数,不要模型
+    // 窗口;摘要不进行,搜索仍认它)。此前是「模式:名称 · 摘要」。
     let mut line = format!(
-        "{marker}{}：{}",
+        "{marker}{} · {} · {}",
         session_mode_label(&entry.mode),
+        session_context_label(entry),
         display_session_name(&entry.name),
     );
-    if !entry.snippet.is_empty() {
-        line.push_str(" · ");
-        line.push_str(&entry.snippet);
-    }
     line.push_str(&sandbox_tag(entry));
     line
+}
+
+/// 列表行里的「当前上下文」:12k 这种短写;还没跑过回合的会话给 0。
+pub(in crate::cli) fn session_context_label(entry: &SessionListEntry) -> String {
+    render::format_compact_count(entry.context_tokens.unwrap_or(0))
 }
 
 /// 列表行尾的沙盒标。读放开的会话要看得出来——否则「关进去了」和「只关了写」
@@ -1026,6 +1034,66 @@ where
             _ => bail!("Miyu core returned an invalid admin response"),
         }
     }
+}
+
+/// 同 [`send_ipc_admin_streaming`],但等结果期间每隔 `tick_every` 调一次 `on_tick`
+/// (footer 转轮要有人喂)。收帧放在单独的任务里经通道转过来:`ipc::receive`
+/// 是按长度前缀分帧的,直接在 `select!` 里和定时器抢会把读到一半的帧丢掉。
+pub(in crate::cli) async fn send_ipc_admin_streaming_ticked<F, T>(
+    paths: &MiyuPaths,
+    command: IpcCommand,
+    mut on_event: F,
+    tick_every: Duration,
+    mut on_tick: T,
+) -> Result<(ipc::SessionState, serde_json::Value)>
+where
+    F: FnMut(&str, &serde_json::Value) -> Result<()>,
+    T: FnMut() -> Result<()>,
+{
+    let mut stream = ipc::connect(&paths.ipc_socket()).await?;
+    ipc::send(&mut stream, &IpcRequest::new(command)).await?;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<Option<IpcFrame>>>();
+    let reader = tokio::spawn(async move {
+        loop {
+            let frame = ipc::receive::<IpcFrame>(&mut stream).await;
+            let terminal = !matches!(frame, Ok(Some(IpcFrame::Event { .. })));
+            if tx.send(frame).is_err() || terminal {
+                break;
+            }
+        }
+    });
+    let mut tick = tokio::time::interval(tick_every);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tick.tick().await;
+    let outcome = loop {
+        tokio::select! {
+            frame = rx.recv() => match frame {
+                Some(Ok(Some(IpcFrame::Event { kind, data, .. }))) => {
+                    if let Err(error) = on_event(&kind, &data) {
+                        break Err(error);
+                    }
+                }
+                Some(Ok(Some(IpcFrame::AdminResult { state, data }))) => break Ok((state, data)),
+                Some(Ok(Some(IpcFrame::Error { message, .. }))) => {
+                    break Err(anyhow::anyhow!("{message}"))
+                }
+                Some(Ok(Some(_))) => {
+                    break Err(anyhow::anyhow!("Miyu core returned an invalid admin response"))
+                }
+                Some(Ok(None)) | None => {
+                    break Err(anyhow::anyhow!("Miyu core closed the connection"))
+                }
+                Some(Err(error)) => break Err(error),
+            },
+            _ = tick.tick() => {
+                if let Err(error) = on_tick() {
+                    break Err(error);
+                }
+            }
+        }
+    };
+    reader.abort();
+    outcome
 }
 
 // `ipc_text` / `ipc_u64` 随解码表一起住到 `runtime::ipc_events`(09-16),

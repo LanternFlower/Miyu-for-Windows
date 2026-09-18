@@ -48,6 +48,19 @@ impl Agent {
     /// 时直接返回锚点，不做锚点后的增量估算。completion 里含推理 token（多数
     /// 供应商不回放推理），锚点因此略偏高——偏保守的方向，可接受。
     pub fn effective_context_tokens(&self) -> Result<u64> {
+        let tokens = self.effective_context_tokens_uncached()?;
+        // 落一份到会话记录上(v38):`/session` 列表每行的「当前上下文」直接读它,
+        // 不用逐个会话重建 agent 去估。算出来就写,回合收尾/压缩/撤销/快照全覆盖。
+        if let Err(error) = self
+            .state
+            .set_session_context_tokens(&self.state.session_id(), tokens)
+        {
+            tracing::debug!(%error, "session context tokens not persisted");
+        }
+        Ok(tokens)
+    }
+
+    fn effective_context_tokens_uncached(&self) -> Result<u64> {
         let estimate = self.context_tokens_estimate()?;
         match self.context_anchor_tokens()? {
             Some(anchor) => {

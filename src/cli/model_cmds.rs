@@ -54,9 +54,11 @@ pub(in crate::cli) fn mixed_model_endpoint_frame(
     variant: Option<&str>,
 ) -> String {
     // 光 SGR 2 在 kitty 里只淡一点点,用户看着「不是暗色」;配一个中灰(245)才
-    // 是肉眼分得出的暗色,亮暗两种底色都看得清。
+    // 是肉眼分得出的暗色,亮暗两种底色都看得清。尾巴留一个空行:正文块的规矩是
+    // 每块自带尾空行(「已中断」那类提示也是),不留的话紧跟着的 `/compact` 提示
+    // 会贴上来(用户 09-18 截图)。
     let line = format!(
-        "\x1b[2m\x1b[38;5;245m{}\x1b[0m\n",
+        "\x1b[2m\x1b[38;5;245m{}\x1b[0m\n\n",
         mixed_model_endpoint_label(provider, model, variant)
     );
     if render::blocks::enabled() {

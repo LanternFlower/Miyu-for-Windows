@@ -282,7 +282,8 @@ impl ConversationDb {
                     (SELECT display_content FROM turns
                       WHERE turns.session_id = sessions.session_id
                         AND hidden = 0 AND is_summary = 0
-                      ORDER BY seq DESC LIMIT 1) AS last_user_content
+                      ORDER BY seq DESC LIMIT 1) AS last_user_content,
+                    sessions.context_tokens AS context_tokens
              FROM sessions
              WHERE (?1 IS NULL OR persona = ?1) AND kind = 'user'
                AND (?2 = 0 OR NOT EXISTS (
@@ -297,6 +298,10 @@ impl ConversationDb {
                 record: session_record_from_row(row)?,
                 turn_count: row.get("turn_count")?,
                 last_user_content: row.get("last_user_content")?,
+                context_tokens: row
+                    .get::<_, Option<i64>>("context_tokens")?
+                    .filter(|value| *value >= 0)
+                    .map(|value| value as u64),
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -497,6 +502,16 @@ impl ConversationDb {
     /// 改会话的人格 scope。只给还没聊过的空会话用(切人格时跟着换)。
     pub fn set_session_persona(&self, session_id: &str, persona: &str) -> Result<()> {
         self.update_session_field(session_id, "persona", Some(persona))
+    }
+
+    /// 会话「当前上下文」落库(见 v38);算出来就写,列表直接读。
+    pub fn set_session_context_tokens(&self, session_id: &str, tokens: u64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sessions SET context_tokens = ?2 WHERE session_id = ?1",
+            params![session_id, tokens as i64],
+        )?;
+        Ok(())
     }
 
     /// `/sandbox` 绑定/解绑:根目录进 `workspace` 列(列名沿用,语义=沙盒根),

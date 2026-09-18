@@ -79,3 +79,42 @@ fn undo_keeps_a_half_line_from_the_previous_turn() {
         );
     });
 }
+
+/// 撤压缩只截那块「上下文已压缩」(压缩标记),前一轮留着;那块后面又有一轮时
+/// 不动(撤掉的不是它)。
+#[test]
+fn undoing_a_compaction_truncates_only_the_compact_block() {
+    with_blocks(|| {
+        let mut screen = Screen::detached(80, 24);
+        let first = blocks::register(vec!["  想了一下".into()]).unwrap();
+        screen.feed_for_test(turn(first, "第一句", "第一句的回复").as_bytes());
+        let rows_after_first = screen.view_len();
+        let summary = blocks::register(vec!["  摘要正文".into()]).unwrap();
+        let block = format!(
+            "{}{}  › 上下文已压缩{}\r\n",
+            blocks::COMPACT_START_MARKER,
+            blocks::begin_marker(summary),
+            blocks::END_MARKER
+        );
+        screen.feed_for_test(block.as_bytes());
+        assert_eq!(screen.block_count(), 2);
+        assert!(screen.truncate_last_compact(), "没找到压缩标记");
+        assert_eq!(screen.view_len(), rows_after_first, "行数没截回压缩前");
+        assert_eq!(screen.block_count(), 1, "压缩那块没跟着走");
+        assert!(!screen.truncate_last_compact(), "标记用过就没了");
+        // 压缩块后面又来了一轮:撤的是那一轮,压缩块不动。
+        screen.feed_for_test(block.as_bytes());
+        let second = blocks::register(vec!["  又想了一下".into()]).unwrap();
+        screen.feed_for_test(turn(second, "第二句", "第二句的回复").as_bytes());
+        assert!(
+            !screen.truncate_last_compact(),
+            "压缩块不是最后一样东西时不动"
+        );
+        assert!(screen.truncate_last_turn());
+        assert!(
+            screen.truncate_last_compact(),
+            "那一轮撤掉之后压缩块又是最后的了"
+        );
+        assert_eq!(screen.view_len(), rows_after_first);
+    });
+}

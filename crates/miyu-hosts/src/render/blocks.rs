@@ -230,6 +230,11 @@ pub const END_MARKER: &str = "\x1b]1337;miyu-block-end\x07";
 /// 原样留着（用户 09-18：整段回放会把往上翻的历史丢掉）。真终端不认得就整条吞掉。
 pub const TURN_START_MARKER: &str = "\x1b]1337;miyu-turn-start\x07";
 
+/// 「一块压缩结果从这儿开始」的标记:`/compact` 在全屏里写那块「上下文已压缩」
+/// 之前埋一个。`/undo` 撤掉压缩时按它把那一块截掉——它不是一轮,不能拿轮标记截
+/// (会把前一轮真正的对话一起截掉),也不能留着(用户 09-18:撤了它还在,还能点开)。
+pub const COMPACT_START_MARKER: &str = "\x1b]1337;miyu-compact-start\x07";
+
 /// OSC 载荷 → 块 id。`Term` 解析时用。
 pub fn parse_marker(payload: &str) -> Option<BlockMarker> {
     if payload == "miyu-block-end" {
@@ -237,6 +242,9 @@ pub fn parse_marker(payload: &str) -> Option<BlockMarker> {
     }
     if payload == "miyu-turn-start" {
         return Some(BlockMarker::TurnStart);
+    }
+    if payload == "miyu-compact-start" {
+        return Some(BlockMarker::CompactStart);
     }
     if let Some(id) = payload.strip_prefix("miyu-block-open=") {
         return id
@@ -259,6 +267,8 @@ pub enum BlockMarker {
     End,
     /// 一轮从这儿开始。见 [`TURN_START_MARKER`]。
     TurnStart,
+    /// 一块压缩结果从这儿开始。见 [`COMPACT_START_MARKER`]。
+    CompactStart,
 }
 
 /// 一段纯文本按块的样式切成行。空块返回空 `Vec`，`register` 那边会当作

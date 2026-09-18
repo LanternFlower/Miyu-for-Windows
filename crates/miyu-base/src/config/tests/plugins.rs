@@ -315,7 +315,7 @@ fn meme_library_defaults_follow_persona() {
     );
     assert!(memes.auto_send_enabled);
     assert!(memes.auto_send_platform_enabled);
-    assert_eq!(memes.search_max_results, 1);
+    assert_eq!(memes.search_max_results, 5);
     assert_eq!(memes.auto_send_probability, 0.05);
 }
 

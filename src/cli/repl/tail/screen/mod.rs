@@ -656,6 +656,24 @@ impl Screen {
         true
     }
 
+    /// 撤掉压缩:最后那块「上下文已压缩」从缓冲里截掉(它得是缓冲里最后一样东西,
+    /// 后面又有一轮的话不动,返回 false)。前面的行、块、滚动历史原样留着。
+    pub(in crate::cli) fn truncate_last_compact(&mut self) -> bool {
+        let Some(start) = self.term.pop_trailing_compact_start() else {
+            return false;
+        };
+        self.term.truncate_rows(start);
+        self.prune_expanded();
+        self.floor = self.floor.min(start);
+        self.hover = None;
+        self.selection = None;
+        self.pending_copy = None;
+        self.row_keys.clear();
+        self.follow = true;
+        self.invalidate();
+        true
+    }
+
     /// 下一帧全量重画。
     fn invalidate(&mut self) {
         self.painted.clear();

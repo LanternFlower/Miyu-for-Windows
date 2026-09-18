@@ -681,7 +681,7 @@ pub(in crate::config_tui) fn apply_plugin_fields(
             config.plugins.memes.max_image_mb =
                 fields[3].value.trim().parse::<u64>()?.clamp(1, 100);
             config.plugins.memes.search_max_results =
-                fields[4].value.trim().parse::<usize>()?.clamp(1, 3);
+                fields[4].value.trim().parse::<usize>()?.clamp(1, 10);
             config.plugins.memes.allow_gif_animation = parse_bool_field(&fields[5].value)?;
             config.plugins.memes.auto_send_enabled = parse_bool_field(&fields[6].value)?;
             config.plugins.memes.auto_send_platform_enabled = parse_bool_field(&fields[7].value)?;

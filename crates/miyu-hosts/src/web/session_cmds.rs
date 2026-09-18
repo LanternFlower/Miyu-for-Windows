@@ -125,9 +125,33 @@ pub(in crate::web) async fn handle_session_command(
                     .list_local_sessions_for_owner(&scope, "")
                     .map_err(|error| safe_error_message(&error))?
             };
+            // 每行带「当前上下文」(用户 09-18:/session 列表要 模式 · 上下文 · 标题)。
+            // 读库里落好的那份(v38,daemon 每次算出上下文都写);还没算过的(升级前
+            // 的老会话)这里现算补上——一条几十毫秒,一次最多补几条,列表不卡,多开
+            // 几次就齐了。没跑过回合的会话不算:空会话的估算是整份系统提示词 + 工具
+            // 表(一万多),挂在没聊过的会话上会误导,列表里给 0。
+            const LAZY_FILL_PER_CALL: usize = 8;
+            let mut filled = 0usize;
             let sessions: Vec<Value> = sessions
                 .iter()
-                .map(|overview| session_overview_json(overview, &current))
+                .map(|overview| {
+                    let mut value = session_overview_json(overview, &current);
+                    let id = overview.record.session_id.as_str();
+                    let tokens = if overview.turn_count == 0 {
+                        Some(0)
+                    } else if let Some(tokens) = overview.context_tokens {
+                        Some(tokens)
+                    } else if filled < LAZY_FILL_PER_CALL {
+                        filled += 1;
+                        session_state_for(state, id)
+                            .ok()
+                            .map(|snapshot| snapshot.context_tokens)
+                    } else {
+                        None
+                    };
+                    value["context_tokens"] = json!(tokens);
+                    value
+                })
                 .collect();
             Ok(json!({ "current": &*current, "sessions": sessions }))
         }

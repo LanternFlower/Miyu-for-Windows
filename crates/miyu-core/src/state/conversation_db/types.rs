@@ -468,6 +468,8 @@ pub struct SessionOverview {
     pub record: SessionRecord,
     pub turn_count: i64,
     pub last_user_content: Option<String>,
+    /// daemon 最近一次算出的「当前上下文」(词元);None = 从没算过。
+    pub context_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

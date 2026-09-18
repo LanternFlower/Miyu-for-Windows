@@ -98,6 +98,8 @@ pub(in crate::cli) struct Term {
     /// 每一轮从第几行开始（提交回显、回放里每轮开头埋的 `TURN_START_MARKER`），
     /// 升序。`/undo` 把缓冲截回最后一个标记处，见 [`Term::truncate_rows`]。
     turn_starts: Vec<usize>,
+    /// 各块压缩结果的起始行(`COMPACT_START_MARKER`),撤压缩时按它截。
+    compact_starts: Vec<usize>,
 }
 
 /// 一块可展开内容在缓冲里占的行。
@@ -126,6 +128,7 @@ impl Default for Term {
             blocks: Vec::new(),
             pending_block: None,
             turn_starts: Vec::new(),
+            compact_starts: Vec::new(),
             cols: 80,
         }
     }
@@ -260,11 +263,25 @@ impl Term {
         for start in &mut self.turn_starts {
             *start -= count;
         }
+        self.compact_starts.retain(|start| *start >= count);
+        for start in &mut self.compact_starts {
+            *start -= count;
+        }
     }
 
     /// 最后一轮从第几行开始（并把这个标记拿掉）。没有标记就 `None`。
     pub(in crate::cli) fn pop_turn_start(&mut self) -> Option<usize> {
         self.turn_starts.pop()
+    }
+
+    /// 最后一块压缩结果从第几行开始(并把标记拿掉)——只在它是缓冲里最后一样东西
+    /// 时给:它后面又有一轮的话,撤掉的就不是它(那轮的标记在它后面),返回 `None`。
+    pub(in crate::cli) fn pop_trailing_compact_start(&mut self) -> Option<usize> {
+        let start = *self.compact_starts.last()?;
+        if self.turn_starts.last().is_some_and(|turn| *turn > start) {
+            return None;
+        }
+        self.compact_starts.pop()
     }
 
     /// 各轮的起始行（测试用）。
@@ -296,6 +313,7 @@ impl Term {
         self.blocks.retain(|block| block.end <= keep);
         self.pending_block = None;
         self.turn_starts.retain(|start| *start < keep);
+        self.compact_starts.retain(|start| *start < keep);
     }
 
     /// 收尾一块：结束标记发出来时光标停在最后一行上，那一行算在块里。
@@ -646,6 +664,14 @@ impl Perform for Term {
                         self.cursor_row().saturating_add(1)
                     };
                     self.turn_starts.push(start);
+                }
+                Some(miyu_hosts::render::blocks::BlockMarker::CompactStart) => {
+                    let start = if self.col == 0 {
+                        self.cursor_row()
+                    } else {
+                        self.cursor_row().saturating_add(1)
+                    };
+                    self.compact_starts.push(start);
                 }
                 None => {}
             }

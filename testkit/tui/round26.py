@@ -453,8 +453,8 @@ def scenario_new_session(report):
 
 
 def scenario_compact(report):
-    """全屏里 `/compact`：正文里有「正在压缩」和「上下文已压缩」两行（不是右上角的
-    通知），后者是一块，点开是摘要（桩模型的摘要就是它那句回复）。"""
+    """全屏里 `/compact`：等待时转轮行写着「正在压缩」，压完正文里有「上下文已压缩」
+    一行（不是右上角的通知），它是一块，点开是摘要（桩模型的摘要就是它那句回复）。"""
     # 尾巴预算默认 16k 词元，桩模型几轮小对话全在尾巴里、没东西可折；压到几十个
     # 词元，三轮之后前面的就能折进摘要。
     stub, daemon, tui, master, sink = start(
@@ -487,10 +487,11 @@ def scenario_compact(report):
         h.settle(master, sink, quiet=0.6, timeout=5.0)
         screen = h.render(bytes(sink))
         save("compact", screen)
-        # 提示行和结果行都在正文里、退两格：不是右上角那种贴着右边的通知。
+        # 结果行在正文里、退两格：不是右上角那种贴着右边的通知。「正在压缩」那句
+        # 09-18 起只在等待时挂在转轮行上(compact_footer.py 验它),压完就撤。
         report["r26_09_compact_notice_in_body"] = any(
-            l.startswith("  ") and "正在压缩上下文" in l for l in screen
-        ) and any(l.startswith("  ") and any(mark in l for mark in done) for l in screen)
+            l.startswith("  ") and any(mark in l for mark in done) for l in screen
+        )
         row = next((i for i, l in enumerate(screen) if "上下文已压缩" in l and l.lstrip().startswith("›")), None)
         report["r26_09_compact_result_is_a_fold"] = row is not None
         if row is not None:

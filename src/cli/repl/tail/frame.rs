@@ -692,6 +692,20 @@ impl LiveReplTail {
         Ok(true)
     }
 
+    /// 撤掉压缩:那块「上下文已压缩」从正文缓冲里截掉(全屏;inline 擦不掉)。
+    pub(in crate::cli) fn truncate_last_compact(&mut self) -> Result<bool> {
+        let Some(screen) = &mut self.screen else {
+            return Ok(false);
+        };
+        screen.dismiss_toast();
+        if !screen.truncate_last_compact() {
+            return Ok(false);
+        }
+        let cursor = self.output_cursor;
+        self.resume_at(cursor)?;
+        Ok(true)
+    }
+
     pub(in crate::cli) fn clear_screen(&mut self) -> Result<()> {
         // 全屏：和终端 `clear` 一个意思——往正文里补一屏空行把视口顶空，
         // **内容没删**，往回翻还在。

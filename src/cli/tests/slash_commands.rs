@@ -304,6 +304,7 @@ fn web_commands_are_a_subset_of_the_repl_table() {
 fn session_list_groups_the_current_lane_first() {
     use crate::cli::repl::session::{order_entries_for_lane, SessionListEntry};
     let entry = |name: &str, mode: &str| SessionListEntry {
+        context_tokens: None,
         id: name.to_string(),
         name: name.to_string(),
         is_current: false,

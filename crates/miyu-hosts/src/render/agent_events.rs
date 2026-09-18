@@ -78,7 +78,10 @@ pub fn apply_agent_event(
         AgentEvent::GenerationSuperseded { .. } => Ok(()),
         AgentEvent::SpinnerTick => renderer.tick_spinner(),
         AgentEvent::CompactStart => {
-            renderer.write_system_message(t("Compacting context...", "正在压缩上下文..."))?;
+            let text = t("Compacting context...", "正在压缩上下文...");
+            renderer.write_system_message(text)?;
+            // 转轮上也写着「正在压缩」,别让它还显示上一步的「正在思考」。
+            renderer.set_custom_waiting_phase(Some(text.to_string()));
             renderer.tick_spinner()
         }
         AgentEvent::CompactChunk(chunk) => {
@@ -86,6 +89,7 @@ pub fn apply_agent_event(
             renderer.tick_spinner()
         }
         AgentEvent::CompactEnd => {
+            renderer.set_custom_waiting_phase(None);
             renderer.finish_compact()?;
             renderer.tick_spinner()
         }

@@ -331,6 +331,14 @@ pub(in crate::state) fn apply_v36_sandbox_root(conn: &Connection) -> Result<()> 
     Ok(())
 }
 
+/// v38: 会话「当前上下文」落库(09-18)。daemon 每次算出某会话的上下文估算
+/// (回合收尾、压缩/撤销/弹出之后、快照)都写一份进来,`/session` 列表直接读,
+/// 不用逐个会话重建 agent 去估(一个几十毫秒,列表几十条就是秒级)。NULL = 从没
+/// 算过(升级前的老会话),列表那时现算一次补上。
+pub(in crate::state) fn apply_v38_session_context_tokens(conn: &Connection) -> Result<()> {
+    add_column_if_missing(conn, "sessions", "context_tokens", "INTEGER")
+}
+
 /// v37: `/sandbox <路径> --allow-read` 的读放开开关(09-14)。没绑沙盒时这一列没有
 /// 意义;默认 0 = 读也锁,老会话升级后尺度不变。
 pub(in crate::state) fn apply_v37_sandbox_read_all(conn: &Connection) -> Result<()> {

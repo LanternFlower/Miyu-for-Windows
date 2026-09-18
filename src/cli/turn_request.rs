@@ -224,6 +224,7 @@ mod tests {
 
     fn entry(id: &str, name: &str) -> SessionListEntry {
         SessionListEntry {
+            context_tokens: None,
             id: id.to_string(),
             name: name.to_string(),
             is_current: false,

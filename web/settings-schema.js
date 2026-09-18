@@ -1451,12 +1451,13 @@
         {
           key: "search_max_results",
           label: "搜索最大结果数",
+          hint: "一次给够候选,模型就不用来回搜;每条约百来字",
           kind: "number",
           integer: true,
           min: 1,
-          max: 3,
+          max: 10,
           unit: "张",
-          default: 1,
+          default: 5,
         },
         { key: "allow_gif_animation", label: "允许 GIF 动画", kind: "toggle", default: false },
         {

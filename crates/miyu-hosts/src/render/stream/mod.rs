@@ -108,6 +108,9 @@ pub struct StreamRenderer {
     pub live_summary: bool,
     pub wait_spinner: Option<WaitSpinner>,
     pub(crate) last_tick: Option<std::time::Instant>,
+    /// 等待转轮上钉死的文案(压缩上下文那种不属于任何一步的等待):在,每帧都用它,
+    /// 不让时间线的「正在思考/工具名」盖掉。
+    pub(crate) custom_waiting_phase: Option<String>,
     /// 全屏：自动压缩时流进来的摘要先攒着，压完收成一块（`finish_compact`）。
     pub(crate) compact_text: String,
     /// 上一次把子代理面板重灌是什么时候。见 `refresh_subagent_panels`。
@@ -183,6 +186,7 @@ impl StreamRenderer {
             live_summary: io::stdout().is_terminal(),
             wait_spinner: None,
             last_tick: None,
+            custom_waiting_phase: None,
             compact_text: String::new(),
             last_subagent_refresh: None,
             preparing_question_started_at: None,

@@ -326,6 +326,10 @@ fn mixed_endpoint_switch_has_three_values_and_needs_a_mixed_pool() {
     );
     assert!(
         !mixed_model_endpoint_frame("p", "a", None).starts_with('\n'),
-        "空行由渲染器收尾给,这里不再多加"
+        "前面的空行由渲染器收尾给,这里不再多加"
+    );
+    assert!(
+        mixed_model_endpoint_frame("p", "a", None).ends_with("\n\n"),
+        "尾巴留一个空行,后面的块才不贴上来"
     );
 }

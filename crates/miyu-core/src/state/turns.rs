@@ -203,6 +203,11 @@ impl StateStore {
         self.conv_db.load_context_anchor(&self.session())
     }
 
+    /// 会话「当前上下文」落库(v38):算出来就写,`/session` 列表直接读。
+    pub fn set_session_context_tokens(&self, session_id: &str, tokens: u64) -> Result<()> {
+        self.conv_db.set_session_context_tokens(session_id, tokens)
+    }
+
     pub fn set_turn_context_messages(
         &self,
         turn_id: &str,
