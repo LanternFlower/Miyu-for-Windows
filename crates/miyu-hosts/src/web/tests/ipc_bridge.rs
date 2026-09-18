@@ -997,3 +997,56 @@ async fn host_query_round_trips_over_ipc_with_a_grant() {
         "守卫掉落即作废"
     );
 }
+
+/// daemon 侧处理出错时，客户端要收到**带原因的 Error 帧**，而不是被直接断连。
+///
+/// 断连的话客户端那边所有「收不到终局帧」都长成同一句「invalid admin
+/// response」（09-18 查一条会话模型失效的报障，为此专门开 debug 日志重启了一次
+/// daemon 才看见真话）。这里拿「全局池指向供应商没有的模型」来逼出一个真错误：
+/// 快照路要给非当前会话现装一个 Agent 估上下文，装不出来就是 `?` 冒到顶。
+#[tokio::test]
+async fn a_handler_error_comes_back_as_an_error_frame() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = DaemonState::for_test(test_paths(temp.path()), 8300).unwrap();
+    let persona = active_persona_scope(&state);
+    // 估上下文只在「不是当前会话」那条路上现装 Agent，所以得另建一条。
+    let other = state
+        .state_store
+        .create_session(&persona, "", "user", None)
+        .unwrap()
+        .session_id;
+    {
+        let mut manager = state.manager.lock().unwrap();
+        let provider_id = manager.config.providers[0].id.clone();
+        manager.config.active_provider_models =
+            Some(vec![miyu_base::config::ActiveProviderModelConfig {
+                provider_id,
+                model: "miyu-model-the-provider-removed".to_string(),
+            }]);
+    }
+
+    let (mut client, server) = tokio::net::UnixStream::pair().unwrap();
+    let server_state = state.clone();
+    let task = tokio::spawn(async move { handle_ipc_connection(server_state, server).await });
+    ipc::send(
+        &mut client,
+        &IpcRequest::new(IpcCommand::GetSessionState {
+            target: ipc::SessionRef::Id { id: other },
+        }),
+    )
+    .await
+    .unwrap();
+    let response = ipc::receive::<IpcFrame>(&mut client)
+        .await
+        .unwrap()
+        .unwrap();
+
+    match response {
+        IpcFrame::Error { message, .. } => assert!(
+            message.contains("no active provider/model endpoint"),
+            "Error 帧里得带上真原因,拿到的是: {message}"
+        ),
+        other => panic!("期望一帧 Error,拿到的是 {other:?}"),
+    }
+    assert!(task.await.unwrap().is_err(), "处理本身仍然算失败");
+}

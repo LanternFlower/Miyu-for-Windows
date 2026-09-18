@@ -24,7 +24,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mode: PersonaLane
     // The REPL resumes its own lane rather than the terminal session, so
     // reopening a REPL lands back where the last one left off while shell-hook
     // keeps talking to whatever session it was on.
-    let (daemon_state, _) = send_ipc_admin(
+    let (daemon_state, repl_session_data) = send_ipc_admin(
         paths,
         IpcCommand::GetReplSession {
             mode: mode.is_dev().then(|| "dev".to_string()),
@@ -118,6 +118,31 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mode: PersonaLane
             Ok(_) => {}
             Err(error) => tracing::debug!(error = %error, "session replay unavailable"),
         }
+    }
+
+    // 这条会话钉的模型被供应商下架了：daemon 已经退回全局池并把覆盖清掉，得说
+    // 一声——不说的话 footer 上的模型悄悄换了人，看着像自己乱跳。放在回放之后，
+    // 免得插在历史前面。
+    if let Some(listed) = repl_session_data
+        .get("stale_model_override")
+        .and_then(|value| value.as_array())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+                .join("、")
+        })
+        .filter(|listed| !listed.is_empty())
+    {
+        let note = t(
+            "this session pinned models the providers no longer list ({}); back to the global pool",
+            "这条会话钉的模型已不在供应商清单里（{}），已退回全局模型池",
+        )
+        .replace("{}", &listed);
+        // 直接写进正文而不是走 `repl_note`：那条路在全屏下会变成 2.2 秒就散的
+        // 浮层提示，而这是一次性的状态变更（钉的池没了），晚一眼看过去也得还在。
+        live_repl.apply_output_frame(format!("\x1b[2m{note}\x1b[0m\n\n").as_bytes())?;
     }
 
     let mut repl = RemoteRepl {

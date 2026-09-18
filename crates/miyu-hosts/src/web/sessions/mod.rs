@@ -458,23 +458,73 @@ pub(in crate::web) fn session_title_from_prompt(prompt: &str) -> String {
 
 /// 把目标会话钉的模型池套到 `config` 上。回合路与压缩路共用同一条规则，
 /// 否则摘要会被路由到全局池里的另一家供应商，拿不到该会话的前缀缓存。
+///
+/// 钉的模型可能已经被供应商下架或改名。**一条都对不上时退回全局池并把这份覆盖
+/// 清掉**——留着它的话 `from_config` 直接报「没有可用端点」，这条会话连打开都打
+/// 不开（09-18 真机：某会话钉着 `opencodego / union-alpha`，供应商清单里早没了，
+/// `miyu` 整个进不去，客户端只看到一句「invalid admin response」）。部分失效的
+/// 只把失效那几条筛掉，剩下的照用。
+///
+/// 客户端/直连侧的同一道守卫在 `cli::model_cmds::apply_session_model_override`
+/// （08-28 就加了），daemon 侧一直漏着。
+///
+/// 返回被清掉的那几条（`"供应商 / 模型"`），给调用方拿去告诉用户；没清就是空的。
 pub(in crate::web) fn apply_session_model_override_to(
     config: &mut AppConfig,
     store: &StateStore,
     session_id: &str,
-) {
+) -> Vec<String> {
     match store.session_model_override(session_id) {
-        Ok(Some(models)) => config.active_provider_models = Some(models),
-        Ok(None) => {}
-        Err(error) => tracing::warn!(
-            error = %error,
-            session_id,
-            "{}",
-            t(
-                "loading the session model override failed",
-                "读取会话模型覆盖失败"
-            )
-        ),
+        Ok(Some(models)) => {
+            let stale = models
+                .iter()
+                .map(|active| format!("{} / {}", active.provider_id.trim(), active.model.trim()))
+                .collect::<Vec<_>>();
+            match config.usable_model_override(models) {
+                Some(usable) => {
+                    config.active_provider_models = Some(usable);
+                    Vec::new()
+                }
+                None => {
+                    tracing::warn!(
+                        session_id,
+                        models = %stale.join(", "),
+                        "{}",
+                        t(
+                            "the session model override points at models the providers no longer list; falling back to the global pool",
+                            "会话钉的模型已不在供应商清单里,退回全局模型池"
+                        )
+                    );
+                    // 清掉而不是只让这一轮退回:留着的话每一轮都要重新踩一次,
+                    // `/models` 里也还显示着一个用不了的池。
+                    if let Err(error) = store.set_session_model_override(session_id, None) {
+                        tracing::warn!(
+                            error = %error,
+                            session_id,
+                            "{}",
+                            t(
+                                "clearing the stale session model override failed",
+                                "清除失效的会话模型覆盖失败"
+                            )
+                        );
+                    }
+                    stale
+                }
+            }
+        }
+        Ok(None) => Vec::new(),
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                session_id,
+                "{}",
+                t(
+                    "loading the session model override failed",
+                    "读取会话模型覆盖失败"
+                )
+            );
+            Vec::new()
+        }
     }
 }
 

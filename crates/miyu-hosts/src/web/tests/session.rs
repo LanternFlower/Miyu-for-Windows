@@ -980,10 +980,9 @@ fn session_model_override_is_applied_to_the_target_session_config() {
         .create_session(&persona, "", "user", None)
         .unwrap();
     let session_id = record.session_id.clone();
-    let pinned = miyu_base::config::ActiveProviderModelConfig {
-        provider_id: "pinned-provider".to_string(),
-        model: "pinned-model".to_string(),
-    };
+    // 钉的得是配置里真有的那一对：钉一个不存在的现在会被当成失效覆盖清掉
+    // （见 `a_stale_session_model_override_falls_back_to_the_global_pool`）。
+    let pinned = usable_pin(&state.manager.lock().unwrap().config.clone());
     state
         .state_store
         .set_session_model_override(&session_id, Some(std::slice::from_ref(&pinned)))
@@ -996,8 +995,8 @@ fn session_model_override_is_applied_to_the_target_session_config() {
         .as_ref()
         .expect("the override is applied to the config");
     assert_eq!(applied.len(), 1);
-    assert_eq!(applied[0].provider_id, "pinned-provider");
-    assert_eq!(applied[0].model, "pinned-model");
+    assert_eq!(applied[0].provider_id, pinned.provider_id);
+    assert_eq!(applied[0].model, pinned.model);
 
     // 没有覆盖时不改这份 config（调用方每次都是从全局配置克隆出来的）。
     state
@@ -1154,4 +1153,81 @@ fn platform_outreach_tools_go_to_everyone_but_need_a_connection() {
     crate::platforms::tool::register_outreach(&mut registry, &admin, true, PersonaLane::Active);
     assert!(registry.contains(outreach), "管理员同样有平台版");
     assert!(registry.contains(contacts));
+}
+
+/// 会话钉的模型被供应商下架/改名之后：退回全局池，并把这份失效的覆盖清掉。
+///
+/// 留着它的话 `from_config` 直接报「没有可用端点」，这条会话连打开都打不开
+/// （09-18 真机：某会话钉着 `opencodego / union-alpha`，`miyu` 整个进不去）。
+#[test]
+fn a_stale_session_model_override_falls_back_to_the_global_pool() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = DaemonState::for_test(test_paths(temp.path()), 8300).unwrap();
+    let persona = active_persona_scope(&state);
+    let session_id = state
+        .state_store
+        .create_session(&persona, "", "user", None)
+        .unwrap()
+        .session_id;
+    let global = state.manager.lock().unwrap().config.clone();
+    let real = usable_pin(&global);
+    let ghost = miyu_base::config::ActiveProviderModelConfig {
+        provider_id: real.provider_id.clone(),
+        model: "miyu-model-the-provider-removed".to_string(),
+    };
+
+    // 一条都对不上：退回全局池，覆盖被清掉，返回值点名是哪一条没了。
+    state
+        .state_store
+        .set_session_model_override(&session_id, Some(std::slice::from_ref(&ghost)))
+        .unwrap();
+    let mut config = global.clone();
+    let stale = apply_session_model_override_to(&mut config, &state.state_store, &session_id);
+    assert_eq!(
+        stale,
+        vec![format!("{} / {}", ghost.provider_id, ghost.model)],
+        "得说清是哪一条失效了"
+    );
+    assert_eq!(
+        config.active_provider_models, global.active_provider_models,
+        "退回全局池"
+    );
+    assert_eq!(
+        state
+            .state_store
+            .session_model_override(&session_id)
+            .unwrap(),
+        None,
+        "失效的覆盖要清掉,否则每一轮都重踩一次、`/models` 里还显示着它"
+    );
+
+    // 一半失效：把失效那条筛掉，剩下的照钉，覆盖留着。
+    state
+        .state_store
+        .set_session_model_override(&session_id, Some(&[ghost.clone(), real.clone()]))
+        .unwrap();
+    let mut config = global.clone();
+    let stale = apply_session_model_override_to(&mut config, &state.state_store, &session_id);
+    assert!(stale.is_empty(), "还有能用的就不算失效");
+    let applied = config.active_provider_models.as_ref().unwrap();
+    assert_eq!(applied.len(), 1);
+    assert_eq!(applied[0].model, real.model);
+    assert!(state
+        .state_store
+        .session_model_override(&session_id)
+        .unwrap()
+        .is_some());
+}
+
+/// 默认配置里随便挑一个**真实存在**的供应商/模型，用来当「钉得住」的那一半。
+fn usable_pin(config: &AppConfig) -> miyu_base::config::ActiveProviderModelConfig {
+    let provider = config
+        .providers
+        .iter()
+        .find(|provider| !provider.models.is_empty())
+        .expect("默认配置里总该有一个带模型清单的供应商");
+    miyu_base::config::ActiveProviderModelConfig {
+        provider_id: provider.id.clone(),
+        model: provider.models[0].clone(),
+    }
 }

@@ -57,9 +57,29 @@ pub(in crate::web) fn start_ipc_server(
     Ok((lease, task))
 }
 
+/// 一条 IPC 连接的总入口。处理出错时**先把原因回给客户端**再断。
+///
+/// 以前错误直接冒出去、连接一关了事，只在 debug 级别记一行；客户端那边所有
+/// 「收不到终局帧」都长成同一句「invalid admin response」，什么线索都没有
+/// （09-18 查一条会话模型失效的报障，为此专门开 debug 日志重启了一次 daemon
+/// 才看见真话）。
 pub(in crate::web) async fn handle_ipc_connection(
     state: DaemonState,
     mut stream: tokio::net::UnixStream,
+) -> Result<()> {
+    let outcome = dispatch_ipc_connection(state, &mut stream).await;
+    if let Err(error) = &outcome {
+        // 已经发过终局帧再补一帧也无妨：客户端读到第一帧就收工了。
+        let _ = ipc::send(&mut stream, &IpcFrame::error(safe_error_message(error))).await;
+    }
+    outcome
+}
+
+async fn dispatch_ipc_connection(
+    state: DaemonState,
+    // `mut` 是给函数体里那五十几处 `&mut stream` 用的(`&mut &mut _` 自己会
+    // 解引用成 `&mut _`),不是要换掉外面那个流。
+    mut stream: &mut tokio::net::UnixStream,
 ) -> Result<()> {
     let Some(request) = tokio::time::timeout(
         Duration::from_secs(5),
@@ -263,11 +283,23 @@ pub(in crate::web) async fn handle_ipc_connection(
                 }
             };
             let _ = store.set_repl_session(&persona, &session_id);
+            // 钉的模型被供应商下架时先把这份覆盖清掉，顺带把清掉的报给 REPL。
+            // 不先清的话，下面给这条会话装 Agent 估上下文当场就报「没有可用
+            // 端点」，连接一断，客户端只剩一句「invalid admin response」——
+            // 09-18 实录，`miyu` 整个进不去。
+            let stale_models = {
+                let mut probe = state.manager.lock().unwrap().config.clone();
+                apply_session_model_override_to(&mut probe, store, &session_id)
+            };
             ipc::send(
                 &mut stream,
                 &IpcFrame::AdminResult {
                     state: session_state_for(&state, &session_id)?,
-                    data: json!({}),
+                    data: if stale_models.is_empty() {
+                        json!({})
+                    } else {
+                        json!({ "stale_model_override": stale_models })
+                    },
                 },
             )
             .await?;
