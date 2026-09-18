@@ -12,7 +12,11 @@ const MAX_TOOL_IMAGES: usize = 4;
 const MAX_TOOL_FILES: usize = 4;
 const MAX_TOOL_MENTIONS: usize = 32;
 
-pub fn register(registry: &mut ToolRegistry, context: Arc<PlatformTurnContext>) {
+pub fn register(
+    registry: &mut ToolRegistry,
+    context: Arc<PlatformTurnContext>,
+    lane: miyu_base::config::PersonaLane,
+) {
     if context.conversation.kind == ConversationKind::Group {
         register_mention(registry, context.clone());
     }
@@ -22,6 +26,12 @@ pub fn register(registry: &mut ToolRegistry, context: Arc<PlatformTurnContext>) 
     if crate::runtime::voice_port().is_some_and(|port| port.tts_available()) {
         register_voice_message(registry, context.clone());
     }
+    register_outreach(
+        registry,
+        &context,
+        miyu_engine::tools::platform_outreach::qq_connected(),
+        lane,
+    );
     let host_tools_allowed = context.host_tools_allowed();
     let parameters = if host_tools_allowed {
         json!({
@@ -93,6 +103,30 @@ pub fn register(registry: &mut ToolRegistry, context: Arc<PlatformTurnContext>) 
         )
         .writes()
         .with_display_name(miyu_base::i18n::text("Send message", "发送消息")),
+    );
+}
+
+/// QQ 里让她「把这个发到 xxx 群 / 发给某某」:装平台版的 `send_qq_message`
+/// (+ 普通模式的 `qq_contacts`)(BUG-14,09-18)。**所有触发者都有**,不分管理员/
+/// 群友——用户裁定发消息是基础能力;而且工具面按触发者分脸会掰断缓存前缀。收件人
+/// 范围按模式:普通模式任意好友/群,开发模式只发管理员。只在 QQ 连着时装,免得模型
+/// 对着断线的通道试。`connected` 由调用方传进来,测试里不用去碰进程级的端口。
+pub(crate) fn register_outreach(
+    registry: &mut ToolRegistry,
+    context: &PlatformTurnContext,
+    connected: bool,
+    lane: miyu_base::config::PersonaLane,
+) {
+    // QQ 会话的 platform 记的是协议名 onebot(测试夹具同款)。
+    if context.conversation.platform != "onebot" || !connected {
+        return;
+    }
+    let account = context.conversation.account_id.parse::<i64>().ok();
+    miyu_engine::tools::platform_outreach::register_in(
+        registry,
+        &context.config,
+        miyu_engine::tools::platform_outreach::Surface::Platform { account },
+        miyu_engine::tools::platform_outreach::Reach::for_lane(lane),
     );
 }
 

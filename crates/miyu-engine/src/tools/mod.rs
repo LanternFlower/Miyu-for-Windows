@@ -432,7 +432,7 @@ pub fn build_tool_registry(
     // 车道只说「哪个 persona」:Dev = 保留人格 "dev"(清单默认 core_only),
     // Active = 当前人格。真正裁决工具面的是 persona 清单。
     let persona = lane.scope(config);
-    let registry = if config.tools.enabled {
+    let mut registry = if config.tools.enabled {
         let manifest = PersonaManifest::load(config, paths, &persona);
         compose_registry(
             config,
@@ -443,6 +443,15 @@ pub fn build_tool_registry(
     } else {
         ToolRegistry::new()
     };
+    // 开发模式的「发到 QQ」只给管理员、没有地址簿(用户 09-18 裁定);内置插件
+    // 表不知道车道,装的是普通版,这里收窄。ws 没连上时本来就没装,不会多出来。
+    if lane == PersonaLane::Dev {
+        platform_outreach::restrict_to_admins(
+            &mut registry,
+            config,
+            platform_outreach::Surface::Terminal,
+        );
+    }
     // 最后登记脚本工具的显示名——要在所有注册之后,否则新注册的脚本在渲染层
     // 会显示成原始工具名。
     register_script_display_names(&registry);

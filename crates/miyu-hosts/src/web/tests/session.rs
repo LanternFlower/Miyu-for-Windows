@@ -1103,3 +1103,55 @@ fn terminal_session_mode_flips_the_terminal_session_and_points_the_lane_at_it() 
     assert_ne!(&*lane, TERMINAL);
     assert_eq!(persona_of(&lane), DEV_PERSONA);
 }
+
+/// BUG-14(09-18):QQ 里要能「发到别的群/好友」——平台版 `send_qq_message` +
+/// `qq_contacts` 装给所有触发者(群友也有,用户裁定;两张脸一致也不掰缓存),只在
+/// QQ 连着时装;开发模式只有 `send_qq_message` 且只发管理员;终端版在收口函数里
+/// 照旧摘掉(它看终端开关)。
+#[test]
+fn platform_outreach_tools_go_to_everyone_but_need_a_connection() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_paths(temp.path());
+    let mut config = AppConfig::default();
+    config.tools.enabled = true;
+    let outreach = miyu_engine::tools::platform_outreach::TOOL_NAME;
+    let contacts = miyu_engine::tools::platform_outreach::CONTACTS_TOOL_NAME;
+
+    let (_temp2, guest, _adapter) = crate::platforms::tests::shared::test_turn_context(false);
+    let mut registry =
+        miyu_engine::tools::build_tool_registry(&config, &paths, PersonaLane::Active, false)
+            .unwrap();
+    // 终端版先装上(模拟 terminal_outreach 且 QQ 连着的 owner 面)再收口。
+    miyu_engine::tools::platform_outreach::register(&mut registry, &config);
+    assert!(registry.contains(outreach));
+    crate::platforms::apply_platform_turn_scope(&mut registry, &config, &paths, &guest, None);
+    assert!(!registry.contains(outreach), "终端版在平台会话里要摘掉");
+    crate::platforms::tool::register_outreach(&mut registry, &guest, false, PersonaLane::Active);
+    assert!(!registry.contains(outreach), "QQ 没连着不装");
+    crate::platforms::tool::register_outreach(&mut registry, &guest, true, PersonaLane::Active);
+    assert!(registry.contains(outreach), "群友也有平台版");
+    assert!(registry.contains(contacts));
+    // 开发模式:只有发 QQ,且收件人是管理员枚举;没有地址簿。
+    let mut dev = miyu_engine::tools::ToolRegistry::new();
+    crate::platforms::tool::register_outreach(&mut dev, &guest, true, PersonaLane::Dev);
+    assert!(dev.contains(outreach));
+    assert!(!dev.contains(contacts), "开发模式没有地址簿工具");
+    // 夹具配置里没配管理员,枚举列不出来;认「没有 kind」这个开发版独有的形状。
+    assert!(dev.get(outreach).unwrap().parameters["properties"]
+        .get("kind")
+        .is_none());
+    assert!(registry.get(outreach).unwrap().parameters["properties"]
+        .get("kind")
+        .is_some());
+
+    let (_temp3, mut admin, _adapter2) = crate::platforms::tests::shared::test_turn_context(true);
+    admin.is_admin = true;
+    let mut registry =
+        miyu_engine::tools::build_tool_registry(&config, &paths, PersonaLane::Active, false)
+            .unwrap();
+    miyu_engine::tools::platform_outreach::register(&mut registry, &config);
+    crate::platforms::apply_platform_turn_scope(&mut registry, &config, &paths, &admin, None);
+    crate::platforms::tool::register_outreach(&mut registry, &admin, true, PersonaLane::Active);
+    assert!(registry.contains(outreach), "管理员同样有平台版");
+    assert!(registry.contains(contacts));
+}

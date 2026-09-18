@@ -1157,7 +1157,7 @@
         {
           path: "platforms.terminal_outreach",
           label: "允许 AI 从终端发消息到通讯平台",
-          hint: "开启后终端 / WebUI / shellhook 会话里有 send_qq_message 工具;收件人只能是管理员 QQ 号(按别名列出),第一个为主管理员",
+          hint: "开启后终端 / WebUI / shellhook 会话里有 send_qq_message(普通模式还有 qq_contacts 地址簿)工具:普通模式按名字或号码发到任意好友/群,开发模式只能发给管理员;不传收件人发给主管理员。QQ 里的同名工具不受此开关管",
           kind: "toggle",
           default: true,
         },

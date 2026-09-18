@@ -33,7 +33,7 @@ pub(crate) mod onebot;
 pub mod plugins;
 mod sponsor_fx;
 mod sponsor_tool;
-mod tool;
+pub(crate) mod tool;
 // 平台层的纯数据类型下沉到 miyu_base::platform_types：tools / memory / agent 都
 // 要用它们（图片引用、主体身份、会话标识），但不该为此依赖整个平台运行时。
 // 这里原样再导出，`platforms::PlatformPrincipal` 这类写法一个字都不用改。
@@ -225,11 +225,15 @@ pub(crate) fn apply_platform_turn_scope(
     // 平台身份走,管理员会话也一并摘掉。该委托工具 08-21 已删除,这行是它
     // 万一回归时的常备闸——当下不生效,也无法被测试钉住。
     registry.unregister("claude_code");
-    // 扬声器与「发到 QQ」都是本机 owner 面的东西:QQ 聊天通常是远程的,
-    // 从群里让电脑开口没有意义;从 QQ 会话再发 QQ 更是绕圈(那边有
-    // send_message_to_user)。管理员会话也一并摘掉。
+    // 扬声器是本机 owner 面的东西:QQ 聊天通常是远程的,从群里让电脑开口没
+    // 有意义,管理员会话也一并摘掉。
     registry.unregister("speak");
-    registry.unregister("send_qq_message");
+    // 「发到 QQ」的终端版也摘掉——它看的是 `terminal_outreach` 开关、发的是
+    // 第一个在线账号。平台会话里管理员要「发到别的群/好友」,由
+    // `tool::register` 装平台版(带当前账号、不看终端开关);非管理员没有
+    // (BUG-14,09-18)。发回当前会话仍是 send_message_to_user。
+    registry.unregister(miyu_engine::tools::platform_outreach::TOOL_NAME);
+    registry.unregister(miyu_engine::tools::platform_outreach::CONTACTS_TOOL_NAME);
 }
 
 pub(crate) use assets::platform_asset;

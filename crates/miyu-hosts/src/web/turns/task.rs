@@ -292,8 +292,12 @@ async fn run_turn_task_inner(
                 .as_ref()
                 .and_then(|profile| profile.platform.clone())
             {
-                platforms::register_platform_tools(&mut normal_tools, context.clone());
-                platforms::register_platform_tools(&mut dev_tools, context);
+                platforms::register_platform_tools_for(
+                    &mut normal_tools,
+                    context.clone(),
+                    PersonaLane::Active,
+                );
+                platforms::register_platform_tools_for(&mut dev_tools, context, PersonaLane::Dev);
             }
         }
         // 回合级工具面裁剪放在所有注册之后:两张表同裁,中途切模式白名单

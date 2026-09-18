@@ -158,6 +158,7 @@ pub(crate) fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "end_voice_chat" => t("End voice chat", "结束语音对话"),
         "speak" => t("Speak", "说话"),
         "send_qq_message" => t("Send to QQ", "发送到 QQ"),
+        "qq_contacts" => t("QQ contacts", "查 QQ 联系人"),
         "send_voice_message" => t("Send voice message", "发送语音"),
         "sponsor" => t("Sponsorships", "赞助记账"),
         "upload_knowledge_base_file" | "upload_text_to_knowledge_base" => {

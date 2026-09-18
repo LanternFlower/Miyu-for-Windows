@@ -943,11 +943,21 @@ impl PlatformTurnContext {
     }
 }
 
+/// 普通模式的平台工具面(老入口,测试与访问管理都走它)。
 pub(crate) fn register_platform_tools(
     registry: &mut miyu_engine::tools::ToolRegistry,
     context: Arc<PlatformTurnContext>,
 ) {
-    tool::register(registry, context.clone());
+    register_platform_tools_for(registry, context, miyu_base::config::PersonaLane::Active);
+}
+
+/// 按车道装平台工具:目前只有「发到 QQ」分模式(开发模式只发管理员、没有地址簿)。
+pub(crate) fn register_platform_tools_for(
+    registry: &mut miyu_engine::tools::ToolRegistry,
+    context: Arc<PlatformTurnContext>,
+    lane: miyu_base::config::PersonaLane,
+) {
+    tool::register(registry, context.clone(), lane);
     context.plugins.register_tools(registry, context.clone());
 }
 

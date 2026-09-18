@@ -9,7 +9,7 @@
 | 端口 | 定义 | 实现 / 装入点 | 调用方 |
 |---|---|---|---|
 | `VoicePort` | `host_ports/ports.rs` | `web::voice_bridge::VoiceBridgePort`,`web::server` 启动时 `install_voice_port` | `tools::voice_speak` / `voice_chat` / `platform_outreach`,`platforms::tool`(send_voice_message),`platforms::onebot::voice_inbound` |
-| `QqOutreachPort` | `host_ports/ports.rs` | `platforms::onebot::proactive::OutreachPort`,`web::server` 启动时 `install_outreach_port` | `tools::platform_outreach`(send_qq_message、注册条件 `qq_connected`) |
+| `QqOutreachPort` | `host_ports/ports.rs` | `platforms::onebot::proactive::OutreachPort`,`web::server` 启动时 `install_outreach_port`;`send_to` 任意好友/群、`directory` 地址簿(缓存 5 分钟) | `tools::platform_outreach`(send_qq_message / qq_contacts,注册条件 `qq_connected`;普通模式任意好友/群,开发模式只发管理员且无地址簿——终端由 `build_tool_registry` 按车道收窄,平台由 `platforms::tool::register_outreach` 按车道装给所有触发者) |
 | live-turn 宿主工具位 | `host_ports/live_turn.rs` | `platforms::live_turns::LiveTurnGuard` 随平台回合登记/注销 | `llm::…::cli_relay::host_tools_face`(中转线桥的工具面) |
 | 终端正文视口 | `terminal::{set_content_viewport, content_viewport}` | 全屏 `Screen` 进入/重绘时设,drop 时清 | `render::markdown`(公式)、`render::content_cols`、`terminal::kitty`、`tools::memes` / `vision::print` |
 | 供应商目录 | `provider_catalog` | 领域模块自身 | WebUI / TUI / OOBE |

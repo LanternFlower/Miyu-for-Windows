@@ -90,8 +90,9 @@ pub struct PlatformsConfig {
         skip_serializing_if = "is_default_platform_max_tool_rounds"
     )]
     pub max_tool_rounds: usize,
-    /// 允许 AI 从终端/WebUI/shellhook 会话主动发消息到通讯平台(`send_qq_message`
-    /// 工具)。收件人只能是各平台配置的管理员,QQ 即 `qq.admin_users`,第一个为主管理员。
+    /// 允许 AI 从终端/WebUI/shellhook 会话主动发消息到通讯平台(`send_qq_message` /
+    /// `qq_contacts` 工具)。普通模式可发任意好友/群,开发模式只能发管理员(QQ 即
+    /// `qq.admin_users`,第一个为主管理员)。平台会话里的同名工具不看这个开关。
     #[serde(default = "default_terminal_outreach")]
     pub terminal_outreach: bool,
     #[serde(default, skip_serializing_if = "OneBotConfig::is_default")]

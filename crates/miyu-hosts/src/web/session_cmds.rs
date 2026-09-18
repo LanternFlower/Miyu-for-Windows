@@ -644,7 +644,7 @@ pub(in crate::web) fn attach_owner_turn_tools(
                 platform.clone(),
             );
         }
-        crate::platforms::register_platform_tools(registry, platform);
+        crate::platforms::register_platform_tools_for(registry, platform, mode);
         return;
     }
     miyu_engine::tools::register_ask_question(registry);

@@ -46,17 +46,76 @@ pub struct QqOutreachPolicy {
     pub recipients: Vec<(i64, String)>,
 }
 
-/// 终端会话往 QQ 直发的能力(不经 AI 回合)。
+/// 直发的收件方:好友(私聊)或群。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QqTarget {
+    Friend(i64),
+    Group(i64),
+}
+
+impl QqTarget {
+    pub fn kind(self) -> &'static str {
+        match self {
+            Self::Friend(_) => "friend",
+            Self::Group(_) => "group",
+        }
+    }
+
+    pub fn id(self) -> i64 {
+        match self {
+            Self::Friend(id) | Self::Group(id) => id,
+        }
+    }
+}
+
+/// 好友一条:昵称 + 备注(备注可空)。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct QqContact {
+    pub user_id: i64,
+    pub nickname: String,
+    pub remark: String,
+}
+
+/// 机器人所在的群一条。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct QqGroup {
+    pub group_id: i64,
+    pub name: String,
+    pub member_count: u32,
+}
+
+/// 地址簿:机器人的好友列表 + 它所在的群(NapCat `get_friend_list` /
+/// `get_group_list`)。「发到 xxx 交流群」要先把名字翻成号码,靠的就是它。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct QqDirectory {
+    pub friends: Vec<QqContact>,
+    pub groups: Vec<QqGroup>,
+}
+
+/// 往 QQ 直发的能力(不经 AI 回合):终端会话的 `send_qq_message`、平台会话里
+/// 管理员让她「发到别的群/好友」都经这里。
 pub trait QqOutreachPort: Send + Sync {
     /// NapCat 的反向 WebSocket 至少一个账号在线。
     fn connected(&self) -> bool;
     fn policy(&self) -> QqOutreachPolicy;
-    /// 私聊直发。
+    /// 直发到任意好友/群。`account` 为空用第一个在线账号(平台会话传当前会话
+    /// 所在的账号,多号时别串号)。
+    fn send_to(
+        &self,
+        account: Option<i64>,
+        target: QqTarget,
+        message: OutboundMessage,
+    ) -> BoxFuture<'static, Result<()>>;
+    /// 地址簿(实现方缓存几分钟,别每次调用都打两个 API)。
+    fn directory(&self, account: Option<i64>) -> BoxFuture<'static, Result<QqDirectory>>;
+    /// 私聊直发(老入口,等于 `send_to(None, Friend)`)。
     fn send_private(
         &self,
         user_id: i64,
         message: OutboundMessage,
-    ) -> BoxFuture<'static, Result<()>>;
+    ) -> BoxFuture<'static, Result<()>> {
+        self.send_to(None, QqTarget::Friend(user_id), message)
+    }
 }
 
 /// 收件人只能是 `qq.admin_users` 里的号码:显示名取 `qq.admin_aliases` 的别名,
