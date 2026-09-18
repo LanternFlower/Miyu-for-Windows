@@ -274,3 +274,58 @@ mod models_inherit {
         );
     }
 }
+
+/// 「Mixed 时显示本次供应商/模型」三档语义(BUG-05):池只有一个模型时一律不显示;
+/// off 永不、all 永远、interactive 只给交互会话。
+#[test]
+fn mixed_endpoint_switch_has_three_values_and_needs_a_mixed_pool() {
+    use miyu_base::config::{ActiveProviderModelConfig, ProviderConfig};
+    let mut config = AppConfig::default();
+    let mut provider = ProviderConfig::template("p", "P", "http://127.0.0.1:1/v1");
+    provider.models = vec!["a".to_string(), "b".to_string()];
+    provider.default_model = "a".to_string();
+    config.providers = vec![provider];
+    config.active_provider = "p".to_string();
+    let pick = |models: &[&str]| {
+        Some(
+            models
+                .iter()
+                .map(|model| ActiveProviderModelConfig {
+                    provider_id: "p".to_string(),
+                    model: model.to_string(),
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
+    config.active_provider_models = pick(&["a", "b"]);
+    for (value, interactive_expected, one_shot_expected) in [
+        ("interactive", true, false),
+        ("all", true, true),
+        ("off", false, false),
+    ] {
+        config.display.mixed_model_endpoint_display = value.to_string();
+        assert_eq!(
+            show_mixed_model_endpoint(&config, true),
+            interactive_expected,
+            "{value}"
+        );
+        assert_eq!(
+            show_mixed_model_endpoint(&config, false),
+            one_shot_expected,
+            "{value}"
+        );
+    }
+    config.display.mixed_model_endpoint_display = "all".to_string();
+    config.active_provider_models = pick(&["a"]);
+    assert!(
+        !show_mixed_model_endpoint(&config, true),
+        "单模型池不是混合,不显示"
+    );
+    assert!(
+        mixed_model_endpoint_frame("p", "a", None).contains("\x1b[2m\x1b[38;5;245mp / a\x1b[0m")
+    );
+    assert!(
+        !mixed_model_endpoint_frame("p", "a", None).starts_with('\n'),
+        "空行由渲染器收尾给,这里不再多加"
+    );
+}

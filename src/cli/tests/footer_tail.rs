@@ -69,6 +69,8 @@ fn replayed_job_wake_turns_are_not_drawn_as_user_prompts() {
         is_synthetic: true,
         interrupted: false,
         assistant_reasoning: None,
+        assistant_provider_id: None,
+        assistant_model: None,
     };
     let typed = miyu_core::state::TurnReplay {
         display_content: "帮我改一下 README".to_string(),
@@ -77,9 +79,11 @@ fn replayed_job_wake_turns_are_not_drawn_as_user_prompts() {
         is_synthetic: false,
         interrupted: false,
         assistant_reasoning: None,
+        assistant_provider_id: None,
+        assistant_model: None,
     };
 
-    let frame = session_replay_frame(&[wake], PersonaLane::Active, &config, 80).unwrap();
+    let frame = session_replay_frame(&[wake], PersonaLane::Active, &config, 80, false).unwrap();
     let frame = String::from_utf8_lossy(&frame);
     // Dim ⚙ notice with the bracketed prefix stripped, exactly like the
     // live path — never the user bubble's bar.
@@ -87,7 +91,7 @@ fn replayed_job_wake_turns_are_not_drawn_as_user_prompts() {
     assert!(!frame.contains("[后台任务完成]"));
     assert!(!frame.contains(&submitted_echo_bar(PersonaLane::Active)));
 
-    let frame = session_replay_frame(&[typed], PersonaLane::Active, &config, 80).unwrap();
+    let frame = session_replay_frame(&[typed], PersonaLane::Active, &config, 80, false).unwrap();
     let frame = String::from_utf8_lossy(&frame);
     assert!(frame.contains(&submitted_echo_bar(PersonaLane::Active)));
     assert!(!frame.contains('⚙'));

@@ -101,8 +101,18 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mode: PersonaLane
                 let cols = crate::cli::content_viewport()
                     .map(|(cols, _)| cols)
                     .unwrap_or(cols);
-                let frame =
-                    session_replay_frame(&replays, mode, &config, usize::from(cols.max(1)))?;
+                // 混合模型池的「本次供应商 / 模型」按会话的池判(BUG-05)。
+                let endpoint_line = show_mixed_model_endpoint(
+                    &crate::cli::model_cmds::session_scoped_config(&replay_store, &config),
+                    true,
+                );
+                let frame = session_replay_frame(
+                    &replays,
+                    mode,
+                    &config,
+                    usize::from(cols.max(1)),
+                    endpoint_line,
+                )?;
                 live_repl.apply_output_frame(&frame)?;
             }
             Ok(_) => {}

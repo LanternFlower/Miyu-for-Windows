@@ -571,6 +571,9 @@ pub struct TurnReplay {
     /// 这一轮的思考正文。库里一直存着，只是从前回放不查它——全屏的时间线
     /// 把思考压成一行，重开 TUI 时再也不用凭空少一块。
     pub assistant_reasoning: Option<String>,
+    /// 这一轮实际答话的供应商/模型（混合模型池时回放要把「本次端点」那行补上）。
+    pub assistant_provider_id: Option<String>,
+    pub assistant_model: Option<String>,
     pub entries: Vec<ReplayEntry>,
     /// daemon 自己合成的轮，不是任何人敲的：后台任务唤醒、目标续轮。
     /// 回放时画成一条居中提示，而不是用户气泡。

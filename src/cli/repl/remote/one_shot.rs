@@ -817,9 +817,35 @@ pub(in crate::cli) async fn try_run_remote_chat(
     };
     renderer.finish()?;
     let focused = live.as_deref().map(|live| live.editor.focused);
+    // 混合模型池的「本次供应商 / 模型」那行（BUG-05）：
+    // - 「是不是混合」按**会话**的池判（会话钉了两个模型、全局只挂一个是常态），
+    //   原来拿全局 config 判在这种配置下永远为假；
+    // - `interactive` 档 = 只给交互 REPL：`live` 在就是交互，原来写死 false；
+    // - 交互 REPL 走 tail 的帧通道落到正文里（全屏下裸 println 会落错位置），
+    //   一次性/shellhook 仍走 stdout。
+    let interactive = live.is_some();
+    let endpoint_config = footer_config_for_session(paths, &config, &turn_session_id);
+    let show_endpoint = show_mixed_model_endpoint(&endpoint_config, interactive);
+    let endpoint = show_endpoint.then(|| {
+        (
+            completion
+                .get("provider_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("-")
+                .to_string(),
+            completion
+                .get("model")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("-")
+                .to_string(),
+        )
+    });
     if let Some(live) = live {
         live.stop_footer_spinner()?;
         live.apply_renderer_frame(&mut renderer)?;
+        if let Some((provider, model)) = &endpoint {
+            live.apply_output_frame(mixed_model_endpoint_frame(provider, model, None).as_bytes())?;
+        }
         if let Some(raw) = raw.as_mut() {
             raw.handoff();
             live.raw_mode_handoff = true;
@@ -863,7 +889,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
             t("waiting for you", "正在等待处理"),
         );
     }
-    print_mixed_model_endpoint(show_mixed_model_endpoint(&config, false), &result, None);
+    print_mixed_model_endpoint(show_endpoint && !interactive, &result, None);
     let context_tokens = completion
         .get("context_tokens")
         .and_then(serde_json::Value::as_u64)

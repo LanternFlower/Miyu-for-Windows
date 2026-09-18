@@ -45,6 +45,42 @@ pub(in crate::cli) fn mixed_model_endpoint_label(
     format!("{provider} / {model}{variant}")
 }
 
+/// 交互 REPL 里挂在回复末尾的那一行「本次供应商 / 模型」：暗色，和回复之间空一行
+/// （渲染器收尾本来就留一个空行，这里不再多加，否则是两行）。全屏下按时间线正文
+/// 的缩进对齐（和「已中断」那类提示一个位置）。
+pub(in crate::cli) fn mixed_model_endpoint_frame(
+    provider: &str,
+    model: &str,
+    variant: Option<&str>,
+) -> String {
+    // 光 SGR 2 在 kitty 里只淡一点点,用户看着「不是暗色」;配一个中灰(245)才
+    // 是肉眼分得出的暗色,亮暗两种底色都看得清。
+    let line = format!(
+        "\x1b[2m\x1b[38;5;245m{}\x1b[0m\n",
+        mixed_model_endpoint_label(provider, model, variant)
+    );
+    if render::blocks::enabled() {
+        render::timeline::indent_body(&line)
+    } else {
+        line
+    }
+}
+
+/// 会话钉了模型池就按会话的算（`footer_config_for_session` 同一道守卫），这里
+/// 拿的是已经钉到会话上的 store。「是不是混合」要看会话池，不是全局池：
+/// 用户全局只挂一个模型、会话里钉两个的情形，按全局判永远不显示（BUG-05）。
+pub(in crate::cli) fn session_scoped_config(store: &StateStore, config: &AppConfig) -> AppConfig {
+    let mut config = config.clone();
+    let session_id = store.session_id();
+    if let Ok(Some(models)) = store.session_model_override(&session_id) {
+        match config.usable_model_override(models) {
+            Some(usable) => config.active_provider_models = Some(usable),
+            None => drop_stale_model_override(store, &session_id),
+        }
+    }
+    config
+}
+
 pub(in crate::cli) fn show_mixed_model_endpoint(config: &AppConfig, interactive: bool) -> bool {
     config.active_provider_model_choices().len() > 1
         && match config.display.mixed_model_endpoint_display.as_str() {

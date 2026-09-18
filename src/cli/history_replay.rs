@@ -104,6 +104,7 @@ pub(super) fn session_replay_frame(
     mode: PersonaLane,
     config: &AppConfig,
     cols: usize,
+    endpoint_line: bool,
 ) -> Result<Vec<u8>> {
     use miyu_core::state::ReplayEntry;
     let mut frame = Vec::new();
@@ -225,6 +226,22 @@ pub(super) fn session_replay_frame(
         }
         renderer.finish()?;
         frame.extend_from_slice(&renderer.take_output_frame());
+        // 混合模型池：实时那一轮末尾有「本次供应商 / 模型」，回放也补上，重开之后
+        // 才对得上（提交的是哪家答的，库里记着）。
+        if endpoint_line {
+            if let (Some(provider), Some(model)) = (
+                replay
+                    .assistant_provider_id
+                    .as_deref()
+                    .filter(|s| !s.is_empty()),
+                replay.assistant_model.as_deref().filter(|s| !s.is_empty()),
+            ) {
+                frame.extend_from_slice(
+                    crate::cli::model_cmds::mixed_model_endpoint_frame(provider, model, None)
+                        .as_bytes(),
+                );
+            }
+        }
         if replay.interrupted {
             // 标一行：这一轮没说完。和后台任务那条提示一个样子。
             let notice = format!(

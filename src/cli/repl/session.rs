@@ -304,7 +304,17 @@ pub(in crate::cli) fn replay_recent_turns(
             let cols = crate::cli::content_viewport()
                 .map(|(cols, _)| cols)
                 .unwrap_or(cols);
-            let frame = session_replay_frame(&replays, mode, config, usize::from(cols.max(1)))?;
+            let endpoint_line = crate::cli::model_cmds::show_mixed_model_endpoint(
+                &crate::cli::model_cmds::session_scoped_config(store, config),
+                true,
+            );
+            let frame = session_replay_frame(
+                &replays,
+                mode,
+                config,
+                usize::from(cols.max(1)),
+                endpoint_line,
+            )?;
             live_repl.apply_output_frame(&frame)?;
         }
         Ok(_) => {}

@@ -841,7 +841,8 @@ impl ConversationDb {
                     (user_content LIKE '<background-job-report>%'
                      OR user_content LIKE '<goal_round>%'),
                     assistant_reasoning,
-                    status = 'interrupted'
+                    status = 'interrupted',
+                    assistant_provider_id, assistant_model
                FROM turns
               WHERE session_id = ?1 AND hidden = 0 AND is_summary = 0
                 AND status IN ('completed', 'interrupted')
@@ -860,6 +861,8 @@ impl ConversationDb {
                     is_synthetic: row.get::<_, i64>(3)? != 0,
                     assistant_reasoning: row.get::<_, Option<String>>(4)?,
                     interrupted: row.get::<_, i64>(5)? != 0,
+                    assistant_provider_id: row.get::<_, Option<String>>(6)?,
+                    assistant_model: row.get::<_, Option<String>>(7)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
