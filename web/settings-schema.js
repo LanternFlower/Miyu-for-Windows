@@ -2361,12 +2361,13 @@
             {
               key: "active_reply_supersede_window_seconds",
               label: "覆盖窗口(秒)",
+              hint: "发错了马上改:同一个人在这么久内再发一条,沿用上一轮的结论顶替(不看上一轮是什么触发)",
               kind: "number",
               integer: true,
               min: 1,
               max: 300,
               unit: "秒",
-              default: 5,
+              default: 7,
             },
             {
               key: "reply_restraint_enable",
@@ -2409,6 +2410,13 @@
               key: "continuation_enable",
               label: "自然续聊",
               hint: "刚回复过的话题在窗口内更容易接话",
+              kind: "toggle",
+              default: true,
+            },
+            {
+              key: "after_speaking_enable",
+              label: "群聊发完消息后观察窗口",
+              hint: "她发完消息后一段时间内,任何人的消息都来一次判断;09-19 前这个跟着「自然续聊」一起开关,现在独立",
               kind: "toggle",
               default: true,
             },

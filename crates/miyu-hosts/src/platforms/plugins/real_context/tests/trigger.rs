@@ -3,16 +3,39 @@
 use super::shared::*;
 use crate::platforms::plugins::real_context::*;
 
+/// 违规候选**不再抢占社交触发**(09-19)：它只是一面旗子。
+///
+/// 旧行为是命中关键词就把 trigger 降成 Moderation、走 moderation_only——于是
+/// 「你正跟她聊着、说了一句含关键词的话」会被降格成纯违规检查，不是真违规就
+/// 一声不吭，连续聊窗口都跟着断掉。而违规检查本来就与 trigger 无关
+/// （`judge.rs::moderation_check_enabled` 只看 `moderation_enable`），降格换不
+/// 来任何东西。
 #[test]
-fn explicit_direct_trigger_precedes_moderation_only_candidates() {
-    assert_eq!(
-        select_trigger(true, true, Some(TriggerKind::Supersede), true, false, true),
-        Some(TriggerKind::Direct)
+fn a_moderation_keyword_no_longer_steals_a_social_trigger() {
+    // 直接触发照旧最优先。
+    let conditions = select_conditions(
+        true,
+        true,
+        true,
+        Some(TriggerKind::Supersede),
+        true,
+        false,
+        true,
     );
-    assert_eq!(
-        select_trigger(false, true, Some(TriggerKind::Supersede), true, false, true),
-        Some(TriggerKind::Moderation)
-    );
+    assert_eq!(conditions.primary(), Some(TriggerKind::Direct));
+    assert!(conditions.moderation, "旗子还在：判官照样认真查一眼");
+    assert!(!conditions.moderation_only());
+
+    // 正在续聊时命中关键词：trigger 还是续聊，不再被降格。
+    let conditions = select_conditions(true, false, true, None, true, false, false);
+    assert_eq!(conditions.primary(), Some(TriggerKind::Continuation));
+    assert!(conditions.moderation);
+    assert!(!conditions.moderation_only(), "不该被降成纯违规检查");
+
+    // 一个社交条件都没有：这时才由它把判断拉起来。
+    let conditions = select_conditions(true, false, true, None, false, false, false);
+    assert_eq!(conditions.primary(), Some(TriggerKind::Moderation));
+    assert!(conditions.moderation_only());
 }
 
 /// 覆盖继承保留原始触发:标签是好感度归类、`<qq-join-in>` 注入与判官加分的
@@ -27,21 +50,21 @@ fn a_takeover_inherits_the_original_trigger() {
         TriggerKind::Supersede,
     ] {
         assert_eq!(
-            select_trigger(false, false, Some(origin), true, false, true),
+            select_conditions(true, false, false, Some(origin), true, false, true).primary(),
             Some(origin)
         );
     }
     // 不继承时维持原有的续聊/概率次序。
     assert_eq!(
-        select_trigger(false, false, None, true, false, true),
+        select_conditions(true, false, false, None, true, false, true).primary(),
         Some(TriggerKind::Continuation)
     );
     assert_eq!(
-        select_trigger(false, false, None, false, false, true),
+        select_conditions(true, false, false, None, false, false, true).primary(),
         Some(TriggerKind::Probability)
     );
     assert_eq!(
-        select_trigger(false, false, None, false, false, false),
+        select_conditions(true, false, false, None, false, false, false).primary(),
         None
     );
 }
@@ -63,32 +86,35 @@ fn direct_trigger_judgement_respects_takeover_and_privileged_bypass() {
     assert!(!active_judgement_allowed(&settings, true, true, true));
 }
 
+/// 主动回复整个关掉时，社交那几路一律不成立，但违规候选照样能把判断拉起来——
+/// 安全检查不该受主动回复开关影响。
 #[test]
-fn skipped_social_judgement_preserves_moderation_only_trigger() {
-    assert_eq!(
-        select_trigger_for_policy(
-            false,
-            true,
-            true,
-            Some(TriggerKind::Supersede),
-            true,
-            false,
-            true
-        ),
-        Some(TriggerKind::Moderation)
+fn a_disabled_active_reply_still_lets_moderation_run() {
+    let conditions = select_conditions(
+        false,
+        false,
+        true,
+        Some(TriggerKind::Supersede),
+        true,
+        true,
+        true,
     );
-    assert_eq!(
-        select_trigger_for_policy(
-            true,
-            true,
-            true,
-            Some(TriggerKind::Supersede),
-            true,
-            false,
-            true
-        ),
-        Some(TriggerKind::Direct)
+    assert_eq!(conditions.primary(), Some(TriggerKind::Moderation));
+    assert!(conditions.moderation_only());
+    assert!(!conditions.continuation, "主动回复关着，社交条件一律不成立");
+
+    // 平台直接触发（@她、私聊、命令）不受影响。
+    let conditions = select_conditions(
+        false,
+        true,
+        true,
+        Some(TriggerKind::Supersede),
+        true,
+        true,
+        true,
     );
+    assert_eq!(conditions.primary(), Some(TriggerKind::Direct));
+    assert!(!conditions.moderation_only());
 }
 
 #[test]
@@ -652,33 +678,35 @@ fn the_join_in_notice_concedes_and_then_overrides() {
 fn after_speaking_sits_between_continuation_and_probability() {
     // 同一个人接着说 = 自然续聊,优先。
     assert_eq!(
-        select_trigger(false, false, None, true, true, true),
+        select_conditions(true, false, false, None, true, true, true).primary(),
         Some(TriggerKind::Continuation)
     );
     // 不是同一个人,但她刚说过话 = 这一路。
     assert_eq!(
-        select_trigger(false, false, None, false, true, true),
+        select_conditions(true, false, false, None, false, true, true).primary(),
         Some(TriggerKind::AfterSpeaking)
     );
     // 她没说过话,只剩概率抽样。
     assert_eq!(
-        select_trigger(false, false, None, false, false, true),
+        select_conditions(true, false, false, None, false, false, true).primary(),
         Some(TriggerKind::Probability)
     );
     // 直接触发与覆盖继承照旧压过它。
     assert_eq!(
-        select_trigger(true, false, None, false, true, false),
+        select_conditions(true, true, false, None, false, true, false).primary(),
         Some(TriggerKind::Direct)
     );
     assert_eq!(
-        select_trigger(
+        select_conditions(
+            true,
             false,
             false,
             Some(TriggerKind::Probability),
             false,
             true,
             false
-        ),
+        )
+        .primary(),
         Some(TriggerKind::Probability)
     );
 }
@@ -701,4 +729,33 @@ fn bracket_placeholders_do_not_count_as_text() {
     ] {
         assert!(!inject::placeholder_only(text), "不该判成占位符: {text:?}");
     }
+}
+
+/// 窗口叠加时**加分要叠加**（用户 09-19 拍板，不封顶）。
+///
+/// 她回完 A 之后两个窗口同时开着：A 再说话 = 续聊 + 观察都成立。旧设计按主触发
+/// 一档定死，观察窗口那份白丢；现在两份都拿得到。`system_boost` 也进和——她刚发
+/// 完言时有人 @ 她，回复意愿本来就该更高，而冷静机制在另一头压着。
+#[test]
+fn overlapping_windows_stack_their_boosts() {
+    let both = select_conditions(true, false, false, None, true, true, false);
+    assert_eq!(
+        both.primary(),
+        Some(TriggerKind::Continuation),
+        "归类取更具体的那个"
+    );
+    assert!(
+        both.continuation && both.after_speaking,
+        "两个条件都记下来了"
+    );
+
+    // 路人在观察窗口里说话：续聊只认同一个人，天然不成立，不会被记成直接互动。
+    let stranger = select_conditions(true, false, false, None, false, true, false);
+    assert_eq!(stranger.primary(), Some(TriggerKind::AfterSpeaking));
+    assert!(!stranger.continuation);
+
+    // @她 + 刚发过言：direct 与 after_speaking 同时成立。
+    let mentioned = select_conditions(true, true, false, None, false, true, false);
+    assert_eq!(mentioned.primary(), Some(TriggerKind::Direct));
+    assert!(mentioned.direct && mentioned.after_speaking);
 }

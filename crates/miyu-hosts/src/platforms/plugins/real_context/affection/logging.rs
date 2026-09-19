@@ -70,7 +70,9 @@ pub(super) fn log_update_skipped(
         threshold,
         miyu_base::i18n::locale(),
     );
-    tracing::debug!(
+    // 09-19 从 debug 抬到 info：置信度不够被整条丢掉是**最常见**的结局，而
+    // daemon 默认只记 error——1834 次调用静默失败，用户完全看不见发生了什么。
+    tracing::info!(
         target: "miyu::qq",
         "\n{readable}"
     );

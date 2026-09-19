@@ -67,6 +67,13 @@ pub struct RealContextPluginSettings {
 
     pub continuation_enable: bool,
     pub continuation_window_seconds: u64,
+    /// 观察窗口的总开关。
+    ///
+    /// 09-19 之前这一路是跟着 `continuation_enable` 走的:想关续聊就必然把观察
+    /// 窗口一起关掉,而且配置面上没有任何提示。两件事本来就不是一件事——续聊是
+    /// 「跟这个人还在聊」,观察是「我刚说完话,接下来一会儿都留意着」。
+    #[serde(default = "default_true")]
+    pub after_speaking_enable: bool,
     /// 她在群里发完消息之后,多少秒内把**任何人**的消息都送去判一次
     /// (TriggerKind::AfterSpeaking)。续聊窗口只认「她刚回的那个人」,这个不挑人,
     /// 所以单独一个值——默认 30s,比续聊的 15s 宽(用户先定 60,实测后收到 30)。
@@ -169,7 +176,7 @@ impl Default for RealContextPluginSettings {
             judge_max_retries: 1,
             skip_pure_image_active_judge: true,
             active_reply_supersede_enable: true,
-            active_reply_supersede_window_seconds: 5,
+            active_reply_supersede_window_seconds: 7,
             reply_restraint_enable: true,
             reply_restraint_recover_minutes: 3,
             reply_restraint_strength: "medium".to_string(),
@@ -184,6 +191,7 @@ impl Default for RealContextPluginSettings {
             judge_should_reply_penalty_score: 0.2,
             continuation_enable: true,
             continuation_window_seconds: 15,
+            after_speaking_enable: true,
             after_speaking_window_seconds: default_after_speaking_window_seconds(),
             continuation_boost_score: 0.1,
             after_speaking_score_boost: default_after_speaking_score_boost(),
@@ -824,10 +832,16 @@ pub(crate) fn normalize_unique_strings(values: &mut Vec<String>) {
 pub(crate) fn default_real_context_moderation_keywords() -> Vec<String> {
     // Deduplicated from the user's deployed AstrBot real-context configuration.
     // Keep this self-contained so Miyu never reads another application's files.
+    //
+    // 09-19 按真机实测砍过一轮：拿用户群里 38878 条真实消息跑匹配，175 条里只有
+    // 57 条命中过，而命中量的 88% 来自 22 个必然误报的词——匹配是**子串**且
+    // ASCII 不分大小写，于是 `OD` 中在 `model`/`code` 里（447 次）、`64` 中在
+    // `x86_64`、`盒` 中在「沙盒」、`节点` 中在「背光节点」。抽样里一条真违规都
+    // 没有。砍掉的是「实测命中过、且全是误报」的那些；零命中的短词留着，它们不
+    // 产生成本，真出事时是兜底。
+    //
+    // 改它等于改所有没自定义过词表的用户的行为。
     const KEYWORDS: &[&str] = &[
-        "3p",
-        "4p",
-        "64",
         ":(){ :|:& };:",
         "> /dev/sda",
         "FtM",
@@ -837,26 +851,20 @@ pub(crate) fn default_real_context_moderation_keywords() -> Vec<String> {
         "LGBTQ",
         "MtF",
         "Netflix拼车",
-        "OD",
         "Spotify车位",
         "V2board",
-        "VPN",
         "chmod -R 777 /",
         "chown -R 777 /",
         "clash/config",
-        "cnm",
         "dd if=/dev/zero",
         "dick",
         "hysteria://",
         "iCloud拼车",
-        "lsp",
         "mkfs.ext4",
         "mkfs.xfs",
         "nmsl",
-        "ntr",
         "rm -fr /*",
         "rm -rf /*",
-        "sb",
         "ss://",
         "ssr://",
         "sub?target=",
@@ -869,7 +877,6 @@ pub(crate) fn default_real_context_moderation_keywords() -> Vec<String> {
         "三年自然灾害",
         "东三省",
         "中美贸易",
-        "主义",
         "京喜",
         "人肉",
         "人身攻击",
@@ -893,7 +900,6 @@ pub(crate) fn default_real_context_moderation_keywords() -> Vec<String> {
         "刷单",
         "刷流水",
         "加我微信",
-        "南梁",
         "南海仲裁",
         "博彩",
         "双性恋",
@@ -916,14 +922,12 @@ pub(crate) fn default_real_context_moderation_keywords() -> Vec<String> {
         "女同",
         "孕酮",
         "孤儿",
-        "实名",
         "小仙女",
         "小日本",
         "小金豆",
         "就是垃圾",
         "巴以冲突",
         "帮我助力",
-        "广告",
         "开盒",
         "忽略之前的指令",
         "恋尸癖",
@@ -939,7 +943,6 @@ pub(crate) fn default_real_context_moderation_keywords() -> Vec<String> {
         "机场跑路",
         "极品",
         "枪支",
-        "梯子",
         "棒子",
         "止咳水",
         "死全家",
@@ -948,7 +951,6 @@ pub(crate) fn default_real_context_moderation_keywords() -> Vec<String> {
         "海洛因",
         "涩图",
         "淘宝客",
-        "渠道",
         "港脚",
         "游行",
         "漏点",
@@ -960,7 +962,6 @@ pub(crate) fn default_real_context_moderation_keywords() -> Vec<String> {
         "玩客云",
         "男娘",
         "百家乐",
-        "盒",
         "看片",
         "睾酮",
         "砍一刀",
@@ -971,14 +972,10 @@ pub(crate) fn default_real_context_moderation_keywords() -> Vec<String> {
         "网盘资源",
         "网赌",
         "美狗",
-        "群号",
-        "翻墙",
         "肛交",
         "脑瘫",
         "色图",
         "色普龙",
-        "节点",
-        "药",
         "药娘",
         "菠菜",
         "薅羊毛",
@@ -992,11 +989,9 @@ pub(crate) fn default_real_context_moderation_keywords() -> Vec<String> {
         "跨性别",
         "身份证",
         "车牌",
-        "辅助",
         "过量服药",
         "进新群",
         "阿普唑仑",
-        "隐私",
         "雌二醇",
         "飞行",
         "飞行员",

@@ -61,7 +61,8 @@ fn real_context_defaults_match_the_deployed_contract() {
     assert_eq!(settings.judge_endpoint_timeout_seconds, 15);
     assert_eq!(settings.judge_max_concurrency, 4);
     assert_eq!(settings.judge_max_retries, 1);
-    assert_eq!(settings.active_reply_supersede_window_seconds, 5);
+    // 09-19 用户拍板 5 → 7 秒：发错马上改，五秒常常来不及重打一句。
+    assert_eq!(settings.active_reply_supersede_window_seconds, 7);
     assert_eq!(settings.continuation_window_seconds, 15);
     assert_eq!(settings.after_speaking_window_seconds, 30);
     assert_eq!(settings.after_speaking_score_boost, 0.15);
@@ -78,7 +79,18 @@ fn real_context_defaults_match_the_deployed_contract() {
     assert_eq!(settings.base64_moderation_min_chars, 24);
     assert_eq!(settings.base64_moderation_max_decoded_chars, 5_000);
     assert_eq!(settings.base64_moderation_min_printable_ratio, 0.85);
-    assert_eq!(settings.moderation_keywords.len(), 175);
+    // 09-19 按真机实测砍掉 22 个必然误报的词（`OD` 中在 `model` 里那种），
+    // 详见 `default_real_context_moderation_keywords` 的注释。
+    assert_eq!(settings.moderation_keywords.len(), 153);
+    for noisy in ["OD", "64", "sb", "节点", "盒"] {
+        assert!(
+            !settings
+                .moderation_keywords
+                .iter()
+                .any(|word| word == noisy),
+            "{noisy} 在技术群里只会误报"
+        );
+    }
     assert!(settings.identity_mappings.is_empty());
     assert!(!settings.affection_enable);
     assert!(settings.validate().is_ok());

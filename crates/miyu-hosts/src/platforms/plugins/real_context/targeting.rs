@@ -118,36 +118,60 @@ impl TriggerKind {
     }
 }
 
-pub(in crate::platforms::plugins::real_context) fn select_trigger(
-    system_triggered: bool,
-    moderation_candidate: bool,
-    inherited: Option<TriggerKind>,
-    continuation: bool,
-    after_speaking: bool,
-    probabilistic: bool,
-) -> Option<TriggerKind> {
-    if system_triggered {
-        Some(TriggerKind::Direct)
-    } else if moderation_candidate {
-        Some(TriggerKind::Moderation)
-    } else if let Some(origin) = inherited {
-        // 覆盖继承保留原始触发。这个标签是好感度归类(mod.rs 的
-        // direct_interaction)、`<qq-join-in>` 注入与判官加分的判据:一律写成
-        // Supersede 会让概率承诺被顶替后白拿直呼好感、注入哑火(08-29 定位,
-        // 08-31 修)。调用方在原始触发不可考时才传 Supersede 兜底。
-        Some(origin)
-    } else if continuation {
-        Some(TriggerKind::Continuation)
-    } else if after_speaking {
-        Some(TriggerKind::AfterSpeaking)
-    } else if probabilistic {
-        Some(TriggerKind::Probability)
-    } else {
-        None
+/// 这条消息同时满足哪些触发条件。
+///
+/// 09-19 之前只返回一个 `TriggerKind`,于是「窗口叠加」只能表达成抢占:她刚回完
+/// A、A 又说话时,续聊赢、观察窗口那份加分白丢。现在条件是一个集合——**加分按集
+/// 合求和**,而 `primary` 只用于归类(好感度 direct_interaction、`<qq-join-in>`
+/// 注入、日志标题)。加分本身在 `inject.rs` 按条件分别算、由判官相加
+/// (`judge.rs` 的 `final_score += continuation_boost + system_trigger_boost +
+/// after_speaking_score_boost`)——判官一直是求和的,卡住叠加的是这边。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(in crate::platforms::plugins::real_context) struct TriggerConditions {
+    pub(in crate::platforms::plugins::real_context) direct: bool,
+    pub(in crate::platforms::plugins::real_context) continuation: bool,
+    pub(in crate::platforms::plugins::real_context) after_speaking: bool,
+    pub(in crate::platforms::plugins::real_context) probability: bool,
+    /// 继承来的原始触发(覆盖窗口),它自带归类语义,不参与加分求和。
+    pub(in crate::platforms::plugins::real_context) inherited: Option<TriggerKind>,
+    /// 命中违规关键词。**不是触发类型,是一面旗子**:有社交条件时它只让判官认真
+    /// 查一眼违规(判官本来就在查),一个社交条件都没有时才由它把判断拉起来。
+    pub(in crate::platforms::plugins::real_context) moderation: bool,
+}
+
+impl TriggerConditions {
+    /// 归类用的主触发。没有任何条件成立就是 `None`(不判)。
+    pub(in crate::platforms::plugins::real_context) fn primary(self) -> Option<TriggerKind> {
+        if self.direct {
+            return Some(TriggerKind::Direct);
+        }
+        if let Some(origin) = self.inherited {
+            // 覆盖继承保留原始触发。这个标签是好感度归类(mod.rs 的
+            // direct_interaction)、`<qq-join-in>` 注入与判官加分的判据:一律写成
+            // Supersede 会让概率承诺被顶替后白拿直呼好感、注入哑火(08-29 定位,
+            // 08-31 修)。调用方在原始触发不可考时才传 Supersede 兜底。
+            return Some(origin);
+        }
+        if self.continuation {
+            return Some(TriggerKind::Continuation);
+        }
+        if self.after_speaking {
+            return Some(TriggerKind::AfterSpeaking);
+        }
+        if self.probability {
+            return Some(TriggerKind::Probability);
+        }
+        // 社交条件一个都没有:这一次判断只为查违规而存在。
+        self.moderation.then_some(TriggerKind::Moderation)
+    }
+
+    /// 这一次判断只做违规初判(不花社交那套评分,提示词也换一套)。
+    pub(in crate::platforms::plugins::real_context) fn moderation_only(self) -> bool {
+        self.primary() == Some(TriggerKind::Moderation)
     }
 }
 
-pub(in crate::platforms::plugins::real_context) fn select_trigger_for_policy(
+pub(in crate::platforms::plugins::real_context) fn select_conditions(
     active_judgement_allowed: bool,
     system_triggered: bool,
     moderation_candidate: bool,
@@ -155,18 +179,24 @@ pub(in crate::platforms::plugins::real_context) fn select_trigger_for_policy(
     continuation: bool,
     after_speaking: bool,
     probabilistic: bool,
-) -> Option<TriggerKind> {
-    if moderation_candidate && !active_judgement_allowed {
-        Some(TriggerKind::Moderation)
-    } else {
-        select_trigger(
-            system_triggered,
-            moderation_candidate,
-            inherited,
-            continuation,
-            after_speaking,
-            probabilistic,
-        )
+) -> TriggerConditions {
+    // 主动回复整个关掉时,社交那几路一律不成立——但违规候选照样能把判断拉起来,
+    // 安全检查不该受主动回复开关影响。
+    if !active_judgement_allowed {
+        return TriggerConditions {
+            direct: system_triggered,
+            inherited: system_triggered.then_some(()).and(inherited),
+            moderation: moderation_candidate,
+            ..TriggerConditions::default()
+        };
+    }
+    TriggerConditions {
+        direct: system_triggered,
+        continuation,
+        after_speaking,
+        probability: probabilistic,
+        inherited,
+        moderation: moderation_candidate,
     }
 }
 

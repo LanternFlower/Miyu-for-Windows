@@ -125,3 +125,29 @@ fn active_reply_skip_log_keeps_session_sender_and_reason() {
     )
     .starts_with("[Active reply decision skipped]\nConversation: group 20000"));
 }
+
+/// 观察窗口有自己的开关（09-19）。
+///
+/// 以前它跟着 `continuation_enable` 走：想关续聊就必然把「她刚发完言、接下来
+/// 一会儿都留意着」一起关掉，而配置面上没有任何提示。
+#[test]
+fn the_observation_window_has_its_own_switch() {
+    let mut settings = RealContextPluginSettings::default();
+    let now = Instant::now();
+    let mut runtime = RuntimeState::default();
+    let session = runtime.session_mut("group", now);
+    session.last_reply = Some(now);
+    let session = &*session;
+
+    assert!(session.spoke_recently(now, &settings), "默认两个都开着");
+
+    settings.continuation_enable = false;
+    assert!(
+        session.spoke_recently(now, &settings),
+        "关掉续聊不该把观察窗口一起关掉"
+    );
+
+    settings.continuation_enable = true;
+    settings.after_speaking_enable = false;
+    assert!(!session.spoke_recently(now, &settings), "自己的开关要管用");
+}

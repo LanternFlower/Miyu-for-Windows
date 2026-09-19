@@ -245,12 +245,11 @@ impl RealContextPlugin {
             );
         let probabilistic = probabilistic
             && rand::random::<f64>() < settings.active_judge_probability.clamp(0.0, 1.0);
-        // When a direct platform trigger is intentionally not being taken over,
-        // a moderation candidate must use the moderation-only judge mode. It
-        // still restores the original core trigger below, but the safety
-        // check should not spend a full social-reply score or accidentally
-        // turn a keyword hit into an unsolicited response.
-        let trigger = select_trigger_for_policy(
+        // 违规候选**不再抢占社交触发**(09-19):它只是一面旗子。有社交条件时
+        // trigger 照旧,判官本来就在查违规;一个社交条件都没有时才由它把判断拉
+        // 起来,走 moderation_only(不花社交那套评分,也不会把关键词命中变成一次
+        // 不请自来的回复)。
+        let conditions = select_conditions(
             active_judgement_allowed,
             system_triggered,
             moderation_candidate,
@@ -262,7 +261,7 @@ impl RealContextPlugin {
             probabilistic,
         );
         decision.should_reply = false;
-        let Some(trigger) = trigger else {
+        let Some(trigger) = conditions.primary() else {
             return Ok(());
         };
         inherited_targets.push(active_reply_target(event));
@@ -395,24 +394,32 @@ impl RealContextPlugin {
             &event.message_id,
             settings.judge_context_window,
         );
-        // 她刚发过言,接下来每条非纯多媒体消息都会来一次判断,那是在模拟
-        // 「人发完言会看到后续」,所以这一路给判断分数加分,让她更容易接上话
-        // (用户 09-15:原来是抬门槛)。
-        let after_speaking_score_boost = if trigger == TriggerKind::AfterSpeaking {
-            settings.after_speaking_score_boost
-        } else {
-            0.0
-        };
+        // 加分按**成立的条件求和**,不按主触发一档定死(09-19 用户拍板,不封顶):
+        // 她刚发完言(观察窗口)时有人 @ 她,两份加分都该拿到——回复意愿本来就该
+        // 更高,而冷静机制在另一头压着。
+        //
+        // 她刚发过言这一路给加分,是在模拟「人发完言会看到后续」,让她更容易接上
+        // 话(用户 09-15:原来是抬门槛)。
+        let after_speaking_score_boost = conditions
+            .after_speaking
+            .then_some(settings.after_speaking_score_boost)
+            .unwrap_or_default();
         let (heat_penalty, heat_threshold_boost) = restraint_adjustments(
             settings.reply_restraint_enable,
             &settings.reply_restraint_strength,
             heat,
         );
-        let continuation_boost = matches!(trigger, TriggerKind::Continuation) as u8 as f64
-            * settings.continuation_boost_score;
-        let system_boost = matches!(trigger, TriggerKind::Direct | TriggerKind::Supersede) as u8
-            as f64
-            * settings.takeover_direct_trigger_boost_score;
+        let continuation_boost = conditions
+            .continuation
+            .then_some(settings.continuation_boost_score)
+            .unwrap_or_default();
+        let system_boost = (conditions.direct
+            || matches!(
+                conditions.inherited,
+                Some(TriggerKind::Direct | TriggerKind::Supersede)
+            ))
+        .then_some(settings.takeover_direct_trigger_boost_score)
+        .unwrap_or_default();
         let short_boost = short_message_boost(
             event,
             continuation_boost,
@@ -466,8 +473,7 @@ impl RealContextPlugin {
                     decoded_base64: &decoded_base64,
                     continuation_boost,
                     system_trigger_boost: system_boost,
-                    moderation_only: trigger == TriggerKind::Moderation,
-                    force_moderation_check: moderation_candidate,
+                    moderation_only: conditions.moderation_only(),
                     reply_heat: heat,
                     heat_penalty,
                     heat_threshold_boost,
