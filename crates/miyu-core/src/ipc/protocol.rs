@@ -159,10 +159,16 @@ pub enum Command {
     GetStatus,
     /// Lightweight poll for the REPL background-command status strip.
     JobsOverview,
-    /// Attach to a running daemon-initiated turn (background-command wake)
-    /// and stream its event frames until it finishes.
+    /// Attach to a running turn and stream its event frames until it finishes.
+    ///
+    /// `from_start` = 把这一轮**从头**补一遍再接实时。同一个会话开第二个 TUI
+    /// 时要的就是它：前面已经流过去的那半截得补上，不然挂上来只看得到后半截
+    /// （用户 09-19：「我期望两个会话的内容是相同的」）。后台唤醒轮那条路不
+    /// 传它，语义不变。
     FollowRun {
         run_id: String,
+        #[serde(default)]
+        from_start: bool,
     },
     /// Stop all running background commands of a session (REPL exit).
     StopSessionJobs {

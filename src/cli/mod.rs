@@ -778,11 +778,15 @@ enum LiveReplOutcome {
         /// 进上键历史的样子(占位符+载荷),不是展开后的全文。
         ReplHistoryEntry,
     ),
-    /// A daemon-initiated wake turn is running in this session; the caller
-    /// should attach and render it live.
+    /// 这个会话里有一轮**不是我起的**在跑，调用方该挂上去实时渲染。
+    ///
+    /// 两种来源：daemon 自己起的唤醒轮（后台任务跑完、目标续轮），以及同一个
+    /// 会话里**另一个客户端**起的轮（第二个 TUI、另一个终端的 shellhook）。
+    /// 后者要 `from_start`：它挂上来时那一轮可能已经流了一半。
     FollowWake {
         run_id: String,
         label: String,
+        from_start: bool,
     },
     /// Ctrl+C on an empty line while this session has background work: stop
     /// the work and stay in the REPL. Pressing it again then exits.

@@ -138,9 +138,9 @@ async fn dispatch_ipc_connection(
             .await?;
         }
         IpcCommand::JobsOverview => {
-            let wake_runs = {
+            let (wake_runs, peer_runs) = {
                 let manager = state.manager.lock().unwrap();
-                manager
+                let wake = manager
                     .active_runs
                     .iter()
                     .filter(|(_, info)| info.job_wake)
@@ -151,7 +151,23 @@ async fn dispatch_ipc_connection(
                             "label": info.job_wake_label,
                         })
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+                // 人起的轮也报出来:同一个会话的**另一个** TUI 靠它发现
+                // 「这儿有一轮在跑」并挂上去(用户 09-19)。唤醒轮不重复列,
+                // 它们走上面那条老路;`turn_id` 还没定的(刚登记、回合没开
+                // 始)先不报,挂上去也没内容。
+                let peers = manager
+                    .active_runs
+                    .iter()
+                    .filter(|(_, info)| !info.job_wake && info.turn_id.is_some())
+                    .map(|(run_id, info)| {
+                        json!({
+                            "run_id": run_id,
+                            "session_id": &*info.session_id,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                (wake, peers)
             };
             let mut jobs = tools::jobs::overview();
             annotate_job_roots(&state, &mut jobs);
@@ -159,13 +175,17 @@ async fn dispatch_ipc_connection(
                 &mut stream,
                 &IpcFrame::AdminResult {
                     state: session_state(&state.manager, &state.state_store)?,
-                    data: json!({ "jobs": jobs, "wake_runs": wake_runs }),
+                    data: json!({
+                        "jobs": jobs,
+                        "wake_runs": wake_runs,
+                        "peer_runs": peer_runs,
+                    }),
                 },
             )
             .await?;
         }
-        IpcCommand::FollowRun { run_id } => {
-            follow_run(&state, &mut stream, run_id).await?;
+        IpcCommand::FollowRun { run_id, from_start } => {
+            follow_run(&state, &mut stream, run_id, from_start).await?;
         }
         IpcCommand::VoiceAttach => {
             voice_bridge::handle_voice_attach(&state, &mut stream).await?;
@@ -950,6 +970,80 @@ pub(in crate::web) async fn handle_ipc_turn(
     // 会话模式创建时定死:以会话记录为准强制,客户端传参只是遗留字段。
     let mode = turn_mode_for_session(&state.state_store, &session_id, mode);
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+    // 这个会话已经有一轮在跑(另一个 TUI、另一个终端的 shellhook)?那就把这条
+    // 消息**排进那一轮**,别再并行起一轮。
+    //
+    // 并行不会弄坏数据(两轮各自看不见对方、完成后按完成顺序 append),但对人
+    // 来说是两条互不知情的对话挤在一个会话里:模型答 B 的时候不知道 A 刚问过
+    // 什么。排队才是人想要的语义——AI 在工具边界取走这条,接着说(用户 09-19)。
+    //
+    // 只排进**同一身份**的轮:REPL 起的是 Owner,网页是 External,跨端那道墙
+    // 照旧(见 web::turns::queue_into_running_session)。
+    let queue_target = {
+        let manager = state.manager.lock().unwrap();
+        let matches = manager.session_runs_match_audience(&session_id, PromptAudience::Owner);
+        let target = if matches {
+            unique_run_target(&manager, &session_id, PromptAudience::Owner)
+        } else {
+            None
+        };
+        tracing::debug!(
+            session = %session_id,
+            owner_runs = matches,
+            active = manager.active_runs.len(),
+            same_session = manager
+                .active_runs
+                .values()
+                .filter(|info| &*info.session_id == &*session_id)
+                .count(),
+            queued_into = ?target.as_ref().map(|(run, _)| run.clone()),
+            "ipc turn: queue-into-running check"
+        );
+        target
+    };
+    if let Some((target_run, target_turn)) = queue_target {
+        match enqueue_turn_update(
+            &state,
+            TurnUpdateRequest {
+                run_id: target_run.clone(),
+                turn_id: target_turn.clone(),
+                session_id: Some(session_id.clone().into()),
+                audience: PromptAudience::Owner,
+                content: content.clone(),
+                display_content: content.clone(),
+                attachments: Vec::new(),
+                uploaded_attachment_ids: Vec::new(),
+                mode: TurnUpdateMode::Followup,
+            },
+        ) {
+            Ok(receipt) => {
+                ipc::send(
+                    stream,
+                    &IpcFrame::TurnUpdateAccepted {
+                        run_id: target_run.clone(),
+                        turn_id: target_turn.clone(),
+                        prompt_id: receipt.prompt.prompt_id,
+                        seq: receipt.prompt.seq,
+                        submitted_at: receipt.prompt.submitted_at,
+                    },
+                )
+                .await?;
+                // 排完接着把那一轮的事件推给它:发问的人得看得到回答。从**当下**
+                // 接(不补前面那半截)——那半截是另一个终端的对话,倒进这个终端
+                // 只会让人莫名其妙。
+                return follow_run(&state, stream, target_run, false).await;
+            }
+            Err(error) => {
+                tracing::debug!(
+                    error = %error,
+                    "could not queue into the running turn; starting a new one"
+                );
+            }
+        }
+    }
+    // 订阅起点要在**登记这一轮之前**取:别的客户端挂上来时要从这儿把整轮补
+    // 一遍,晚一步取就会漏掉开头那几帧(`job_wake` 那条路同样的做法)。
+    let first_event_id = state.events.latest_id();
     let busy = {
         let mut manager = state.manager.lock().unwrap();
         if manager.admin_blocks_session(&session_id) {
@@ -970,6 +1064,7 @@ pub(in crate::web) async fn handle_ipc_turn(
                     job_wake: false,
                     turn_origin: miyu_base::workspace::TurnOrigin::Human,
                     job_wake_label: None,
+                    first_event_id: Some(first_event_id),
                 },
             );
             false
@@ -986,7 +1081,7 @@ pub(in crate::web) async fn handle_ipc_turn(
 
     // REPL 常驻连接不带 origin_tty;带的只有阅后即焚的单次/shellhook 触发。
     let one_shot = origin_tty.is_some();
-    let after = state.events.latest_id();
+    let after = first_event_id;
     let mut subscription = state.events.subscribe_after(after);
     if state
         .actor_tx

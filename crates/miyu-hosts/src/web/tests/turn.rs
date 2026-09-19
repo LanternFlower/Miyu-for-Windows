@@ -114,6 +114,7 @@ fn state_with_running_run(
             job_wake: true,
             turn_origin,
             job_wake_label: None,
+            first_event_id: None,
         },
     );
     (store, cancel_rx)
@@ -218,6 +219,7 @@ fn turn_updates_are_routed_to_the_exact_run_and_turn() {
                 job_wake: false,
                 turn_origin: miyu_base::workspace::TurnOrigin::Human,
                 job_wake_label: None,
+                first_event_id: None,
             },
         );
     }

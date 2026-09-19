@@ -767,6 +767,7 @@ async fn config_reload_succeeds_and_keeps_turns_running() {
             job_wake: false,
             turn_origin: miyu_base::workspace::TurnOrigin::Human,
             job_wake_label: None,
+            first_event_id: None,
         },
     );
 
@@ -912,6 +913,7 @@ async fn the_bridge_hands_out_artifact_tools_only_to_webui_turns() {
                         operation: RunOperation::Create,
                         job_wake: false,
                         job_wake_label: None,
+                        first_event_id: None,
                         turn_origin: miyu_base::workspace::TurnOrigin::Human,
                     },
                 );

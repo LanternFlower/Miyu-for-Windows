@@ -123,7 +123,20 @@ pub(in crate::cli) fn read_live_repl_input(
             }
             if let Some(session) = repl_session {
                 if let Some((run_id, label)) = jobs_feed.claim_wake_run(session) {
-                    return Ok(LiveReplOutcome::FollowWake { run_id, label });
+                    return Ok(LiveReplOutcome::FollowWake {
+                        run_id,
+                        label,
+                        from_start: false,
+                    });
+                }
+                // 同一个会话里**别人**起的轮（第二个 TUI、另一个终端的
+                // shellhook）：挂上去，从这一轮开头补一遍。
+                if let Some((run_id, label)) = jobs_feed.claim_peer_run(session) {
+                    return Ok(LiveReplOutcome::FollowWake {
+                        run_id,
+                        label,
+                        from_start: true,
+                    });
                 }
             }
             // 输入框右上角那行 `/goal …`：目标跑着的时候屏幕上只有正文，

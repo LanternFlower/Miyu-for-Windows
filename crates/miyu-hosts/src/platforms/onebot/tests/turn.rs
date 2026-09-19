@@ -77,6 +77,7 @@ async fn text_tool_followup_is_observed_and_queued_for_the_running_turn() {
             job_wake: false,
             turn_origin: miyu_base::workspace::TurnOrigin::Human,
             job_wake_label: None,
+            first_event_id: None,
         },
     );
 
@@ -350,6 +351,7 @@ async fn stop_command_cancels_the_session_and_preserves_completed_history() {
             job_wake: false,
             turn_origin: miyu_base::workspace::TurnOrigin::Human,
             job_wake_label: None,
+            first_event_id: None,
         },
     );
 

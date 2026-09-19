@@ -323,6 +323,7 @@ pub(in crate::web) async fn maybe_continue_goal(state: DaemonState, session_id: 
                 job_wake: true,
                 turn_origin: origin.clone(),
                 job_wake_label: Some(goal::GOAL_ROUND_LABEL.to_string()),
+                first_event_id: None,
             },
         );
     }

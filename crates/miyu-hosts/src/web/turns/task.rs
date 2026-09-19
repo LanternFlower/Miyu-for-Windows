@@ -578,12 +578,17 @@ async fn run_turn_task_inner(
     // for another session must not overwrite it.
     let updates_context = || *base_store.session_id() == *session_id;
     let agent = &mut agent;
+    // 起新轮时也把用户那句话带进 `turn.started`：**别的客户端**挂到这一轮上
+    // 时要靠它画出「用户说了什么」——它自己没提交过，没有别的来源（用户
+    // 09-19：两个 TUI 该看到一样的内容）。redo 走原来那条，取被重发的那条。
     let (redo_input_id, redo_display_content) = match &input {
         TurnTaskInput::Redo { candidate, prompts } => (
             Some(candidate.input_id.clone()),
             prompts.last().map(|prompt| prompt.display_content.clone()),
         ),
-        TurnTaskInput::Create { .. } => (None, None),
+        TurnTaskInput::Create {
+            display_content, ..
+        } => (None, Some(display_content.clone())),
     };
 
     let mapper = Arc::new(Mutex::new(RunEventMapper::new(

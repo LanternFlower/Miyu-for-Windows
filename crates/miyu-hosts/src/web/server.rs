@@ -243,16 +243,24 @@ pub(in crate::web) async fn follow_run(
     state: &DaemonState,
     stream: &mut tokio::net::UnixStream,
     run_id: String,
+    from_start: bool,
 ) -> Result<()> {
-    let mut subscription = state.events.subscribe_after(state.events.latest_id());
+    // 订阅起点要在**查这一轮之前**定:先查再订阅的话,两步之间发生的事件谁也
+    // 收不到。`from_start` 取这一轮登记时记下的序号,把整轮补一遍。
     let run_state = {
         let manager = state.manager.lock().unwrap();
         manager
             .active_runs
             .get(&run_id)
-            .map(|info| info.turn_id.clone())
+            .map(|info| (info.turn_id.clone(), info.first_event_id))
     };
-    let Some(turn_id) = run_state else {
+    let after = match (from_start, run_state.as_ref().and_then(|(_, id)| *id)) {
+        (true, Some(first)) => first,
+        // 不知道从哪儿补(老路径起的轮)就退回只接实时:少看半截好过报错。
+        _ => state.events.latest_id(),
+    };
+    let mut subscription = state.events.subscribe_after(after);
+    let Some((turn_id, _)) = run_state else {
         ipc::send(stream, &IpcFrame::error("run is not active")).await?;
         return Ok(());
     };

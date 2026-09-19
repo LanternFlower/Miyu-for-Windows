@@ -18,6 +18,9 @@ pub(in crate::cli) async fn follow_wake_run(
     live: &mut LiveReplTail,
     run_id: &str,
     label: &str,
+    // 把这一轮**从头**补一遍吗。后台唤醒轮是刚刚才起的，接实时就够；
+    // 同一个会话的第二个 TUI 挂到一轮**已经在跑**的轮上时要补。
+    from_start: bool,
     // 附着期间静默执行的 `/goal` 要落在**这个 REPL 的会话**上，不能拿
     // daemon 的当前会话指针顶替——普通模式的 REPL 早就有自己的会话了。
     session_id: &str,
@@ -30,6 +33,7 @@ pub(in crate::cli) async fn follow_wake_run(
         &mut stream,
         &IpcRequest::new(IpcCommand::FollowRun {
             run_id: run_id.to_string(),
+            from_start,
         }),
     )
     .await?;
@@ -61,7 +65,11 @@ pub(in crate::cli) async fn follow_wake_run(
     {
         // 目标续轮不打表头：一个长任务会连着跑几十轮，每轮顶一行「第 N 轮」
         // 只会把真正的输出挤散。轮次已经在 footer 上（那是它常驻的位置）。
-        let header = if label == miyu_engine::tools::goal::GOAL_ROUND_LABEL {
+        //
+        // 挂到**别人起的轮**上也不打：那不是后台任务完成，是这个会话里另一个
+        // 端正在说话。它自己的用户消息会从 `turn.started` 画出来，那才是该有
+        // 的抬头（用户 09-19 实测：第二个 TUI 顶上写着「后台任务完成」）。
+        let header = if from_start || label == miyu_engine::tools::goal::GOAL_ROUND_LABEL {
             String::new()
         } else if label.is_empty() {
             miyu_base::i18n::text("⚙ background task finished", "⚙ 后台任务完成").to_string()
@@ -93,8 +101,20 @@ pub(in crate::cli) async fn follow_wake_run(
             live.resume_at(output_cursor)?;
         }
     }
-    renderer.start_waiting()?;
-    live.apply_renderer_frame(&mut renderer)?;
+    // 挂到**已经在跑**的那一轮上时先别起转轮。
+    //
+    // 起了的话，它会先画在活动区里，紧接着回放的 `turn.started` 才把用户那句
+    // 话写进正文——转轮就被孤零零地留在了用户消息上面（用户 09-19 截图，稳定
+    // 复现）。后台唤醒轮那条路没这毛病：它的表头是在起转轮**之前**打的。
+    //
+    // 回放一来事件就接上了，转轮由渲染器自己按事件带起来；万一回放是空的
+    // （那一轮刚好没赶上），下面收到第一条事件后补起一次，不会一直没有。
+    let mut waiting_started = false;
+    if !from_start {
+        renderer.start_waiting()?;
+        live.apply_renderer_frame(&mut renderer)?;
+        waiting_started = true;
+    }
     let mut raw = LiveRawMode::start()?;
 
     let mut spinner_tick = tokio::time::interval(Duration::from_millis(33));
@@ -298,6 +318,35 @@ pub(in crate::cli) async fn follow_wake_run(
         match kind.as_str() {
             "turn.started" => {
                 turn_id = Some(ipc_text(&data, "turn_id").to_string());
+                // 挂到别人起的轮上时，这是**唯一**能知道「用户说了什么」的
+                // 地方：这个 REPL 自己没提交过，画不出那条用户消息（用户
+                // 09-19：两个 TUI 该看到一样的内容）。自己起的轮不走这儿，
+                // 提交时早就画过了。
+                if from_start {
+                    let said = ipc_text(&data, "display_content").trim_end().to_string();
+                    if !said.trim().is_empty() {
+                        let cols = crate::cli::terminal_cols();
+                        let mut echo = submitted_echo_lines(live.mode(), &said, cols).join("\r\n");
+                        echo.push_str("\r\n\r\n");
+                        if crate::cli::in_fullscreen() {
+                            live.apply_output_frame(echo.as_bytes())?;
+                        } else {
+                            live.suspend()?;
+                            let mut stdout = io::stdout();
+                            queue!(stdout, Print(&echo))?;
+                            stdout.flush()?;
+                            live.output_cursor = cursor_position_or(live.output_cursor);
+                            let output_cursor = live.output_cursor;
+                            live.resume_at(output_cursor)?;
+                        }
+                    }
+                    // 用户那句话落进正文了，这时候起转轮才落在它**下面**。
+                    if !waiting_started {
+                        renderer.start_waiting()?;
+                        live.apply_renderer_frame(&mut renderer)?;
+                        waiting_started = true;
+                    }
+                }
             }
             "assistant.delta" => handle_live_agent_event(
                 live,
@@ -435,6 +484,32 @@ pub(in crate::cli) async fn follow_wake_run(
                 live.output_cursor = cursor_position_or(live.output_cursor);
                 live.resume_at(live.output_cursor)?;
                 live.apply_renderer_frame(&mut renderer)?;
+            }
+            // 别的端往这一轮排了一条消息：画进自己的排队列表，两边看到的队列
+            // 才是同一份（用户 09-19：「TUIA 发消息进入排队，TUIB 也能看到」）。
+            // 自己排的那条提交时已经画过了，按 prompt_id 去重。
+            "queue.added" => {
+                let prompt = data.get("prompt").cloned().unwrap_or_default();
+                let prompt_id = ipc_text(&prompt, "id").to_string();
+                let already = live
+                    .queued
+                    .iter()
+                    .any(|queued| queued.prompt_id == prompt_id);
+                if !prompt_id.is_empty() && !already {
+                    let content = ipc_text(&prompt, "content").to_string();
+                    live.enqueue(miyu_core::state::QueuedPrompt {
+                        prompt_id,
+                        seq: data
+                            .get("seq")
+                            .and_then(serde_json::Value::as_i64)
+                            .unwrap_or(0),
+                        content: content.clone(),
+                        display_content: content,
+                        attachments: Vec::new(),
+                        uploaded_attachments: Vec::new(),
+                        submitted_at: ipc_text(&prompt, "submitted_at").to_string(),
+                    })?;
+                }
             }
             "queue.consumed" => {
                 let prompt_ids: Vec<String> = data

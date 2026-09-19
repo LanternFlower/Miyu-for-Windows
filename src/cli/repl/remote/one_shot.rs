@@ -69,11 +69,35 @@ pub(in crate::cli) async fn try_run_remote_chat(
     let Some(first) = ipc::receive::<IpcFrame>(&mut stream).await? else {
         bail!("Miyu core closed the connection before accepting the turn");
     };
+    // `TurnUpdateAccepted` = 这个会话已经有一轮在跑（另一个 TUI、另一个终端），
+    // daemon 把这条消息**排进了那一轮**而不是并行起一轮。接下来推的是那一轮的
+    // 事件，照常渲染；人得知道自己是在排队，不然会以为消息发丢了。
+    let mut queued_into_running = false;
     let run_id = match first {
         IpcFrame::Accepted { run_id, .. } => run_id,
+        IpcFrame::TurnUpdateAccepted { run_id, .. } => {
+            queued_into_running = true;
+            run_id
+        }
         IpcFrame::Error { message, .. } => bail!("{message}"),
         _ => bail!("Miyu core returned an invalid response"),
     };
+    if queued_into_running && live.is_none() {
+        // 一次性/shellhook：没有活动区可以挂排队条，直说一行。REPL 那边
+        // `queue.added` 会把它画进排队列表里，不必再打字。
+        println!(
+            "\x1b[2m{}\x1b[0m",
+            t(
+                "queued into the conversation already in progress",
+                "已排进正在进行的对话"
+            )
+        );
+    }
+    // 记下「这一轮是我起的」。回合结束到 daemon 把它从活跃表里摘掉之间有个
+    // 窗口，不记的话空闲循环会把自己刚跑完的那一轮当成「别人的」再画一遍。
+    if let Some(jobs_feed) = jobs_feed {
+        jobs_feed.mark_own_run(&run_id);
+    }
     let mut turn_id: Option<String> = None;
 
     let config = AppConfig::load_or_default(paths)?;
@@ -728,6 +752,35 @@ pub(in crate::cli) async fn try_run_remote_chat(
                     live.external_output_active = false;
                     live.output_cursor = cursor_position_or(live.output_cursor);
                     live.resume_at(live.output_cursor)?;
+                }
+            }
+            // 别的端往这一轮排了一条消息：画进自己的排队列表，两边看到的队列
+            // 才是同一份（用户 09-19：「TUIA 发消息进入排队，TUIB 也能看到」）。
+            // 自己排的那条提交时已经画过了，按 prompt_id 去重。
+            "queue.added" => {
+                let Some(live) = live.as_deref_mut() else {
+                    continue;
+                };
+                let prompt = data.get("prompt").cloned().unwrap_or_default();
+                let prompt_id = ipc_text(&prompt, "id").to_string();
+                let already = live
+                    .queued
+                    .iter()
+                    .any(|queued| queued.prompt_id == prompt_id);
+                if !prompt_id.is_empty() && !already {
+                    let content = ipc_text(&prompt, "content").to_string();
+                    live.enqueue(miyu_core::state::QueuedPrompt {
+                        prompt_id,
+                        seq: data
+                            .get("seq")
+                            .and_then(serde_json::Value::as_i64)
+                            .unwrap_or(0),
+                        content: content.clone(),
+                        display_content: content,
+                        attachments: Vec::new(),
+                        uploaded_attachments: Vec::new(),
+                        submitted_at: ipc_text(&prompt, "submitted_at").to_string(),
+                    })?;
                 }
             }
             "queue.consumed" => {

@@ -272,12 +272,17 @@ impl RemoteRepl {
                     )?;
                     continue;
                 }
-                LiveReplOutcome::FollowWake { run_id, label } => {
+                LiveReplOutcome::FollowWake {
+                    run_id,
+                    label,
+                    from_start,
+                } => {
                     if let Err(error) = follow_wake_run(
                         &self.paths,
                         &mut self.live_repl,
                         &run_id,
                         &label,
+                        from_start,
                         &self.active_session_id,
                         &self.jobs_feed,
                         &self.jobs_shared,

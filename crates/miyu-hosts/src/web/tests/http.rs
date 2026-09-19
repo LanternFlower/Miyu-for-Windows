@@ -203,6 +203,7 @@ async fn platform_session_reset_is_serialized_per_target_session() {
             job_wake: false,
             turn_origin: miyu_base::workspace::TurnOrigin::Human,
             job_wake_label: None,
+            first_event_id: None,
         },
     );
     assert!(
@@ -235,6 +236,7 @@ async fn platform_session_reset_is_serialized_per_target_session() {
             job_wake: false,
             turn_origin: miyu_base::workspace::TurnOrigin::Human,
             job_wake_label: None,
+            first_event_id: None,
         },
     );
     assert!(matches!(

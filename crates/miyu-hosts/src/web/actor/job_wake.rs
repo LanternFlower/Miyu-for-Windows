@@ -544,6 +544,7 @@ pub(in crate::web) fn wake_local_session_for_job(
                 operation: RunOperation::Create,
                 job_wake: true,
                 turn_origin: miyu_base::workspace::TurnOrigin::JobWake,
+                first_event_id: None,
                 job_wake_label: Some(format!(
                     "{}完成 {} · {}",
                     if completion.is_subagent {

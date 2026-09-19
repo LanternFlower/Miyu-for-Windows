@@ -815,6 +815,7 @@ async fn cancelling_an_autonomous_round_disarms_the_goal() {
                 round: 1,
             },
             job_wake_label: None,
+            first_event_id: None,
         },
     );
 

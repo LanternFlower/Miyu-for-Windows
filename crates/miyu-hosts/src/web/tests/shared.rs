@@ -43,6 +43,7 @@ pub(super) fn manager_with_run(
                 job_wake: false,
                 turn_origin: miyu_base::workspace::TurnOrigin::Human,
                 job_wake_label: None,
+                first_event_id: None,
             },
         )]),
         admin_busy: false,

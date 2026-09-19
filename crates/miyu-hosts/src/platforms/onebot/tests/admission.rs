@@ -613,6 +613,7 @@ async fn tool_followup_reservation_requires_the_same_conversation_and_sender() {
             job_wake: false,
             turn_origin: miyu_base::workspace::TurnOrigin::Human,
             job_wake_label: None,
+            first_event_id: None,
         },
     );
 
@@ -644,6 +645,7 @@ async fn tool_followup_reservation_requires_the_same_conversation_and_sender() {
             job_wake: false,
             turn_origin: miyu_base::workspace::TurnOrigin::Human,
             job_wake_label: None,
+            first_event_id: None,
         },
     );
     assert_eq!(

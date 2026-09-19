@@ -356,6 +356,7 @@ async fn run_child_turn(
                 job_wake: false,
                 turn_origin: origin.clone(),
                 job_wake_label: None,
+                first_event_id: None,
             },
         );
     }

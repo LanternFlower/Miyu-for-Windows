@@ -33,6 +33,12 @@ pub(crate) struct RunInfo {
     pub(crate) turn_origin: miyu_base::workspace::TurnOrigin,
     /// Display label for wake turns: "<job_id> · <title>".
     pub(crate) job_wake_label: Option<String>,
+    /// 起这一轮那一刻的事件序号。**别的客户端要把这一轮从头看一遍**就从这儿
+    /// 订阅（`FollowRun { from_start: true }`）——同一个会话开第二个 TUI 时，
+    /// 它得补上已经流过去的那半截，而不是只接后半截。
+    ///
+    /// `None` = 不知道从哪儿补（老路径、测试夹具），跟随方退回「只接实时」。
+    pub(crate) first_event_id: Option<u64>,
 }
 
 #[derive(Clone, Debug)]

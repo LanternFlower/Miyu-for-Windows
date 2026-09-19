@@ -162,6 +162,11 @@ pub(in crate::cli) struct SharedJobsFeed {
     pub(in crate::cli) goal: std::sync::Mutex<Option<miyu_core::ipc::GoalHint>>,
     /// Active daemon-initiated wake runs: (run_id, session_id, label).
     pub(in crate::cli) wake_runs: std::sync::Mutex<Vec<(String, String, String)>>,
+    /// 人起的活跃轮 `(run_id, session_id)`：同一个会话的**别的**客户端起的。
+    pub(in crate::cli) peer_runs: std::sync::Mutex<Vec<(String, String)>>,
+    /// **我自己**起的轮。回合刚结束到 daemon 把它从活跃表里摘掉之间有个窗口，
+    /// 不记下来的话这个 REPL 会把自己刚跑完的那一轮当成「别人的」再画一遍。
+    pub(in crate::cli) own_runs: std::sync::Mutex<std::collections::HashSet<String>>,
     /// Wake runs already attached to (never re-follow), and turn ids that
     /// were rendered live (their DB report must not print again).
     pub(in crate::cli) followed_runs: std::sync::Mutex<std::collections::HashSet<String>>,
@@ -277,6 +282,42 @@ impl JobsFeed {
         }
     }
 
+    /// 记下「这一轮是我自己起的」，别把它当成别人的再画一遍。
+    pub(in crate::cli) fn mark_own_run(&self, run_id: &str) {
+        let JobsFeed::Shared(shared) = self else {
+            return;
+        };
+        let mut own = shared.own_runs.lock().unwrap();
+        if own.len() >= JOBS_FEED_MARK_LIMIT {
+            own.clear();
+        }
+        own.insert(run_id.to_string());
+    }
+
+    /// `session` 上**别人**起的、还没挂过的那一轮；认领一次就记下，免得重复挂。
+    ///
+    /// 空闲循环里才会走到这儿，所以「我自己正在跑的轮」不会出现在这里；真正要
+    /// 防的是刚跑完那一瞬间（daemon 还没把它从活跃表摘掉），靠 `own_runs`。
+    pub(in crate::cli) fn claim_peer_run(&self, session: &str) -> Option<(String, String)> {
+        let JobsFeed::Shared(shared) = self else {
+            return None;
+        };
+        let peer_runs = shared.peer_runs.lock().unwrap();
+        let own = shared.own_runs.lock().unwrap();
+        let mut followed = shared.followed_runs.lock().unwrap();
+        for (run_id, run_session) in peer_runs.iter() {
+            if run_session != session || own.contains(run_id) || followed.contains(run_id) {
+                continue;
+            }
+            if followed.len() >= JOBS_FEED_MARK_LIMIT {
+                followed.retain(|id| peer_runs.iter().any(|(r, _)| r == id));
+            }
+            followed.insert(run_id.clone());
+            return Some((run_id.clone(), String::new()));
+        }
+        None
+    }
+
     /// Next wake run in `session` that has not been followed yet; marks it
     /// followed so the caller attaches exactly once.
     pub(in crate::cli) fn claim_wake_run(&self, session: &str) -> Option<(String, String)> {
@@ -322,14 +363,14 @@ pub(in crate::cli) fn spawn_jobs_poll_thread(paths: MiyuPaths) -> std::sync::Arc
             if store.is_none() {
                 store = StateStore::new(&paths).ok();
             }
-            let (jobs, session_id, wake_runs) = runtime
+            let (jobs, session_id, wake_runs, peer_runs) = runtime
                 .block_on(async {
                     tokio::time::timeout(
                         std::time::Duration::from_millis(500),
                         fetch_jobs_overview(&paths),
                     )
                     .await
-                    .unwrap_or_else(|_| Ok((Vec::new(), None, Vec::new())))
+                    .unwrap_or_else(|_| Ok((Vec::new(), None, Vec::new(), Vec::new())))
                 })
                 .unwrap_or_default();
             let mut jobs = jobs;
@@ -337,6 +378,7 @@ pub(in crate::cli) fn spawn_jobs_poll_thread(paths: MiyuPaths) -> std::sync::Arc
             retain_session_jobs(&mut jobs, repl_session.as_deref());
             *feed.jobs.lock().unwrap() = jobs;
             *feed.wake_runs.lock().unwrap() = wake_runs;
+            *feed.peer_runs.lock().unwrap() = peer_runs;
             // 目标按**这个 REPL 的会话**单独问一次：任务总览回的那份
             // `SessionState` 说的是 daemon 的当前会话，跟 REPL 的会话常常不是
             // 一条（`GetReplSession` 不动当前会话指针）。
@@ -420,10 +462,15 @@ const TRACE_TICK: std::time::Duration = std::time::Duration::from_millis(150);
 /// 一轮总览（1s）里跟几次标记流。
 const TRACE_TICKS_PER_POLL: usize = 7;
 
+/// `(任务总览, daemon 当前会话, 唤醒轮, 人起的活跃轮)`。
+///
+/// 最后一项是 `(run_id, session_id)`：同一个会话的另一个客户端靠它发现
+/// 「这儿有一轮在跑」并挂上去。
 pub(in crate::cli) type JobsOverviewSnapshot = (
     Vec<miyu_engine::tools::jobs::JobOverview>,
     Option<String>,
     Vec<(String, String, String)>,
+    Vec<(String, String)>,
 );
 
 /// 后台子代理的原始进度标记，从绝对序号 `after` 之后取。
@@ -504,6 +551,20 @@ pub(in crate::cli) async fn fetch_jobs_overview(paths: &MiyuPaths) -> Result<Job
     ipc::send(&mut stream, &IpcRequest::new(IpcCommand::JobsOverview)).await?;
     match ipc::receive::<IpcFrame>(&mut stream).await? {
         Some(IpcFrame::AdminResult { state, data }) => {
+            let peer_runs = data
+                .get("peer_runs")
+                .and_then(serde_json::Value::as_array)
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(|row| {
+                            Some((
+                                row.get("run_id")?.as_str()?.to_string(),
+                                row.get("session_id")?.as_str()?.to_string(),
+                            ))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             let wake_runs = data
                 .get("wake_runs")
                 .and_then(serde_json::Value::as_array)
@@ -531,8 +592,9 @@ pub(in crate::cli) async fn fetch_jobs_overview(paths: &MiyuPaths) -> Result<Job
                     .unwrap_or_default(),
                 Some(state.session_id),
                 wake_runs,
+                peer_runs,
             ))
         }
-        _ => Ok((Vec::new(), None, Vec::new())),
+        _ => Ok((Vec::new(), None, Vec::new(), Vec::new())),
     }
 }

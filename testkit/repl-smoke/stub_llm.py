@@ -90,6 +90,27 @@ class Handler(BaseHTTPRequestHandler):
         time.sleep(float(os.environ.get("STUB_RESPONSE_DELAY", "0")))
         length = int(self.headers.get("content-length", "0"))
         body = self.rfile.read(length) if length else b""
+        # 置 STUB_REQUEST_LOG=<文件>:把每次请求的消息列表落一行 JSON。
+        # 「模型到底收到了什么」只有这儿看得见——会话历史是 daemon 现拼的,
+        # 库里那份不等于送进去的那份。
+        log_path = os.environ.get("STUB_REQUEST_LOG")
+        if log_path:
+            try:
+                payload = json.loads(body or b"{}")
+                with open(log_path, "a", encoding="utf-8") as log:
+                    log.write(json.dumps({
+                        "at": time.time(),
+                        "messages": [
+                            {"role": message.get("role"),
+                             # 全长也记下来：只记前缀的话，「完整回答」被我
+                             # 自己截短会看成「模型收到半截」（09-19 踩过）。
+                             "len": len(str(message.get("content"))),
+                             "content": str(message.get("content"))[:4000]}
+                            for message in payload.get("messages", [])
+                        ],
+                    }, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
         # 按请求里已有几条 tool 结果决定这一轮要什么,免得来回死循环。
         done = body.count(b'"role": "tool"') + body.count(b'"role":"tool"')
         # 子代理的子对话是独立的一份消息列表,按任务标记认出来:它只跑一条命令

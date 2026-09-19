@@ -96,6 +96,9 @@ pub(crate) fn enqueue_turn_update(
                 TurnUpdateMode::Followup => "followup",
                 TurnUpdateMode::Supersede => "supersede",
             },
+            // 序号也带上：别的客户端收到这条要把它插进自己那份排队列表里，
+            // 顺序按 seq 排（用户 09-19：「TUIA 发消息进入排队，TUIB 也能看到」）。
+            "seq": prompt.seq,
             "prompt": SafeQueuedPrompt::from(prompt.clone()),
         }),
     );

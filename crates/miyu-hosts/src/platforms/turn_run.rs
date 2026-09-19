@@ -83,6 +83,7 @@ pub(crate) async fn run_platform_turn(
                 operation: crate::runtime::RunOperation::Create,
                 job_wake: false,
                 job_wake_label: None,
+                first_event_id: None,
                 // 平台真实入站消息;wake 合成轮的来源细分待平台 goal 支持时一并做。
                 turn_origin: miyu_base::workspace::TurnOrigin::Human,
             },

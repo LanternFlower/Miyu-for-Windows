@@ -154,6 +154,8 @@ pub(in crate::web) async fn redo_turn(
 
     let run_id = random_id("run", 18);
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+    // 登记之前取:别的端要把这一轮从头补一遍(见 RunInfo::first_event_id)。
+    let first_event_id = state.events.latest_id();
     {
         let mut manager = state.manager.lock().unwrap();
         if manager.admin_blocks_session(&session_id) || manager.session_has_runs(&session_id) {
@@ -180,6 +182,7 @@ pub(in crate::web) async fn redo_turn(
                 job_wake: false,
                 turn_origin: miyu_base::workspace::TurnOrigin::Human,
                 job_wake_label: None,
+                first_event_id: Some(first_event_id),
             },
         );
     }
@@ -351,6 +354,8 @@ pub(in crate::web) async fn create_turn(
     }
     let run_id = random_id("run", 18);
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+    // 登记之前取:别的端要把这一轮从头补一遍(见 RunInfo::first_event_id)。
+    let first_event_id = state.events.latest_id();
     {
         let mut manager = state.manager.lock().unwrap();
         if manager.admin_blocks_session(&session_id) || manager.session_has_runs(&session_id) {
@@ -374,6 +379,7 @@ pub(in crate::web) async fn create_turn(
                 job_wake: false,
                 turn_origin: miyu_base::workspace::TurnOrigin::Human,
                 job_wake_label: None,
+                first_event_id: Some(first_event_id),
             },
         );
     }
