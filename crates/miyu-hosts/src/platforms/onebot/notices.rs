@@ -92,6 +92,7 @@ pub(in crate::platforms::onebot) fn recall_event(
     let self_id = event.get("self_id").and_then(Value::as_i64).unwrap_or(0);
     PlatformInboundEvent {
         kind: PlatformInboundEventKind::MessageRecall,
+        message_seq: None,
         conversation: platform_conversation(target, self_id),
         conversation_display_name: None,
         message_id: event
@@ -156,6 +157,7 @@ pub(in crate::platforms::onebot) fn group_upload_event(
     );
     Some(PlatformInboundEvent {
         kind: PlatformInboundEventKind::GroupFileUpload,
+        message_seq: None,
         conversation: platform_conversation(Target::Group { group_id }, self_id),
         conversation_display_name: None,
         message_id,
@@ -250,6 +252,7 @@ pub(in crate::platforms::onebot) fn group_management_notice(
         conversation: platform_conversation(Target::Group { group_id }, self_id),
         conversation_display_name: None,
         message_id: String::new(),
+        message_seq: None,
         sender_id: user_id.to_string(),
         sender_display_name: user_id.to_string(),
         operator_id: event.get("operator_id").and_then(value_id_string),

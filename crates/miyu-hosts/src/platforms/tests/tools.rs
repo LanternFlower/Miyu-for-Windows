@@ -168,6 +168,7 @@ async fn multi_mention_tool_overrides_automatic_mention_without_sending_an_extra
     let context = Arc::new(context);
     context.set_response_target(Some(ResponseTarget {
         message_id: "message-1".to_string(),
+        message_seq: None,
         user_id: "20000".to_string(),
         quote: true,
         mention: true,
@@ -194,6 +195,7 @@ async fn multi_mention_tool_overrides_automatic_mention_without_sending_an_extra
         context.response_target(),
         Some(ResponseTarget {
             message_id: "message-1".to_string(),
+            message_seq: None,
             user_id: "20000".to_string(),
             quote: true,
             mention: false,
@@ -212,6 +214,7 @@ async fn multi_mention_tool_overrides_automatic_mention_without_sending_an_extra
         messages[0].response_target,
         Some(ResponseTarget {
             message_id: "message-1".to_string(),
+            message_seq: None,
             user_id: "20000".to_string(),
             quote: true,
             mention: false,
@@ -228,6 +231,7 @@ async fn multi_mention_tool_preserves_the_adaptive_quote_policy() {
     context.set_adaptive_response_target(
         Some(ResponseTarget {
             message_id: "message-1".to_string(),
+            message_seq: None,
             user_id: "20000".to_string(),
             quote: true,
             mention: true,
@@ -245,6 +249,7 @@ async fn multi_mention_tool_preserves_the_adaptive_quote_policy() {
     context.set_adaptive_response_target(
         Some(ResponseTarget {
             message_id: "message-2".to_string(),
+            message_seq: None,
             user_id: "20000".to_string(),
             quote: true,
             mention: true,
@@ -262,6 +267,7 @@ async fn multi_mention_tool_preserves_the_adaptive_quote_policy() {
         messages[0].response_target,
         Some(ResponseTarget {
             message_id: "message-2".to_string(),
+            message_seq: None,
             user_id: "20000".to_string(),
             quote: false,
             mention: false,

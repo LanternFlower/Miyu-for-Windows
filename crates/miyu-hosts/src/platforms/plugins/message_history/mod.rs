@@ -575,6 +575,7 @@ mod tests {
             },
             conversation_display_name: None,
             message_id: "123".to_string(),
+            message_seq: None,
             sender_id: "42".to_string(),
             sender_display_name: "Alice".to_string(),
             operator_id: None,

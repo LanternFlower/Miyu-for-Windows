@@ -21,6 +21,7 @@ fn disabled_targeting_returns_none_and_core_fallback_is_preserved_exactly() {
         content: "插件临时内容".to_string(),
         response_target: Some(ResponseTarget {
             message_id: "guessed-message".to_string(),
+            message_seq: None,
             user_id: "guessed-user".to_string(),
             quote: true,
             mention: true,

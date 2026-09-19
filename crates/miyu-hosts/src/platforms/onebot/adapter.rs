@@ -18,6 +18,22 @@ pub(in crate::platforms::onebot) struct OneBotAdapter {
     pub(in crate::platforms::onebot) file_store_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
+/// 引用段里怎么指认被引用的那条消息：**原样把对端给的消息号还回去**。
+///
+/// 09-19 在这儿绕过一次弯，记下来免得谁再走一遍：那天群里约一半的引用在 QQ
+/// 里没出现，查到的判据是「被引用消息的号是负数就必丢」（43 个样本 100% 对
+/// 齐）。根因在对端 SnowLuma 1.14.7：它自己用 `sha1(...).readInt32BE(0)` 发
+/// 号——**有符号**，一半是负数——可它收引用段时写的是 `if (id <= 0) 丢掉`，
+/// 自己发的号自己拒收，还是**不声不响地扔掉引用、消息照发、回一句"成功"**。
+/// 它 1.14.9 改成了 `if (id === 0)`，负数放行。
+///
+/// 期间试过「负数号改成只给序号」绕开，实测对端照样丢；而且升级之后那条绕路
+/// 反而会挡住修复（对端拿不到号就当成 0 丢掉）。所以这里只做一件事：把号原样
+/// 给它。**别再自作聪明换写法。**
+fn reply_data(target: &ResponseTarget) -> Value {
+    json!({ "id": target.message_id })
+}
+
 pub(in crate::platforms::onebot) fn prepend_response_target(
     segments: &mut Vec<Value>,
     target: &ResponseTarget,
@@ -26,7 +42,7 @@ pub(in crate::platforms::onebot) fn prepend_response_target(
     if target.quote && !target.message_id.is_empty() {
         segments.insert(
             index,
-            json!({ "type": "reply", "data": { "id": target.message_id } }),
+            json!({ "type": "reply", "data": reply_data(target) }),
         );
         index += 1;
     }

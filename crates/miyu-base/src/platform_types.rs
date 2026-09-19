@@ -82,6 +82,14 @@ pub enum OutboundOrigin {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResponseTarget {
     pub message_id: String,
+    /// 平台自己的消息序号（QQ 的 msgSeq）。
+    ///
+    /// 和 `message_id` 并存是因为它们的可靠性不一样：NapCat 给出的
+    /// `message_id` 是它进程内一张 5000 条的表映射出来的短号，表里没有了
+    /// （它重启过、或被挤掉了）就**查不回原消息**——而它查不到时是**一声不吭
+    /// 地把引用扔掉、消息照发**，我们这边看到的是发送成功。序号走的是协议本
+    /// 身的字段，不依赖那张表，所以有就带上，NapCat 也优先用它。
+    pub message_seq: Option<i64>,
     pub user_id: String,
     pub quote: bool,
     pub mention: bool,
@@ -187,6 +195,9 @@ pub struct PlatformInboundEvent {
     pub conversation: PlatformConversation,
     pub conversation_display_name: Option<String>,
     pub message_id: String,
+    /// 平台自己的消息序号（QQ 的 msgSeq）。引用这条消息时带上它，见
+    /// [`ResponseTarget::message_seq`]。
+    pub message_seq: Option<i64>,
     pub sender_id: String,
     pub sender_display_name: String,
     pub operator_id: Option<String>,

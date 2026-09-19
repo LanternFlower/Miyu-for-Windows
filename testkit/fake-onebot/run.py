@@ -105,10 +105,29 @@ REPLIES = []
 SENT_MESSAGES = {}
 
 
+# 置 FAKE_DROP_QUOTE=1:把自己发出去的消息里的引用段悄悄扔掉,模仿 NapCat
+# 「短号反查不到就静默丢引用、消息照发」那个行为。用来验 Miyu 那侧的事后核对
+# 抓不抓得到。
+DROP_QUOTE = os.environ.get("FAKE_DROP_QUOTE")
+
+
 def api_data(action, params):
     """按 action 给出合理的返回体。返回 None 表示"不支持",让 Miyu 走降级。"""
     if action in ("send_group_msg", "send_msg", "send_private_msg"):
-        return {"message_id": int(time.time() * 1000) % 2**31}
+        mid = int(time.time() * 1000) % 2**31
+        # 存下来:Miyu 发完会回头 get_msg 核对引用段还在不在,不存的话它每条
+        # 都会报"对端把引用段丢掉了"。
+        stored = [
+            seg for seg in (params.get("message") or [])
+            if not (DROP_QUOTE and seg.get("type") == "reply")
+        ]
+        SENT_MESSAGES[mid] = {
+            "message_type": "group" if action != "send_private_msg" else "private",
+            "user_id": SELF_ID, "group_id": params.get("group_id"),
+            "message": stored, "raw_message": "", "nickname": "Miyu",
+            "time": int(time.time()),
+        }
+        return {"message_id": mid}
     if action == "get_group_info":
         return {"group_id": GROUP_ID, "group_name": "假群(测具)",
                 "member_count": 3, "max_member_count": 200}
@@ -273,6 +292,9 @@ def private_image_probe(ws, keep: float):
         time.sleep(0.5); waited += 0.5
 
 
+GROUP_SEQ = [1000]
+
+
 def group_msg(ws, text, *, sender=SENDER, at_self=False, name="测试群友"):
     segments = []
     if at_self:
@@ -280,10 +302,15 @@ def group_msg(ws, text, *, sender=SENDER, at_self=False, name="测试群友"):
         segments.append({"type": "text", "data": {"text": " "}})
     segments.append({"type": "text", "data": {"text": text}})
     mid = int(time.time() * 1000) % 2**31
+    GROUP_SEQ[0] += 1
     ws.send({
         "post_type": "message", "message_type": "group", "sub_type": "normal",
         "self_id": SELF_ID, "group_id": GROUP_ID, "user_id": sender,
-        "message_id": mid, "raw_message": text, "message": segments,
+        "message_id": mid,
+        # NapCat 每条消息都带:`message_seq` 是 message_id 的副本(它进程内那张
+        # 短号表的号),`real_seq` 才是协议里的消息序号,而且是字符串。
+        "message_seq": mid, "real_seq": str(GROUP_SEQ[0]),
+        "raw_message": text, "message": segments,
         "font": 0, "time": int(time.time()),
         "sender": {"user_id": sender, "nickname": name, "role": "member"},
     })

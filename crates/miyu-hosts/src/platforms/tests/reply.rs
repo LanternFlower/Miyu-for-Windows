@@ -229,6 +229,7 @@ fn adaptive_response_target_uses_independent_inclusive_boundaries() {
     };
     let target = ResponseTarget {
         message_id: "message-1".to_string(),
+        message_seq: None,
         user_id: "alice".to_string(),
         quote: true,
         mention: true,
@@ -299,6 +300,7 @@ fn adaptive_response_target_mention_uses_known_message_activity() {
     };
     let target = ResponseTarget {
         message_id: "message-1".to_string(),
+        message_seq: None,
         user_id: "alice".to_string(),
         quote: false,
         mention: true,
@@ -444,6 +446,7 @@ async fn response_target_is_consumed_once_and_survives_primary_fallback() {
     let (_temp, context, adapter) = test_turn_context(true);
     let target = ResponseTarget {
         message_id: "message-9".to_string(),
+        message_seq: None,
         user_id: "user-4".to_string(),
         quote: true,
         mention: true,
@@ -515,6 +518,7 @@ fn failed_older_send_merges_mentions_into_a_newer_response_target() {
     context.set_adaptive_response_target(
         Some(ResponseTarget {
             message_id: "message-2".to_string(),
+            message_seq: None,
             user_id: "20000".to_string(),
             quote: true,
             mention: true,
@@ -529,6 +533,7 @@ fn failed_older_send_merges_mentions_into_a_newer_response_target() {
         context.response_target(),
         Some(ResponseTarget {
             message_id: "message-2".to_string(),
+            message_seq: None,
             user_id: "20000".to_string(),
             quote: true,
             mention: false,
@@ -553,6 +558,7 @@ async fn adaptive_response_target_is_identical_on_primary_and_fallback() {
     context.message_activity = Some(activity);
     let target = ResponseTarget {
         message_id: "m1".to_string(),
+        message_seq: None,
         user_id: "alice".to_string(),
         quote: true,
         mention: true,
@@ -785,6 +791,7 @@ fn a_reply_right_after_my_own_message_still_quotes() {
     };
     let target = ResponseTarget {
         message_id: "message-1".to_string(),
+        message_seq: None,
         user_id: "alice".to_string(),
         quote: true,
         mention: true,

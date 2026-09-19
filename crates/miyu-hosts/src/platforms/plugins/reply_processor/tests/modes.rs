@@ -177,6 +177,7 @@ async fn forward_mode_preserves_the_selected_response_target_without_guessing_se
     let mut message = OutboundMessage::markdown(OutboundOrigin::FinalReply, "long。");
     message.response_target = Some(ResponseTarget {
         message_id: "9".to_string(),
+        message_seq: None,
         user_id: "40000".to_string(),
         quote: true,
         mention: true,
@@ -189,6 +190,7 @@ async fn forward_mode_preserves_the_selected_response_target_without_guessing_se
         prepared.primary.response_target,
         Some(ResponseTarget {
             message_id: "9".to_string(),
+            message_seq: None,
             user_id: "40000".to_string(),
             quote: true,
             mention: true,
@@ -215,6 +217,7 @@ async fn forward_mode_keeps_explicit_mentions_in_the_regular_message() {
     let mut message = OutboundMessage::markdown(OutboundOrigin::FinalReply, "long。");
     message.response_target = Some(ResponseTarget {
         message_id: "9".to_string(),
+        message_seq: None,
         user_id: "40000".to_string(),
         quote: true,
         mention: false,

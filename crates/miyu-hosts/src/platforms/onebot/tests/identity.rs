@@ -306,6 +306,7 @@ fn generated_mentions_are_ordered_deduplicated_and_separated() {
         &mut segments,
         &ResponseTarget {
             message_id: String::new(),
+            message_seq: None,
             user_id: "123".to_string(),
             quote: false,
             mention: true,

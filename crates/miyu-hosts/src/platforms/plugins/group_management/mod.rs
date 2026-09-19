@@ -1004,6 +1004,7 @@ mod removal_ledger_tests {
             conversation: conversation.clone(),
             conversation_display_name: None,
             message_id: String::new(),
+            message_seq: None,
             sender_id: user_id.to_string(),
             sender_display_name: "被踢的人".to_string(),
             operator_id: Some(operator_id.to_string()),

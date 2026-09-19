@@ -6,6 +6,7 @@ impl ResponseTarget {
     pub fn quoted(message_id: impl Into<String>, user_id: impl Into<String>) -> Self {
         Self {
             message_id: message_id.into(),
+            message_seq: None,
             user_id: user_id.into(),
             quote: true,
             mention: false,

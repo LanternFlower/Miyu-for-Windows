@@ -256,6 +256,7 @@ impl PlatformTurnContext {
             (None, Some(mentions)) => Some(PendingResponseTarget {
                 target: ResponseTarget {
                     message_id: String::new(),
+                    message_seq: None,
                     user_id: String::new(),
                     quote: false,
                     mention: false,
@@ -279,6 +280,7 @@ impl PlatformTurnContext {
             *pending = Some(PendingResponseTarget {
                 target: ResponseTarget {
                     message_id: String::new(),
+                    message_seq: None,
                     user_id: String::new(),
                     quote: false,
                     mention: false,
@@ -497,6 +499,28 @@ impl PlatformTurnContext {
                     )
                 })
                 .or_else(|| target.policy.is_none().then(|| target.target.clone()));
+            // 这一行是「她为什么没引用那条消息」唯一能事后查的依据：库里只留
+            // 结果，留不下判断时的现场（隔了几条、当时最后一条是不是她自己
+            // 发的）。用户 09-19 问的就是这个，而当时查不出来。
+            //
+            // 走 `miyu::qq`:daemon 默认只记 error,这个 target 是明确放行的
+            // 那几个之一(见 logging::init),否则这行等于没写。
+            tracing::info!(
+                target: "miyu::qq",
+                conversation_id = %self.conversation.conversation_id,
+                reply_to = %target.target.message_id,
+                other_messages = ?target.policy.and_then(|policy| policy.other_messages(current)),
+                quote_after = ?target.policy.map(|policy| policy.quote_after_other_messages),
+                last_message_is_own,
+                wanted_quote = target.target.quote,
+                quoted = resolved.as_ref().is_some_and(|target| target.quote),
+                mentioned = resolved.as_ref().is_some_and(|target| target.mention),
+                "{}",
+                miyu_base::i18n::text(
+                    "resolved the reply target",
+                    "已判定回复的指向(引用/艾特)",
+                )
+            );
             apply_resolved_response_target(
                 &mut prepared.primary,
                 &target.target,

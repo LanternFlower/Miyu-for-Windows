@@ -524,6 +524,7 @@ pub(in crate::platforms::plugins::real_context) fn response_target(
     }
     let target = ResponseTarget {
         message_id: event.message_id.clone(),
+        message_seq: event.message_seq,
         user_id: event.sender_id.clone(),
         quote: settings.reply_target_quote_enable,
         mention: settings.reply_target_mention_enable,

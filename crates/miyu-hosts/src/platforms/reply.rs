@@ -40,6 +40,20 @@ impl AdaptiveResponseTargetPolicy {
     /// 别人说过话",引用要"隔了几条别人的消息";她回完 A 立刻回 B,B 那条
     /// 两个条件都不满足,于是既不引用也不艾特——而上一条还是她自己的,读的
     /// 人分不清她在跟谁说话。真人在群里连着说话也会靠引用分流。
+    /// 从她收到那条消息到此刻，中间插进来多少条**别人**的消息。
+    ///
+    /// None = 不知道（那条消息没带位置，或这会话没在数）。判引用时按"不知道
+    /// 就不引用"处理，判艾特时按"不知道就只看时间"处理——两边的老语义。
+    pub(crate) fn other_messages(self, current: Option<PlatformMessagePosition>) -> Option<u64> {
+        self.position.zip(current).map(|(start, current)| {
+            let total = current.total_messages.saturating_sub(start.total_messages);
+            let same_sender = current
+                .sender_messages
+                .saturating_sub(start.sender_messages);
+            total.saturating_sub(same_sender)
+        })
+    }
+
     pub(crate) fn resolve(
         self,
         mut target: ResponseTarget,
@@ -47,13 +61,7 @@ impl AdaptiveResponseTargetPolicy {
         last_message_is_own: bool,
         now: Instant,
     ) -> Option<ResponseTarget> {
-        let other_messages = self.position.zip(current).map(|(start, current)| {
-            let total = current.total_messages.saturating_sub(start.total_messages);
-            let same_sender = current
-                .sender_messages
-                .saturating_sub(start.sender_messages);
-            total.saturating_sub(same_sender)
-        });
+        let other_messages = self.other_messages(current);
         if target.quote {
             target.quote = last_message_is_own
                 || self.quote_after_other_messages == 0

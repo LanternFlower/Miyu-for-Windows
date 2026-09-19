@@ -558,6 +558,7 @@ async fn adapter_smoke_test_sends_replies_images_and_forward_nodes() {
     );
     message.response_target = Some(ResponseTarget {
         message_id: "99".to_string(),
+        message_seq: None,
         user_id: "77".to_string(),
         quote: true,
         mention: true,
@@ -602,6 +603,7 @@ async fn adapter_smoke_test_sends_replies_images_and_forward_nodes() {
         }]),
         response_target: Some(ResponseTarget {
             message_id: "98".to_string(),
+            message_seq: None,
             user_id: "76".to_string(),
             quote: true,
             mention: true,
@@ -661,6 +663,7 @@ async fn split_replies_encode_the_response_target_only_on_the_first_frame() {
     let mut message = OutboundMessage::text(OutboundOrigin::FinalReply, "abcdef");
     message.response_target = Some(ResponseTarget {
         message_id: "99".to_string(),
+        message_seq: None,
         user_id: "7".to_string(),
         quote: true,
         mention: true,
@@ -715,6 +718,7 @@ async fn split_failure_reports_that_the_response_target_was_delivered() {
     let mut message = OutboundMessage::text(OutboundOrigin::FinalReply, "abcdef");
     message.response_target = Some(ResponseTarget {
         message_id: String::new(),
+        message_seq: None,
         user_id: String::new(),
         quote: false,
         mention: false,
@@ -766,6 +770,7 @@ async fn forward_marker_failure_is_reported_as_partial_delivery() {
         }]),
         response_target: Some(ResponseTarget {
             message_id: String::new(),
+            message_seq: None,
             user_id: String::new(),
             quote: false,
             mention: false,
@@ -825,6 +830,7 @@ async fn invalid_attachment_does_not_send_a_bare_response_marker() {
     let mut message = message;
     message.response_target = Some(ResponseTarget {
         message_id: String::new(),
+        message_seq: None,
         user_id: String::new(),
         quote: false,
         mention: false,

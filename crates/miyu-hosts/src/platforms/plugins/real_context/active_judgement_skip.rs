@@ -433,6 +433,7 @@ mod tests {
                 conversation,
                 conversation_display_name: None,
                 message_id: "message-1".to_string(),
+                message_seq: None,
                 sender_id: "42".to_string(),
                 sender_display_name: "admin".to_string(),
                 operator_id: None,

@@ -683,6 +683,7 @@ mod tests {
             },
             conversation_display_name: Some("测试群".to_string()),
             message_id: "90".to_string(),
+            message_seq: None,
             sender_id: "7".to_string(),
             sender_display_name: "seven".to_string(),
             operator_id: None,

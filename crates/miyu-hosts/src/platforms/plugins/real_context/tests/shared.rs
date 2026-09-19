@@ -103,6 +103,7 @@ pub(super) fn inbound_event() -> PlatformInboundEvent {
         },
         conversation_display_name: Some("测试群".to_string()),
         message_id: "message-1".to_string(),
+        message_seq: None,
         sender_id: "30000".to_string(),
         sender_display_name: "测试用户".to_string(),
         operator_id: None,

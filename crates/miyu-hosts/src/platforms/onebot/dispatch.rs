@@ -29,6 +29,40 @@ impl Target {
     }
 }
 
+/// 这条消息在平台上的真实序号。引用它的时候要用（见 `ResponseTarget::message_seq`）。
+///
+/// 名字按几种实现都试一遍：NapCat 叫 `real_seq`（字符串）；有的实现把真序号放
+/// `message_seq`——但 NapCat 的 `message_seq` 是 `message_id` 的副本（它进程内
+/// 那张短号表的号），和 `message_id` 相等时就不是我们要的东西。
+///
+/// 一个都没取到时记一行，把这条事件带了哪些字段（只有字段名，不含内容）打出
+/// 来：没有序号 = 将来引用这条消息只能靠对端那张会过期的表，而这正是引用会
+/// 「悄悄消失」的根子（用户 09-19）。
+fn inbound_message_seq(event: &Value) -> Option<i64> {
+    let number = |value: Option<&Value>| match value {
+        Some(Value::String(text)) => text.trim().parse::<i64>().ok(),
+        Some(other) => other.as_i64(),
+        None => None,
+    };
+    let message_id = number(event.get("message_id"));
+    let seq = number(event.get("real_seq"))
+        .or_else(|| number(event.get("message_seq")).filter(|seq| Some(*seq) != message_id));
+    if seq.is_none() {
+        if let Some(fields) = event.as_object() {
+            tracing::info!(
+                target: "miyu::qq",
+                fields = %fields.keys().cloned().collect::<Vec<_>>().join(","),
+                "{}",
+                t(
+                    "the inbound message carried no platform sequence number",
+                    "这条入站消息没带平台消息序号",
+                )
+            );
+        }
+    }
+    seq
+}
+
 pub(in crate::platforms::onebot) fn message_event_at(
     target: Target,
     event: &Value,
@@ -45,6 +79,7 @@ pub(in crate::platforms::onebot) fn message_event_at(
             .get("message_id")
             .and_then(value_id_string)
             .unwrap_or_default(),
+        message_seq: inbound_message_seq(event),
         sender_id: event
             .get("user_id")
             .and_then(value_id_string)
@@ -640,6 +675,9 @@ pub(in crate::platforms::onebot) async fn handle_message_with_activity(
         conversation_kind = target.kind(),
         conversation_id = target.conversation_id(),
         %message_id,
+        // 引用要用的消息序号。没有的话引用只能靠对端进程里那张会过期的短号表
+        // ——这一格是空的就说明这条消息将来被引用时是"脆"的。
+        message_seq = ?inbound_event.message_seq,
         text_chars = parsed.text.chars().count(),
         images = parsed
             .images
