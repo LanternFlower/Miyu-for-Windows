@@ -6,11 +6,16 @@
 
 它起一个假的 OpenAI 兼容端点（/v1/models 与 /v1/chat/completions），
 把每次请求的全部头按到达顺序打印出来，然后回一条最短的流式应答让 CLI 正常收尾。
+
+必须是 `ThreadingHTTPServer`：`protocol_version` 声明了 HTTP/1.1，连接默认
+keep-alive，而单线程的 `HTTPServer` 会一直卡在第一条连接上，后面的请求全躺在
+backlog 里。opencode 先用一条连接拉模型列表、再开一条发对话，正好踩死——
+09-20 连续四次「一个请求都没抓到」就是这个。自检见 capture_headers_selftest.py。
 """
 
 import json
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8791
 
@@ -68,4 +73,4 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     print(f"listening on http://127.0.0.1:{PORT}", flush=True)
-    HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
