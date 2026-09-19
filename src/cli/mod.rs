@@ -152,6 +152,35 @@ pub(in crate::cli) fn apply_pm_shim(mut args: Vec<std::ffi::OsString>) -> Vec<st
     args
 }
 
+/// 装着的 shell hook 和这个二进制对不上就悄悄换成新的。
+///
+/// hook 是**生成**的文件（顶上那行写着版本和内容指纹），升级之后本该跟着换，
+/// 否则新版的补全、按键绑定、拦截逻辑要等用户想起来手动跑一次 `fish-init`
+/// 才生效。只动已经存在的文件：没装过 shell 集成的人不会被自作主张装上，
+/// `.bashrc` / `.zshrc` 里那段 source 也一个字不碰。
+///
+/// 换完只对**新开的 shell** 生效，所以不打字——当前这条命令的输出里冒出一行
+/// 「已更新 hook」只会碍事（shellhook 那条路上还会糊进正文）。
+///
+/// **隔离家目录下不做**：fish 的 hook 在 `~/.config/fish/conf.d/` 下，
+/// 不跟着 `MIYU_HOME` 走，沙箱/测具一跑就会把用户真正在用的那份改掉。
+/// 走查要验这条路的话，把 `XDG_CONFIG_HOME` 也指进沙箱，再用
+/// `MIYU_SHELL_HOOK_SYNC=1` 强制打开。
+fn refresh_shell_hooks(paths: &MiyuPaths) {
+    let forced = std::env::var_os("MIYU_SHELL_HOOK_SYNC").is_some_and(|value| value == "1");
+    if !forced && std::env::var_os("MIYU_HOME").is_some() {
+        return;
+    }
+    let updated = miyu_base::shell::sync_installed_hooks(paths);
+    if !updated.is_empty() {
+        tracing::info!(
+            shells = updated.join(", "),
+            version = env!("CARGO_PKG_VERSION"),
+            "refreshed installed shell hooks"
+        );
+    }
+}
+
 pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
     if cli.shell_classify {
         let shell_name = cli.shell.as_deref().unwrap_or("fish");
@@ -189,6 +218,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
             }
         }
     };
+    refresh_shell_hooks(&paths);
     // 终端集成会话那条车道按配置选模式（daemon 侧按会话人格强制，这里只管
     // 直连路和 IPC 里那个遗留字段）。
     let mode = terminal_lane_mode(&paths);

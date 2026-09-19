@@ -6,7 +6,11 @@ use std::path::Path;
 const BEGIN_MARKER: &str = "# >>> miyu bash hook >>>";
 const END_MARKER: &str = "# <<< miyu bash hook <<<";
 
-pub fn hook() -> &'static str {
+pub fn hook() -> String {
+    super::stamp_hook("bash-init", body())
+}
+
+fn body() -> &'static str {
     r#"command_not_found_handle() {
     [[ $- == *i* ]] || return 127
 

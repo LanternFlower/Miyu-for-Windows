@@ -78,6 +78,10 @@ fn completion_entries() -> [(&'static str, &'static str); 16] {
 }
 
 pub fn hook() -> String {
+    super::stamp_hook("fish-init", &body())
+}
+
+fn body() -> String {
     let mut output = String::new();
     for (command, description) in completion_entries() {
         output.push_str(&format!(

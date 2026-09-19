@@ -6,7 +6,11 @@ use std::path::Path;
 const BEGIN_MARKER: &str = "# >>> miyu zsh hook >>>";
 const END_MARKER: &str = "# <<< miyu zsh hook <<<";
 
-pub fn hook() -> &'static str {
+pub fn hook() -> String {
+    super::stamp_hook("zsh-init", body())
+}
+
+fn body() -> &'static str {
     r#"# zsh 是先展开再找命令:一句自然语言里带个没匹配上的通配符,它在展开阶段就报
 # 「no matches found」,命令根本没开始找,command_not_found_handler 也就永远不
 # 触发,整句话掉在地上(fish 有同一个坑,已同样修法)。所以回车时先看首词。
