@@ -262,6 +262,12 @@ impl OpenAiCompatibleClient {
     where
         F: FnMut(ChatStreamChunk) -> Result<()>,
     {
+        // Zen 免费档那套工具别名的回程:名字在这一层换回来,再往上就是回合层,
+        // 它认的是 Miyu 自己的工具名(09-20,见 zen_tools)。包在最外面,流式的
+        // 「工具名已解码」chunk 与收口那批调用都走得到。
+        let mut on_chunk_zen =
+            |chunk: ChatStreamChunk| on_chunk(zen_tools::restore_chunk(&self.provider, chunk));
+        let on_chunk = &mut on_chunk_zen;
         let dsml = dsml_enabled_for(&self.provider);
         let mut buffer = Utf8LineBuffer::default();
         let mut content = String::new();
@@ -292,7 +298,7 @@ impl OpenAiCompatibleClient {
                             content,
                             reasoning,
                             usage,
-                            tool_calls.finish(),
+                            zen_tools::restore_calls(&self.provider, tool_calls.finish()),
                             dsml,
                         );
                     }
@@ -370,8 +376,13 @@ impl OpenAiCompatibleClient {
             "{}",
             t("Chat completions stream reached EOF", "聊天补全流已到达 EOF")
         );
-        let mut result =
-            finalize_stream_result(content, reasoning, usage, tool_calls.finish(), dsml)?;
+        let mut result = finalize_stream_result(
+            content,
+            reasoning,
+            usage,
+            zen_tools::restore_calls(&self.provider, tool_calls.finish()),
+            dsml,
+        )?;
         result.finish_reason = finish_reason;
         if reasoning_part_active {
             on_chunk(ChatStreamChunk {
@@ -483,7 +494,7 @@ impl OpenAiCompatibleClient {
             content,
             reasoning,
             response.usage,
-            tool_calls.finish(),
+            zen_tools::restore_calls(&self.provider, tool_calls.finish()),
             dsml_enabled_for(&self.provider),
         )?;
         result.finish_reason = choice.finish_reason;

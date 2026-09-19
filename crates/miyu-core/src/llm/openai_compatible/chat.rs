@@ -84,6 +84,10 @@ impl OpenAiCompatibleClient {
         if client.uses_openai_responses()
             || client.uses_anthropic_messages()
             || provider_uses_cli_relay(&client.provider)
+            // 保温 ping 是非流式的,而 Zen 免费档只放行 stream:true(09-20 实测)。
+            // 打过去必然 403,而 403 会按认证失败把这家端点冷却 600 秒——为了
+            // 省一次 miss 把整家端点摁死十分钟,不划算。
+            || zen_tools::aliases_apply(&client.provider)
         {
             return Ok(None);
         }
@@ -449,7 +453,13 @@ impl OpenAiCompatibleClient {
             sanitize_extra_body(self.provider.extra_body.clone(), CHAT_RESERVED_BODY_KEYS),
             self.chat_variant_extra_body(),
         );
-        let messages = prepare_chat_messages_for_provider(&self.provider, messages);
+        let mut messages = prepare_chat_messages_for_provider(&self.provider, messages);
+        // Zen 免费档按工具名认客户端(09-20 实测,见 zen_tools)。改名要连历史里
+        // 的 tool_calls 一起改,不然清单报 `shell`、回放叫 `run_command`,两边对
+        // 不上。
+        let mut tools = tools;
+        zen_tools::lower_tools(&self.provider, &mut tools);
+        zen_tools::lower_messages(&self.provider, &mut messages);
         let mut request = ChatRequest {
             model: self.provider.default_model.clone(),
             messages,
@@ -473,7 +483,11 @@ impl OpenAiCompatibleClient {
         let mut status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            if non_stream_quota_fallback_candidate(status.as_u16(), &body) {
+            // Zen 不走这条:它只放行 stream:true,非流式重试必然再挨一个 403,
+            // 白白把端点冷却掉(09-20)。
+            if non_stream_quota_fallback_candidate(status.as_u16(), &body)
+                && !zen_tools::aliases_apply(&self.provider)
+            {
                 let mut retry = request.clone();
                 retry.stream = false;
                 retry.stream_options = None;

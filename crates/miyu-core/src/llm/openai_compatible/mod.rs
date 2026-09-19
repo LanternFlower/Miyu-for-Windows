@@ -15,6 +15,7 @@ mod sse;
 mod variants;
 mod wire;
 mod zen_headers;
+mod zen_tools;
 // 三条中转线的去重名单:断言「名单里都是真工具」的测试住在工具侧
 // (`tools::relay_tests`,拿注册表核),这里按线别名出去(09-16)。
 pub use antigravity::pool::{
