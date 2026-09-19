@@ -621,9 +621,14 @@ fn qq_message_history_defaults_to_full_text_recording() {
     let settings = QqMessageHistoryPluginSettings::default();
 
     assert_eq!(settings.history_search_max_results, 0);
-    assert_eq!(settings.history_safe_page_limit, 500);
+    // 用户 09-19 从 500 抬到 2000：她会自己切时间窗分几次查，一次拿够反而便宜。
+    assert_eq!(settings.history_safe_page_limit, 2_000);
     assert!(settings.allow_cross_conversation_search);
     assert!(settings.validate().is_ok());
+
+    let mut too_big = settings.clone();
+    too_big.history_safe_page_limit = 2_001;
+    assert!(too_big.validate().is_err(), "硬顶卡在 2000");
 }
 
 #[test]

@@ -183,7 +183,7 @@ fn register_search(
     registry.register(
         ToolSpec::new(
             "search_real_chat_history",
-            "Read persisted QQ chat history.",
+            HISTORY_TOOL_DESCRIPTION,
             json!({
                 "type": "object",
                 "properties": {
@@ -198,7 +198,12 @@ fn register_search(
                     "days": { "type": "integer", "minimum": 1 },
                     "start_time": { "type": "string", "description": "Unix 时间戳、RFC 3339、YYYY-MM-DD 或 YYYY-MM-DD HH:MM[:SS]" },
                     "end_time": { "type": "string", "description": "格式同 start_time；仅日期时包含当天" },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": maximum }
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": maximum,
+                        "description": history_limit_description(maximum)
+                    }
                 },
                 "additionalProperties": false
             }),
@@ -223,6 +228,27 @@ fn register_search(
         )
         .with_display_name(miyu_base::i18n::text("Search real chat history", "搜索聊天记录")),
     );
+}
+
+/// 这个工具能干什么，写给模型看。
+///
+/// 原来只有一句「Read persisted QQ chat history.」，**能按时间范围查这件事一个字
+/// 都没说**——于是被问到「上周三聊了什么」时她只会去捞最近的一堆，看着就像「没有
+/// 按时间查询」（用户 09-19）。参数表指望不上模型逐条读，能力得写在描述里。
+pub(crate) const HISTORY_TOOL_DESCRIPTION: &str =
+    "Read persisted QQ chat history. Four ways, combinable: by keyword (query), \
+     by sender (sender_id), by time range (days, or start_time/end_time), and \
+     across conversations (all_conversations / all_groups, admins only). \
+     Omitting query and sender_id replays the most recent messages in range. \
+     Ask for the whole range in ONE call with a large limit: splitting a day into \
+     several windows costs far more than one big page, because every extra call \
+     re-sends the entire conversation.";
+
+pub(crate) fn history_limit_description(maximum: usize) -> String {
+    format!(
+        "本次最多返回多少条，省略按 {DEFAULT_HISTORY_LIMIT} 条，上限 {maximum}；\
+         宁可一次要满，也别把时间范围拆成几次查。"
+    )
 }
 
 /// 08-21 token-diet:检索结果以行格式返回,与 <qq-history-format> 描述的
@@ -321,7 +347,13 @@ fn format_history_output(
         }
     }
     if has_more {
-        output.push_str("(more messages beyond this page; narrow the time range or raise limit)\n");
+        // 别教她切时间窗。原话是「narrow the time range or raise limit」，她照做了：
+        // 把一天切成四段、每段 limit 100 查四次，同一段上下文进了四次缓存
+        // （用户 09-19 的真实日志）。一次把 limit 拉满比分四次便宜得多。
+        output.push_str(
+            "(more messages beyond this page; raise limit in ONE call — do not split the \
+             time range into several calls, each call re-sends the whole context)\n",
+        );
     }
     output.push_str(notice);
     output
@@ -715,12 +747,52 @@ mod tests {
         ));
     }
 
+    /// 省略 `limit` 给一大页（用户 09-19 定的 500）：分次查比一次拿够贵得多。
     #[test]
-    fn zero_history_limit_uses_the_bounded_page_maximum() {
-        assert_eq!(limit(&json!({}), 0, 500), 500);
-        assert_eq!(limit(&json!({ "limit": 25 }), 0, 500), 25);
+    fn an_omitted_history_limit_returns_one_big_page() {
+        assert_eq!(limit(&json!({}), 0, 2_000), DEFAULT_HISTORY_LIMIT);
+        assert_eq!(limit(&json!({}), 0, 10), 10, "上限比一页还小就按上限");
+        assert_eq!(limit(&json!({ "limit": 25 }), 0, 2_000), 25);
+        assert_eq!(
+            limit(&json!({ "limit": 2_000 }), 0, 2_000),
+            2_000,
+            "上限抬到 2000 了"
+        );
         assert_eq!(limit(&json!({ "limit": 100 }), 40, 500), 40);
-        assert_eq!(limit(&json!({ "limit": 2_000 }), 0, 2_000), 1_000);
+        assert_eq!(
+            limit(&json!({ "limit": 9_000 }), 0, 9_000),
+            MAX_HISTORY_LIMIT,
+            "硬顶卡在 2000"
+        );
+    }
+
+    /// 工具描述得把「能按时间范围查」写出来：参数表指望不上模型逐条读，
+    /// 用户 09-19 报的「无法按时间范围查询」就是这么来的。
+    #[test]
+    fn the_history_tool_advertises_its_time_range() {
+        for needle in [
+            "time range",
+            "start_time",
+            "days",
+            "sender_id",
+            "query",
+            "limit",
+        ] {
+            assert!(
+                HISTORY_TOOL_DESCRIPTION.contains(needle),
+                "描述里没提 {needle}"
+            );
+        }
+        assert!(
+            HISTORY_TOOL_DESCRIPTION.contains("ONE call"),
+            "得明说一次问全，别切窗口"
+        );
+        let limit = history_limit_description(2_000);
+        assert!(limit.contains("上限 2000"), "{limit}");
+        assert!(
+            limit.contains(&DEFAULT_HISTORY_LIMIT.to_string()),
+            "{limit}"
+        );
     }
 
     #[test]

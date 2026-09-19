@@ -7,7 +7,7 @@
 
 use crate::platforms::plugins::message_history::store::*;
 
-pub(crate) const MAX_PAGE_SIZE: usize = 1_000;
+pub(crate) const MAX_PAGE_SIZE: usize = 2_000;
 
 pub(crate) const MAX_SEARCH_BYTES: usize = 1_024;
 

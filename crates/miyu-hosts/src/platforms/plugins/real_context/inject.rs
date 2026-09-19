@@ -840,7 +840,8 @@ impl RealContextPlugin {
             // 提示词说一次(实测一条 780K token 的群聊请求里它出现 558 次、
             // 共 60,264 字符)。这里只保留会变的缺口提示。
             let gap_note = if truncated_backlog {
-                "\n(Only the most recent messages fit here; fetch earlier ones with search_real_chat_history.)"
+                "\n(Only the most recent messages fit here; fetch earlier ones with \
+                 search_real_chat_history — it takes days or start_time/end_time.)"
             } else {
                 ""
             };

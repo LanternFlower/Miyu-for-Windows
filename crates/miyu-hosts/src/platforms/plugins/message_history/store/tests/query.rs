@@ -150,11 +150,11 @@ async fn activity_ranking_validates_time_range_and_includes_both_boundaries() {
 }
 
 #[tokio::test]
-async fn fts_search_is_safe_paginated_and_capped_at_one_thousand() {
+async fn fts_search_is_safe_paginated_and_capped_at_the_hard_ceiling() {
     let (_temp, store) = test_store();
     let key = group("bot", "group");
-    for batch_start in (0..1_005).step_by(MAX_BATCH_MESSAGES) {
-        let end = (batch_start + MAX_BATCH_MESSAGES).min(1_005);
+    for batch_start in (0..2_005).step_by(MAX_BATCH_MESSAGES) {
+        let end = (batch_start + MAX_BATCH_MESSAGES).min(2_005);
         let batch = (batch_start..end)
             .map(|index| {
                 message(
@@ -176,7 +176,7 @@ async fn fts_search_is_safe_paginated_and_capped_at_one_thousand() {
             "u",
             "中文用户",
             "今天天气很好",
-            1_000,
+            2_000,
         ))
         .await
         .unwrap();
@@ -279,4 +279,52 @@ async fn history_pages_are_limited_by_message_count_only() {
         .unwrap();
     assert_eq!(page.messages.len(), 10);
     assert!(page.next_cursor.is_none());
+}
+
+/// 用户 09-19 问的两件事，用数据回答：**按时间范围查得到吗**、**是不是固定
+/// 200 条**。两条都在库这一层量，不靠读代码。
+#[tokio::test]
+async fn history_honours_a_time_range_and_is_not_capped_at_two_hundred() {
+    let (_temp, store) = test_store();
+    let key = group("default", "42");
+    // 六百条，每条差一小时：跨得过 200 也跨得过一天。
+    let base = 1_700_000_000;
+    for index in 0..600 {
+        store
+            .record_message(message(
+                key.clone(),
+                format!("m{index}"),
+                "1001",
+                "群友",
+                format!("第 {index} 条"),
+                base + index as i64 * 3_600,
+            ))
+            .await
+            .unwrap();
+    }
+
+    // 1. 不给时间范围、要 500 条：500 条就是 500 条，不是 200。
+    let page = store
+        .search(SearchQuery::new(HistoryScope::Group(key.clone()), "", 500))
+        .await
+        .unwrap();
+    assert_eq!(page.messages.len(), 500, "上限是 500，不是 200");
+
+    // 2. 卡一个 24 小时的窗：只该回那一天的 24 条。
+    let mut query = SearchQuery::new(HistoryScope::Group(key.clone()), "", 500);
+    query.since = Some(base + 100 * 3_600);
+    query.until = Some(base + 124 * 3_600 - 1);
+    let page = store.search(query).await.unwrap();
+    assert_eq!(page.messages.len(), 24, "时间范围没卡住");
+    assert!(page
+        .messages
+        .iter()
+        .all(|message| message.sent_at >= base + 100 * 3_600));
+
+    // 3. 关键词 + 时间范围叠加。
+    let mut query = SearchQuery::new(HistoryScope::Group(key), "第 300 条", 500);
+    query.since = Some(base + 299 * 3_600);
+    let page = store.search(query).await.unwrap();
+    assert_eq!(page.messages.len(), 1);
+    assert!(page.messages[0].content.text.contains("第 300 条"));
 }

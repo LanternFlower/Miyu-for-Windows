@@ -319,18 +319,29 @@ pub(crate) fn history_limit_ceiling(settings: &QqMessageHistoryPluginSettings) -
     .clamp(1, 1_000)
 }
 
+/// 模型没填 `limit` 时返回多少条。
+///
+/// 一度改成 30（怕一次 500 条撑爆上下文），结果更糟：她自己填 `limit: 100`，再
+/// 把一天切成四个时间窗查四次，同一段上下文跟着进四次缓存（用户 09-19 贴的真实
+/// 日志）。**一次拿够比分四次便宜**——分页提示那句「narrow the time range」也一起
+/// 改掉了。500 是用户 09-19 定的。
+pub(crate) const DEFAULT_HISTORY_LIMIT: usize = 500;
+
+/// 一次最多能要多少条（硬顶，配置调不过去）。用户 09-19 从 1000 抬到 2000。
+pub(crate) const MAX_HISTORY_LIMIT: usize = 2_000;
+
 pub(crate) fn limit(arguments: &Value, configured: usize, safety_limit: usize) -> usize {
     let ceiling = if configured == 0 {
         safety_limit
     } else {
         configured.min(safety_limit)
     }
-    .clamp(1, 1_000);
+    .clamp(1, MAX_HISTORY_LIMIT);
     arguments
         .get("limit")
         .and_then(Value::as_u64)
         .map(|value| value as usize)
-        .unwrap_or(ceiling)
+        .unwrap_or(DEFAULT_HISTORY_LIMIT.min(ceiling))
         .clamp(1, ceiling)
 }
 

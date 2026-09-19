@@ -263,7 +263,7 @@ impl Default for QqMessageHistoryPluginSettings {
     fn default() -> Self {
         Self {
             history_search_max_results: 0,
-            history_safe_page_limit: 500,
+            history_safe_page_limit: 2_000,
             allow_cross_conversation_search: true,
         }
     }
@@ -276,8 +276,8 @@ impl QqMessageHistoryPluginSettings {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.history_safe_page_limit == 0 || self.history_safe_page_limit > 1_000 {
-            bail!("platform plugin qq_message_history.history_safe_page_limit must be between 1 and 1000");
+        if self.history_safe_page_limit == 0 || self.history_safe_page_limit > 2_000 {
+            bail!("platform plugin qq_message_history.history_safe_page_limit must be between 1 and 2000");
         }
         if self.history_search_max_results > self.history_safe_page_limit {
             bail!("platform plugin qq_message_history.history_search_max_results must be 0 or no greater than history_safe_page_limit");
