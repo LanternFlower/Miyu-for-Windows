@@ -176,6 +176,19 @@ impl Screen {
                 self.needs_clear,
                 self.suspended
             );
+            // 排查「点开正在想的那一步之后屏幕上出现两份」用的：块的行号范围
+            // 与展开着的是哪几个。缓冲里的块跨度对不上活动区此刻的位置时，
+            // 展开出来的那一片就会落在别处，而活动区照旧在下面画自己那一份。
+            let note = format!(
+                "{note}   blocks={:?} expanded={:?} live_rows={}\n",
+                self.term
+                    .blocks()
+                    .iter()
+                    .map(|block| (block.id, block.start, block.end, block.open))
+                    .collect::<Vec<_>>(),
+                self.expanded.keys().collect::<Vec<_>>(),
+                self.term.filled_rows(),
+            );
             let path = std::path::Path::new("/tmp/miyu-screen-trace.log");
             if let Ok(mut file) = std::fs::OpenOptions::new()
                 .create(true)

@@ -465,6 +465,26 @@ impl LiveReplTail {
         // 全屏：字节交给终端模拟器，它按光标动作落到对的行上——spinner 的
         // 原地刷新、命令块的实时输出都靠这个，输出方一行不用改。
         if let Some(screen) = &mut self.screen {
+            if std::env::var_os("MIYU_SCREEN_TRACE").is_some() {
+                // 排查「点开正在想的那一步之后出现两份」：这一帧里开始标记和
+                // 结束标记各有几个。只有开始没有结束 = 块留在半开状态,展开层
+                // 会把内容插进去而不是替换掉。
+                let text = String::from_utf8_lossy(frame);
+                let begins =
+                    text.matches("miyu-block=").count() + text.matches("miyu-block-open=").count();
+                let ends = text.matches("miyu-block-end").count();
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("/tmp/miyu-screen-trace.log")
+                {
+                    let _ = std::io::Write::write_all(
+                        &mut file,
+                        format!("feed bytes={} begins={begins} ends={ends}\n", frame.len())
+                            .as_bytes(),
+                    );
+                }
+            }
             screen.feed(frame);
             let cursor = self.output_cursor;
             return self.resume_at_own(cursor);

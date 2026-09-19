@@ -355,7 +355,11 @@ impl Term {
             self.cursor_row().saturating_add(1)
         };
         if let Some(block) = self.blocks.last_mut() {
-            if block.end <= block.start {
+            // 原来只在「跨度还是空的」时候才写。自从开始标记会保留旧跨度
+            //（见 `print`）,那条件就再也不成立了,块会一直停在上一帧的高度——
+            // 内容长了也不跟着长。结束标记本来就只跟在自己那一块后面,直接按
+            // 光标此刻的位置收口。
+            if block.start < end {
                 block.end = end.max(block.start.saturating_add(1));
             }
         }
@@ -952,6 +956,20 @@ impl Perform for Term {
     fn print(&mut self, character: char) {
         if let Some((id, open)) = self.pending_block.take() {
             let start = self.cursor_row();
+            // 同一块在原地被重写时,**把它原来的结束行留着**。
+            //
+            // 转轮那侧为了不闪,一帧只重写变了的行(`rewrite_changed_spinner_lines`)。
+            // 滚动思考窗的第一行每帧都在变(转轮、秒数),后面几行常常没变——于是
+            // 这一帧只带开始标记、不带结束标记。要是照旧把跨度清成 `start..start`,
+            // 块就停在半开状态,展开层算出「要替换 0 行」,于是把展开内容**插进去**
+            // 而不是替换掉:同一段思考在屏幕上出现两份,还随每帧长短乱跳
+            //（用户 09-19：「点击展开之后就开始鬼畜」）。
+            let reopened = self
+                .blocks
+                .iter()
+                .find(|block| block.id == id && block.start == start)
+                .map(|block| block.end)
+                .filter(|end| *end > start);
             // 这一行（及其之后）要被重写了：原来记在那儿的块作废。
             // 活动区的实时那几行每一帧都是「上移 → 清行 → 重画」，不作废的话
             // 每 tick 都会多攒一个块，行号还全是错的。
@@ -959,7 +977,7 @@ impl Perform for Term {
             self.blocks.push(BlockSpan {
                 id,
                 start,
-                end: start,
+                end: reopened.unwrap_or(start),
                 open,
             });
         }
