@@ -83,7 +83,9 @@ pub fn highlight_code_line(lang: &str, line: &str) -> String {
                 Some(CODE_KEYWORD_STYLE)
             } else if matches!(
                 token.as_str(),
-                "true" | "false" | "null" | "None" | "Some" | "Ok" | "Err"
+                // Python 的 True/False 是大写的——名单里原来只有小写那对,
+                // 于是 `while True:` 里的 True 和普通标识符一个色(09-19)。
+                "true" | "false" | "null" | "None" | "True" | "False" | "Some" | "Ok" | "Err"
             ) {
                 Some(CODE_NUMBER_STYLE)
             } else if next_non_space_is_open_paren(&chars, index) {
@@ -204,4 +206,104 @@ pub(crate) fn next_non_space_is_open_paren(chars: &[char], mut index: usize) -> 
         index += 1;
     }
     chars.get(index) == Some(&'(')
+}
+
+/// 一条命令的每一行该按什么语言着色。
+///
+/// 命令本身是 shell，但 `<<'PY'` 这种 heredoc 里装的往往是**别的语言的源码**
+/// ——AI 自己写脚本时最常见的形状，也正是命令长到需要看清楚的那种时候
+///（用户 09-19 的截图就是 `python3 - <<'PY'` 塞了五十行 Python）。
+///
+/// 语言从**起这个 heredoc 的那一行里的解释器词**认。认不出来就返回空串（不着
+/// 色）：`cat > 文件 <<'EOF'` 那种 heredoc 体是数据不是代码，猜错了比不上色
+/// 更难看。
+pub fn command_line_languages(command: &str) -> Vec<&'static str> {
+    let mut languages = Vec::new();
+    // 开着的 heredoc：`(结束标记, 体内语言)`。
+    let mut open: Option<(String, &'static str)> = None;
+    for line in command.lines() {
+        if let Some((delimiter, language)) = open.as_ref() {
+            if line.trim() == delimiter.as_str() {
+                // 结束标记那行是 shell 的词，不是体内容。
+                languages.push("bash");
+                open = None;
+            } else {
+                languages.push(language);
+            }
+            continue;
+        }
+        languages.push("bash");
+        if let Some((delimiter, language)) = heredoc_opened_by(line) {
+            open = Some((delimiter, language));
+        }
+    }
+    languages
+}
+
+/// 这一行有没有起一个 heredoc；起了的话结束标记是什么、体内是什么语言。
+fn heredoc_opened_by(line: &str) -> Option<(String, &'static str)> {
+    let chars = line.chars().collect::<Vec<_>>();
+    let mut index = 0;
+    while index + 1 < chars.len() {
+        if chars[index] != '<' || chars[index + 1] != '<' {
+            index += 1;
+            continue;
+        }
+        // `<<<` 是 here-string，一行就完了，不开体。
+        if chars.get(index + 2) == Some(&'<') {
+            index += 3;
+            continue;
+        }
+        let mut cursor = index + 2;
+        // `<<-` 允许结束标记前有制表符，对认标记本身没影响。
+        if chars.get(cursor) == Some(&'-') {
+            cursor += 1;
+        }
+        while chars.get(cursor).is_some_and(|ch| *ch == ' ') {
+            cursor += 1;
+        }
+        let quote = match chars.get(cursor) {
+            Some('\'') => Some('\''),
+            Some('"') => Some('"'),
+            _ => None,
+        };
+        if quote.is_some() {
+            cursor += 1;
+        }
+        let start = cursor;
+        while let Some(ch) = chars.get(cursor) {
+            let ends = match quote {
+                Some(quote) => *ch == quote,
+                None => !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-')),
+            };
+            if ends {
+                break;
+            }
+            cursor += 1;
+        }
+        let delimiter = chars[start..cursor].iter().collect::<String>();
+        if delimiter.is_empty() {
+            index = cursor.max(index + 2);
+            continue;
+        }
+        return Some((delimiter, heredoc_body_language(line)));
+    }
+    None
+}
+
+/// heredoc 体按什么语言着色：看这一行里的解释器。
+fn heredoc_body_language(line: &str) -> &'static str {
+    for word in line.split_whitespace() {
+        // `/usr/bin/python3` 也算；参数（`-u`、`-`）跳过。
+        let name = word.rsplit('/').next().unwrap_or(word);
+        let name = name.trim_end_matches(|ch: char| !ch.is_ascii_alphanumeric());
+        match name {
+            "python" | "python2" | "python3" | "py" => return "python",
+            "node" | "nodejs" | "bun" | "deno" => return "js",
+            "sh" | "bash" | "zsh" | "fish" => return "bash",
+            _ => {}
+        }
+    }
+    // 认不出来就不着色（`cat > 文件 <<'EOF'` 里装的是数据）。
+    ""
 }

@@ -264,15 +264,34 @@ impl CommandLiveDisplay {
     ///（用户实测：命令展开后没有流式输出，展开内容居然是窥视行）。
     pub(crate) fn live_detail(&self, width: usize) -> Vec<String> {
         let mut lines = Vec::new();
-        // 命令那几行跟着抬头一起暗——和露在抬头底下那份同一个色（用户 09-17：
-        // 「展开之后的命令部分的颜色你没改」）。输出本来就是暗的，命令比输出还
-        // 亮的话，一整块里最显眼的是"我让它跑了什么"，而不是"它吐了什么"。
-        for line in self.command.lines() {
-            lines.extend(
-                wrap_plain_text(line, width)
-                    .into_iter()
-                    .map(|line| format!("\x1b[2m{line}\x1b[0m")),
-            );
+        // 展开之后的命令按语法着色（用户 09-19：「展开后给一个语法高亮」）。
+        //
+        // 09-17 定过「命令那几行跟着抬头一起暗，输出才是主角」——那条**只留给
+        // 抬头底下那份窥视**了。点开来看的时候，长命令（AI 自己写的几十行脚本）
+        // 本身就是要读的东西，着色帮的正是这个忙。
+        //
+        // 先折行、再逐段着色：反过来的话折行会把转义序列算进宽度
+        //（`render_code_block` 一直是这个顺序）。逐行词法着色本来就不跨行，
+        // 折一次不会更糟。
+        // **只对多行命令着色**。单行的 `ls -la`、`tail -f log` 逐词上色等于整行
+        // 变亮，没有任何信息增益——而「命令别比输出亮」正是 09-17 那条裁定的
+        // 来意。值得看清楚的是 AI 自己写的那种几十行脚本，它们必然是多行的。
+        let highlight = self.command.lines().count() > 1;
+        let languages = crate::render::command_line_languages(&self.command);
+        for (index, line) in self.command.lines().enumerate() {
+            let language = if highlight {
+                languages.get(index).copied().unwrap_or("bash")
+            } else {
+                ""
+            };
+            lines.extend(wrap_plain_text(line, width).into_iter().map(|piece| {
+                if language.is_empty() {
+                    // 认不出语言（heredoc 里装的是数据）：维持原来的暗色。
+                    format!("\x1b[2m{piece}\x1b[0m")
+                } else {
+                    crate::render::highlight_code_line(language, &piece)
+                }
+            }));
         }
         if self.show_output {
             let logical = self.output.logical_lines();

@@ -360,3 +360,69 @@ fn command_tool_family_covers_native_bash() {
     assert!(is_command_tool("Bash"));
     assert!(!is_command_tool("read_file"));
 }
+
+/// 展开视图里的命令按语法着色；heredoc 体按**解释器**认语言。
+///
+/// 用户 09-19：AI 写了个 `python3 - <<'PY'` 塞五十行 Python 的命令，展开之后
+/// 是一片单色，想要语法高亮。
+#[test]
+fn an_expanded_command_is_syntax_highlighted_per_heredoc_language() {
+    use crate::render::command_line_languages;
+
+    let command = "python3 - <<'PY'\nimport os\nx = 1  # 注释\nPY\necho done";
+    assert_eq!(
+        command_line_languages(command),
+        vec!["bash", "python", "python", "bash", "bash"],
+        "heredoc 体该按 python 着色，起止两行仍是 shell"
+    );
+    // 认不出解释器的（`cat > 文件`）是数据，不猜。
+    assert_eq!(
+        command_line_languages("cat > a.txt <<'EOF'\nhello\nEOF"),
+        vec!["bash", "", "bash"]
+    );
+    // here-string（`<<<`）不开体。
+    assert_eq!(
+        command_line_languages("grep x <<< \"$y\"\necho ok"),
+        vec!["bash", "bash"]
+    );
+    // `<<-` 与不加引号的标记都认。
+    assert_eq!(
+        command_line_languages("python3 <<-PY\npass\nPY"),
+        vec!["bash", "python", "bash"]
+    );
+    // 没有 heredoc 时整条都是 shell。
+    assert_eq!(command_line_languages("ls -la"), vec!["bash"]);
+}
+
+/// 着色真的落到展开内容里了——而且认不出语言的那几行仍然是暗的。
+#[test]
+fn the_expanded_command_detail_carries_highlight_escapes() {
+    let args = serde_json::json!({ "command": "python3 - <<'PY'\nimport os\nPY" });
+    let mut display = CommandLiveDisplay::new(&args.to_string(), 10, true, false);
+    display.set_result(true);
+    let detail = display.timeline_detail(80);
+    let text = detail.join("\n");
+    assert!(
+        text.contains("\x1b[38;2;"),
+        "展开内容里没有着色转义:\n{text:?}"
+    );
+    // 单行命令不着色：逐词上色只是整行变亮，没有信息增益，而「命令别比输出
+    // 亮」是 09-17 定下的（用户 09-19 要的是长脚本读得清楚）。
+    let one_line = serde_json::json!({ "command": "tail -f log" });
+    let mut one_line = CommandLiveDisplay::new(&one_line.to_string(), 10, true, false);
+    one_line.set_result(true);
+    let plain = one_line.timeline_detail(80).join("\n");
+    assert!(
+        !plain.contains("\x1b[38;2;") && plain.contains("\x1b[2m"),
+        "单行命令不该被着色:\n{plain:?}"
+    );
+    let data_args = serde_json::json!({ "command": "cat > a.txt <<'EOF'\nhello\nEOF" });
+    let mut data = CommandLiveDisplay::new(&data_args.to_string(), 10, true, false);
+    data.set_result(true);
+    let body = data.timeline_detail(80);
+    assert!(
+        body.iter()
+            .any(|line| line.contains("hello") && line.contains("\x1b[2m")),
+        "heredoc 里的数据行该维持暗色:\n{body:?}"
+    );
+}
