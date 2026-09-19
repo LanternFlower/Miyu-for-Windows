@@ -93,7 +93,7 @@ impl RemoteRepl {
                 }
             }
             Err(err) => {
-                let frame = format!("\x1b[31m{}: {err}\x1b[0m\n\n", t("error", "错误"));
+                let frame = format!("{}\n", crate::cli::repl::session::error_frame(&err));
                 self.live_repl.apply_output_frame(frame.as_bytes())?;
                 if let Ok((state, true)) =
                     repl_active_or_default_state(&self.paths, &self.active_session_id).await

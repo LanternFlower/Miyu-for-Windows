@@ -42,22 +42,19 @@ fn classify_agy_failure(text: &str) -> Option<HttpStatusFailure> {
         "login required",
     ];
     if google_policy_block(text) {
-        return Some(HttpStatusFailure {
-            status: 400,
-            kind: HttpFailureKind::ContentPolicy,
-        });
+        return Some(HttpStatusFailure::relay(
+            400,
+            HttpFailureKind::ContentPolicy,
+        ));
     }
     if RATE_LIMIT.iter().any(|needle| lower.contains(needle)) {
-        return Some(HttpStatusFailure {
-            status: 429,
-            kind: HttpFailureKind::RateLimit,
-        });
+        return Some(HttpStatusFailure::relay(429, HttpFailureKind::RateLimit));
     }
     if AUTH.iter().any(|needle| lower.contains(needle)) {
-        return Some(HttpStatusFailure {
-            status: 401,
-            kind: HttpFailureKind::Authentication,
-        });
+        return Some(HttpStatusFailure::relay(
+            401,
+            HttpFailureKind::Authentication,
+        ));
     }
     None
 }
@@ -260,10 +257,10 @@ where
             ),
             compact_line(&text, 200)
         )
-        .context(HttpStatusFailure {
-            status: 400,
-            kind: HttpFailureKind::ContentPolicy,
-        }));
+        .context(HttpStatusFailure::relay(
+            400,
+            HttpFailureKind::ContentPolicy,
+        )));
     }
     // `result.status` 是**会话级**粘性状态,不是本轮的成败:会话转录里但凡留下
     // 过一次失败(被硬杀的取消态步、上下文压缩序列化炸掉),之后每次续传这条

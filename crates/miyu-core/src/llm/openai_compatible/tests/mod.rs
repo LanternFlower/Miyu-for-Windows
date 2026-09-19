@@ -9,6 +9,7 @@ mod chat_stream;
 mod claude_code;
 mod codex;
 mod endpoint_retry;
+mod error_text;
 mod extra_body;
 mod failover;
 mod responses;

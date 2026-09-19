@@ -9651,7 +9651,10 @@
     notice.className = `run-notice${error ? " is-error" : ""}`;
     notice.append(makeIconSlot(error ? "circle-alert" : "circle-stop"));
     const text = document.createElement("span");
+    // 报错现在是多行的（一句结论 + 每个端点一行 + 一句该怎么办，见 BUG-16），
+    // 顶上那句和明细得分开显示；`flex` 默认是竖向居中，多行时图标要顶对齐。
     text.textContent = String(message || "");
+    if (text.textContent.includes("\n")) notice.classList.add("is-multiline");
     notice.appendChild(text);
     procLineBreak(live.blocks);
     live.blocks.appendChild(notice);

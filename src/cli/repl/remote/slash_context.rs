@@ -81,7 +81,7 @@ impl RemoteRepl {
             Err(err) => {
                 repl_note(
                     &mut self.live_repl,
-                    &format!("\x1b[31m{}: {err}\x1b[0m", t("error", "错误")),
+                    &crate::cli::repl::session::error_frame(&err),
                 )?;
                 return Ok(LoopStep::Continue);
             }
@@ -214,7 +214,7 @@ impl RemoteRepl {
             Err(err) => {
                 repl_note(
                     &mut self.live_repl,
-                    &format!("\x1b[31m{}: {err}\x1b[0m\n", t("error", "错误")),
+                    &crate::cli::repl::session::error_frame(&err),
                 )?;
                 return Ok(LoopStep::Continue);
             }

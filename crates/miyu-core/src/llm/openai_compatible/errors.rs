@@ -101,13 +101,94 @@ impl std::fmt::Display for HttpFailureKind {
     }
 }
 
+impl HttpFailureKind {
+    /// 给人看的那句：出了什么事。
+    ///
+    /// 分类本来只喂调度器（冷却多久、换不换端点），一个字都没到过用户眼前——
+    /// 429 和别的状态码打出来长得一模一样，谁也看不出是额度问题（BUG-16）。
+    pub(in crate::llm::openai_compatible) fn label(self, relay: bool) -> &'static str {
+        match self {
+            Self::RateLimit if relay => t("usage limit reached", "额度用完或被限流"),
+            Self::RateLimit => t("rate limited or out of quota", "被限流或额度用完"),
+            Self::Authentication if relay => t("not signed in", "没登录或登录态失效"),
+            Self::Authentication => t("authentication failed", "认证失败"),
+            Self::EndpointUnavailable => t(
+                "the endpoint does not serve this model",
+                "这个端点没有这个模型",
+            ),
+            Self::EndpointIncompatible => t(
+                "the endpoint does not accept this request shape",
+                "这个端点不认这种请求",
+            ),
+            Self::InvalidRequest => t("the request was rejected", "请求被拒"),
+            Self::ContentPolicy => t(
+                "the provider's content policy blocked this prompt",
+                "供应商的内容策略拦下了这条提示词",
+            ),
+            Self::Status => t("the provider returned an error", "供应商报错"),
+        }
+    }
+
+    /// 给人看的那句：该怎么办。没有可说的就 `None`。
+    pub(in crate::llm::openai_compatible) fn advice(self, relay: bool) -> Option<&'static str> {
+        Some(match self {
+            Self::RateLimit if relay => t(
+                "wait for the quota to reset, or switch providers",
+                "等额度刷新，或换一个供应商",
+            ),
+            Self::RateLimit => t(
+                "wait out the cooldown, or switch providers",
+                "等冷却结束，或换一个供应商",
+            ),
+            Self::Authentication if relay => {
+                t("sign in again in that CLI", "去那个 CLI 里重新登录")
+            }
+            Self::Authentication => t("check the API key", "检查一下 API key"),
+            Self::EndpointUnavailable => t(
+                "check the model name in the provider's model list",
+                "对一下供应商的模型清单里有没有这个名字",
+            ),
+            Self::ContentPolicy => t("rephrase and send again", "换个说法再发一次"),
+            Self::EndpointIncompatible | Self::InvalidRequest | Self::Status => return None,
+        })
+    }
+}
+
 #[derive(Debug)]
 pub(in crate::llm::openai_compatible) struct HttpStatusFailure {
     pub(in crate::llm::openai_compatible) status: u16,
     pub(in crate::llm::openai_compatible) kind: HttpFailureKind,
+    /// 这个状态码是**编的**吗。
+    ///
+    /// CLI 中转线（codex / claude-code / antigravity）根本不发 HTTP 请求，是拉起
+    /// 子进程读 stdout，再按措辞翻成状态码。翻完还打印「HTTP 429」的话，人会
+    /// 照着网络问题去查 base_url 和代理，而真正要做的是等订阅额度刷新
+    /// （BUG-16）。标上它，文本里就不提那个数字。
+    pub(in crate::llm::openai_compatible) relay: bool,
+    /// 供应商自己那句人话（报文里的 `error.message`），已经裁短。
+    ///
+    /// 原来给用户的那行是把整条错误链倒出来，里头是一整坨原始 JSON；而真正有用
+    /// 的只有这一句（「Please try again in 1.024s」这种）。留下它，别的丢掉。
+    pub(in crate::llm::openai_compatible) detail: Option<String>,
 }
 
 impl HttpStatusFailure {
+    /// 子进程输出的措辞翻出来的失败：没有真的 HTTP 请求，别提状态码。
+    pub(in crate::llm::openai_compatible) fn relay(status: u16, kind: HttpFailureKind) -> Self {
+        Self {
+            status,
+            kind,
+            relay: true,
+            detail: None,
+        }
+    }
+
+    /// 配上供应商/子进程自己那句话（会裁短）。
+    pub(in crate::llm::openai_compatible) fn with_detail(mut self, detail: &str) -> Self {
+        self.detail = clip_detail(detail);
+        self
+    }
+
     pub(in crate::llm::openai_compatible) fn classify(status: u16, body: &str) -> Self {
         let kind = match status {
             401 | 403 => HttpFailureKind::Authentication,
@@ -121,8 +202,39 @@ impl HttpStatusFailure {
             408 | 500..=599 => HttpFailureKind::Status,
             _ => classify_provider_error_body(body).unwrap_or(HttpFailureKind::Status),
         };
-        Self { status, kind }
+        Self {
+            status,
+            kind,
+            relay: false,
+            detail: provider_message(body),
+        }
     }
+}
+
+/// 报文里供应商自己那句话。JSON 认 `error.message` 与顶层 `message`；不是 JSON
+/// 的就整段当那句话。
+pub(in crate::llm::openai_compatible) fn provider_message(body: &str) -> Option<String> {
+    let structured = serde_json::from_str::<Value>(body).ok();
+    let message = structured
+        .as_ref()
+        .and_then(|value| value.get("error").unwrap_or(value).get("message"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| body.to_string());
+    clip_detail(&message)
+}
+
+/// 裁到一行能读的长度。
+fn clip_detail(detail: &str) -> Option<String> {
+    const MAX_CHARS: usize = 120;
+    let single_line = detail.split_whitespace().collect::<Vec<_>>().join(" ");
+    if single_line.is_empty() {
+        return None;
+    }
+    if single_line.chars().count() <= MAX_CHARS {
+        return Some(single_line);
+    }
+    Some(single_line.chars().take(MAX_CHARS).collect::<String>() + "…")
 }
 
 pub(in crate::llm::openai_compatible) fn classify_provider_error_body(
@@ -261,7 +373,18 @@ pub(in crate::llm::openai_compatible) fn contains_any(value: &str, needles: &[&s
 
 impl std::fmt::Display for HttpStatusFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "upstream returned HTTP {}", self.status)
+        // 分类要打在最前面：这一行是用户唯一看得到的东西，而「HTTP 429」这个
+        // 数字对人几乎没有信息量（BUG-16）。中转线连数字都不提——那是编的。
+        let label = self.kind.label(self.relay);
+        if self.relay {
+            write!(f, "{label}")?;
+        } else {
+            write!(f, "{label}（HTTP {}）", self.status)?;
+        }
+        match &self.detail {
+            Some(detail) => write!(f, "：{detail}"),
+            None => Ok(()),
+        }
     }
 }
 

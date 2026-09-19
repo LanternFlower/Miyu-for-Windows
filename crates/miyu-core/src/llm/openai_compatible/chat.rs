@@ -349,33 +349,29 @@ impl OpenAiCompatibleClient {
                             )
                         );
                     }
-                    let message = format!("{err:#}");
-                    errors.push(format!(
-                        "{} / {} key#{}: {message}",
-                        endpoint.provider.id,
-                        endpoint.provider.default_model,
-                        endpoint.key_index + 1
-                    ));
+                    errors.push(endpoint_failure_line(endpoint, &err, cooldown));
                     if !same_endpoint_retry_allowed(&err) {
                         exhausted.push(endpoint.id());
                     }
+                    // 这两句会被 anyhow 顶到错误链最前面，也就是用户第一眼看到的
+                    // 那一句——原来是英文长句，真正的原因（429 之类）被压在链尾
+                    // （BUG-16）。改短、改成中文，并且把原因先说了。
                     if attempt_committed {
-                        return Err(err.context(
-                            "LLM stream failed after emitting output; endpoint failover was suppressed",
-                        ));
+                        return Err(err.context(t(
+                            "the stream failed after output had started, so no other endpoint was tried",
+                            "已经开始输出之后才失败，没有再换别的端点",
+                        )));
                     }
                     if !endpoint_failover_allowed(&err) {
-                        return Err(err.context(
-                            "LLM request was rejected; endpoint failover was suppressed",
-                        ));
+                        return Err(err.context(t(
+                            "the request itself was rejected, so no other endpoint was tried",
+                            "这条请求本身被拒了，换端点也没用",
+                        )));
                     }
                 }
             }
         }
-        bail!(
-            "no LLM provider/model endpoint succeeded (request {request_id}):\n- {}",
-            errors.join("\n- ")
-        )
+        bail!("{}", all_endpoints_failed_message(&errors, &request_id))
     }
 
     pub(crate) async fn chat_stream_single<F>(
@@ -568,4 +564,121 @@ impl OpenAiCompatibleClient {
         self.consume_chat_completion_stream(response, on_chunk)
             .await
     }
+}
+
+/// 一个端点失败了，写给人看的一行。
+///
+/// 原来是 `provider / model key#N: {err:#}`——纯英文、把整条错误链原样倒出来
+/// （里头常常是供应商的原始 JSON），而最要紧的两件事「这是什么毛病」「这个端点
+/// 要停多久」一个都没有（BUG-16）。
+pub(in crate::llm::openai_compatible) fn endpoint_failure_line(
+    endpoint: &LlmEndpoint,
+    error: &anyhow::Error,
+    cooldown: Option<Duration>,
+) -> String {
+    let head = format!(
+        "{} / {}（key#{}）：",
+        endpoint.provider.id,
+        endpoint.provider.default_model,
+        endpoint.key_index + 1
+    );
+    // 有分类就只说分类那一句（它自带供应商的原话）：把整条错误链倒出来的话，
+    // 后面跟的是一整坨原始 JSON，既没信息又把别的端点挤掉（BUG-16）。
+    let reason = match error.downcast_ref::<HttpStatusFailure>() {
+        Some(failure) => failure.to_string(),
+        None => clip_reason(&format!("{error:#}")),
+    };
+    let mut line = format!("{head}{reason}");
+    if let Some(cooldown) = cooldown {
+        // 冷却秒数以前只进 tracing，UI 一个字都拿不到——而「这个端点要停 10
+        // 分钟」恰恰是撞上限流时最有用的一条。
+        line.push_str(&t("; cooled down for ", "；该端点暂停 "));
+        line.push_str(&humanize_duration(cooldown));
+    }
+    line
+}
+
+/// 一条端点的失败理由裁到能读的长度。
+///
+/// 整条消息在 daemon 那头会被 `safe_error_message` 砍到 1000 字，砍掉的正好是
+/// 排在后面的端点明细（也就是「还试过谁、各自为什么不行」）。按条裁就不会整段
+/// 丢尾巴。
+pub(in crate::llm::openai_compatible) fn clip_reason(reason: &str) -> String {
+    const MAX_CHARS: usize = 160;
+    let single_line = reason.split_whitespace().collect::<Vec<_>>().join(" ");
+    if single_line.chars().count() <= MAX_CHARS {
+        return single_line;
+    }
+    single_line.chars().take(MAX_CHARS).collect::<String>() + "…"
+}
+
+pub(in crate::llm::openai_compatible) fn humanize_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    if seconds >= 60 {
+        return format!("{} {}", seconds / 60, t("min", "分钟"));
+    }
+    format!("{seconds} {}", t("s", "秒"))
+}
+
+/// 池里每个端点都失败了，写给人看的那一段。
+///
+/// 形状是「一句结论 + 每个端点一行 + 一句该怎么办」：原来是一句英文
+/// `no LLM provider/model endpoint succeeded` 加一串原始错误链，人看完不知道
+/// 发生了什么、更不知道下一步做什么（BUG-16）。
+pub(in crate::llm::openai_compatible) fn all_endpoints_failed_message(
+    errors: &[String],
+    request_id: &str,
+) -> String {
+    let headline = if errors.len() == 1 {
+        t("the model endpoint failed", "模型端点没跑通")
+    } else {
+        t("every model endpoint failed", "所有模型端点都没跑通")
+    };
+    let mut message = format!("{headline}（{}）：", request_id);
+    for line in errors {
+        message.push_str("\n  · ");
+        message.push_str(line);
+    }
+    if let Some(advice) = shared_advice(errors) {
+        message.push_str("\n  ");
+        message.push_str(&advice);
+    }
+    message
+}
+
+/// 所有端点栽在同一件事上时，给一句该怎么办。
+///
+/// 只在**一致**时给：一半限流一半认证失败的话，给哪句都是误导。
+pub(in crate::llm::openai_compatible) fn shared_advice(errors: &[String]) -> Option<String> {
+    let kinds = [
+        (
+            HttpFailureKind::RateLimit,
+            [
+                HttpFailureKind::RateLimit.label(false),
+                HttpFailureKind::RateLimit.label(true),
+            ],
+        ),
+        (
+            HttpFailureKind::Authentication,
+            [
+                HttpFailureKind::Authentication.label(false),
+                HttpFailureKind::Authentication.label(true),
+            ],
+        ),
+        (
+            HttpFailureKind::ContentPolicy,
+            [
+                HttpFailureKind::ContentPolicy.label(false),
+                HttpFailureKind::ContentPolicy.label(true),
+            ],
+        ),
+    ];
+    let (kind, _) = kinds.into_iter().find(|(_, labels)| {
+        errors
+            .iter()
+            .all(|line| labels.iter().any(|label| line.contains(label)))
+    })?;
+    // 中转线那档的措辞不一样（没登录 / 额度用完），全是中转线时给中转线那句。
+    let relay = errors.iter().all(|line| line.contains(kind.label(true)));
+    Some(format!("→ {}", kind.advice(relay)?))
 }

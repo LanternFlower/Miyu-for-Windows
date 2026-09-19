@@ -39,16 +39,13 @@ fn classify_codex_failure(text: &str) -> Option<HttpStatusFailure> {
         "authentication",
     ];
     if RATE_LIMIT.iter().any(|needle| lower.contains(needle)) {
-        return Some(HttpStatusFailure {
-            status: 429,
-            kind: HttpFailureKind::RateLimit,
-        });
+        return Some(HttpStatusFailure::relay(429, HttpFailureKind::RateLimit));
     }
     if AUTH.iter().any(|needle| lower.contains(needle)) {
-        return Some(HttpStatusFailure {
-            status: 401,
-            kind: HttpFailureKind::Authentication,
-        });
+        return Some(HttpStatusFailure::relay(
+            401,
+            HttpFailureKind::Authentication,
+        ));
     }
     None
 }

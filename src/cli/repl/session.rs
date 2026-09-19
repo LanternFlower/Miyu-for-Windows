@@ -197,6 +197,29 @@ pub(in crate::cli) fn validate_ipc_command_response(frame: Option<IpcFrame>) -> 
 /// 全屏下短提示走**通知条**（浮在输入框上方，几秒后自己消失），长的照旧进正文。
 /// 判据是行数：`/help` 那种整页清单浮起来没法看，而「已取消」写进正文只会让
 /// 回翻时满屏都是碎片。
+/// 回合失败写给人看的那一段。
+///
+/// 报错现在是多行的（一句结论 + 每个端点一行 + 一句该怎么办，见
+/// `chat::all_endpoints_failed_message`），原来那句
+/// `eprintln!("\x1b[31m错误: {err}")` 会把它糊成一大坨红字。这里给它和工具失败
+/// 同一套视觉语言：抬头带错误图标、明细压暗缩进。
+pub(in crate::cli) fn error_frame(error: &impl std::fmt::Display) -> String {
+    let text = error.to_string();
+    let mut lines = text.lines();
+    let headline = lines.next().unwrap_or_default();
+    let mut frame = format!(
+        "\x1b[31m{} {}: {headline}\x1b[0m\n",
+        miyu_hosts::render::timeline::glyph_err(),
+        t("error", "错误")
+    );
+    for line in lines {
+        // 明细压暗:它们是给排查用的,别和结论抢眼睛(暗色要 SGR2 + 灰 245,
+        // 光 SGR2 在 kitty 里看不出)。
+        frame.push_str(&format!("\x1b[2m\x1b[38;5;245m{line}\x1b[0m\n"));
+    }
+    frame
+}
+
 pub(in crate::cli) fn repl_note(live: &mut LiveReplTail, text: &str) -> Result<()> {
     if live.toast_note(text) {
         return Ok(());
@@ -767,10 +790,7 @@ pub(in crate::cli) async fn repl_ipc_admin(
     match await_in_lobby(live, send_ipc_admin(paths, command)).await {
         Ok(result) => Ok(Some(result)),
         Err(err) => {
-            repl_note(
-                live,
-                &format!("\x1b[31m{}: {err}\x1b[0m\n", t("error", "错误")),
-            )?;
+            repl_note(live, &error_frame(&err))?;
             Ok(None)
         }
     }

@@ -4363,6 +4363,16 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   border-left-color: var(--danger);
 }
 
+/* 多行报错：换行要留着（一句结论 + 每个端点一行 + 一句该怎么办），图标顶对齐。 */
+.run-notice.is-multiline {
+  align-items: flex-start;
+  white-space: pre-wrap;
+}
+
+.run-notice.is-multiline .icon-slot {
+  margin-top: 2px;
+}
+
 .run-notice .icon-slot {
   width: 14px;
   height: 14px;

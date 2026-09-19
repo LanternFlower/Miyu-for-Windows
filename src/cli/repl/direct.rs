@@ -694,7 +694,7 @@ pub(in crate::cli) async fn run_direct_repl(
             let count = match parse_repl_pop_count(command_args) {
                 Ok(count) => count,
                 Err(err) => {
-                    eprintln!("\x1b[31m{}: {err}\x1b[0m", t("error", "错误"));
+                    eprint!("{}", crate::cli::repl::session::error_frame(&err));
                     continue;
                 }
             };
@@ -706,7 +706,7 @@ pub(in crate::cli) async fn run_direct_repl(
                 }
                 Ok(None) => {}
                 Err(err) => {
-                    eprintln!("\x1b[31m{}: {err}\x1b[0m", t("error", "错误"));
+                    eprint!("{}", crate::cli::repl::session::error_frame(&err));
                 }
             }
             continue;
@@ -761,7 +761,7 @@ pub(in crate::cli) async fn run_direct_repl(
                 }
                 Err(err) => {
                     renderer.finish()?;
-                    eprintln!("\x1b[31m{}: {err}\x1b[0m", t("error", "错误"));
+                    eprint!("{}", crate::cli::repl::session::error_frame(&err));
                 }
             }
             continue;

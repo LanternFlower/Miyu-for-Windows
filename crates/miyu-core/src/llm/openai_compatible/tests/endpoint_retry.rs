@@ -373,7 +373,9 @@ async fn invalid_request_does_not_fail_over_to_another_endpoint() {
         .await
         .unwrap_err();
 
-    assert!(format!("{error:#}").contains("endpoint failover was suppressed"));
+    // 这句 09-18 起改成中文、也改短了（英文长句会被 anyhow 顶到最前面，把真正
+    // 的原因压到链尾——BUG-16）。
+    assert!(format!("{error:#}").contains("换端点也没用"), "{error:#}");
     assert!(
         server.await.unwrap(),
         "a second endpoint received the request"
