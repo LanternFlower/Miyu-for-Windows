@@ -99,6 +99,11 @@ pub struct StreamRenderer {
     /// 一段过程跑完收成一行 `Worked for …` 吗。见 `DisplayConfig::fold_timeline`。
     pub fold_timeline: bool,
     pub(crate) command_display: Option<CommandLiveDisplay>,
+    /// 这一刻的收尾是不是「给外部输出让路」（表情包要往终端写图那种）。
+    ///
+    /// 真时：还没返回的工具**留在统计里**，不收进时间线——它还在跑，不是被
+    /// 打断了。见 `prepare_for_external_output`。
+    pub(crate) finalizing_for_external_output: bool,
     pub(crate) summary_line_active: bool,
     pub(crate) summary_lines_active: u16,
     pub(crate) last_tool_summary: String,
@@ -180,6 +185,7 @@ impl StreamRenderer {
             live_tool_blocks: BTreeMap::new(),
             subagent_tokens: BTreeMap::new(),
             command_display: None,
+            finalizing_for_external_output: false,
             summary_line_active: false,
             summary_lines_active: 0,
             last_tool_summary: String::new(),
@@ -357,7 +363,15 @@ impl StreamRenderer {
         self.tool_preparing = None;
         self.tool_preparing_since = None;
         self.release_transient_output()?;
-        self.finalize_tools_summary()?;
+        // 这次收尾只是**给外部输出让路**,不是回合结束:正在跑的那个工具(往终端
+        // 写图的表情包就是它自己)还没返回,不能当成「没跑完 = 已中断」收进时间
+        // 线。不挡这一下的话它会被记成一步红色的「已中断」,而真结果回来时统计
+        // 已经清空、`calls` 归零,`settled()` 仍是假——于是**又记一次**,一次发图
+        // 两行报错(用户 09-19 在 shellhook 里实测)。
+        self.finalizing_for_external_output = true;
+        let finalized = self.finalize_tools_summary();
+        self.finalizing_for_external_output = false;
+        finalized?;
         self.cut_timeline()?;
         self.show_cursor()?;
         Ok(())

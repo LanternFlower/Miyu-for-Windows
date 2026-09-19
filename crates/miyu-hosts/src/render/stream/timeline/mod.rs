@@ -602,9 +602,14 @@ impl StreamRenderer {
         let open_by_default = full_details && caps.expandable;
         // 先收集再改：`ordered_tool_stats` 借着 `self`，循环里要往 `self.timeline`
         // 里写，借用检查过不去。
+        // 「给外部输出让路」那一次收尾:还没返回的工具留着,别收。它还在跑——
+        // 收进来就是一步红色的「已中断」,而真结果回来时又会记第二次
+        //(用户 09-19:shellhook 里一次发图两行报错)。
+        let hold_unsettled = self.finalizing_for_external_output;
         let entries: Vec<PendingStep> = self
             .ordered_tool_stats()
             .into_iter()
+            .filter(|(_, stats)| !hold_unsettled || stats.settled())
             .map(|(name, stats)| PendingStep {
                 name: name.to_string(),
                 display: self.display_tool_name(name),
@@ -726,7 +731,13 @@ impl StreamRenderer {
             step.open = (open_by_default || step.user_open) && overlay.is_none();
             self.timeline.steps.push(step);
         }
-        self.tool_stats.clear();
+        // 留着的那几个(还在跑)不能清:它们的结果回来时要落在自己的统计上,
+        // 不然 `calls` 归零、`settled()` 永远是假,又变成一步「已中断」。
+        if hold_unsettled {
+            self.tool_stats.retain(|_, stats| !stats.settled());
+        } else {
+            self.tool_stats.clear();
+        }
         self.last_tool_summary.clear();
         self.live_block = None;
         self.live_tool_blocks.clear();
@@ -1078,8 +1089,19 @@ impl StreamRenderer {
         }
         let pending = std::mem::take(&mut self.pending_after_timeline);
         let stdout = &mut self.output;
+        // 上面空一行。这一块（图、清单表）是**正文**，不是时间线的一部分：
+        // 紧贴着收缩行的话，图看着像是从 `Worked for …` 那一行长出来的
+        //（用户 09-19：全屏下图和上面那行之间缺一行空）。段尾那行空由调用
+        // 方按老规矩出，所以这儿只管上面。
+        writeln!(stdout)?;
+        let mut ends_with_newline = true;
         for chunk in pending {
             write!(stdout, "{chunk}")?;
+            ends_with_newline = chunk.ends_with('\n');
+        }
+        // 自己不带收尾换行的块（万一）别把段尾那行空吃掉。
+        if !ends_with_newline {
+            writeln!(stdout)?;
         }
         stdout.flush()?;
         Ok(())

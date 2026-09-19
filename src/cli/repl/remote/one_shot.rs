@@ -148,6 +148,8 @@ pub(in crate::cli) async fn try_run_remote_chat(
     }
     let mut content = String::new();
     let mut reasoning = String::new();
+    // 攒着还没打的图（非全屏那条路）。见 `tool.image` / `tool.finished`。
+    let mut deferred_images: Vec<(serde_json::Value, Option<String>)> = Vec::new();
     let mut spinner_tick = tokio::time::interval(Duration::from_millis(33));
     let mut job_strip_tick: u32 = 0;
     spinner_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -535,6 +537,34 @@ pub(in crate::cli) async fn try_run_remote_chat(
                         output: ipc_text(&data, "output").to_string(),
                     },
                 )?;
+                // 这一步已经落地（静态面当场写进正文，折叠面收段时进
+                // `Worked for`），现在才轮到它打出来的图。
+                let finished_tool = ipc_text(&data, "tool_id").to_string();
+                let (mine, rest): (Vec<_>, Vec<_>) = deferred_images
+                    .drain(..)
+                    .partition(|(image, _)| ipc_text(image, "tool_id") == finished_tool);
+                deferred_images = rest;
+                for (image, size) in mine {
+                    let state = queue_state
+                        .as_ref()
+                        .expect("queue state exists for a remote turn");
+                    renderer.prepare_for_external_output()?;
+                    if let Some(live) = live.as_deref_mut() {
+                        live.apply_renderer_frame(&mut renderer)?;
+                        synchronized_terminal_update(CursorAfterUpdate::Hidden, || live.suspend())?;
+                        live.external_output_active = true;
+                    }
+                    if let Err(error) = render_remote_tool_image(state, &image, size).await {
+                        renderer.write_system_message(&format!(
+                            "{}: {error}",
+                            t("Could not display tool image", "工具图片显示失败")
+                        ))?;
+                    }
+                    // 图片打完不用再单独「抬进页内」:残影的根因不在图片的位置,
+                    // 而在受限区滚动本身(见 tail/frame.rs 的 queue_lifted_frame),
+                    // 此后的帧都会改走整屏滚,活动区 resume 时自己会把光标下方的
+                    // 溢出滚掉。
+                }
                 if let Some(live) = live.as_deref_mut() {
                     if live.external_output_active {
                         live.external_output_active = false;
@@ -571,12 +601,12 @@ pub(in crate::cli) async fn try_run_remote_chat(
                             // 结果"，不是过程。就地写的话，发图那一步自己反而排到
                             // 图下面去了（用户实测的表情包/搜图顺序错乱）。
                             // 缩进两格：它是正文的一部分，得在装订边上。
-                            // 收缩行后面本来就带一行空，这儿再补一行就空两行了；
-                            // 图**下面**那一行空反倒一直没有，正文直接贴着图。
-                            renderer.queue_after_timeline(format!(
-                                "{}\n",
-                                miyu_hosts::render::timeline::indent_body(&placeholder)
-                            ));
+                            // 上下那两行空不在这儿补：`flush_after_timeline`
+                            // 出上面那行、收段出下面那行。这儿自己再补一个
+                            // `\n`，图下面就空两行了（用户 09-19）。
+                            renderer.queue_after_timeline(
+                                miyu_hosts::render::timeline::indent_body(&placeholder),
+                            );
                             if let Some(live) = live.as_deref_mut() {
                                 live.apply_renderer_frame(&mut renderer)?;
                             }
@@ -593,21 +623,15 @@ pub(in crate::cli) async fn try_run_remote_chat(
                     }
                     continue;
                 }
-                renderer.prepare_for_external_output()?;
-                if let Some(live) = live.as_deref_mut() {
-                    live.apply_renderer_frame(&mut renderer)?;
-                    synchronized_terminal_update(CursorAfterUpdate::Hidden, || live.suspend())?;
-                    live.external_output_active = true;
-                }
-                if let Err(error) = render_remote_tool_image(state, &data, size).await {
-                    renderer.write_system_message(&format!(
-                        "{}: {error}",
-                        t("Could not display tool image", "工具图片显示失败")
-                    ))?;
-                }
-                // 图片打完不用再单独「抬进页内」:残影的根因不在图片的位置,而在
-                // 受限区滚动本身(见 tail/frame.rs 的 queue_lifted_frame),此后的
-                // 帧都会改走整屏滚,活动区 resume 时自己会把光标下方的溢出滚掉。
+                // 非全屏：也要排到**这一步落地之后**再打。
+                //
+                // `tool.image` 是工具一开头就报的（它得先把图交出去，才谈得上
+                // 打），当场打的话「表情包 · 67ms」那一行反而排到图下面——读起
+                // 来不像「用了表情包工具，于是图出来了」（用户 09-19 截图）。
+                // 全屏那条路早就把占位格排到时间线之后了，这里把顺序对齐：攒
+                // 着，等这把工具的 `tool.finished` 到了再打。
+                let _ = state;
+                deferred_images.push((data.clone(), size));
             }
             "question.requested" => {
                 // 只让屏、不切线：这一步得等答案到手才补得进去。

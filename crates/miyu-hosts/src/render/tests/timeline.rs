@@ -1079,3 +1079,109 @@ fn the_fold_opens_into_a_timeline_not_an_indented_body() {
         );
     });
 }
+
+/// 排在时间线后面的那一块（图、清单表）上下各空一行。
+///
+/// 09-19 用户报「全屏 TUI 里缺空行」：图紧贴着 `Worked for …` 那一行长出来，
+/// 而图和后面的正文之间反倒空了两行。上面那行空谁都没出，下面那行空出了两遍
+/// （收段一次、投递方自己又补一个 `\n`）。
+#[test]
+fn a_queued_result_block_is_fenced_by_one_blank_line_on_each_side() {
+    with_blocks(|| {
+        let mut renderer = timeline_renderer();
+        renderer.use_buffered_output();
+        renderer
+            .write_tool_call("use_meme", r#"{"action":"show","id":"x"}"#)
+            .unwrap();
+        renderer
+            .write_tool_result("use_meme", true, "sent meme x")
+            .unwrap();
+        // 图占位格进缓冲的形状：逐行、行末带换行。
+        renderer.queue_after_timeline("  ▉▉▉\r\n  ▉▉▉\r\n".to_string());
+        renderer.cut_timeline().unwrap();
+        let frame = String::from_utf8_lossy(&renderer.take_output_frame()).into_owned();
+        let rows = frame
+            .lines()
+            .map(|line| crate::render::strip_ansi_text(line).trim_end().to_string())
+            .collect::<Vec<_>>();
+        // 收缩行：`› …`（这一轮耗时是 0，所以措辞是 `1 tool` 而不是 `Worked for`）
+        let head = rows
+            .iter()
+            .position(|line| line.trim_start().starts_with('\u{203a}'))
+            .unwrap_or_else(|| panic!("没有收缩行: {rows:?}"));
+        let first = rows
+            .iter()
+            .position(|line| line.contains('▉'))
+            .unwrap_or_else(|| panic!("图那几行没落下来: {rows:?}"));
+        let last = rows.iter().rposition(|line| line.contains('▉')).unwrap();
+        assert_eq!(
+            first - head,
+            2,
+            "收缩行和图之间不是正好一行空: {:?}",
+            &rows[head..=first]
+        );
+        assert!(
+            rows.get(last + 1).is_some_and(|line| line.is_empty()),
+            "图下面没有空行: {:?}",
+            &rows[last..]
+        );
+        assert!(
+            rows.get(last + 2).is_none_or(|line| !line.is_empty()),
+            "图下面空了不止一行: {:?}",
+            &rows[last..]
+        );
+    });
+}
+
+/// 还在跑的工具要终端腾地方时，不能被当成「已中断」收掉。
+///
+/// 09-19 用户：shellhook 里每发一次表情包就多两行 `✗ 表情包 · 已中断`，而那次
+/// 其实是成功的。发图要先请渲染器收尾（`prepare_for_external_output`），收尾
+/// 那一刻这次调用**还没返回**——判成「没跑完 = 中断」收一次，真结果回来统计已经
+/// 被清空、又当成新的一次收一次。
+#[test]
+fn a_tool_still_running_when_the_terminal_is_borrowed_is_not_cut_as_interrupted() {
+    with_blocks(|| {
+        const MEME_GLYPH: char = '\u{f118}';
+        let mut renderer = timeline_renderer();
+        renderer.use_buffered_output();
+        renderer
+            .write_tool_call("use_meme", r#"{"action":"show","id":"x"}"#)
+            .unwrap();
+        renderer.prepare_for_external_output().unwrap();
+        let cut = String::from_utf8_lossy(&renderer.take_output_frame()).into_owned();
+        assert!(
+            !cut.contains(&t("interrupted", "已中断")),
+            "腾地方时把还在跑的工具收成了中断: {cut}"
+        );
+        // 真结果回来，这才轮到它落地——而且只落一次。
+        renderer
+            .write_tool_result("use_meme", true, "sent meme x")
+            .unwrap();
+        renderer.finish().unwrap();
+        let frame = String::from_utf8_lossy(&renderer.take_output_frame()).into_owned();
+        // 收缩行只报一次工具、零个错。原来是「2 tools · 2 errs」。
+        let summary = frame
+            .lines()
+            .map(crate::render::strip_ansi_text)
+            .find(|line| line.trim_start().starts_with('\u{203a}'))
+            .unwrap_or_else(|| panic!("没有收缩行: {frame:?}"));
+        assert!(
+            summary.contains("1 tool") && !summary.contains("err"),
+            "收缩行把一次发图记成了多次/记了错: {summary:?}"
+        );
+        // 点开也只有那一步。
+        let head = block_id_in(&frame).expect("收缩行没挂块");
+        let rows = crate::render::blocks::get(head)
+            .unwrap_or_default()
+            .iter()
+            .map(|line| crate::render::strip_ansi_text(line))
+            .filter(|line| line.contains(MEME_GLYPH))
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 1, "表情包那一步落了不止一次: {rows:?}");
+        assert!(
+            !rows[0].contains(&t("interrupted", "已中断")),
+            "落下来的那一步还是中断态: {rows:?}"
+        );
+    });
+}

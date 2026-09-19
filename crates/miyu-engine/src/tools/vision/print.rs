@@ -101,7 +101,14 @@ pub async fn image_parts_for_buffer(path: &Path, size: Option<String>) -> Result
         bail!("chafa exited with status {}", output.status);
     }
     // chafa 吐的是 `\n` 断行；缓冲按终端语义走，要 `\r\n` 才回到行首。
-    let art = String::from_utf8_lossy(&output.stdout).replace('\n', "\r\n");
+    //
+    // 藏/显光标那两条序列顺手摘掉：进缓冲这一路光标归 TUI 管，而末尾那条
+    // `?25h` 落在最后一行的换行**之后**，于是自己占掉一行——图下面凭空多
+    // 一行空（09-19）。
+    let art = String::from_utf8_lossy(&output.stdout)
+        .replace("\x1b[?25l", "")
+        .replace("\x1b[?25h", "")
+        .replace('\n', "\r\n");
     Ok((String::new(), art))
 }
 
