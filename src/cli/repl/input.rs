@@ -126,6 +126,9 @@ pub(in crate::cli) fn read_live_repl_input(
                     return Ok(LiveReplOutcome::FollowWake { run_id, label });
                 }
             }
+            // 输入框右上角那行 `/goal …`：目标跑着的时候屏幕上只有正文，
+            // 这行提示是唯一还在动的东西（用户 09-19）。一秒一拍。
+            live.tick_goal_hint(jobs_feed.goal())?;
             let cumulative_changed = jobs_feed
                 .cumulative()
                 .is_some_and(|totals| live.footer.update_cumulative_tokens(totals));
@@ -867,6 +870,27 @@ pub(in crate::cli) fn render_repl_input_with_footer(
     let mut row_offset = 0u16;
     let footer_row;
     queue!(stdout, MoveTo(x0, *input_row), Print(&prompt_prefix))?;
+    // 输入框顶那一行右端：长任务跑起来之后屏幕上只有正文，看不出「它还在自己
+    // 往前跑吗、第几轮了」（用户 09-19）。这行常驻提示只说这一件事，不进
+    // footer——那儿已经挤着模型名和用量了。
+    let goal_hint = crate::cli::footer::goal_hint_text(footer.goal.as_ref());
+    if !goal_hint.is_empty() {
+        let hint_width = visible_width(&goal_hint);
+        let prefix_width = visible_width(&prompt_prefix);
+        // 放不下就整条不画：截断出来的 `/goal runn` 比没有更糟。
+        if cols > prefix_width.saturating_add(hint_width).saturating_add(2) {
+            let column = u16::try_from(cols.saturating_sub(hint_width))
+                .unwrap_or(u16::MAX)
+                .saturating_add(x0);
+            // 和左侧那根粗线、左下角的模式标签同一个高亮色（用户 09-19）。
+            let style = crate::cli::footer::goal_hint_style(mode);
+            queue!(
+                stdout,
+                MoveTo(column, *input_row),
+                Print(format!("{style}{goal_hint}\x1b[0m"))
+            )?;
+        }
+    }
     row_offset = row_offset.saturating_add(1);
     let pad = " ".repeat(usize::from(x0));
     for line in &display_rows {

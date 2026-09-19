@@ -14,6 +14,7 @@ fn lobby_tail(banner: Option<BannerScene>) -> LiveReplTail {
         round_base_footer: None,
         footer_offset: None,
         footer_spinner_last: None,
+        goal_hint_drawn: String::new(),
         output_cursor: (0, 0),
         tail_start: 0,
         tail_rows: 0,

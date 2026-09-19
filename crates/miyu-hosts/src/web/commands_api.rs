@@ -58,8 +58,8 @@ pub(in crate::web) async fn goal_command_http(
 ) -> std::result::Result<Json<Value>, ApiError> {
     require_mutation(&headers, &state)?;
     require_local_web_session(&state, &headers, &request.session_id)?;
-    let text = crate::web::apply_goal_command(&state, &request.session_id, &request.input);
-    Ok(Json(json!({ "text": text })))
+    let (text, ok) = crate::web::apply_goal_command(&state, &request.session_id, &request.input);
+    Ok(Json(json!({ "text": text, "ok": ok })))
 }
 
 /// 会话当前目标的结构化快照。

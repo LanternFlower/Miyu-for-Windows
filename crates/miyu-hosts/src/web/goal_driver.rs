@@ -116,11 +116,16 @@ pub(in crate::web) fn spawn_goal_round_driver(state: DaemonState) {
 ///   撞一次 CAS 才发现世界变了，要么整轮都在推进旧目标。
 ///
 /// REPL 走 IPC、WebUI 走 HTTP，两条路都必须从这里过：各写一份迟早分叉。
+/// 执行一条 `/goal` 命令，返回（回执文案, 成没成）。
+///
+/// 成败要带出去：被拒的命令（「本会话已有未完成的目标」）在**续轮跑着**的时候
+/// 是没有任何可见后果的——客户端那条静默执行的路子本来靠「流被掐断」当反馈，
+/// 拒绝时流照跑，不特地打一句就等于什么都没发生（用户 09-19 实测）。
 pub(in crate::web) fn apply_goal_command(
     state: &DaemonState,
     session_id: &str,
     input: &str,
-) -> String {
+) -> (String, bool) {
     let verb = input.split_whitespace().next().unwrap_or("");
     // 会话所属者的库(成员在成员库):goals 表外键指向 sessions,用错库会
     // FOREIGN KEY constraint failed(09-11)。
@@ -163,7 +168,7 @@ pub(in crate::web) fn apply_goal_command(
     // 人刚动过目标，驱动器该重新看一眼：`/goal resume` 之后正是要它立刻接着
     // 跑，而不是干等下一个回合结束事件——那个事件可能永远不来（会话正闲着）。
     nudge_goal_driver(state, session_id);
-    text
+    (text, succeeded)
 }
 
 /// 取消这个会话所有在飞的续轮 run。人类发起的回合不碰。

@@ -163,6 +163,10 @@ pub(in crate::cli) struct LiveReplTail {
     /// 那行永远没人清(用户 08-20 截图实锤)。
     pub(in crate::cli) footer_offset: Option<u16>,
     pub(in crate::cli) footer_spinner_last: Option<std::time::Instant>,
+    /// 输入框右上角那行 `/goal …` 上一次画出去的**原文**。秒数每秒自己变，
+    /// 光比 `GoalHint` 比不出来；比字符串则「没变就不重画」，空闲时一秒最多
+    /// 一帧。见 [`Self::tick_goal_hint`]。
+    pub(in crate::cli) goal_hint_drawn: String,
     pub(in crate::cli) jobs: Vec<miyu_engine::tools::jobs::JobOverview>,
     /// 已经下过"停"的任务 → 下达的时刻。见 `suppress_jobs`。
     pub(in crate::cli) suppressed_jobs: std::collections::HashMap<String, std::time::Instant>,
@@ -591,6 +595,7 @@ impl LiveReplTail {
             round_base_footer: None,
             footer_offset: None,
             footer_spinner_last: None,
+            goal_hint_drawn: String::new(),
             jobs: Vec::new(),
             suppressed_jobs: std::collections::HashMap::new(),
             live_turn_tokens: 0,
@@ -967,6 +972,27 @@ impl LiveReplTail {
         renderer.tick_spinner()?;
         self.apply_renderer_frame(renderer)?;
         self.tick_footer_spinner()
+    }
+
+    /// 输入框右上角那行 `/goal …` 走一拍。
+    ///
+    /// 它有两个走法：状态由 daemon 推（轮次、暂停、受阻，搭任务总览那趟一秒
+    /// 一次的车回来），秒数则是自己每秒往上加。所以这里比的是**画出来的那串
+    /// 字**——一样就什么都不做，不一样才重画一帧（空闲时一秒最多一次）。
+    pub(in crate::cli) fn tick_goal_hint(
+        &mut self,
+        goal: Option<miyu_core::ipc::GoalHint>,
+    ) -> Result<()> {
+        self.footer.goal = goal;
+        if !self.rendered || self.external_output_active {
+            return Ok(());
+        }
+        let text = crate::cli::footer::goal_hint_text(self.footer.goal.as_ref());
+        if text == self.goal_hint_drawn {
+            return Ok(());
+        }
+        self.goal_hint_drawn = text;
+        synchronized_terminal_update(CursorAfterUpdate::Preserve, || self.redraw())
     }
 
     /// footer 里的运行转轮:单行覆写(footer 行全宽 padding,直接盖不闪),

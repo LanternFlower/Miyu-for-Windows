@@ -537,6 +537,26 @@ pub(in crate::web) fn apply_session_model_override_to(
     }
 }
 
+/// 输入框那行 `/goal …` 提示要的状态。完成的目标不下发——没什么可提示的。
+pub(in crate::web) fn goal_hint(store: &StateStore, session_id: &str) -> Option<ipc::GoalHint> {
+    use miyu_core::state::GoalPhase;
+    let goal = store.goal(session_id).ok().flatten()?;
+    if goal.phase == GoalPhase::Complete {
+        return None;
+    }
+    Some(ipc::GoalHint {
+        phase: goal.phase.as_str().to_string(),
+        armed: miyu_engine::tools::goal::is_armed(session_id),
+        awaiting: miyu_engine::tools::goal::is_awaiting_human(session_id),
+        rounds: goal.rounds_started,
+        // `updated_at` 是这个状态最后一次变动的时刻：起新一轮、被暂停、被卡住
+        // 都会推它，正好就是「这个状态持续了多久」的起点。
+        since_unix: chrono::DateTime::parse_from_rfc3339(&goal.updated_at)
+            .map(|time| time.timestamp())
+            .unwrap_or_default(),
+    })
+}
+
 pub(in crate::web) fn build_session_agent(
     config: &AppConfig,
     paths: &MiyuPaths,

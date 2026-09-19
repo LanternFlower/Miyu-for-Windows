@@ -5,6 +5,7 @@ use crate::cli::*;
 
 fn status(model: &str, running: bool) -> ReplFooterStatus {
     ReplFooterStatus {
+        goal: None,
         provider: "provider".to_string(),
         model: model.to_string(),
         mixed_models: false,

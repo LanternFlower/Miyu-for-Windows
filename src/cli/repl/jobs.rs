@@ -156,6 +156,10 @@ pub(in crate::cli) struct SharedJobsFeed {
     /// turn that spawned them published its totals — without this the footer
     /// sat on a stale Σ until the user happened to send another prompt.
     pub(in crate::cli) cumulative: std::sync::Mutex<Option<TurnTokens>>,
+    /// 这条 REPL 的会话上挂着的目标。轮询线程一秒问一次（`GoalStatus`）——
+    /// 输入框右上角那行 `/goal …` 靠它自己往前走（轮次、暂停、受阻、上一轮
+    /// 空转停下来等人），不必等下一条命令或下一个回合。
+    pub(in crate::cli) goal: std::sync::Mutex<Option<miyu_core::ipc::GoalHint>>,
     /// Active daemon-initiated wake runs: (run_id, session_id, label).
     pub(in crate::cli) wake_runs: std::sync::Mutex<Vec<(String, String, String)>>,
     /// Wake runs already attached to (never re-follow), and turn ids that
@@ -238,6 +242,26 @@ impl JobsFeed {
         }
     }
 
+    /// 这条 REPL 的会话上挂着的目标（`/goal`）。直连道没有 daemon，也就没有
+    /// 续轮驱动器——那边永远是 None。
+    pub(in crate::cli) fn goal(&self) -> Option<miyu_core::ipc::GoalHint> {
+        match self {
+            JobsFeed::Shared(shared) => shared.goal.lock().unwrap().clone(),
+            JobsFeed::Local(_) => None,
+        }
+    }
+
+    /// 刚从 daemon 手里拿到一份更新的目标状态（`/goal` 命令的回执里就带着）。
+    ///
+    /// 必须写回这里而不只是写 footer：轮询一秒一次，这一秒里每一拍
+    /// `tick_goal_hint` 都会拿这份快照去盖 footer——不同步的话「清掉的目标」
+    /// 会自己回来待满一秒。
+    pub(in crate::cli) fn set_goal(&self, goal: Option<miyu_core::ipc::GoalHint>) {
+        if let JobsFeed::Shared(shared) = self {
+            *shared.goal.lock().unwrap() = goal;
+        }
+    }
+
     pub(in crate::cli) fn take_reports(&self) -> Vec<BackgroundReport> {
         match self {
             JobsFeed::Shared(shared) => {
@@ -313,6 +337,22 @@ pub(in crate::cli) fn spawn_jobs_poll_thread(paths: MiyuPaths) -> std::sync::Arc
             retain_session_jobs(&mut jobs, repl_session.as_deref());
             *feed.jobs.lock().unwrap() = jobs;
             *feed.wake_runs.lock().unwrap() = wake_runs;
+            // 目标按**这个 REPL 的会话**单独问一次：任务总览回的那份
+            // `SessionState` 说的是 daemon 的当前会话，跟 REPL 的会话常常不是
+            // 一条（`GetReplSession` 不动当前会话指针）。
+            if let Some(session) = repl_session.as_deref() {
+                let goal = runtime.block_on(async {
+                    tokio::time::timeout(
+                        std::time::Duration::from_millis(500),
+                        fetch_goal_status(&paths, session),
+                    )
+                    .await
+                    .unwrap_or(Ok(None))
+                });
+                if let Ok(goal) = goal {
+                    *feed.goal.lock().unwrap() = goal;
+                }
+            }
             if let (Some(store), Some(session)) = (store.as_ref(), repl_session.as_deref()) {
                 if let Ok(totals) = store.pinned(session).session_cumulative_token_totals() {
                     *feed.cumulative.lock().unwrap() = Some(totals);
@@ -424,6 +464,39 @@ pub(in crate::cli) async fn fetch_job_trace(
         )),
         other => anyhow::bail!("unexpected frame for job trace: {other:?}"),
     }
+}
+
+/// 一条会话此刻的目标（`/goal`）。
+///
+/// 单开一条命令是因为另外两条都不合用：任务总览回的 `SessionState` 说的是
+/// daemon 的当前会话，而 `GetSessionState` 对非当前会话要现装一个 Agent 估
+/// 上下文——一秒一次的轮询用不起。
+pub(in crate::cli) async fn fetch_goal_status(
+    paths: &MiyuPaths,
+    session_id: &str,
+) -> Result<Option<miyu_core::ipc::GoalHint>> {
+    let mut stream = ipc::connect(&paths.ipc_socket()).await?;
+    ipc::send(
+        &mut stream,
+        &IpcRequest::new(IpcCommand::GoalStatus {
+            target: miyu_core::ipc::SessionRef::Id {
+                id: session_id.to_string(),
+            },
+        }),
+    )
+    .await?;
+    match ipc::receive::<IpcFrame>(&mut stream).await? {
+        Some(IpcFrame::AdminResult { data, .. }) => Ok(goal_hint_from_admin_data(&data)),
+        _ => Ok(None),
+    }
+}
+
+/// `AdminResult` 的 data 里那份目标状态。`/goal` 命令的回执也带同一个键——
+/// 解析只此一处，两条路的形状不会分叉。
+pub(in crate::cli) fn goal_hint_from_admin_data(
+    data: &serde_json::Value,
+) -> Option<miyu_core::ipc::GoalHint> {
+    serde_json::from_value(data.get("goal")?.clone()).ok()?
 }
 
 pub(in crate::cli) async fn fetch_jobs_overview(paths: &MiyuPaths) -> Result<JobsOverviewSnapshot> {

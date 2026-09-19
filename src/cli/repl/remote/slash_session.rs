@@ -435,6 +435,25 @@ impl RemoteRepl {
             // 多行的详情压成一句：命令回执不该占半屏。
             text.lines().next().unwrap_or_default().to_string()
         };
+        // 输入框右上角那行 `/goal …` 当场跟上：命令的回执只说一句话，状态是否
+        // 真的换了（设上了、暂停了、清掉了）要看那行提示变没变。回执里带着命令
+        // 执行完之后的目标状态，直接用。
+        //
+        // 写的是轮询线程那份快照而不是 footer：空闲循环每一拍都拿快照去盖
+        // footer，不同步的话刚清掉的目标会自己回来待满一秒。
+        let goal = goal_hint_from_admin_data(&data);
+        // 目标要开跑了就撤大厅：接下来的续轮会往屏幕上写正文，而大厅那层星空
+        // 是盖在正文之上的——不撤的话第一轮跑完了屏幕上还是一片星空，什么都
+        // 没有（用户 09-19 实测：空会话里 `/goal` 建目标不退出大厅）。
+        //
+        // 只在「真的会自己往前跑」时撤：`/goal` 查状态、`/goal pause`、
+        // `/goal clear` 都不该把大厅弄没。
+        if goal.as_ref().is_some_and(miyu_core::ipc::GoalHint::running) {
+            self.live_repl
+                .set_session_empty(&self.config, &self.paths, false);
+        }
+        self.jobs_feed.set_goal(goal.clone());
+        self.live_repl.tick_goal_hint(goal)?;
         // 暗色 + 图标：这是系统回执，不是模型正文，得和邻居们
         // （工作目录绑定、后台任务表头）长得一族。单个 \n 收尾，
         // 和它们一致——多一个就空两行。

@@ -38,6 +38,11 @@ pub(in crate::cli) async fn follow_wake_run(
         // Run already finished — the DB report path will print it instead.
         _ => return Ok(()),
     };
+    // 挂上了就撤大厅：接下来这一轮要往屏幕上写正文，而大厅那层星空是盖在正文
+    // 之上的——不撤的话整轮跑完屏幕上还是一片星空（用户 09-19 实测:空会话里
+    // 建目标不退大厅）。目标续轮、后台任务的跟进回复都从这儿过，所以放这一处
+    // 就够；命令自己那条路另有一处，那儿不必等 daemon 真的起轮。
+    live.set_session_empty(&config, paths, false);
 
     let mut renderer = render::StreamRenderer::new(
         render::ReasoningDisplayMode::from_expand(config.display.expand_reasoning),
@@ -152,16 +157,48 @@ pub(in crate::cli) async fn follow_wake_run(
                                 // 静默执行：edit/pause/clear 会让 daemon 掐掉
                                 // 当前续轮（edit 随后按新目标重开一轮），流的
                                 // 中断与重启本身就是反馈。
-                                let _ = crate::cli::repl::session::send_ipc_admin(
-                                    paths,
-                                    IpcCommand::Goal {
-                                        target: miyu_core::ipc::SessionRef::Id {
-                                            id: session_id.to_string(),
+                                if let Ok((_, data)) =
+                                    crate::cli::repl::session::send_ipc_admin(
+                                        paths,
+                                        IpcCommand::Goal {
+                                            target: miyu_core::ipc::SessionRef::Id {
+                                                id: session_id.to_string(),
+                                            },
+                                            input: args,
                                         },
-                                        input: args,
-                                    },
-                                )
-                                .await;
+                                    )
+                                    .await
+                                {
+                                    // 右上角那行提示是这条静默路径唯一的回执：
+                                    // 暂停/清掉之后它当场换字，不必等轮询。
+                                    let goal = goal_hint_from_admin_data(&data);
+                                    jobs_feed.set_goal(goal.clone());
+                                    live.tick_goal_hint(goal)?;
+                                    // **被拒的那条得说话**：「静默」的前提是命令
+                                    // 有可见后果（流被掐断）。`/goal <另一个目标>`
+                                    // 撞上已有目标会被拒，流照跑、提示行也不变，
+                                    // 不打这一句就真的一点反应都没有（用户 09-19
+                                    // 实测）。全屏下 `repl_note` 走的是浮层提示，
+                                    // 不碰正在流的那块画面。
+                                    let rejected = data
+                                        .get("ok")
+                                        .and_then(serde_json::Value::as_bool)
+                                        .is_some_and(|ok| !ok);
+                                    if rejected {
+                                        let text = data
+                                            .get("text")
+                                            .and_then(serde_json::Value::as_str)
+                                            .unwrap_or_default();
+                                        let line =
+                                            text.lines().next().unwrap_or_default().to_string();
+                                        if !line.is_empty() {
+                                            repl_note(
+                                                live,
+                                                &format!("\x1b[2m◎ {line}\x1b[0m\n"),
+                                            )?;
+                                        }
+                                    }
+                                }
                                 live.editor.clear();
                                 if !live.external_output_active {
                                     synchronized_terminal_update(
@@ -241,6 +278,9 @@ pub(in crate::cli) async fn follow_wake_run(
                     // 状态条是 live tail 的一部分，附着期间同样要持续刷新。
                     follow_strip_tick = follow_strip_tick.wrapping_add(1);
                     if follow_strip_tick % 2 == 0 && !live.external_output_active {
+                        // 目标续轮就是在这条路上跑的：右上角那行 `/goal running
+                        // · 第 N 轮 · 12s` 得跟着一起走，不然一附着就冻住了。
+                        live.tick_goal_hint(jobs_feed.goal())?;
                         if live.set_jobs(jobs_feed.current()) {
                             synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
                                 live.redraw()

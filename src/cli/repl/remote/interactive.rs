@@ -188,6 +188,10 @@ impl RemoteRepl {
         loop {
             // Keep the poll thread's session filter in step with /new & /session.
             *self.jobs_shared.repl_session.lock().unwrap() = Some(self.active_session_id.clone());
+            // 目标提示是输入循环里一秒一拍自己往前走的（`tick_goal_hint` 写在
+            // tail 的 footer 上），这儿先收回来：下面那次 set_footer 是整份覆盖，
+            // 不收就拿上一轮的旧值盖掉它，一秒后才由下一拍补上——屏幕上是闪一下。
+            self.footer.goal = self.live_repl.footer.goal.clone();
             self.live_repl.set_footer(self.footer.clone());
             let (next_mode, input, images, history_entry) = match read_live_repl_input(
                 &mut self.live_repl,

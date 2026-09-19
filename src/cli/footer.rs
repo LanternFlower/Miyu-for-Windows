@@ -20,6 +20,72 @@ pub(in crate::cli) struct ReplFooterStatus {
     /// 回合运行中的盲文转轮帧号;None=空闲不显示。随 spinner tick 推进,
     /// set_footer 的权威覆盖(from_config 构造)自然回落 None。
     pub(in crate::cli) running_spinner: Option<usize>,
+    /// 会话上挂着的目标（`/goal`）。画在输入框第一行的右端，不占 footer。
+    pub(in crate::cli) goal: Option<miyu_core::ipc::GoalHint>,
+}
+
+/// 这条车道的高亮色：输入框左侧那根粗线、footer 左下角的模式标签、输入框右上
+/// 角那行 `/goal …`，三处是同一个颜色。
+///
+/// 收成一个来源是因为它们本来就必须一致——改主题时漏掉一处，屏幕四个角就对不
+/// 上了。普通 = primary 蓝，开发 = tertiary 酒红（与 render/webui 的 tertiary
+/// 同源）。
+pub(in crate::cli) fn lane_accent_style(mode: PersonaLane) -> &'static str {
+    match mode {
+        PersonaLane::Active => "\x1b[1m\x1b[34m",
+        PersonaLane::Dev => "\x1b[1m\x1b[35m",
+    }
+}
+
+/// 输入框右上角那行 `/goal …` 的配色。
+///
+/// 不跟「已绑定沙盒」那些系统回执一样走暗灰：那是说过就算的一次性告知，而这行
+/// 是常驻的状态灯，暗着就沉进星空里看不见了（用户 09-19：「这个是值得高亮的内
+/// 容」）。用的是当前模式的高亮色——和左侧粗线、左下角模式标签同一个颜色，屏幕
+/// 上这几处连成一气（用户 09-19 指定）。
+pub(in crate::cli) fn goal_hint_style(mode: PersonaLane) -> &'static str {
+    lane_accent_style(mode)
+}
+
+/// 输入框右上角那行 `/goal …`。没目标、或目标已完成就返回空串。
+///
+/// 长任务跑起来之后屏幕上一直只有正文，看不出「它还在自己往前跑吗、跑到第几轮
+/// 了」（用户 09-19）。这行常驻提示就管这一件事，所以只说三个词：什么状态、第几
+/// 轮、这个状态持续了多久。颜色另走 [`goal_hint_style`]——这里只出字，好让走查
+/// 和单测比得了原文。
+pub(in crate::cli) fn goal_hint_text(goal: Option<&miyu_core::ipc::GoalHint>) -> String {
+    let Some(goal) = goal else {
+        return String::new();
+    };
+    let running = goal.running();
+    let state = match goal.phase.as_str() {
+        "blocked" => t("blocked", "blocked"),
+        _ if running => t("running", "running"),
+        _ => t("paused", "paused"),
+    };
+    let mut text = format!("/goal {state}");
+    // 轮数的说法跟 `/goal` 自己那份对齐（「进行中 · 第 3 轮」），两处说的是
+    // 同一个数，长得也该一样。
+    if goal.rounds > 0 {
+        let rounds = goal.rounds;
+        text.push_str(&if is_zh() {
+            format!(" · 第 {rounds} 轮")
+        } else {
+            format!(" · round {rounds}")
+        });
+    }
+    // 秒数只在真的往前跑时给：停着的时候那个数字每帧都一样，只会让人以为卡了。
+    if running {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_secs() as i64)
+            .unwrap_or_default();
+        let elapsed = now.saturating_sub(goal.since_unix);
+        if (0..86_400).contains(&elapsed) {
+            text.push_str(&format!(" · {elapsed}s"));
+        }
+    }
+    text
 }
 
 /// Σ is hidden entirely when nothing has been spent yet, so an empty session
@@ -57,6 +123,9 @@ impl ReplFooterStatus {
             mixed_models,
             thinking: None,
             running_spinner: None,
+            // 目标状态由轮询线程一秒一拍地喂（`LiveReplTail::tick_goal_hint`），
+            // 配置构造这一路不知道。
+            goal: None,
             token_usage: render::TokenMeter {
                 session_tokens,
                 context_window: window.map(|(value, _)| value),
@@ -362,13 +431,7 @@ pub(in crate::cli) fn sound_wave_frame(frame: usize, dev: bool) -> String {
 }
 
 pub(in crate::cli) fn colored_footer_mode_label(mode: PersonaLane) -> String {
-    let label = mode.label();
-    match mode {
-        PersonaLane::Active => primary_footer_text(label),
-        // tertiary(35 酒红,与 render/webui 的 tertiary 一致),区别于普通
-        // 模式的 primary 蓝。
-        PersonaLane::Dev => format!("\x1b[1m\x1b[35m{label}\x1b[0m"),
-    }
+    format!("{}{}\x1b[0m", lane_accent_style(mode), mode.label())
 }
 
 pub(in crate::cli) fn primary_footer_text(text: &str) -> String {

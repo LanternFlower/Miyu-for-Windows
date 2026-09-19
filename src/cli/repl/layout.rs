@@ -121,11 +121,9 @@ pub(in crate::cli) fn submitted_echo_lines(
 }
 
 pub(in crate::cli) fn submitted_echo_bar(mode: PersonaLane) -> String {
-    match mode {
-        PersonaLane::Active => "\x1b[1m\x1b[34m┃\x1b[0m".to_string(),
-        // 与 footer 模式标签同为 tertiary(35 酒红),整条 dev 视觉一致。
-        PersonaLane::Dev => "\x1b[1m\x1b[35m┃\x1b[0m".to_string(),
-    }
+    // 颜色走 `footer::lane_accent_style`:这根粗线、footer 左下角的模式标签、
+    // 输入框右上角那行 `/goal …` 是同一个高亮色,各写一遍迟早漂移。
+    format!("{}┃\x1b[0m", crate::cli::footer::lane_accent_style(mode))
 }
 
 pub(in crate::cli) fn input_prompt_bar(mode: PersonaLane) -> String {

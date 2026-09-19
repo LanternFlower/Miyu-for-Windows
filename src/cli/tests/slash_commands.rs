@@ -337,3 +337,107 @@ fn session_list_groups_the_current_lane_first() {
         ["d1", "d2", "n1", "n2"]
     );
 }
+
+/// 输入框右上角那行 `/goal …`（用户 09-19）。
+///
+/// 长任务跑起来之后屏幕上一直只有正文，看不出「它还在自己往前跑吗、第几轮
+/// 了」。这行只说三件事：状态、轮数、这个状态持续了多久。
+#[test]
+fn the_goal_hint_says_state_rounds_and_elapsed() {
+    use crate::cli::footer::goal_hint_text;
+    use miyu_core::ipc::GoalHint;
+
+    assert_eq!(goal_hint_text(None), "", "没目标就什么都不画");
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    // 自己往前跑：状态 + 轮数 + 秒数。
+    let running = GoalHint {
+        phase: "active".into(),
+        armed: true,
+        awaiting: false,
+        rounds: 3,
+        since_unix: now - 12,
+    };
+    let text = goal_hint_text(Some(&running));
+    assert!(text.starts_with("/goal running"), "{text}");
+    assert!(text.contains("第 3 轮"), "{text}");
+    assert!(text.contains("12s"), "{text}");
+
+    // 上一轮一个工具都没调，驱动器停下来等人开口了：armed 还挂着，但它不会
+    // 自己往前跑——说成 running 就是在骗人，这正是这行提示要治的病。
+    let awaiting = GoalHint {
+        awaiting: true,
+        ..running.clone()
+    };
+    let text = goal_hint_text(Some(&awaiting));
+    assert!(text.starts_with("/goal paused"), "{text}");
+
+    // `active` 但没 armed，和 `paused` 对人是同一件事：停在这儿等人。
+    let waiting = GoalHint {
+        armed: false,
+        ..running.clone()
+    };
+    let text = goal_hint_text(Some(&waiting));
+    assert!(text.starts_with("/goal paused"), "{text}");
+    assert!(
+        !text.contains("12s"),
+        "停着的秒数每帧都一样，只会让人以为卡了: {text}"
+    );
+
+    let paused = GoalHint {
+        phase: "paused".into(),
+        armed: true,
+        ..running.clone()
+    };
+    assert!(goal_hint_text(Some(&paused)).starts_with("/goal paused"));
+
+    let blocked = GoalHint {
+        phase: "blocked".into(),
+        ..running.clone()
+    };
+    assert!(goal_hint_text(Some(&blocked)).starts_with("/goal blocked"));
+
+    // 时钟歪了（未来时间戳、或跨了一天）不画那个数，别显示 -3s 这种。
+    let skewed = GoalHint {
+        since_unix: now + 60,
+        ..running.clone()
+    };
+    assert!(
+        !goal_hint_text(Some(&skewed)).contains('s'),
+        "{}",
+        goal_hint_text(Some(&skewed))
+    );
+
+    // 还没起过轮就不说轮数。
+    let fresh = GoalHint {
+        rounds: 0,
+        ..running.clone()
+    };
+    assert!(!goal_hint_text(Some(&fresh)).contains("轮"));
+
+    // 配色 = 当前模式的高亮色，和左侧那根粗线、左下角的模式标签同一个
+    //（用户 09-19 指定）。三处同源，这里把它钉死：谁改跑偏了这条就红。
+    // 也不许带暗化——这行是常驻的状态灯，暗着就沉进背景里看不见了。
+    use crate::cli::footer::{colored_footer_mode_label, goal_hint_style};
+    for mode in [PersonaLane::Active, PersonaLane::Dev] {
+        let style = goal_hint_style(mode);
+        assert!(!style.is_empty() && !style.contains("\x1b[2m"), "{style:?}");
+        assert!(
+            submitted_echo_bar(mode).starts_with(style),
+            "{mode:?}: 得和左侧那根粗线同色"
+        );
+        assert!(
+            colored_footer_mode_label(mode).starts_with(style),
+            "{mode:?}: 得和左下角的模式标签同色"
+        );
+    }
+    assert_ne!(
+        goal_hint_style(PersonaLane::Active),
+        goal_hint_style(PersonaLane::Dev),
+        "两条车道的高亮色本来就不是一个"
+    );
+}

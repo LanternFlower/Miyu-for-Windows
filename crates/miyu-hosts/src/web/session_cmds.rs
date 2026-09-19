@@ -40,6 +40,15 @@ pub(in crate::web) fn is_available_local_session(
     Ok(usable && !state_store.is_platform_session(session_id)?)
 }
 
+/// 一条会话此刻的目标状态，JSON 形态（没有目标/已完成就是 `null`）。
+///
+/// 走**会话所属者的库**：成员的会话在成员库里，拿管理员库读 goals 表只会读到
+/// 空（与 `/goal` 命令、续轮驱动器同口径）。
+fn goal_status_json(state: &DaemonState, session_id: &str) -> Value {
+    let store = state.stores.for_session(session_id);
+    json!(crate::web::goal_hint(&store, session_id))
+}
+
 /// Handles the session-management IPC commands. Returns the `AdminResult`
 /// payload on success or a user-facing error message.
 pub(in crate::web) async fn handle_session_command(
@@ -481,8 +490,19 @@ pub(in crate::web) async fn handle_session_command(
         IpcCommand::Goal { target, input } => {
             let record = resolve_local_session_ref(state, &target)?;
             let session_id = record.session_id;
-            let text = crate::web::apply_goal_command(state, &session_id, &input);
-            Ok(json!({ "text": text }))
+            let (text, ok) = crate::web::apply_goal_command(state, &session_id, &input);
+            // 顺带回一份新状态：输入框右上角那行提示靠它当场换字，不用等下一
+            // 次轮询（`/goal clear` 之后那行还挂着一秒，看着像没清掉）。
+            // `ok` 给客户端判「这条被拒了」——被拒是没有可见后果的。
+            Ok(json!({
+                "text": text,
+                "ok": ok,
+                "goal": goal_status_json(state, &session_id),
+            }))
+        }
+        IpcCommand::GoalStatus { target } => {
+            let record = resolve_local_session_ref(state, &target)?;
+            Ok(json!({ "goal": goal_status_json(state, &record.session_id) }))
         }
         IpcCommand::DeleteSession { target } => {
             // Accepts `ask` too: a one-shot turn deletes its own session here.

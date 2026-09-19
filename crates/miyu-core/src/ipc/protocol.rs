@@ -48,6 +48,34 @@ pub struct SessionState {
     pub mode: String,
 }
 
+/// 输入框右上角那行 `/goal …` 提示要的全部信息。见 [`IpcCommand::GoalStatus`]。
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GoalHint {
+    /// `active` | `paused` | `blocked`（`complete` 不下发——没什么可提示的）。
+    pub phase: String,
+    /// 会不会自己往前跑。`active` 且没 armed 与 `paused` 对用户是同一件事：
+    /// 「它停在这儿等人」，所以显示时合并。
+    pub armed: bool,
+    /// 上一轮一个工具都没调,驱动器停下来等人开口了。armed 仍是 true,
+    /// 但它不会自己往前跑——对用户来说和暂停是同一件事。
+    #[serde(default)]
+    pub awaiting: bool,
+    /// 已经起过几轮。
+    pub rounds: i64,
+    /// 这个状态是什么时候进入的（Unix 秒）。客户端拿它算「跑了多久」。
+    pub since_unix: i64,
+}
+
+impl GoalHint {
+    /// 它此刻会不会自己往前跑。
+    ///
+    /// `active` 但没 armed（被打断过、daemon 重启过），以及「上一轮空转、驱动器
+    /// 在等人开口」，对人都和 `paused` 是同一件事：它停在这儿等你。
+    pub fn running(&self) -> bool {
+        self.phase == "active" && self.armed && !self.awaiting
+    }
+}
+
 /// 记忆重置的范围。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -207,6 +235,16 @@ pub enum Command {
     Goal {
         target: SessionRef,
         input: String,
+    },
+    /// 这条会话的目标此刻是什么样（给输入框右上角那行提示用）。
+    ///
+    /// 单开一条命令而不是搭 `SessionState` 的车：`AdminResult` 里那份状态说的
+    /// 是 **daemon 的当前会话**，而 REPL 有自己的会话指针（`GetReplSession`
+    /// 不动当前会话），两者常常不是一条；而 `GetSessionState` 对非当前会话
+    /// 要现装一个 Agent 估上下文，一秒一次的轮询用不起。这条只读一行库 +
+    /// 两个内存标记。
+    GoalStatus {
+        target: SessionRef,
     },
     StartTurn {
         content: String,
