@@ -98,6 +98,16 @@ pub(in crate::cli) async fn try_run_remote_chat(
     if let Some(jobs_feed) = jobs_feed {
         jobs_feed.mark_own_run(&run_id);
     }
+    // 在 herdr 里跑的话，侧栏那行跟着这一轮亮起来（不在就是 no-op）。
+    // 守卫负责收口：这个函数有九条出口，Drop 保证哪条走都报回 idle。
+    // 先记下来：`live` 后面会被部分移动，那之后问不了它。
+    let interactive_repl = live.is_some();
+    let herdr_turn = if interactive_repl {
+        herdr::TurnGuard::begin(&turn_session_id)
+    } else {
+        // 一次性 / shellhook：跑完进程就没了，收尾要把 pane 还回去。
+        herdr::TurnGuard::begin_transient(&turn_session_id)
+    };
     let mut turn_id: Option<String> = None;
 
     let config = AppConfig::load_or_default(paths)?;
@@ -658,6 +668,14 @@ pub(in crate::cli) async fn try_run_remote_chat(
                 deferred_images.push((data.clone(), size));
             }
             "question.requested" => {
+                // 她反问了：herdr 侧栏把整条 tab / workspace 标红，人在别的
+                // pane 干活时余光就知道「这儿在等我回话」。
+                herdr_turn.blocked(
+                    data.get("questions")
+                        .and_then(|questions| questions.get(0))
+                        .and_then(|question| question.get("question"))
+                        .and_then(serde_json::Value::as_str),
+                );
                 // 只让屏、不切线：这一步得等答案到手才补得进去。
                 renderer.prepare_for_panel()?;
                 if let Some(live) = live.as_deref_mut() {
@@ -720,6 +738,9 @@ pub(in crate::cli) async fn try_run_remote_chat(
                             },
                         )
                         .await?;
+                        // 答完了，回合接着跑：侧栏从红色回到「运行中」。不报的话
+                        // 它会一直红到整轮结束。
+                        herdr_turn.resumed();
                         renderer.start_waiting()?;
                     }
                     // Nobody could be shown the panel — no tty, or it failed to
@@ -957,6 +978,25 @@ pub(in crate::cli) async fn try_run_remote_chat(
         last_request_usage: None,
         responses_continuation: None,
     };
+    // 会话可能刚被自动命名（首条消息之后），标题跟着刷新一次。
+    // **只在常驻 REPL 里设**：一次性 / shellhook 跑完就退出，改了标题没人改回来，
+    // 人的终端标签页会被永久改名成「Miyu · 某某」。
+    if interactive_repl {
+        herdr::set_terminal_title_for_session(paths, &turn_session_id);
+    }
+    // 侧栏那几个自定义字段：模型和上下文占用。herdr 的 rows 里写 `$model`
+    // `$ctx` 就能显示——这是 Claude Code 在 herdr 里都没有的。
+    herdr::report_metadata(&[
+        ("model", result.model.clone().unwrap_or_default()),
+        (
+            "ctx",
+            completion
+                .get("context_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .map(|tokens| format!("{}k", tokens / 1000))
+                .unwrap_or_default(),
+        ),
+    ]);
     if config.notifications.on_turn_complete {
         notify_if_unfocused(
             &config,

@@ -10,6 +10,45 @@ const RAW_CHUNK_BYTES: usize = 3072;
 
 pub fn is_native_kitty_terminal() -> bool {
     is_native_kitty(std::env::var("TERM").as_deref().unwrap_or_default())
+        || herdr_renders_kitty_graphics()
+}
+
+/// 跑在 herdr 的 pane 里、而 herdr 自己开着 kitty 图形协议。
+///
+/// herdr 把 pane 的 `TERM` 降成 `xterm-256color`（它要自己接管终端），于是只看
+/// `TERM` 的判据会认定「这儿画不了图」，图退到 chafa 的字符画——**而 herdr 原生
+/// 支持 kitty 图形协议**（`terminal.kitty_graphics`，默认开）。白白降级一次
+/// （09-17 调研实测）。
+///
+/// 不盲猜：真去读 herdr 自己的 `config.toml`，用户把那个开关关了就照旧退回字符画
+/// ——往不认识图形序列的终端吐一段 base64，满屏都是乱码，比看字符画糟得多。
+/// 配置文件位置从 `HERDR_SOCKET_PATH` 的父目录推，这样具名 session（独立 socket
+/// 目录）也对得上。
+fn herdr_renders_kitty_graphics() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        if std::env::var("HERDR_ENV").ok().as_deref() != Some("1") {
+            return false;
+        }
+        let Some(socket) = std::env::var_os("HERDR_SOCKET_PATH") else {
+            return false;
+        };
+        let Some(dir) = std::path::Path::new(&socket).parent() else {
+            return false;
+        };
+        let Ok(text) = std::fs::read_to_string(dir.join("config.toml")) else {
+            // 没有配置文件 = 全是默认值，而这个开关默认是开的。
+            return true;
+        };
+        let Ok(config) = text.parse::<toml::Value>() else {
+            return true;
+        };
+        config
+            .get("terminal")
+            .and_then(|terminal| terminal.get("kitty_graphics"))
+            .and_then(toml::Value::as_bool)
+            .unwrap_or(true)
+    })
 }
 
 /// 本进程是否已经往终端发过 Unicode 占位符图片。

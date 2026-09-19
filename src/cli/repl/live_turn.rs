@@ -123,7 +123,11 @@ pub(in crate::cli) fn handle_live_agent_event(
                         let _ = screen.scroll_question_body(delta, panel_rows);
                     }
                 };
+                // 她反问了：侧栏标红（直连模式这儿没有会话 id 在手，只报状态；
+                // herdr 那边的会话 id 是可选字段，不带就是不更新它）。
+                herdr::report(herdr::HerdrState::Blocked, None, None);
                 question_panel::answer(renderer, request, responder, Some(&mut scroll))?;
+                herdr::report(herdr::HerdrState::Working, None, None);
                 // 问题面板只关闭 raw mode 与括号粘贴，键盘增强仍由外层 LiveRawMode 持有
                 enable_live_raw_mode()?;
                 execute!(io::stdout(), EnableBracketedPaste)?;
@@ -164,6 +168,9 @@ pub(in crate::cli) async fn run_live_agent_turn(
     }
     renderer.start_waiting()?;
     live.apply_renderer_frame(renderer)?;
+    // 直连模式（`MIYU_DIRECT=1`，不经 daemon）也上报：留半套的话，同一台机器上
+    // 换个跑法侧栏就不动了，查起来比没有还费劲。
+    let _herdr_turn = herdr::TurnGuard::begin(&state.session_id());
 
     let result = {
         let live_cell = std::cell::RefCell::new(&mut *live);

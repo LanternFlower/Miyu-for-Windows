@@ -115,6 +115,10 @@ pub(in crate::cli) async fn follow_wake_run(
         live.apply_renderer_frame(&mut renderer)?;
         waiting_started = true;
     }
+    // 跟着别人起的轮（另一个界面、后台任务唤醒）时，侧栏也该显示「在跑」——
+    // 这条 REPL 自己没起轮，但屏幕上正在流内容，报 idle 是骗人的。守卫在这段
+    // 结束时（跑完 / 脱离 / 中断）报回 idle。
+    let _herdr_follow = herdr::TurnGuard::begin(session_id);
     let mut raw = LiveRawMode::start()?;
 
     let mut spinner_tick = tokio::time::interval(Duration::from_millis(33));

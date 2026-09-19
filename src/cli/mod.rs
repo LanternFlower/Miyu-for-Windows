@@ -86,6 +86,7 @@ pub(in crate::cli) use repl::{
 pub(in crate::cli) use miyu_core::slash_commands::*;
 use repl::direct::{run_chat_with_images, run_chat_with_options, run_direct_repl};
 use repl::editor::{load_repl_input_history, repl_input_lines};
+pub(in crate::cli) use repl::herdr;
 use repl::input::render_repl_input_with_footer;
 use repl::live_turn::{
     handle_live_agent_event, handle_live_post_turn_overflow, run_live_agent_turn,

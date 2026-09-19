@@ -57,6 +57,10 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mode: PersonaLane
     live_repl.set_session_empty(&config, paths, session_is_empty(paths, &active_session_id));
     let jobs_shared = spawn_jobs_poll_thread(paths.clone());
     let jobs_feed = JobsFeed::Shared(jobs_shared.clone());
+    // 在 herdr 的 pane 里跑的话，侧栏这就多一行 `miyu`（不在就是 no-op）。
+    // 带上会话 id：`herdr agent list` 会显示它，将来做「重启后恢复」也靠它指回来。
+    herdr::report(herdr::HerdrState::Idle, None, Some(&active_session_id));
+    herdr::set_terminal_title_for_session(paths, &active_session_id);
 
     // Terminal closed (SIGHUP) or process killed (SIGTERM): the graceful
     // exit path at the bottom never runs, so stop this session's background
@@ -80,6 +84,10 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mode: PersonaLane
             // 后台任务归 daemon 管:前端死了任务照跑,完成后有唤醒
             // (验收:dsh 语义,前端退出不拖死会话任务)。
             let _ = (&paths, &feed);
+            // 死之前把 herdr 那个 pane 的权威还回去，否则侧栏上一直挂着一个
+            // 不存在的 miyu。`release` 是起进程、不等，这里要等它真的跑完再
+            // `exit`——所以同步调一次而不是丢给线程。
+            herdr::release_blocking();
             // SIGTERM 时终端往往还活着:process::exit 绕过 Drop,先尽力
             // 恢复 raw mode,否则用户的 shell 停在原始模式里。
             let _ = crossterm::terminal::disable_raw_mode();
@@ -157,7 +165,11 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mode: PersonaLane
         jobs_shared,
         jobs_feed,
     };
-    repl.run().await
+    let outcome = repl.run().await;
+    // 正常退出也要把 pane 的权威还回去（信号那条路另有一处）。跑不跑得成都要还，
+    // 所以放在 `?` 之外。
+    herdr::release_blocking();
+    outcome
 }
 
 /// 一个远端 REPL 会话跑着时的全部状态:配置、车道、当前会话、输入历史、footer 读数、

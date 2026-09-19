@@ -86,6 +86,17 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def do_POST(self):
+        # 置 STUB_HTTP_STATUS=500:直接回一个错误状态,用来验「回合报错时前端怎么
+        # 收场」。不带流,内容也无所谓——调用方要的就是失败。
+        status = os.environ.get("STUB_HTTP_STATUS")
+        if status and status != "200":
+            body = json.dumps({"error": {"message": "stub 故意失败"}}).encode()
+            self.send_response(int(status))
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         # 模型请求的往返延迟:两批工具之间 live 区空着的那个窗口靠它撑开。
         time.sleep(float(os.environ.get("STUB_RESPONSE_DELAY", "0")))
         length = int(self.headers.get("content-length", "0"))
