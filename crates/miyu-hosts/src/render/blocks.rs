@@ -37,6 +37,12 @@ struct Entry {
     version: u64,
     /// 最后一次被登记／更新／读取的序号。淘汰按它来，见 [`evict`]。
     touched: u64,
+    /// 用户**亲手**把这一块点开过（而不是按配置默认开着）。
+    ///
+    /// 记在这儿是因为这件事只有客户端知道（展开是视图层的事），而"这一步落地
+    /// 时默认开不开"是渲染器决定的——登记处本来就是两侧共用的那张表，正好当
+    /// 通道。用户 09-19：点开过的行，想完／跑完都不该被自动收回去。
+    user_open: bool,
 }
 
 fn registry() -> &'static Mutex<HashMap<u64, Entry>> {
@@ -104,10 +110,34 @@ fn insert_entry(lines: Vec<String>, overlay: bool, title: String) -> Option<u64>
             title,
             version: 0,
             touched: touch(),
+            user_open: false,
         },
     );
     evict(&mut map);
     Some(id)
+}
+
+/// 用户亲手开合了这一块。客户端的 `toggle_block` 每次都报一声。
+///
+/// 记下来是给**渲染器**用的：一步从「正在跑」落成「跑完了」时会换一块新的
+/// （内容不一样了），换的时候要知道用户手上那一块是开着还是关着——开着就让新
+/// 的那块也出来就是展开态，而不是按配置默认收起（用户 09-19）。
+pub fn set_user_open(id: u64, open: bool) {
+    let Ok(mut map) = registry().lock() else {
+        return;
+    };
+    if let Some(entry) = map.get_mut(&id) {
+        entry.user_open = open;
+    }
+}
+
+/// 这一块是不是用户亲手点开着的。块已经不在了就当没开过。
+pub fn user_open(id: u64) -> bool {
+    registry()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(&id).map(|entry| entry.user_open))
+        .unwrap_or(false)
 }
 
 /// 往一块里灌新内容（子代理边跑边更新）。标题跟着一起更新——它带着耗时。
@@ -320,9 +350,22 @@ pub fn write_expandable<W: std::io::Write>(
     expanded: Vec<String>,
     collapsed: impl FnOnce(&mut W) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
+    write_expandable_in(writer, expanded, false, collapsed)
+}
+
+/// 同上，外加「这一块出来就是展开态吗」。
+///
+/// `Worked for …` 用得上：这一段里只要有用户亲手点开着的步，收段时就不该把它们
+/// 一起收没——该是展开着的 `⌄ Worked for …`（用户 09-19）。
+pub fn write_expandable_in<W: std::io::Write>(
+    writer: &mut W,
+    expanded: Vec<String>,
+    open: bool,
+    collapsed: impl FnOnce(&mut W) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let id = register(expanded);
     if let Some(id) = id {
-        write!(writer, "{}", begin_marker(id))?;
+        write!(writer, "{}", begin_marker_in(id, open))?;
     }
     collapsed(writer)?;
     if id.is_some() {

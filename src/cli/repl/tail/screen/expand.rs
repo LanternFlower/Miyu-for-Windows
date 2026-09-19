@@ -603,6 +603,10 @@ impl Screen {
         // 顶到视口下面去，看着像"一展开正文就没了"。不在底部时才钉住原位。
         let following = self.following();
         if self.expanded.remove(&id).is_some() {
+            // 告诉登记处一声：这一步从「正在跑」落成「跑完了」时要换一块新的,
+            // 换的时候得知道用户手上这块是开是关(用户 09-19:点开过的行,想完/
+            // 跑完都不该被自动收回去)。
+            miyu_hosts::render::blocks::set_user_open(id, false);
             self.note_expanded_changed();
             self.restore_follow(following);
             self.invalidate();
@@ -611,6 +615,7 @@ impl Screen {
         let Some(body) = load_body(id, usize::from(self.cols)) else {
             return false;
         };
+        miyu_hosts::render::blocks::set_user_open(id, true);
         self.expanded.insert(id, body);
         self.note_expanded_changed();
         self.restore_follow(following);

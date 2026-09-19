@@ -205,6 +205,12 @@ pub struct Step {
     /// 不能点开的面（shellhook、单次、管道）没有"展开态"可言：那儿这一位由
     /// `body` 印不印在抬头底下来表达，见 `commit_static_steps`。
     open: bool,
+    /// 上一位的**来历**：用户亲手点开的（真），还是按配置默认开着的（假）。
+    ///
+    /// 两者在屏幕上一个样，收段时不一样：用户亲手点开过的，`Worked for …` 不能
+    /// 把它一起收没（用户 09-19）；配置默认开着的照旧收起来——不然开了「展开
+    /// 思考内容」的人每一段都会得到一个摊开的收缩行。
+    user_open: bool,
 }
 
 impl Step {
@@ -217,6 +223,7 @@ impl Step {
             block: None,
             tail: Vec::new(),
             open: false,
+            user_open: false,
         }
     }
 
@@ -234,6 +241,7 @@ impl Step {
             block,
             tail: Vec::new(),
             open: false,
+            user_open: false,
         }
     }
 
@@ -281,6 +289,7 @@ impl Step {
             block: None,
             tail: Vec::new(),
             open: false,
+            user_open: false,
         }
     }
 }
@@ -708,7 +717,13 @@ impl StreamRenderer {
             // 一处尾巴，和档位无关。
             step.tail = tail;
             // 子代理点开是覆盖层，默认开着没有意义（也没处开）。
-            step.open = open_by_default && overlay.is_none();
+            // 用户在 live 区亲手点开过这个工具那一行,跑完同样不收回去。
+            step.user_open = self
+                .live_tool_blocks
+                .get(&name)
+                .copied()
+                .is_some_and(blocks::user_open);
+            step.open = (open_by_default || step.user_open) && overlay.is_none();
             self.timeline.steps.push(step);
         }
         self.tool_stats.clear();
@@ -730,6 +745,13 @@ impl StreamRenderer {
         for step in &mut self.timeline.steps {
             if step.block.is_none() && step.overlay.is_none() && !step.body.is_empty() {
                 step.block = blocks::register(step_detail(step));
+                // 这一步是用户亲手点开的:换的这块新的也得带上这个来历,收段时
+                // `Worked for …` 才知道不能把它收没(用户 09-19)。
+                if step.user_open {
+                    if let Some(id) = step.block {
+                        blocks::set_user_open(id, true);
+                    }
+                }
             }
         }
         Ok(())
@@ -859,7 +881,11 @@ impl StreamRenderer {
         self.timeline.thoughts += 1;
         let mut step = Step::new(step_line(glyph_think(), &label), detail, None);
         step.kind = StepKind::Thought;
-        step.open = full_reasoning && caps.expandable;
+        // 用户在 live 区亲手点开过这一步,想完就不该把它收回去——「亲手点开」
+        // 比「默认怎么显示」优先(用户 09-19)。落地换的是新的一块,所以要把
+        // 手上那块的开合带过来。
+        step.user_open = self.live_block.is_some_and(blocks::user_open);
+        step.open = (full_reasoning || step.user_open) && caps.expandable;
         self.timeline.steps.push(step);
         self.clear_reasoning_phase();
         self.settle_new_steps()
@@ -1120,8 +1146,13 @@ impl StreamRenderer {
         expanded.push(rail());
         expanded.extend(thread(steps));
         expanded.extend((!result_follows).then(String::new));
+        // 这一段里只要还有用户亲手点开着的步,收段时就不能把它们一起收没:
+        // 收缩行自己出来就是展开态,里面那一步照旧开着(用户 09-19)。
+        let keep_open = timeline.steps.iter().any(|step| {
+            step.user_open || step.block.or(step.overlay).is_some_and(blocks::user_open)
+        });
         let stdout = &mut self.output;
-        blocks::write_expandable(stdout, expanded, |writer| {
+        blocks::write_expandable_in(stdout, expanded, keep_open, |writer| {
             writeln!(writer, "\x1b[2m{INDENT}› {summary}\x1b[0m")?;
             if result_follows {
                 return Ok(());
