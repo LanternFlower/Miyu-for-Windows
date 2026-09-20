@@ -78,6 +78,15 @@ pub(crate) fn is_mermaid_lang(lang: &str) -> bool {
 }
 
 /// 源码 → SVG。WebUI 走这条:图在服务端渲染好,前端只管把 SVG 塞进卡片。
+///
+/// **带进程内缓存。** 同一张图会被反复要:WebUI 那个 `mermaidCache` 是个 JS
+/// `Map`,一刷新页面就没了,于是每次刷新每张卡片都重新 POST 一遍。没有缓存时实测
+/// (debug 档)一张 6 节点的图每次 ~90ms、14 节点的 ~580ms,**次次如此**——一页两
+/// 三张图,刷新一下就是一秒多的「正在画图…」(用户 09-20)。
+///
+/// 只放内存不落盘:SVG 才几 KB、重算也就百毫秒量级,daemon 重启后头一次重算是可
+/// 以接受的;而终端那条路本来就有按「源码+终端几何」落盘的位图缓存,轮不到这儿
+/// 操心。
 pub fn render_svg(source: &str) -> Result<String, String> {
     let source = source.trim();
     if source.is_empty() {
@@ -86,7 +95,54 @@ pub fn render_svg(source: &str) -> Result<String, String> {
     if source.len() > MAX_SOURCE {
         return Err(format!("mermaid source exceeds {MAX_SOURCE} bytes"));
     }
-    mermaid_rs_renderer::render(source).map_err(|error| error.to_string())
+    let key = blake3::hash(source.as_bytes());
+    if let Some(svg) = svg_cache_get(key.as_bytes()) {
+        return Ok(svg);
+    }
+    let svg = mermaid_rs_renderer::render(source).map_err(|error| error.to_string())?;
+    svg_cache_put(*key.as_bytes(), &svg);
+    Ok(svg)
+}
+
+/// 缓存住多少张 SVG。一张几 KB,64 张不到 1MB。
+const SVG_CACHE_ENTRIES: usize = 64;
+
+type SvgCache = (
+    std::collections::HashMap<[u8; 32], String>,
+    std::collections::VecDeque<[u8; 32]>,
+);
+
+fn svg_cache() -> &'static std::sync::Mutex<SvgCache> {
+    static CACHE: OnceLock<std::sync::Mutex<SvgCache>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        std::sync::Mutex::new((
+            std::collections::HashMap::new(),
+            std::collections::VecDeque::new(),
+        ))
+    })
+}
+
+fn svg_cache_get(key: &[u8; 32]) -> Option<String> {
+    // 锁中毒不该让出图整个失败:当作没缓存,重算一遍就是了。
+    let guard = svg_cache().lock().ok()?;
+    guard.0.get(key).cloned()
+}
+
+/// 满了就丢最早进来的那张(FIFO)。真 LRU 要在读的时候也改动结构、得拿写锁,
+/// 对这个量级不值当——同一页上的图反正都在窗口里。
+fn svg_cache_put(key: [u8; 32], svg: &str) {
+    let Ok(mut guard) = svg_cache().lock() else {
+        return;
+    };
+    let (map, order) = &mut *guard;
+    if map.insert(key, svg.to_string()).is_none() {
+        order.push_back(key);
+        while order.len() > SVG_CACHE_ENTRIES {
+            if let Some(oldest) = order.pop_front() {
+                map.remove(&oldest);
+            }
+        }
+    }
 }
 
 /// 源码 → 终端里那一段(上下各留一个空行,可直接进正文;**不带缩进**)。
@@ -458,6 +514,38 @@ mod tests {
         assert!(render_svg("").is_err(), "空源码该报错");
         // 认不出的图型:要么报错、要么给一张空图,两种都不能炸。
         let _ = render_svg("这不是 mermaid，只是一句话");
+    }
+
+    /// 同一张图要第二遍时不再重算——WebUI 每刷新一次页面就会把每张卡片重新
+    /// POST 一遍,没缓存的话次次几十上百毫秒(用户 09-20:「每次刷新都在画图」)。
+    #[test]
+    fn the_same_source_is_only_rendered_once() {
+        // 用一段独一无二的源码,免得和别的测试共用进程时互相命中。
+        let source = "flowchart TD\n    唯一缓存测试[只渲一次] --> 好[好]";
+        let first = std::time::Instant::now();
+        let a = render_svg(source).expect("该渲染得出来");
+        let cold = first.elapsed();
+        let second = std::time::Instant::now();
+        let b = render_svg(source).expect("第二遍该命中缓存");
+        let warm = second.elapsed();
+        assert_eq!(a, b, "两遍出的 SVG 不一样");
+        // 命中缓存是一次哈希 + 一次 clone,和解析布局差着数量级;放宽到十分之一,
+        // 机器再慢也不会误判。
+        assert!(
+            warm * 10 < cold.max(std::time::Duration::from_micros(200)),
+            "第二遍没走缓存:冷 {cold:?} / 热 {warm:?}"
+        );
+    }
+
+    /// 缓存满了按先进先出丢,不会无限长。
+    #[test]
+    fn the_svg_cache_stays_bounded() {
+        for index in 0..(SVG_CACHE_ENTRIES + 20) {
+            svg_cache_put(blake3::hash(format!("满不满 {index}").as_bytes()).into(), "<svg/>");
+        }
+        let guard = svg_cache().lock().unwrap();
+        assert!(guard.0.len() <= SVG_CACHE_ENTRIES, "缓存涨过头:{}", guard.0.len());
+        assert_eq!(guard.0.len(), guard.1.len(), "表和次序队列对不上");
     }
 
     /// 源码太大直接拒,不进渲染器。渲染是同步的,这是唯一挡得住的地方。
