@@ -89,13 +89,27 @@ impl MarkdownLineRenderer {
         }
     }
 
+    /// 围栏闭合时这一段怎么出。
+    ///
+    /// ```mermaid 先试着画成图(终端图片协议);画不出来——语法不对、图型不支持、
+    /// 终端不认图片——就照常打那个带语法高亮的代码块。与数学公式同规矩:
+    /// 渲染失败永不阻断输出。
+    fn close_code_block(&mut self) -> String {
+        let lang = std::mem::take(&mut self.code_lang);
+        let body = std::mem::take(&mut self.code_buffer);
+        if super::mermaid::is_mermaid_lang(&lang) {
+            if let Some(block) = super::mermaid::render_terminal(&body.join("\n")) {
+                return block;
+            }
+        }
+        render_code_block(&lang, &body)
+    }
+
     pub(crate) fn render_line(&mut self, line: &str) -> String {
         if line.trim_start().starts_with("```") {
             if self.in_code_block {
                 self.in_code_block = false;
-                let code = render_code_block(&self.code_lang, &self.code_buffer);
-                self.code_lang.clear();
-                self.code_buffer.clear();
+                let code = self.close_code_block();
                 return code;
             }
             let pending = self.flush();
@@ -221,10 +235,7 @@ impl MarkdownLineRenderer {
         }
         if self.in_code_block {
             self.in_code_block = false;
-            let output = render_code_block(&self.code_lang, &self.code_buffer);
-            self.code_lang.clear();
-            self.code_buffer.clear();
-            return output;
+            return self.close_code_block();
         }
         if let Some(table) = self.active_table.take() {
             return bottom_table_border(&table.widths);

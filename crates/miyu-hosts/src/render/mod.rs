@@ -4,6 +4,7 @@ mod code;
 mod command;
 mod link;
 mod markdown;
+pub(crate) mod mermaid;
 pub(crate) mod math;
 mod patch;
 pub(crate) mod stream;
