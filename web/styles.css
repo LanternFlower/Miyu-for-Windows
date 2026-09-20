@@ -3792,28 +3792,65 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
 }
 
 /* 收起时展示命令与最近输出；展开后由完整详情替代这两个预览。 */
+/* 命令本身：抬头底下按行排开，缩进到文字列，时间线那根竖线从左边穿过。
+   不再是一块粉底圆角框——那是 09-10 时间线重做之前的形态，重做时整个关掉了
+   （只在抬头里留一截命令窥视）；现在抬头右边改放 short_title，命令回到下面，
+   形状对齐 TUI 的 `│ <命令的一行>`。行数跟 `display.command_output_lines`。 */
 .tool-command-preview {
-  width: fit-content;
+  display: flex;
   min-width: 0;
   max-width: 100%;
   box-sizing: border-box;
-  margin: 6px 0 0;
-  padding: 8px 12px;
-  max-height: min(calc(9.9em + 16px), 30.9091dvh);
-  overflow-x: hidden;
-  overflow-y: auto;
+  flex-direction: column;
+  margin: 0 0 4px var(--proc-indent, 0);
+  padding: 0;
   border: 0;
-  border-radius: var(--radius);
-  background: var(--command-preview-bg);
-  color: var(--command-preview-ink);
+  background: none;
+  max-height: calc(var(--command-rows, 8) * 1.7em);
+  overflow: hidden;
+  color: var(--proc-soft, var(--text-soft));
   font-family: var(--font-mono);
-  font-size: 11.5px;
-  font-weight: 400;
-  line-height: 1.65;
-  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.7;
   tab-size: 2;
+}
+
+/* `⋮` 挂在裁剪容器**外面**，不然它自己也会被裁掉。 */
+.tool-command-more {
+  display: block;
+  margin: 0 0 4px var(--proc-indent, 0);
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.7;
+  letter-spacing: 0.1em;
+}
+
+/* 命令行**软换行**：一条很长的单行命令该把配置给的那几行空间用满，而不是
+   截成一行加省略号（用户 09-20）。行数的账因此按「屏幕上占几行」算，不按
+   「命令有几行」算——容器按 `--command-rows` 卡高度，超出的裁掉、底下给 `⋮`。 */
+.tool-command-line,
+.tool-command-omitted {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.tool-command-omitted {
+  color: var(--text-faint);
+  letter-spacing: 0.1em;
+}
+
+/* 抬头里的读秒：工具名和 short_title 之间。 */
+.tool-command-seconds {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .tool-command-output-preview {
@@ -10623,6 +10660,35 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 .assistant-blocks .proc-steps > .tool-card > .tool-head:hover {
   background: var(--surface-2);
 }
+/* 命令那几行也能点开，就得有同样的手感：悬浮时整条（抬头 + 命令行）一起亮，
+   不然点得动但看不出来能点（用户 09-20）。`:has()` 让「鼠标在命令行上」也能
+   把抬头点亮，反过来同理。 */
+.assistant-blocks .proc-steps > .tool-card > .tool-command-preview,
+.assistant-blocks .proc-steps > .tool-card > .tool-command-more {
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.assistant-blocks .proc-steps > .tool-card > .tool-command-preview:hover,
+.assistant-blocks .proc-steps > .tool-card > .tool-command-more:hover,
+.assistant-blocks
+  .proc-steps
+  > .tool-card:has(> .tool-command-preview:hover, > .tool-command-more:hover)
+  > .tool-head,
+.assistant-blocks .proc-steps > .tool-card:has(> .tool-head:hover) > .tool-command-preview,
+.assistant-blocks .proc-steps > .tool-card:has(> .tool-head:hover) > .tool-command-more {
+  background: var(--surface-2);
+}
+/* 抬头的图标是拿底色遮住时间线那根竖线的，整条一起亮时它也得跟上，
+   否则中间露出一块 app-bg 的小方块。 */
+.assistant-blocks
+  .proc-steps
+  > .tool-card:has(> .tool-command-preview:hover, > .tool-command-more:hover)
+  > .tool-head
+  > .tool-icon {
+  background: var(--surface-2);
+  box-shadow: 0 -2px 0 var(--surface-2), 0 2px 0 var(--surface-2);
+}
 .assistant-blocks .proc-steps > .tool-card > .tool-head:hover > .tool-icon {
   background: var(--surface-2);
   box-shadow: 0 -2px 0 var(--surface-2), 0 2px 0 var(--surface-2);
@@ -10657,10 +10723,8 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 .assistant-blocks .proc-steps > .tool-card.is-failure > .tool-head > .tool-status {
   color: var(--danger);
 }
-/* 命令签:命令写在行里,不再单独一块粉底预览;收起态的输出预览缩进到文字列 */
-.assistant-blocks .proc-steps > .tool-card > .tool-command-preview {
-  display: none;
-}
+/* 命令签:命令本身排在抬头底下(见 `.tool-command-preview`);命令**输出**仍然
+   只在点开里,收起态不露 */
 .assistant-blocks .proc-steps > .tool-card > .tool-command-output-preview {
   display: none;
 }
@@ -10697,8 +10761,22 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   gap: 1em;
 }
 /* 旧的 collapsed display:none 只在没套 fold 的兜底路径生效;套了 fold 就靠 grid 收。 */
+/* 展开之后「参数」和「结果」连成一坨，看不出哪儿是命令、哪儿是输出（用户
+   09-20）。09-10 那版把标签整个藏了，这儿请回来，并给除第一块之外的每块加一道
+   细分界线（哪一块是第一块由 JS 打 `.is-first-detail`——CSS 选不出「前一个可见
+   兄弟」，中间那几块是 hidden 的）。 */
 .assistant-blocks .proc-steps > .tool-card .tool-detail-label {
-  display: none;
+  display: block;
+  margin-bottom: 3px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+.assistant-blocks .proc-steps > .tool-card .tool-detail:not([hidden]):not(.is-first-detail) {
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
 }
 .assistant-blocks .proc-steps > .tool-card .tool-detail pre {
   padding: 0;
@@ -10992,15 +11070,18 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   line-height: 1.75;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-.reasoning-window::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: calc(var(--proc-col, 16px) / 2 - 0.5px);
-  width: 1px;
-  background: color-mix(in srgb, var(--line-strong) 75%, var(--line));
+  /* 这根线**必须画成背景**，不能用绝对定位的伪元素：这扇窗自己滚
+     （`setReasoningWindow` 里 `scrollTop = scrollHeight`），而绝对定位的子元素
+     会跟着内容一起滚走——线于是被滚上去、窗口顶上空一截（用户 09-20）。
+     背景默认 `background-attachment: scroll`，是钉在元素盒子上的，不随内容动。 */
+  background-image: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--line-strong) 75%, var(--line)),
+    color-mix(in srgb, var(--line-strong) 75%, var(--line))
+  );
+  background-repeat: no-repeat;
+  background-size: 1px 100%;
+  background-position: calc(var(--proc-col, 16px) / 2 - 0.5px) 0;
 }
 .reasoning-block.is-live.has-window:not([open]) > summary {
   flex-wrap: wrap;
