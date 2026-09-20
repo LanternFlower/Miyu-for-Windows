@@ -165,6 +165,8 @@ impl OpenAiCompatibleClient {
         let request_id = gen_llm_request_id();
         let endpoints = self.endpoints.as_ref();
         let mut errors = Vec::new();
+        // 这一轮有没有被 agy 的内容策略拦过（见下面 push 失败行那一处）。
+        let mut content_policy_blocked = false;
         let mut order = if let Some(continuation) = continuation {
             let index = endpoints
                 .iter()
@@ -353,6 +355,12 @@ impl OpenAiCompatibleClient {
                             )
                         );
                     }
+                    // agy 的内容策略拦截要一路带到回合收尾：被拦的那一轮留在
+                    // 上下文里，之后每一轮都会把同一句话再发一遍、再被拦一次，
+                    // 整条会话就哑了（用户 09-20 在 QQ 群里实测）。只认 agy
+                    // （用户 09-20 拍板「仅 agy 时」）：它的拦截是会话级粘性的，
+                    // 别家的内容策略多半是一次性的，不该据此删用户的话。
+                    content_policy_blocked |= agy_content_policy_block(&endpoint.provider, &err);
                     errors.push(endpoint_failure_line(endpoint, &err, cooldown));
                     if !same_endpoint_retry_allowed(&err) {
                         exhausted.push(endpoint.id());
@@ -375,7 +383,11 @@ impl OpenAiCompatibleClient {
                 }
             }
         }
-        bail!("{}", all_endpoints_failed_message(&errors, &request_id))
+        let message = all_endpoints_failed_message(&errors, &request_id);
+        if content_policy_blocked {
+            return Err(anyhow::Error::new(ContentPolicyBlocked { message }));
+        }
+        bail!("{message}")
     }
 
     pub(crate) async fn chat_stream_single<F>(
@@ -615,6 +627,40 @@ pub(in crate::llm::openai_compatible) fn endpoint_failure_line(
     }
     line
 }
+
+/// 这一条端点失败，是不是「**agy** 因为内容策略拒了这条提示词」。
+///
+/// 只认 agy（用户 09-20 拍板「仅 agy 时」）：它的拦截是**会话级粘性**的——被拦
+/// 的那一轮留在上下文里，之后每一轮都会把同一句话再发一遍、再被拦一次，整条会话
+/// 就哑了。别家的内容策略多半是一次性的，不该据此把用户的话从上下文里删掉。
+pub(in crate::llm::openai_compatible) fn agy_content_policy_block(
+    provider: &ProviderConfig,
+    error: &anyhow::Error,
+) -> bool {
+    provider_uses_antigravity(provider)
+        && error
+            .downcast_ref::<HttpStatusFailure>()
+            .is_some_and(|failure| failure.kind == HttpFailureKind::ContentPolicy)
+}
+
+/// 整池都失败了，**而且其中有 agy 因为内容策略拒了这条提示词**。
+///
+/// 单开一个类型是为了把这件事带到回合收尾（`finish_failed_run`）：那边只拿得到
+/// 一个 `anyhow::Error`，而聚合消息是纯字符串，失败分类早就丢了。收尾处据此把
+/// 这一轮踢出后续上下文——不踢的话它每轮都会被重发、每轮都被拦，整条会话就哑了
+/// （用户 09-20 在 QQ 群里实测）。
+#[derive(Debug)]
+pub struct ContentPolicyBlocked {
+    pub message: String,
+}
+
+impl std::fmt::Display for ContentPolicyBlocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ContentPolicyBlocked {}
 
 /// 一条端点的失败理由裁到能读的长度。
 ///

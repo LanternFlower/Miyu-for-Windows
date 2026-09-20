@@ -992,3 +992,57 @@ fn synthetic_turn_markers_match_the_replay_sql() {
         "帮我看看 <background-job-report> 这个标签"
     ));
 }
+
+/// 被内容策略拦下的那一轮要能**踢出上下文**，但仍留在库里可查。
+///
+/// 用户 09-20：agy 拦下一条提示词之后，那一轮留在上下文里，之后每一轮都会把同
+/// 一句话再发一遍、再被拦一次，整条会话就哑了（群聊里尤其难受，那边的内部错误
+/// 是被抑制的，看上去就是她突然不说话了）。
+#[test]
+fn hiding_the_last_turn_drops_it_from_context_but_keeps_the_row() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = StateStore::new(&MiyuPaths {
+        root_dir: temp.path().to_path_buf(),
+        config_dir: temp.path().join("config"),
+        config_file: temp.path().join("config/config.jsonc"),
+        skills_dir: temp.path().join("config/skills"),
+        data_dir: temp.path().join("data"),
+        cache_dir: temp.path().join("cache"),
+        state_dir: temp.path().join("state"),
+        pictures_dir: temp.path().join("pictures"),
+        fish_hook_file: temp.path().join("fish/miyu.fish"),
+        bash_hook_file: temp.path().join("shell/bash-hook.sh"),
+        zsh_hook_file: temp.path().join("shell/zsh-hook.zsh"),
+        scripts_dir: temp.path().join("config/scripts"),
+        system_scripts_dir: PathBuf::new(),
+    })
+    .unwrap();
+
+    store.start_turn("turn_1", "没问题的一句", 999999).unwrap();
+    store.complete_turn("turn_1", "好的", None).unwrap();
+    store
+        .start_turn("turn_2", "触发拦截的那句", 999999)
+        .unwrap();
+    store.complete_turn("turn_2", "", None).unwrap();
+
+    // 上下文取的是 `load_visible_turns`（按 hidden 过滤），隐藏前两轮都在。
+    assert_eq!(store.load_visible_turns().unwrap().len(), 2);
+
+    let hidden = store.hide_last_turn().unwrap();
+    assert_eq!(hidden.as_deref(), Some("turn_2"));
+
+    // 踢出上下文：只剩没被拦的那一轮。
+    let visible = store.load_visible_turns().unwrap();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].turn_id, "turn_1");
+
+    // 但库里还查得到——不是删除，将来想把它显示出来也还在。
+    assert_eq!(store.load_turns().unwrap().len(), 2);
+
+    // 再隐藏一次落到**上一轮**，不会重复隐藏同一条（判据：只认没隐藏的那些）。
+    assert_eq!(store.hide_last_turn().unwrap().as_deref(), Some("turn_1"));
+    assert!(store.load_visible_turns().unwrap().is_empty());
+
+    // 一条都不剩时返回 None，不报错。
+    assert_eq!(store.hide_last_turn().unwrap(), None);
+}

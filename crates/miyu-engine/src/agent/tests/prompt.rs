@@ -611,3 +611,80 @@ fn dev_load_tools_registers_only_after_the_session_used_it() {
         "历史里调用过就必须放回来,否则模型照着历史撞未知工具"
     );
 }
+
+/// 被内容策略拦下、已经踢出上下文的那一轮，**不许再发给模型**。
+///
+/// 这条是整件事的落点：用户 09-20 报 agy 拦下一条提示词之后，那一轮留在上下文里
+/// 每轮重发、每轮被拦，整条会话哑掉。上面两层单测只证明「标记打得对」「标记打在
+/// 对的轮上」，真正要钉住的是**标记之后请求里没有它**。
+#[test]
+fn a_turn_dropped_from_context_never_reaches_the_model_again() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_paths(temp.path());
+    let config = AppConfig::default();
+    let state = StateStore::new(&paths).unwrap();
+    state.init_files().unwrap();
+    state.start_turn("turn_ok", "正常的一句", 999999).unwrap();
+    state.complete_turn("turn_ok", "好的", None).unwrap();
+    state
+        .start_turn("turn_blocked", "触发拦截的那句", 999999)
+        .unwrap();
+    state.complete_turn("turn_blocked", "", None).unwrap();
+
+    let messages_before = {
+        let client =
+            OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
+        let agent = Agent::new(
+            config.clone(),
+            &paths,
+            state.clone(),
+            client,
+            ToolRegistry::new(),
+            PersonaLane::Active,
+        )
+        .unwrap();
+        agent.chat_messages("current", "下一句").unwrap().0
+    };
+    let joined_before = messages_before
+        .iter()
+        .map(|message| chat_message_text(message).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        joined_before.contains("触发拦截的那句"),
+        "前提不成立：踢出去之前它本来就该在请求里"
+    );
+
+    assert_eq!(
+        state.hide_last_turn().unwrap().as_deref(),
+        Some("turn_blocked")
+    );
+
+    let client =
+        OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
+    let agent = Agent::new(
+        config,
+        &paths,
+        state,
+        client,
+        ToolRegistry::new(),
+        PersonaLane::Active,
+    )
+    .unwrap();
+    let joined_after = agent
+        .chat_messages("current", "下一句")
+        .unwrap()
+        .0
+        .iter()
+        .map(|message| chat_message_text(message).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !joined_after.contains("触发拦截的那句"),
+        "被拦的那一轮还在请求里，下一轮照样会被拦：\n{joined_after}"
+    );
+    assert!(
+        joined_after.contains("正常的一句"),
+        "只该踢掉被拦的那一轮，别的历史要留着：\n{joined_after}"
+    );
+}

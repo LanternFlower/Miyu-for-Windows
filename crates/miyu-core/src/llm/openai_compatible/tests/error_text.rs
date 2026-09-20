@@ -119,3 +119,36 @@ fn a_long_reason_is_clipped_per_endpoint() {
     assert!(clipped.ends_with('…'));
     assert_eq!(clip_reason("短的  报文\n还有一行"), "短的 报文 还有一行");
 }
+
+/// 「把这一轮踢出上下文」只认 **agy 的内容策略拦截**（用户 09-20 拍板「仅 agy
+/// 时」）。
+///
+/// 背景：agy 的拦截是会话级粘性的——被拦的那一轮留在上下文里，之后每一轮都会把
+/// 同一句话再发一遍、再被拦一次，整条会话就哑了（群聊里那边的内部错误还是被抑制
+/// 的，看上去就是她突然不说话）。别家的内容策略多半是一次性的，限流/网络抖动更
+/// 不该据此删用户的话。
+#[test]
+fn only_an_agy_content_policy_block_drops_the_turn_from_context() {
+    use crate::llm::openai_compatible::chat::agy_content_policy_block;
+
+    let mut agy = crate::llm::openai_compatible::tests::shared::test_provider("agy", "");
+    agy.protocol = "antigravity".to_string();
+    let other = crate::llm::openai_compatible::tests::shared::test_provider("zen", "https://x");
+
+    let policy = anyhow::Error::new(HttpStatusFailure::relay(
+        400,
+        HttpFailureKind::ContentPolicy,
+    ));
+    let rate_limit = anyhow::Error::new(HttpStatusFailure::relay(429, HttpFailureKind::RateLimit));
+    let plain = anyhow::anyhow!("socket closed");
+
+    // 这一条才踢。
+    assert!(agy_content_policy_block(&agy, &policy));
+
+    // agy 但不是内容策略：限流、掉线都不踢——否则一次网络抖动就把用户的话删了。
+    assert!(!agy_content_policy_block(&agy, &rate_limit));
+    assert!(!agy_content_policy_block(&agy, &plain));
+
+    // 是内容策略但不是 agy：不踢（「仅 agy 时」）。
+    assert!(!agy_content_policy_block(&other, &policy));
+}

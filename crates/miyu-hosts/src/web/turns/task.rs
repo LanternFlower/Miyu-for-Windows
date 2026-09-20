@@ -691,6 +691,32 @@ async fn run_turn_task_inner(
             return;
         }
         TurnOutcome::Finished(Err(error)) => {
+            // agy 的内容策略拦下了这条提示词：把这一轮**踢出后续上下文**。
+            //
+            // 不踢的话它每一轮都会被重发、每一轮都被拦，整条会话从此哑掉——群聊
+            // 里尤其难受，那边的内部错误是被抑制的，看上去就是她突然不说话了
+            // （用户 09-20 实测）。只认 agy（用户拍板「仅 agy 时」）：它的拦截
+            // 是会话级粘性的。
+            let error = match error.downcast_ref::<miyu_core::llm::ContentPolicyBlocked>() {
+                Some(_) => {
+                    let hidden = store.hide_last_turn().unwrap_or_default();
+                    tracing::warn!(
+                        run_id,
+                        session_id = %session_id,
+                        turn_id = ?hidden,
+                        "{}",
+                        t(
+                            "content policy blocked this turn; dropped it from later context",
+                            "内容策略拦下了这一轮，已把它踢出后续上下文"
+                        )
+                    );
+                    error.context(t(
+                        "this turn was dropped from later context, so the rest of the conversation keeps working",
+                        "这一轮已不再进入后续上下文，之后的对话不受影响"
+                    ))
+                }
+                None => error,
+            };
             finish_failed_run(
                 manager,
                 events,

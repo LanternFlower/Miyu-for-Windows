@@ -143,6 +143,31 @@ impl ConversationDb {
     }
 
     #[allow(dead_code)]
+    /// 把这条会话**最后一轮**标成隐藏：不进后续上下文（上下文走
+    /// `load_visible_turns`，它按 `hidden = 0` 过滤），也不再回放。
+    ///
+    /// 给「被供应商内容策略拦下的那一轮」用：不踢出去的话它每一轮都会被重发、
+    /// 每一轮都被拦，整条会话就哑了（用户 09-20 在 QQ 群里实测）。
+    pub fn hide_last_turn(&self, session_id: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let turn_id: Option<String> = conn
+            .query_row(
+                "SELECT turn_id FROM turns WHERE session_id = ?1 AND hidden = 0
+                  ORDER BY seq DESC LIMIT 1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(turn_id) = turn_id else {
+            return Ok(None);
+        };
+        conn.execute(
+            "UPDATE turns SET hidden = 1 WHERE session_id = ?1 AND turn_id = ?2",
+            params![session_id, turn_id],
+        )?;
+        Ok(Some(turn_id))
+    }
+
     pub fn hide_turns_before_seq(&self, session_id: &str, seq: i64) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
         let affected = conn.execute(

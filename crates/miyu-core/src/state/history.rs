@@ -137,6 +137,11 @@ impl StateStore {
     }
 
     #[allow(dead_code)]
+    /// 见 `conversation_db::hide_last_turn`。
+    pub fn hide_last_turn(&self) -> Result<Option<String>> {
+        self.conv_db.hide_last_turn(&self.session())
+    }
+
     pub fn hide_turns_before_seq(&self, seq: i64) -> Result<usize> {
         self.conv_db.hide_turns_before_seq(&self.session(), seq)
     }
