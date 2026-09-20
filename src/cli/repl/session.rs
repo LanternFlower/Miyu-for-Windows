@@ -727,6 +727,24 @@ pub(in crate::cli) fn order_entries_for_lane(
     first.into_iter().chain(rest).collect()
 }
 
+/// REPL 的 `/session` 看得见的那些会话：**不含「终端集成会话」**。
+///
+/// 用户 09-20：「终端集成会话不应该出现在 /session 里」。它是 shell 无缝对话
+/// 那条路的会话（`default`），REPL 压根不会停在它上面——`ensure_repl_session`
+/// 把指到它的指针视同缺失、就地自举一条新的。既然进不去，列出来只会让人误选，
+/// 还会在「当前会话被删掉」时被兜底逻辑挑中（用户实测：回车跳进了终端集成会话）。
+/// 要用它还是走 shell 那条路或 `miyu session`。
+pub(in crate::cli) fn repl_visible_entries(
+    data: &serde_json::Value,
+    mode: PersonaLane,
+) -> Vec<SessionListEntry> {
+    let entries = session_list_entries(data)
+        .into_iter()
+        .filter(|entry| entry.id != miyu_core::state::DEFAULT_SESSION_ID)
+        .collect();
+    order_entries_for_lane(entries, mode)
+}
+
 pub(in crate::cli) async fn resolve_repl_session_target(
     paths: &MiyuPaths,
     live: &mut LiveReplTail,
@@ -747,7 +765,7 @@ pub(in crate::cli) async fn resolve_repl_session_target(
     else {
         return Ok(None);
     };
-    let entries = order_entries_for_lane(session_list_entries(&data), mode);
+    let entries = repl_visible_entries(&data, mode);
     let target = match index {
         Some(index) => session_ref_from_index(&entries, index),
         None => entries.iter().find(|entry| entry.name == arg).map(|entry| {
@@ -870,42 +888,24 @@ pub(in crate::cli) async fn repl_fallback_session_state(
     live: &mut LiveReplTail,
     mode: PersonaLane,
 ) -> Result<Option<ipc::SessionState>> {
-    // dev 无普通人格的"终端会话"可退:GetReplSession 会治愈指针并在
-    // 没有 dev 会话时就地自举一个,绝不落回普通人格的会话。
-    if mode == PersonaLane::Dev {
-        return Ok(repl_ipc_admin(
-            paths,
-            live,
-            IpcCommand::GetReplSession {
-                mode: Some("dev".to_string()),
-                // 兜底取回一条能用的会话,不是启动。
-                fresh: false,
-            },
-        )
-        .await?
-        .map(|(state, _)| state));
-    }
-    let Some((_, data)) =
-        repl_ipc_admin(paths, live, IpcCommand::ListSessions { mode: None }).await?
-    else {
-        return Ok(None);
-    };
-    let entries = session_list_entries(&data);
-    let Some(entry) = entries
-        .iter()
-        .find(|entry| entry.is_current)
-        .or_else(|| entries.first())
-    else {
-        return Ok(None);
-    };
-    repl_get_session_state(
+    // 两条车道都走 `GetReplSession`：它会治愈死掉的指针（刚被删的那条），
+    // 没有可用的就地自举一条新的，而且**绝不会给出终端集成会话**
+    // （`ensure_repl_session` 把指到它的指针视同缺失）。
+    //
+    // 普通车道原来是「列会话 → 挑 `is_current` 或第一条」。`is_current` 说的是
+    // **daemon 的当前会话**，那通常正是终端集成会话——于是删掉当前会话之后
+    // 一回车就跳了进去（用户 09-20 实测）。
+    Ok(repl_ipc_admin(
         paths,
         live,
-        miyu_core::ipc::SessionRef::Id {
-            id: entry.id.clone(),
+        IpcCommand::GetReplSession {
+            mode: mode.is_dev().then(|| "dev".to_string()),
+            // 兜底取回一条能用的会话，不是启动。
+            fresh: false,
         },
     )
-    .await
+    .await?
+    .map(|(state, _)| state))
 }
 
 /// Runs the interactive session picker inside the REPL, servicing Ctrl+D
@@ -919,7 +919,9 @@ pub(in crate::cli) async fn repl_pick_session(
     active_session_id: &str,
 ) -> Result<Option<ipc::SessionState>> {
     let mut cursor = None;
-    let mut lost_active = false;
+    // 09-20 起「删掉自己待着的那条」当场就返回兜底会话（见下面的 Delete
+    // 分支），所以循环里不再有「我的会话已经没了但还在挑」这个状态——原来
+    // 那个 `lost_active` 标记随之消失。
     loop {
         let Some((_, data)) = repl_ipc_admin(
             paths,
@@ -932,18 +934,13 @@ pub(in crate::cli) async fn repl_pick_session(
         else {
             return Ok(None);
         };
-        let entries = order_entries_for_lane(session_list_entries(&data), mode);
+        let entries = repl_visible_entries(&data, mode);
         if entries.is_empty() {
             repl_note(
                 live,
                 &format!("\x1b[2m{}\x1b[0m\n", t("no sessions", "没有会话")),
             )?;
-            // Deleting the last session leaves the daemon to mint a fresh one.
-            return if lost_active {
-                repl_fallback_session_state(paths, live, mode).await
-            } else {
-                Ok(None)
-            };
+            return Ok(None);
         }
         let picked = if live.screen.is_some() {
             super::session_picker::pick(live, &entries, active_session_id, cursor)
@@ -954,19 +951,9 @@ pub(in crate::cli) async fn repl_pick_session(
             picked
         };
         match picked? {
-            SessionPick::Cancelled => {
-                return if lost_active {
-                    repl_fallback_session_state(paths, live, mode).await
-                } else {
-                    Ok(None)
-                };
-            }
+            SessionPick::Cancelled => return Ok(None),
             SessionPick::Switch(target) => {
-                return if lost_active {
-                    repl_get_session_state(paths, live, target).await
-                } else {
-                    repl_get_session_switch(paths, live, target, active_session_id).await
-                };
+                return repl_get_session_switch(paths, live, target, active_session_id).await;
             }
             SessionPick::Delete { session_id, index } => {
                 let was_active = session_id == active_session_id;
@@ -979,13 +966,15 @@ pub(in crate::cli) async fn repl_pick_session(
                 )
                 .await?;
                 if deleted.is_none() {
-                    return if lost_active {
-                        repl_fallback_session_state(paths, live, mode).await
-                    } else {
-                        Ok(None)
-                    };
+                    return Ok(None);
                 }
-                lost_active |= was_active;
+                // 删掉的是**自己正待着**的那条：当场离开，别继续挂在一条已经
+                // 不存在的会话的画面上接着挑（用户 09-20 实测：删完还看得见被
+                // 删会话的正文）。落到本车道的一条可用会话上，没有就自举一条
+                // 新的空会话——`repl_fallback_session_state` 管这件事。
+                if was_active {
+                    return repl_fallback_session_state(paths, live, mode).await;
+                }
                 // The rows below shift up, so holding the index parks the
                 // cursor on the next session instead of jumping to the top.
                 cursor = Some(index);

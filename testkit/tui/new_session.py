@@ -237,6 +237,42 @@ def main():
             "只认 new" in line or "only `new`" in line for line in screen
         )
         report["乱给参数没有偷偷开新会话"] = len(lane_sessions("dev")) == before_junk
+
+        # ── 七、/new 在**空会话**里不再新建（用户 09-20 拍板） ──
+        #
+        # `/new` 原来是唯一会攒空会话的口子：连敲两次不说话就多两条。现在规则
+        # 和启动、`/dev new` 统一——空会话永远只有一条。
+        #
+        # 先切回**普通车道**：上一段结束时人在开发车道，而下面数的是普通车道，
+        # 不切的话数的是另一条车道，断言全会骗人（09-20 实测，四条一起红）。
+        command(master, sink, "/normal")
+        command(master, sink, "/new")  # 造一条空的
+        empty_before = len(lane_sessions())
+        # 浮层提示只活 2.2 秒，而 `command()` 在大厅里要等「安静 0.8 秒」——
+        # 星空一直在动，它会一路等满超时，提示早散了。敲完就采。
+        os.write(master, b"/new")
+        h.drain_until(master, sink, "/new", 5.0)
+        os.write(master, b"\r")
+        h.drain(master, 1.2, sink)
+        screen = h.render(bytes(sink))
+        r.save("new-session-new-on-empty", screen)
+        report["_空会话里敲 /new 前后的条数"] = [empty_before, len(lane_sessions())]
+        report["空会话里敲 /new 不再多一条"] = len(lane_sessions()) == empty_before
+        report["空会话里敲 /new 会说一句"] = any(
+            "已经是一条新会话" in line or "already on a new session" in line
+            for line in screen
+        )
+        # 带名字就把当前这条改名，不新建。
+        command(master, sink, "/new 改个名字")
+        report["带名字也不新建"] = len(lane_sessions()) == empty_before
+        report["带名字把当前这条改名了"] = any(
+            row[1] == "改个名字" for row in lane_sessions()
+        )
+        # 说一句让它不空，这时 /new 该真的新建。
+        ask(master, sink, "让这条不空")
+        before_real = len(lane_sessions())
+        command(master, sink, "/new")
+        report["非空会话里敲 /new 照样新建"] = len(lane_sessions()) == before_real + 1
         return report
     finally:
         r.stop(tui, daemon, stub)

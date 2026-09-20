@@ -2,7 +2,7 @@
 """`/dev` 与跨模式的 `/session`（BUG-13）真机走查。
 
 - 普通模式里 `/dev`：切到开发模式那条车道的会话（等同 `miyu dev`），footer 变「开发」；
-- `/session` 两侧合并列出：开发模式里看得见「普通：…」，普通模式里看得见「开发：…」；
+- `/session` 两侧合并列出：开发模式里看得见「普通 · …」，普通模式里看得见「开发 · …」；
 - 在菜单里挑另一侧的会话，车道跟着切回去（footer 变回「普通」）；
 - 开发模式里再 `/dev` 只提示一句；`/normal` 切回普通车道，再 `/dev` 回到刚才那条开发会话。
 
@@ -87,24 +87,26 @@ def main():
         h.settle(master, sink, quiet=0.6, timeout=20)
         picker = h.render(bytes(sink))
         r.save("dev-picker-from-dev", picker)
-        rows = [line for line in picker if "普通：" in line or "开发：" in line or "normal:" in line or "dev:" in line]
+        # 行格式 09-18 定的是「模式 · 上下文 · 标题」，**空格点空格**不是冒号。
+        # 判据一直停在旧写法上，于是从那天起这三条就一直红着（09-20 发现）。
+        rows = [line for line in picker if "普通 ·" in line or "开发 ·" in line or "normal ·" in line or "dev ·" in line]
         report["picker_rows"] = [line.strip()[:60] for line in rows]
-        has_normal = any("普通：" in line or "normal:" in line for line in rows)
-        has_dev = any("开发：" in line or "dev:" in line for line in rows)
+        has_normal = any("普通 ·" in line or "normal ·" in line for line in rows)
+        has_dev = any("开发 ·" in line or "dev ·" in line for line in rows)
         report["picker_lists_both_modes"] = has_normal and has_dev
         # 当前是开发模式：开发的排前面、普通的排后面，不混排（用户 09-18 截图）。
-        kinds = ["dev" if ("开发：" in line or "dev:" in line) else "normal" for line in rows]
+        kinds = ["dev" if ("开发 ·" in line or "dev ·" in line) else "normal" for line in rows]
         first_normal = next((i for i, k in enumerate(kinds) if k == "normal"), len(kinds))
         report["picker_groups_current_lane_first"] = all(k == "normal" for k in kinds[first_normal:])
-        # 把光标挪到「普通：」那一行再回车
+        # 把光标挪到「普通 · 」那一行再回车
         moved = False
         for _ in range(12):
             current = h.render(bytes(sink))
             selected = next(
-                (line for line in current if "›" in line and ("普通：" in line or "开发：" in line or "normal:" in line or "dev:" in line)),
+                (line for line in current if "›" in line and ("普通 ·" in line or "开发 ·" in line or "normal ·" in line or "dev ·" in line)),
                 None,
             )
-            if selected is not None and ("普通：" in selected or "normal:" in selected):
+            if selected is not None and ("普通 ·" in selected or "normal ·" in selected):
                 moved = True
                 break
             os.write(master, b"j")
@@ -123,7 +125,7 @@ def main():
         picker = h.render(bytes(sink))
         r.save("dev-picker-from-normal", picker)
         report["normal_picker_shows_dev_session"] = any(
-            "开发：" in line or "dev:" in line for line in picker
+            "开发 ·" in line or "dev ·" in line for line in picker
         )
         os.write(master, b"\x1b")
         h.settle(master, sink, quiet=0.4, timeout=5)

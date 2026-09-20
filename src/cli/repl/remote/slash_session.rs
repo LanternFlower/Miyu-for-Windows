@@ -6,6 +6,38 @@ use crate::cli::*;
 impl RemoteRepl {
     pub(super) async fn cmd_new(&mut self, command_args: &str) -> Result<LoopStep> {
         let name = command_args.trim();
+        // 当前这条本来就是白纸：不新建（用户 09-20 拍板）。
+        //
+        // 规则和启动（`miyu` / `miyu dev`）、`/dev new` 一致，统一成一句话：
+        // **空会话永远只有一条**。原来 `/new` 无条件新建，是唯一会攒空会话的
+        // 口子——连敲两次不说话就多两条，列表里全是「新会话」。
+        // 带名字就把当前这条改名，你的意图不丢。
+        if session_is_empty(&self.paths, &self.active_session_id) {
+            if !name.is_empty() {
+                let renamed = repl_ipc_admin(
+                    &self.paths,
+                    &mut self.live_repl,
+                    IpcCommand::RenameSession {
+                        target: miyu_core::ipc::SessionRef::Id {
+                            id: self.active_session_id.clone(),
+                        },
+                        name: name.to_string(),
+                    },
+                )
+                .await?;
+                if renamed.is_none() {
+                    return Ok(LoopStep::Continue);
+                }
+            }
+            repl_note(
+                &mut self.live_repl,
+                &format!(
+                    "\x1b[2m{}\x1b[0m\n",
+                    t("already on a new session", "已经是一条新会话了")
+                ),
+            )?;
+            return Ok(LoopStep::Continue);
+        }
         let Some((_, data)) = repl_ipc_admin(
             &self.paths,
             &mut self.live_repl,

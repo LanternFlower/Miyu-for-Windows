@@ -295,10 +295,11 @@ pub(in crate::cli) fn inline_single_select_deletable(
     let mut scroll = 0usize;
     let (_, cursor_y) = cursor::position().unwrap_or((0, menu_lines.saturating_sub(1)));
     let anchor_y = cursor_y.saturating_sub(menu_lines.saturating_sub(1));
+    // Ctrl+D **当场删**，没有 y/N（用户 09-20 拍板；全屏那条路同步改了，见
+    // `repl::session_picker`）。`delete_labels` 现在只用来判「这个选择器能不能
+    // 删」；`draw_inline_single` 的确认表头那一支留着没动，别的选择器将来要
+    // 确认还用得上。
     let deletable = delete_labels.is_some();
-    // Index awaiting a y/N answer. Confirming inside the picker keeps the
-    // drawing intact instead of tearing it down for a separate prompt.
-    let mut confirming: Option<usize> = None;
     loop {
         let matches = fuzzy_matches(&matcher, search, &query);
         if selected >= matches.len() {
@@ -306,11 +307,6 @@ pub(in crate::cli) fn inline_single_select_deletable(
         }
         let visible = matches.len().min(menu_lines.saturating_sub(2) as usize);
         scroll = inline_fuzzy_scroll(selected, scroll, visible);
-        let confirm_label = confirming.and_then(|index| {
-            delete_labels
-                .and_then(|labels| labels.get(index))
-                .map(String::as_str)
-        });
         draw_inline_single(
             &mut session.stdout,
             anchor_y,
@@ -322,7 +318,7 @@ pub(in crate::cli) fn inline_single_select_deletable(
             selected,
             scroll,
             deletable,
-            confirm_label,
+            None,
         )?;
         let Event::Key(KeyEvent {
             code, modifiers, ..
@@ -330,16 +326,6 @@ pub(in crate::cli) fn inline_single_select_deletable(
         else {
             continue;
         };
-        if let Some(index) = confirming {
-            // Only an explicit yes deletes; every other key backs out.
-            let confirmed = matches!(code, KeyCode::Char('y') | KeyCode::Char('Y'));
-            confirming = None;
-            if confirmed {
-                clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
-                return Ok(InlineSelectOutcome::Deleted(index));
-            }
-            continue;
-        }
         match inline_select_key(code, modifiers, deletable) {
             InlineSelectKey::Cancel => {
                 clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
@@ -354,7 +340,11 @@ pub(in crate::cli) fn inline_single_select_deletable(
                 });
             }
             InlineSelectKey::DeleteRequest => {
-                confirming = matches.get(selected).map(|(_, index)| *index);
+                if let Some((_, index)) = matches.get(selected) {
+                    let index = *index;
+                    clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
+                    return Ok(InlineSelectOutcome::Deleted(index));
+                }
             }
             InlineSelectKey::Up => selected = selected.saturating_sub(1),
             InlineSelectKey::Down => {

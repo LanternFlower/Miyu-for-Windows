@@ -1,7 +1,10 @@
 //! Full-screen session selection on the shared picker panel (`panel`): the
 //! lobby keeps its input and captions; conversations share the question
-//! panel's scrollable body viewport. Search, Ctrl+D delete with in-place
-//! confirmation, Enter switch.
+//! panel's scrollable body viewport. Search, Ctrl+D delete, Enter switch.
+//!
+//! Ctrl+D **当场删**，没有 y/N（用户 09-20 拍板：「应该改成 ctrl+d 直接删除」）。
+//! 原来是按一下弹一行「删除「xx」？y/N」再等一个键。删掉的那一行从列表里消失
+//! 就是回执，光标停在原位（下面的行顶上来），可以连着删。
 
 use super::panel::{self, with_help_line, PanelFrame, PanelModel};
 use crate::cli::*;
@@ -24,8 +27,6 @@ struct SessionPicker<'a> {
     query: String,
     selected: usize,
     scroll: usize,
-    /// Index awaiting a y/N answer for deletion.
-    confirming: Option<usize>,
 }
 
 impl<'a> SessionPicker<'a> {
@@ -41,7 +42,6 @@ impl<'a> SessionPicker<'a> {
             query: String::new(),
             selected: cursor.unwrap_or_else(|| session_initial_selection(entries, Some(active))),
             scroll: 0,
-            confirming: None,
         }
     }
 
@@ -63,13 +63,11 @@ impl PanelModel for SessionPicker<'_> {
         let visible = matches.len().min(frame.visible);
         self.scroll = inline_fuzzy_scroll(self.selected, self.scroll, visible);
         let width = frame.width;
-        let header = match self.confirming {
-            Some(index) => {
-                inline_single_confirm_header(display_session_name(&self.entries[index].name), width)
-            }
-            None => inline_single_header(t("Select session", "选择会话"), &self.query, width),
-        };
-        let mut content = vec![header];
+        let mut content = vec![inline_single_header(
+            t("Select session", "选择会话"),
+            &self.query,
+            width,
+        )];
         if matches.is_empty() {
             content.push(format!("\x1b[2m{}\x1b[0m", t("no matches", "没有匹配项")));
         } else {
@@ -97,15 +95,6 @@ impl PanelModel for SessionPicker<'_> {
 
     fn on_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<SessionPick> {
         let matches = self.matches();
-        if let Some(index) = self.confirming.take() {
-            if matches!(code, KeyCode::Char('y') | KeyCode::Char('Y')) {
-                return Some(SessionPick::Delete {
-                    session_id: self.entries[index].id.clone(),
-                    index,
-                });
-            }
-            return None;
-        }
         match inline_select_key(code, modifiers, true) {
             InlineSelectKey::Cancel => Some(SessionPick::Cancelled),
             InlineSelectKey::Accept => Some(matches.get(self.selected).map_or(
@@ -116,9 +105,15 @@ impl PanelModel for SessionPicker<'_> {
                     })
                 },
             )),
+            // 当场删，不问 y/N（用户 09-20）。调用方删完会带着同一个
+            // `index` 重开列表，光标停在原位。
             InlineSelectKey::DeleteRequest => {
-                self.confirming = matches.get(self.selected).map(|(_, index)| *index);
-                None
+                matches
+                    .get(self.selected)
+                    .map(|(_, index)| SessionPick::Delete {
+                        session_id: self.entries[*index].id.clone(),
+                        index: *index,
+                    })
             }
             InlineSelectKey::Up => {
                 self.selected = self.selected.saturating_sub(1);
