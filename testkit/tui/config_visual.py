@@ -256,7 +256,7 @@ def main():
         check("─────" in text, "正文与按键条之间有细线")
         keybar = line_with(text, "移动")
         check("⏎" in keybar and "Esc" in keybar, "按键条列着按键", keybar.strip()[:60])
-        check("1/11" in text, "右下角有计数")
+        check("1/10" in text, "右下角有计数")
 
         # ── 星空 ──
         left_margin = [line[:10] for line in text.split("\n")]
@@ -291,7 +291,7 @@ def main():
 
         # ── 进一层：面包屑跟着走 ──
         to_main(driver)
-        text = driver.send(b"j" * 8 + b"\r", "工具启用", "界面语言")
+        text = driver.send(b"j" * 7 + b"\r", "工具启用", "界面语言")
         check(text is not None, "进得了全局设置")
         text = text or driver.text()
         check("● 配置 ── ◉ 全局设置" in line_with(text, "◉ 全局设置"),
@@ -311,7 +311,7 @@ def main():
         os.write(driver.master, b"\x1b")
         to_main(driver)
         started = time.monotonic()
-        os.write(driver.master, b"j" * 8 + b"\r")
+        os.write(driver.master, b"j" * 7 + b"\r")
         # 最后一项出现得多快。逐行落下的话，18 行要 18 帧（≈540ms）才铺完。
         while time.monotonic() - started < 3.0:
             driver.pump(0.02)
@@ -333,13 +333,19 @@ def main():
         check(text is not None and "◉ 配置" in text and "全局设置" not in text,
               "退回上一层，面包屑跟着弹")
 
-        # ── 插件表：跟引导的功能表同一个样子 ──
+        # ── 功能表：跟引导的功能表同一个样子（2026-09-20 起插件表并进了这里）──
         to_main(driver)
-        text = driver.send(b"j" * 5 + b"\r", "网络搜索")
-        check(text is not None, "进得了插件表")
+        text = driver.send(b"j" * 5 + b"\r", "启用的功能", "当前人格")
+        check(text is not None, "进得了人格菜单")
+        text = driver.send(b"j\r", "内置插件", "子系统")
+        check(text is not None, "进得了功能表")
         text = text or driver.text()
-        check("[*]" in text, "插件开关是 [*]")
-        check("● 配置 ── ◉ 插件" in line_with(text, "◉ 插件"), "插件层的面包屑")
+        check("[*]" in text, "功能开关是 [*]")
+        check(
+            "● 配置 ── ● 人格和功能 ── ◉ 启用的功能" in line_with(text, "◉ 启用的功能"),
+            "功能表的面包屑记着两层",
+        )
+        driver.send(b"\x1b", "当前人格")
         driver.send(b"\x1b", "保存并退出")
 
         # ── 三列：表头 + 按键条折行 ──

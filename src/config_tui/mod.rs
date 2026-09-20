@@ -2,6 +2,8 @@ mod antigravity_form;
 mod claude_code_form;
 mod codebuddy_form;
 mod codex_form;
+mod features;
+mod pending;
 mod personas;
 mod platforms;
 mod plugin_settings;
@@ -19,6 +21,8 @@ use antigravity_form::*;
 use claude_code_form::*;
 use codebuddy_form::edit_codebuddy_provider_form;
 use codex_form::*;
+use features::*;
+use pending::*;
 use personas::*;
 use platforms::*;
 use plugin_settings::*;
@@ -207,6 +211,9 @@ fn run_main_menu(
     // Detects edits on quit; sub-menus mutate `config` in place without any
     // dirty flag of their own.
     let pristine_config = dirty_snapshot(config);
+    // 人格清单与开发模式提示词是独立文件，攒着跟配置一起落盘（用户 09-20：
+    // 别改一下就写一次，走同一个「保存并退出」）。
+    let mut pending = PendingWrites::default();
     let mut selected = 0usize;
     loop {
         let active = active_label(config);
@@ -230,8 +237,11 @@ fn run_main_menu(
                 embedding_model_label(config)
             ),
             t("Configure tiered model pools", "配置分级模型池").to_string(),
-            t("Plugins", "插件配置").to_string(),
-            t("Custom prompts", "自定义提示词").to_string(),
+            format!(
+                "{} ({})",
+                t("Persona & features", "人格和功能"),
+                active_persona_label(config)
+            ),
             format!(
                 "{} ({})",
                 t("IM platforms", "接入通讯平台"),
@@ -262,7 +272,8 @@ fn run_main_menu(
                 let snapshot = dirty_snapshot(config);
                 let dirty = thinking_variants.is_dirty()
                     || snapshot.is_none()
-                    || snapshot != pristine_config;
+                    || snapshot != pristine_config
+                    || !pending.is_empty();
                 if !dirty {
                     return Ok(false);
                 }
@@ -270,6 +281,7 @@ fn run_main_menu(
                     match config.save(paths) {
                         Ok(()) => {
                             thinking_variants.save(paths)?;
+                            pending.flush(config, paths)?;
                             sync_usage_ledger_after_save(paths, pristine_config.as_ref(), config);
                             return Ok(true);
                         }
@@ -292,14 +304,14 @@ fn run_main_menu(
                     2 => select_active_multimodal_provider(ui, config),
                     3 => edit_embedding_model(ui, config),
                     4 => select_model_tiers(ui, config),
-                    5 => edit_plugins(ui, config),
-                    6 => edit_custom_prompts(ui, paths, config),
-                    7 => select_platforms(ui, paths, config),
-                    8 => edit_settings(ui, config),
-                    9 => edit_voice(ui, paths, config),
-                    10 => match config.save(paths) {
+                    5 => edit_persona_menu(ui, paths, config, &mut pending),
+                    6 => select_platforms(ui, paths, config),
+                    7 => edit_settings(ui, config),
+                    8 => edit_voice(ui, paths, config),
+                    9 => match config.save(paths) {
                         Ok(()) => {
                             thinking_variants.save(paths)?;
+                            pending.flush(config, paths)?;
                             sync_usage_ledger_after_save(paths, pristine_config.as_ref(), config);
                             return Ok(true);
                         }

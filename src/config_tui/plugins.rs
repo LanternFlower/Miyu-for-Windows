@@ -1,204 +1,43 @@
-//! 插件的开关与逐项设置。
+//! 一件功能的「怎么配」：密钥、尺寸、账号。
 //!
-//! 插件的字段是**运行时才知道**的：`plugin_fields` 按插件 ID 生成表单描述，
-//! `apply_plugin_fields` 再把用户填的值写回配置。加插件只用改这两处，不用碰
-//! TUI 框架。
+//! 「开不开」不在这里——那是人格的事，归功能表（`features.rs`）。这里只管
+//! 字段：`plugin_fields` 按 id 生成表单描述，`apply_plugin_fields` 把填的值写回
+//! 配置。加一件带设置页的功能 = 登记表里标 `settings: true` + 这两处各加一个
+//! 分支。
+//!
+//! 2026-09-20 之前这里还有一张手写的 10 项表（插件总表界面按它的下标分发），
+//! 和 `builtin_plugins.rs` 的登记表口径对不上：那张表里有 web / vision / memory、
+//! 没有闹钟 / 汇率 / 记账。现在表只有一张，这里按 id 取用。
 
 use crate::config_tui::*;
-use miyu_base::terminal::chrome::View;
 
-pub(in crate::config_tui) fn edit_plugins(ui: &mut Ui, config: &mut AppConfig) -> Result<()> {
-    let mut selected = 0usize;
-    loop {
-        let count = plugin_names().len();
-        draw_plugin_menu(ui, config, selected)?;
-        match read_key(ui)? {
-            KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
-            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(count - 1),
-            KeyCode::Char(' ') => toggle_plugin(config, selected),
-            KeyCode::Enter | KeyCode::Char('i') => edit_plugin_detail(ui, config, selected)?,
-            _ => {}
-        }
-    }
-}
-
-/// 插件总表：一行一个插件，`[*]` 是开关、右边是一句说明——和引导里那张
-/// 「自选功能」表同一个样子。
-pub(in crate::config_tui) fn draw_plugin_menu(
-    ui: &mut Ui,
-    config: &AppConfig,
-    selected: usize,
-) -> Result<()> {
-    let cx = ui.cx();
-    let plugins = plugin_names();
-    let name_col = plugins
-        .iter()
-        .map(|(_, name, _)| display_width(name) + 8)
-        .max()
-        .unwrap_or(NAME_COL_MIN)
-        .clamp(NAME_COL_MIN, NAME_COL_MAX)
-        .min(ui.body_width().saturating_sub(16).max(NAME_COL_MIN));
-    let body = plugins
-        .iter()
-        .enumerate()
-        .map(|(index, (_, name, description))| {
-            cx.check(
-                index == selected,
-                plugin_enabled(config, index),
-                name,
-                description,
-                name_col,
-            )
-        })
-        .collect();
-    let (footer, keys) = key_bar(
-        &cx,
-        t(
-            "[Space]enable/disable [⏎]configure [↑↓ jk]move [Esc]back",
-            "[空格]启用/禁用 [⏎]配置 [↑↓ jk]移动 [Esc]返回",
-        ),
-    );
-    ui.show(
-        t(" PLUGINS ", " 插件 "),
-        View {
-            body,
-            cursor_row: selected,
-            footer,
-            counter: Some(format!("{}/{}", selected + 1, plugins.len())),
-            keys,
-            ..View::default()
-        },
-    )
-}
-
-pub(in crate::config_tui) fn plugin_names() -> [(&'static str, &'static str, &'static str); 10] {
-    [
-        (
-            "web",
-            t("Web search", "网络搜索"),
-            t(
-                "Search APIs with script fallback",
-                "搜索 API 与脚本 fallback",
-            ),
-        ),
-        (
-            "vision",
-            t("Vision", "识图"),
-            t(
-                "Image understanding and terminal preview",
-                "图片理解和终端预览",
-            ),
-        ),
-        (
-            "image_generation",
-            t("Image generation", "生图"),
-            t("Generate images from text", "文本生成图片"),
-        ),
-        (
-            "web_images",
-            t("Image search", "搜图"),
-            t(
-                "Search, download, and review web images",
-                "网络图片搜索、下载与审核",
-            ),
-        ),
-        (
-            "print_image",
-            t("Print image", "打印图片"),
-            t("Terminal image print size", "终端图片打印尺寸"),
-        ),
-        (
-            "memes",
-            t("Memes", "表情包"),
-            t("Persona meme library and send size", "人格表情库与发送尺寸"),
-        ),
-        (
-            "knowledge_base",
-            t("Knowledge base", "知识库"),
-            t(
-                "Local file search and semantic index",
-                "本地文件检索与语义索引",
-            ),
-        ),
-        (
-            "archlinux",
-            "Arch Linux",
-            t(
-                "AUR lookup, PKGBUILD review, ArchWiki",
-                "AUR 查询、PKGBUILD 审查与 ArchWiki",
-            ),
-        ),
-        (
-            "memory",
-            t("Memory", "记忆"),
-            t("Long-term memory and association", "长期记忆与联想"),
-        ),
-        (
-            "api_quota",
-            t("LLM API quota", "大模型额度查询"),
-            t(
-                "Query DeepSeek and OpenRouter API quota",
-                "查询 DeepSeek 与 OpenRouter API 额度",
-            ),
-        ),
-    ]
-}
-
-pub(in crate::config_tui) fn plugin_enabled(config: &AppConfig, index: usize) -> bool {
-    match index {
-        0 => config.plugins.web.enabled,
-        1 => config.plugins.vision.enabled,
-        2 => config.plugins.image_generation.enabled,
-        3 => config.plugins.web_images.enabled,
-        4 => config.plugins.print_image.enabled,
-        5 => config.plugins.memes.enabled,
-        6 => config.plugins.knowledge_base.enabled,
-        7 => config.plugins.archlinux.enabled,
-        8 => config.plugins.memory.enabled,
-        9 => config.plugins.api_quota.enabled,
-        _ => false,
-    }
-}
-
-pub(in crate::config_tui) fn toggle_plugin(config: &mut AppConfig, index: usize) {
-    let value = !plugin_enabled(config, index);
-    match index {
-        0 => config.plugins.web.enabled = value,
-        1 => config.plugins.vision.enabled = value,
-        2 => config.plugins.image_generation.enabled = value,
-        3 => config.plugins.web_images.enabled = value,
-        4 => config.plugins.print_image.enabled = value,
-        5 => config.plugins.memes.enabled = value,
-        6 => config.plugins.knowledge_base.enabled = value,
-        7 => config.plugins.archlinux.enabled = value,
-        8 => config.plugins.memory.enabled = value,
-        9 => config.plugins.api_quota.enabled = value,
-        _ => {}
-    }
-}
-
+/// 一件功能的「怎么配」。`id` 就是登记表里的 id（功能表那一行的 id）。
+///
+/// 2026-09-20 起按 id 分发而不是按菜单下标：以前那张手写表的顺序就是语义，
+/// 插一行进去后面全错位。
 pub(in crate::config_tui) fn edit_plugin_detail(
     ui: &mut Ui,
     config: &mut AppConfig,
-    index: usize,
+    id: &str,
+    display_name: &str,
 ) -> Result<()> {
-    // api_quota 是 plugin_names() 的最后一项(下标 9):它有专门的账号
-    // 管理界面,不走通用表单。
-    if index == plugin_names().len() - 1 {
+    // API 额度有专门的账号管理界面,不走通用表单。
+    if id == "api_quota" {
         return edit_api_quota(ui, config);
     }
-    let title = format!(" {}: {} ", t("PLUGIN", "插件"), plugin_names()[index].1);
-    let mut fields = plugin_fields(config, index);
-    if !run_form(ui, &title, &mut fields)? {
+    let mut fields = plugin_fields(config, id);
+    if fields.is_empty() {
         return Ok(());
     }
-    apply_plugin_fields(config, index, &fields)
+    if !run_form(ui, &format!(" {display_name} "), &mut fields)? {
+        return Ok(());
+    }
+    apply_plugin_fields(config, id, &fields)
 }
 
-pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
-    match index {
-        0 => vec![
+pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, id: &str) -> Vec<Field> {
+    match id {
+        "web" => vec![
             Field::boolean(t("Enabled", "启用"), config.plugins.web.enabled),
             Field::new(
                 t("Results per request", "每次返回数量"),
@@ -229,7 +68,7 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, index: usize) -> 
             .sensitive(),
             Field::new("SearXNG URL", config.plugins.web.searxng_base_url.clone()),
         ],
-        1 => vec![
+        "vision" => vec![
             Field::boolean(t("Enabled", "启用"), config.plugins.vision.enabled),
             Field::boolean(
                 t(
@@ -264,7 +103,7 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, index: usize) -> 
                 config.plugins.vision.image_timeout_seconds.to_string(),
             ),
         ],
-        2 => vec![
+        "image_generation" => vec![
             Field::boolean(
                 t("Enabled", "启用"),
                 config.plugins.image_generation.enabled,
@@ -309,7 +148,7 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, index: usize) -> 
                 config.plugins.image_generation.timeout_seconds.to_string(),
             ),
         ],
-        3 => vec![
+        "web_images" => vec![
             Field::boolean(t("Enabled", "启用"), config.plugins.web_images.enabled),
             Field::new(
                 t("Search source mode", "搜索来源模式"),
@@ -345,7 +184,7 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, index: usize) -> 
                 config.plugins.web_images.timeout_seconds.to_string(),
             ),
         ],
-        4 => vec![
+        "print_image" => vec![
             Field::boolean(t("Enabled", "启用"), config.plugins.print_image.enabled),
             Field::new(
                 t("Print width percent", "打印宽度百分比"),
@@ -356,7 +195,7 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, index: usize) -> 
                 config.plugins.print_image.height_percent.to_string(),
             ),
         ],
-        5 => vec![
+        "memes" => vec![
             Field::boolean(t("Enabled", "启用"), config.plugins.memes.enabled),
             Field::new(
                 t("Send width percent", "发送宽度百分比"),
@@ -397,7 +236,7 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, index: usize) -> 
                 config.plugins.memes.auto_send_probability.to_string(),
             ),
         ],
-        6 => vec![
+        "knowledge_base" => vec![
             Field::boolean(t("Enabled", "启用"), config.plugins.knowledge_base.enabled),
             Field::new(
                 t("Knowledge base directory", "知识库目录"),
@@ -486,11 +325,11 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, index: usize) -> 
                     .to_string(),
             ),
         ],
-        7 => vec![Field::boolean(
+        "archlinux" => vec![Field::boolean(
             t("Enabled", "启用"),
             config.plugins.archlinux.enabled,
         )],
-        8 => {
+        "memory" => {
             let memory = config.memory_config();
             vec![
                 Field::boolean(t("Enabled", "启用"), memory.enabled),
@@ -557,24 +396,23 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, index: usize) -> 
                 ),
             ]
         }
-        9 => vec![Field::boolean(
+        "api_quota" => vec![Field::boolean(
             t("Enabled", "启用"),
             config.plugins.api_quota.enabled,
         )],
-        _ => vec![Field::boolean(
-            t("Enabled", "启用"),
-            plugin_enabled(config, index),
-        )],
+        // 没有专属设置页的（闹钟、汇率、记账、脚本、MCP…）。功能表上它们那行
+        // 不摆齿轮，正常走不到这里。
+        _ => Vec::new(),
     }
 }
 
 pub(in crate::config_tui) fn apply_plugin_fields(
     config: &mut AppConfig,
-    index: usize,
+    id: &str,
     fields: &[Field],
 ) -> Result<()> {
-    match index {
-        0 => {
+    match id {
+        "web" => {
             config.plugins.web.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.web.max_results = fields[1].value.trim().parse::<usize>()?.clamp(1, 10);
             config.plugins.web.tavily_api_keys = parse_key_list(&fields[2].value);
@@ -584,7 +422,7 @@ pub(in crate::config_tui) fn apply_plugin_fields(
             config.plugins.web.searxng_base_url =
                 fields[6].value.trim().trim_end_matches('/').to_string();
         }
-        1 => {
+        "vision" => {
             config.plugins.vision.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.vision.prefer_current_multimodal_model =
                 parse_bool_field(&fields[1].value)?;
@@ -598,7 +436,7 @@ pub(in crate::config_tui) fn apply_plugin_fields(
             config.plugins.vision.image_timeout_seconds =
                 fields[5].value.trim().parse::<u64>()?.max(1);
         }
-        2 => {
+        "image_generation" => {
             config.plugins.image_generation.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.image_generation.provider_type = fields[1].value.trim().to_string();
             config.plugins.image_generation.base_url =
@@ -612,7 +450,7 @@ pub(in crate::config_tui) fn apply_plugin_fields(
             config.plugins.image_generation.auto_print = parse_bool_field(&fields[8].value)?;
             config.plugins.image_generation.timeout_seconds = fields[9].value.trim().parse()?;
         }
-        3 => {
+        "web_images" => {
             config.plugins.web_images.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.web_images.source_mode = match fields[1].value.trim() {
                 "auto" | "global" | "mainland" => fields[1].value.trim().to_string(),
@@ -637,12 +475,12 @@ pub(in crate::config_tui) fn apply_plugin_fields(
             config.plugins.web_images.timeout_seconds =
                 fields[8].value.trim().parse::<u64>()?.clamp(5, 120);
         }
-        4 => {
+        "print_image" => {
             config.plugins.print_image.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.print_image.width_percent = fields[1].value.trim().parse::<u8>()?;
             config.plugins.print_image.height_percent = fields[2].value.trim().parse::<u8>()?;
         }
-        5 => {
+        "memes" => {
             config.plugins.memes.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.memes.width_percent =
                 fields[1].value.trim().parse::<u8>()?.clamp(1, 100);
@@ -658,7 +496,7 @@ pub(in crate::config_tui) fn apply_plugin_fields(
             config.plugins.memes.auto_send_probability =
                 fields[8].value.trim().parse::<f32>()?.clamp(0.0, 1.0);
         }
-        6 => {
+        "knowledge_base" => {
             config.plugins.knowledge_base.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.knowledge_base.data_dir = fields[1].value.trim().to_string();
             config.plugins.knowledge_base.max_search_results = fields[2].value.trim().parse()?;
@@ -682,10 +520,10 @@ pub(in crate::config_tui) fn apply_plugin_fields(
             config.plugins.knowledge_base.embedding_timeout_seconds =
                 fields[15].value.trim().parse()?;
         }
-        7 => {
+        "archlinux" => {
             config.plugins.archlinux.enabled = parse_bool_field(&fields[0].value)?;
         }
-        8 => {
+        "memory" => {
             config.memory = miyu_base::config::MemoryConfig::default();
             config.plugins.memory.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.memory.evicted_context_enabled = parse_bool_field(&fields[1].value)?;
@@ -715,15 +553,10 @@ pub(in crate::config_tui) fn apply_plugin_fields(
                 fields[15].value.trim().parse::<f64>()?;
             config.plugins.memory.association_dedup = parse_bool_field(&fields[16].value)?;
         }
-        9 => {
+        "api_quota" => {
             config.plugins.api_quota.enabled = parse_bool_field(&fields[0].value)?;
         }
-        _ => {
-            let value = parse_bool_field(&fields[0].value)?;
-            if plugin_enabled(config, index) != value {
-                toggle_plugin(config, index);
-            }
-        }
+        _ => {}
     }
     Ok(())
 }

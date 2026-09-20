@@ -22,6 +22,16 @@ pub enum PluginKind {
     Provider,
 }
 
+/// 机器级开关落在配置的哪个字段上：读一份、写一份。
+///
+/// 写的那半是 2026-09-20 加的：设置界面的功能表勾上一项时，人格白名单与机器
+/// 开关**一起**打开（用户拍板的口径），不然勾了不生效，人要在两个菜单之间
+/// 来回找。取消勾选只动人格那层，机器上的配置（密钥、尺寸）留着。
+pub struct MachineSwitch {
+    pub get: fn(&AppConfig) -> bool,
+    pub set: fn(&mut AppConfig, bool),
+}
+
 pub struct BuiltinPluginDescriptor {
     /// persona.toml 里的名字,也是 `manifest.plugin_enabled(id)` 的键。
     pub id: &'static str,
@@ -33,6 +43,12 @@ pub struct BuiltinPluginDescriptor {
     /// 机器级开关:本机装了 / 开了没有。人格只能在装了的里挑;运行态条件
     /// (如 QQ 是否连着)在注册函数里再判。
     pub installed: fn(&AppConfig) -> bool,
+    /// 机器级开关能不能**写**。组合条件的（外发要「终端外发开着且 QQ 连着」）
+    /// 没有单一开关，给 `None`。
+    pub switch: Option<MachineSwitch>,
+    /// 有没有「怎么配」的设置页（密钥、尺寸、账号）。功能表上这一行摆个齿轮，
+    /// 回车进去。设置页的实现在 `config_tui`，这里只记有没有。
+    pub settings: bool,
 }
 
 fn always(_: &AppConfig) -> bool {
@@ -76,6 +92,8 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDescriptor] = &[
         hint_zh: "读写工作区文件",
         toggleable: false,
         installed: always,
+        switch: None,
+        settings: false,
     },
     BuiltinPluginDescriptor {
         id: "usage_query",
@@ -84,6 +102,8 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDescriptor] = &[
         hint_zh: "对话里问用了多少 token",
         toggleable: false,
         installed: always,
+        switch: None,
+        settings: false,
     },
     BuiltinPluginDescriptor {
         id: "alarm",
@@ -92,6 +112,8 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDescriptor] = &[
         hint_zh: "定时提醒",
         toggleable: true,
         installed: always,
+        switch: None,
+        settings: false,
     },
     BuiltinPluginDescriptor {
         id: "exchange_rate",
@@ -100,6 +122,11 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDescriptor] = &[
         hint_zh: "货币换算",
         toggleable: true,
         installed: exchange_rate_installed,
+        switch: Some(MachineSwitch {
+            get: |config| config.plugins.exchange_rate.enabled,
+            set: |config, on| config.plugins.exchange_rate.enabled = on,
+        }),
+        settings: false,
     },
     BuiltinPluginDescriptor {
         id: "archlinux",
@@ -108,6 +135,11 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDescriptor] = &[
         hint_zh: "AUR 查询与审查安装、Arch 新闻",
         toggleable: true,
         installed: archlinux_installed,
+        switch: Some(MachineSwitch {
+            get: |config| config.plugins.archlinux.enabled,
+            set: |config, on| config.plugins.archlinux.enabled = on,
+        }),
+        settings: true,
     },
     BuiltinPluginDescriptor {
         id: "api_quota",
@@ -116,14 +148,21 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDescriptor] = &[
         hint_zh: "查供应商余额",
         toggleable: true,
         installed: api_quota_installed,
+        switch: Some(MachineSwitch {
+            get: |config| config.plugins.api_quota.enabled,
+            set: |config, on| config.plugins.api_quota.enabled = on,
+        }),
+        settings: true,
     },
     BuiltinPluginDescriptor {
         id: "print_image",
         kind: PluginKind::Builtin,
-        name_zh: "视觉分析",
-        hint_zh: "看图片和截图",
+        name_zh: "打印图片",
+        hint_zh: "把图片打到终端里,可调尺寸",
         toggleable: false,
         installed: always,
+        switch: None,
+        settings: true,
     },
     BuiltinPluginDescriptor {
         id: "memes",
@@ -132,6 +171,11 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDescriptor] = &[
         hint_zh: "用表情包回复",
         toggleable: true,
         installed: memes_installed,
+        switch: Some(MachineSwitch {
+            get: |config| config.plugins.memes.enabled,
+            set: |config, on| config.plugins.memes.enabled = on,
+        }),
+        settings: true,
     },
     BuiltinPluginDescriptor {
         id: "platform_outreach",
@@ -140,6 +184,8 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDescriptor] = &[
         hint_zh: "从对话里给通讯平台发消息",
         toggleable: false,
         installed: platform_outreach_installed,
+        switch: None,
+        settings: false,
     },
     BuiltinPluginDescriptor {
         id: "web_images",
@@ -148,6 +194,11 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDescriptor] = &[
         hint_zh: "网络找图",
         toggleable: false,
         installed: web_images_installed,
+        switch: Some(MachineSwitch {
+            get: |config| config.plugins.web_images.enabled,
+            set: |config, on| config.plugins.web_images.enabled = on,
+        }),
+        settings: true,
     },
     BuiltinPluginDescriptor {
         id: "image_generation",
@@ -156,6 +207,11 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDescriptor] = &[
         hint_zh: "AI 画图",
         toggleable: true,
         installed: image_generation_installed,
+        switch: Some(MachineSwitch {
+            get: |config| config.plugins.image_generation.enabled,
+            set: |config, on| config.plugins.image_generation.enabled = on,
+        }),
+        settings: true,
     },
     BuiltinPluginDescriptor {
         id: "knowledge_base",
@@ -164,6 +220,11 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDescriptor] = &[
         hint_zh: "自己的资料库,对话里能查",
         toggleable: false,
         installed: knowledge_base_installed,
+        switch: Some(MachineSwitch {
+            get: |config| config.plugins.knowledge_base.enabled,
+            set: |config, on| config.plugins.knowledge_base.enabled = on,
+        }),
+        settings: true,
     },
     BuiltinPluginDescriptor {
         id: "ledger",
@@ -172,6 +233,8 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDescriptor] = &[
         hint_zh: "记账本",
         toggleable: true,
         installed: always,
+        switch: None,
+        settings: false,
     },
     BuiltinPluginDescriptor {
         id: "scripts",
@@ -180,6 +243,8 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDescriptor] = &[
         hint_zh: "逐个勾选",
         toggleable: false,
         installed: always,
+        switch: None,
+        settings: false,
     },
     // MCP 与脚本同级:插件闸之上还能按服务器 id 逐个勾(`plugins.mcp`)。
     BuiltinPluginDescriptor {
@@ -189,6 +254,11 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDescriptor] = &[
         hint_zh: "外接 MCP 服务器的工具",
         toggleable: false,
         installed: mcp_installed,
+        switch: Some(MachineSwitch {
+            get: |config| config.mcp.enabled,
+            set: |config, on| config.mcp.enabled = on,
+        }),
+        settings: false,
     },
 ];
 
@@ -234,6 +304,48 @@ const fn toggle_plugin_ids() -> [&'static str; toggle_count()] {
 
 /// 引导里给开关的内置插件。其余 [`PLUGIN_IDS`] 一律常开、不摆出来。
 pub const TOGGLE_PLUGINS: &[&str] = &toggle_plugin_ids();
+
+/// 不跟人格走的机器级能力。
+///
+/// 它们在工具面上属于 core（`compose_core` 直接按 config 判），persona.toml
+/// 管不着，所以**不进** [`PLUGIN_IDS`]——写进 persona.toml 也不会生效。但设置
+/// 界面仍得给它们开关和设置页，于是单列一张表：2026-09-20 之前这两项只在
+/// `config_tui` 的一张手写表里，和这张登记表口径对不上（那张表里有 web /
+/// vision / memory，没有闹钟 / 汇率 / 记账）。
+pub struct MachineFeature {
+    pub id: &'static str,
+    pub name_zh: &'static str,
+    pub hint_zh: &'static str,
+    pub switch: MachineSwitch,
+    pub settings: bool,
+}
+
+pub const MACHINE_FEATURES: &[MachineFeature] = &[
+    MachineFeature {
+        id: "web",
+        name_zh: "网络搜索",
+        hint_zh: "搜索 API 与脚本兜底",
+        switch: MachineSwitch {
+            get: |config| config.plugins.web.enabled,
+            set: |config, on| config.plugins.web.enabled = on,
+        },
+        settings: true,
+    },
+    MachineFeature {
+        id: "vision",
+        name_zh: "识图",
+        hint_zh: "图片理解与终端预览",
+        switch: MachineSwitch {
+            get: |config| config.plugins.vision.enabled,
+            set: |config, on| config.plugins.vision.enabled = on,
+        },
+        settings: true,
+    },
+];
+
+pub fn machine_feature(id: &str) -> Option<&'static MachineFeature> {
+    MACHINE_FEATURES.iter().find(|item| item.id == id)
+}
 
 pub fn descriptor(id: &str) -> Option<&'static BuiltinPluginDescriptor> {
     BUILTIN_PLUGINS.iter().find(|plugin| plugin.id == id)

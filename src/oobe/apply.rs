@@ -70,14 +70,21 @@ pub(super) fn save_persona(
     Ok(config.active_persona_scope())
 }
 
-/// 功能屏的勾选写进人格清单。
+/// 功能屏的勾选写进人格清单；勾上的那些顺手把机器级开关也打开。
+///
+/// 机器层那一半是 2026-09-20 补的：勾了却因为机器开关关着而不生效，在引导里
+/// 一样说不通（设置界面的功能表同一个口径）。默认配置本来就全开，所以这条只
+/// 在「用户之前关过、又重跑引导」时才起作用。
 pub(super) fn save_features(
-    config: &AppConfig,
+    config: &mut AppConfig,
     paths: &MiyuPaths,
     scope: &str,
     items: &[FeatureItem],
     default_persona: bool,
 ) -> Result<()> {
+    let before = serde_json::to_string(&config.plugins).ok();
+    let mcp_before = config.mcp.enabled;
+    feature_catalog::apply_machine_switches(config, items);
     let mut manifest = PersonaManifest::load(config, paths, scope);
     feature_catalog::apply_selection(&mut manifest, items, default_persona);
     let path = PersonaManifest::manifest_path(config, paths, scope);
@@ -87,6 +94,9 @@ pub(super) fn save_features(
     }
     std::fs::write(&path, manifest.to_toml())
         .with_context(|| format!("写 persona.toml 失败: {}", path.display()))?;
+    if serde_json::to_string(&config.plugins).ok() != before || config.mcp.enabled != mcp_before {
+        config.save(paths).context("保存配置失败")?;
+    }
     Ok(())
 }
 

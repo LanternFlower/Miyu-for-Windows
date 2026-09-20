@@ -17,7 +17,7 @@ pub(super) mod widgets;
 use super::apply;
 use super::probe::{Facts, Fcitx, Ime, Loader};
 use super::providers::{CatalogJob, Prefetch, ProviderOption};
-use miyu_base::config::feature_catalog::{self, FeatureItem, FeatureKind, FeatureSources};
+use miyu_base::config::feature_catalog::{self, FeatureItem, FeatureKind};
 use miyu_base::config::{AppConfig, ProviderConfig};
 use miyu_base::paths::MiyuPaths;
 use miyu_base::terminal::palette::{Depth, Theme};
@@ -339,28 +339,23 @@ impl App {
         }
         let manifest = apply::current_manifest(&self.config, &self.paths);
         let default_persona = miyu_core::skills::is_default_persona(&self.config);
-        // 内置脚本对每个人格都列出来:默认人格默认全勾,自定义人格默认不勾、勾了才挂。
-        let dirs = [
-            miyu_engine::tools::builtin_scripts_dir(&self.paths),
-            self.paths.scripts_dir.clone(),
-        ];
-        let dir_refs: Vec<&std::path::Path> = dirs.iter().map(|dir| dir.as_path()).collect();
-        let sources = FeatureSources {
-            voice_available: super::probe::which("miyu-voice") || voice_beside_exe(),
-            persona_reminder_available: self.config.prompt.persona_reminder,
-            emotion_available: self.config.platforms.qq.enabled,
-            scripts: miyu_engine::tools::list_scripts_with_origin(&dir_refs, Some(&self.paths)),
-            skills: miyu_core::skills::persona_skill_options(&self.config, &self.paths),
-            mcp_servers: mcp_server_options(&self.config),
-        };
-        self.feats = feature_catalog::catalog(&manifest, &sources, default_persona);
+        let sources = crate::feature_sources::collect(&self.config, &self.paths);
+        self.feats = feature_catalog::catalog(
+            &manifest,
+            &sources,
+            default_persona,
+            feature_catalog::CatalogScope::Onboarding,
+            Some(&self.config),
+        );
         self.feat_cur = 0;
         self.feats_for = Some(self.persona_scope.clone());
     }
 
     pub fn section_of(kind: FeatureKind) -> &'static str {
         match kind {
-            FeatureKind::Subsystem | FeatureKind::Plugin => "内置功能",
+            // 机器级那一档引导里不摆（`CatalogScope::Onboarding`），真到了这儿
+            // 也归「内置功能」。
+            FeatureKind::Machine | FeatureKind::Subsystem | FeatureKind::Plugin => "内置功能",
             FeatureKind::Script => "脚本",
             FeatureKind::Skill => "技能",
             FeatureKind::Mcp => "MCP 服务器",
@@ -472,7 +467,7 @@ impl App {
     pub fn commit_features(&mut self) -> bool {
         let default_persona = miyu_core::skills::is_default_persona(&self.config);
         match apply::save_features(
-            &self.config,
+            &mut self.config,
             &self.paths,
             &self.persona_scope,
             &self.feats,
@@ -750,34 +745,4 @@ mod search_tests {
         assert_eq!(filter_models(&models, "QWEN"), vec![2]);
         assert_eq!(filter_models(&models, "nope"), Vec::<usize>::new());
     }
-}
-
-/// 引导表里的 MCP 一格:机器级 `mcp.enabled` 开着才列,只列 `servers[].enabled` 的;
-/// 说明行是命令本身(截到一行),显示名空的由目录退回 id。
-fn mcp_server_options(config: &miyu_base::config::AppConfig) -> Vec<(String, String, String)> {
-    if !config.mcp.enabled {
-        return Vec::new();
-    }
-    config
-        .mcp
-        .servers
-        .iter()
-        .filter(|server| server.enabled && !server.id.trim().is_empty())
-        .map(|server| {
-            let mut hint = server.command.clone();
-            for arg in &server.args {
-                hint.push(' ');
-                hint.push_str(arg);
-            }
-            (server.id.clone(), server.display_name.clone(), hint)
-        })
-        .collect()
-}
-
-/// `miyu-voice` 也可能和主程序放在一起而不在 PATH 里。
-fn voice_beside_exe() -> bool {
-    miyu_base::paths::miyu_executable()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("miyu-voice").is_file()))
-        .unwrap_or(false)
 }

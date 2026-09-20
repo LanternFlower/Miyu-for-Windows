@@ -107,7 +107,8 @@ def main():
         send(b"jj\r", "message", ["No models support image input", "any key"])
         resize(92, 30, "message-resized", ["No models support image input", "any key"])
         send(b"x", "message-dismissed", ["CONFIG"])
-        send(b"j" * 6 + b"\r", "settings", ["GLOBAL SETTINGS", "Maximum tool rounds"])
+        # 2026-09-20：插件配置与自定义提示词并成了「人格」，主菜单少一项。
+        send(b"j" * 5 + b"\r", "settings", ["GLOBAL SETTINGS", "Maximum tool rounds"])
         send(b"j\r\x1b[H" + b"\x1b[3~" * 20 + b"resizecheck\x1b[D\x1b[D",
              "editing", ["resizecheck"])
         resize(110, 36, "editing-resized", ["GLOBAL SETTINGS", "resizecheck"])

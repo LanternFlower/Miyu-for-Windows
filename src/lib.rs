@@ -5,6 +5,8 @@
 
 mod cli;
 mod config_tui;
+/// 功能表的数据源（引导与设置界面共用）。
+mod feature_sources;
 mod oobe;
 mod pm;
 mod question_tui;

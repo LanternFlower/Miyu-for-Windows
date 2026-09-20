@@ -8,62 +8,41 @@
 
 use crate::config_tui::*;
 
-pub(in crate::config_tui) fn edit_custom_prompts(
+/// 「人格」菜单：这个人格是谁、挂哪些功能、提示词怎么写。
+///
+/// 2026-09-20 由「插件配置」+「自定义提示词」合并而来：功能本来就是跟着人格
+/// 走的（`persona.toml`），而插件的「怎么配」是机器的事——后者现在挂在功能表
+/// 每一行的回车上，不再单占一个菜单项。
+pub(in crate::config_tui) fn edit_persona_menu(
     ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
+    pending: &mut PendingWrites,
 ) -> Result<()> {
     let mut selected = 0usize;
+    // 数功能要扫脚本与技能目录，每帧算一遍太重：进来算一次，改过再算。
+    let mut counts = feature_counts(config, paths, pending);
     loop {
-        // 防失忆提醒那两项是人格的事（开发模式没有人格，自然没有提醒），
-        // 归到「普通模式」底下（用户 09-14 要求）。
+        let persona = persona_display_name_for(config);
         let options = [
-            t("Normal mode", "普通模式").to_string(),
-            t("Dev mode", "开发模式").to_string(),
-        ];
-        draw_menu(
-            ui,
-            t(" CUSTOM PROMPTS ", " 自定义提示词 "),
-            &options,
-            selected,
-            t("[Enter]select [q]back", "[Enter]选择 [q]返回"),
-        )?;
-        match read_key(ui)? {
-            KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
-            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
-            KeyCode::Enter if selected == 0 => edit_normal_mode_prompts(ui, paths, config)?,
-            KeyCode::Enter if selected == 1 => edit_dev_prompt(ui, paths)?,
-            _ => {}
-        }
-    }
-}
-
-/// 普通模式的提示词面:AI 人格与用户身份(原顶层两项下沉至此)，以及防失忆
-/// 提醒的开关与间隔(09-14 从「自定义提示词」挪进来:提醒是人格的事)。
-pub(in crate::config_tui) fn edit_normal_mode_prompts(
-    ui: &mut Ui,
-    paths: &MiyuPaths,
-    config: &mut AppConfig,
-) -> Result<()> {
-    let mut selected = 0usize;
-    loop {
-        let persona = if config.prompt.active_persona.trim().is_empty() {
-            "Miyu".to_string()
-        } else {
-            persona_display_name(&config.prompt.active_persona).to_string()
-        };
-        let options = [
+            format!("{} ({persona})", t("Current persona", "当前人格")),
             format!(
-                "{} ({}: {persona})",
-                t("AI persona", "AI 人格"),
-                t("Current", "当前")
+                "{} ({}/{})",
+                t("Enabled features", "启用的功能"),
+                counts.0,
+                counts.1
             ),
-            t("User identity", "用户身份").to_string(),
-            // 08-15 A/B 二轮:干净体制下预设对话单独已满分,提醒降为可关
-            // 开关;重噪声 QQ 长群聊体制未复测,默认保持启用。
             format!(
-                "{}: {}",
+                "{} ({})",
+                t("Prompt and preset dialogs", "提示词与预设对话"),
+                if config.prompt.active_persona.trim().is_empty() {
+                    t("built-in Miyu", "内置 Miyu")
+                } else {
+                    t("custom", "自定义")
+                }
+            ),
+            format!(
+                "{} ({})",
                 t("Anti-amnesia reminder", "防失忆提醒"),
                 if config.prompt.persona_reminder {
                     t("Enabled", "启用")
@@ -72,50 +51,135 @@ pub(in crate::config_tui) fn edit_normal_mode_prompts(
                 }
             ),
             format!(
-                "{}: {}",
-                t("Send reminder every N turns", "每几轮发一次防失忆提醒"),
-                config.prompt.persona_reminder_interval.max(1)
+                "{} ({} {})",
+                t("Reminder interval", "提醒间隔"),
+                config.prompt.persona_reminder_interval.max(1),
+                t("turns", "轮")
             ),
+            String::new(),
+            t("User identity", "用户身份").to_string(),
+            t("Dev mode prompt", "开发模式提示词").to_string(),
         ];
         draw_menu(
             ui,
-            t(" NORMAL MODE ", " 普通模式 "),
+            t(" PERSONA & FEATURES ", " 人格和功能 "),
             &options,
             selected,
             t("[Enter]select/toggle [q]back", "[Enter]选择/切换 [q]返回"),
         )?;
         match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
-            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
-            KeyCode::Enter if selected == 0 => edit_personas(ui, paths, config)?,
-            KeyCode::Enter if selected == 1 => edit_identities(ui, paths, config)?,
-            KeyCode::Enter if selected == 2 => {
-                config.prompt.persona_reminder = !config.prompt.persona_reminder;
-            }
-            KeyCode::Enter if selected == 3 => {
-                if let Some(value) = edit_inline_value(
-                    ui,
-                    t("Send reminder every N turns", "每几轮发一次防失忆提醒"),
-                    &config.prompt.persona_reminder_interval.to_string(),
-                    false,
-                )? {
-                    if let Ok(interval) = value.trim().parse::<u32>() {
-                        config.prompt.persona_reminder_interval = interval.max(1);
-                    }
+            KeyCode::Up | KeyCode::Char('k') => {
+                selected = selected.saturating_sub(1);
+                // 第 5 行是分隔用的空行，跳过去。
+                if selected == 5 {
+                    selected = 4;
                 }
             }
+            KeyCode::Down | KeyCode::Char('j') => {
+                selected = (selected + 1).min(options.len() - 1);
+                if selected == 5 {
+                    selected = 6;
+                }
+            }
+            KeyCode::Enter => match selected {
+                0 => {
+                    edit_personas(ui, paths, config)?;
+                    counts = feature_counts(config, paths, pending);
+                }
+                1 => {
+                    edit_features(ui, paths, config, pending)?;
+                    counts = feature_counts(config, paths, pending);
+                }
+                2 => edit_active_persona_prompt(ui, paths, config)?,
+                3 => config.prompt.persona_reminder = !config.prompt.persona_reminder,
+                4 => {
+                    if let Some(value) = edit_inline_value(
+                        ui,
+                        t("Reminder interval", "提醒间隔"),
+                        &config.prompt.persona_reminder_interval.to_string(),
+                        false,
+                    )? {
+                        if let Ok(interval) = value.trim().parse::<u32>() {
+                            config.prompt.persona_reminder_interval = interval.max(1);
+                        }
+                    }
+                }
+                6 => edit_identities(ui, paths, config)?,
+                7 => edit_dev_prompt(ui, paths, pending)?,
+                _ => {}
+            },
             _ => {}
         }
     }
 }
 
+pub(in crate::config_tui) fn active_persona_label(config: &AppConfig) -> String {
+    persona_display_name_for(config)
+}
+
+fn persona_display_name_for(config: &AppConfig) -> String {
+    if config.prompt.active_persona.trim().is_empty() {
+        "Miyu".to_string()
+    } else {
+        persona_display_name(&config.prompt.active_persona).to_string()
+    }
+}
+
+/// 当前人格挂着几件、一共几件。
+fn feature_counts(
+    config: &AppConfig,
+    paths: &MiyuPaths,
+    pending: &PendingWrites,
+) -> (usize, usize) {
+    let scope = config.active_persona_scope();
+    let manifest = pending.manifest(config, paths, &scope);
+    let sources = crate::feature_sources::collect(config, paths);
+    let items = miyu_base::config::feature_catalog::catalog(
+        &manifest,
+        &sources,
+        miyu_core::skills::is_default_persona(config),
+        miyu_base::config::feature_catalog::CatalogScope::Settings,
+        Some(config),
+    );
+    (items.iter().filter(|item| item.on).count(), items.len())
+}
+
+/// 当前人格的提示词与预设对话。内置 Miyu 只有附加件可改（本体只读）。
+fn edit_active_persona_prompt(
+    ui: &mut Ui,
+    paths: &MiyuPaths,
+    config: &mut AppConfig,
+) -> Result<()> {
+    let name = config.prompt.active_persona.trim().to_string();
+    if name.is_empty() {
+        return edit_miyu_persona_extras(ui, paths, config);
+    }
+    if let Some(values) = edit_persona(ui, paths, config, &name)? {
+        apply_persona_edit(paths, config, &name, &values.name, &values.content)?;
+        write_persona_aux(
+            paths,
+            config,
+            &miyu_base::config::persona_scope_name(&values.name),
+            &values.hint,
+            &values.dialogs,
+        )?;
+        if config.prompt.active_persona == name {
+            config.prompt.active_persona = values.name;
+        }
+    }
+    Ok(())
+}
+
 /// 开发模式的「AI 提示词」:编辑 config/dev-prompt.md 一个文件。清空
 /// 保存=删文件,运行时回退内置默认一行;记忆按保留人格 "dev" 落库,
 /// 与这份提示词的内容完全解耦——怎么改都不会切库。
-pub(in crate::config_tui) fn edit_dev_prompt(ui: &mut Ui, paths: &MiyuPaths) -> Result<()> {
-    let path = paths.config_dir.join(miyu_base::config::DEV_PROMPT_FILE);
-    let current = std::fs::read_to_string(&path).unwrap_or_default();
+pub(in crate::config_tui) fn edit_dev_prompt(
+    ui: &mut Ui,
+    paths: &MiyuPaths,
+    pending: &mut PendingWrites,
+) -> Result<()> {
+    let current = pending.dev_prompt(paths);
     let prefill = if current.trim().is_empty() {
         miyu_base::config::DEFAULT_DEV_SYSTEM_PROMPT.to_string()
     } else {
@@ -128,19 +192,15 @@ pub(in crate::config_tui) fn edit_dev_prompt(ui: &mut Ui, paths: &MiyuPaths) -> 
         ),
         prefill,
     )];
-    if !run_form(ui, t(" DEV MODE ", " 开发模式 "), &mut fields)? {
-        return Ok(());
-    }
+    // 不摆「保存 / 返回」两个按钮：这一屏只有一个字段，编辑完退出就写
+    // （用户 2026-09-20）。它是独立文件（`dev-prompt.md`），跟不了设置界面
+    // 「退出时一起保存」那条路——那条只管 config.jsonc。
+    run_form_without_buttons(ui, t(" DEV MODE ", " 开发模式 "), &mut fields)?;
+    // 写在内存里，跟配置一起走「保存并退出」。内容和内置默认一模一样就当没改，
+    // 免得一进一出就凭空多出一个文件。
     let value = fields[0].value.trim();
-    if value.is_empty() {
-        if path.exists() {
-            std::fs::remove_file(&path)?;
-        }
-    } else {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, format!("{value}\n"))?;
+    if value != miyu_base::config::DEFAULT_DEV_SYSTEM_PROMPT.trim() || !current.trim().is_empty() {
+        pending.set_dev_prompt(value.to_string());
     }
     Ok(())
 }
