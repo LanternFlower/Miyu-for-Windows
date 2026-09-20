@@ -268,15 +268,23 @@ pub(in crate::web) async fn follow_run(
         _ => state.events.latest_id(),
     };
     let mut subscription = state.events.subscribe_after(after);
-    let Some((turn_id, _)) = run_state else {
+    // 这一轮**已经跑完了**，但客户端说得出自己看到第几号：把缓冲里剩下的补完
+    // 再收，别一句「run is not active」把人打发走。
+    //
+    // 09-20 用户实测：回合跑着时开 `/models` / `/session`，面板开着的那会儿
+    // 回合在 daemon 里跑完了，挂回来就撞上这条早退——正文的尾巴永远画不出来，
+    // 看着就像「AI 的输出消失了 / 被打断了」（库里那一轮其实是 completed）。
+    // 事件都还在环形缓冲里，缺的只是放行。
+    let finished = run_state.is_none();
+    if finished && after_id.is_none() {
         ipc::send(stream, &IpcFrame::error("run is not active")).await?;
         return Ok(());
-    };
+    }
     ipc::send(
         stream,
         &IpcFrame::Accepted {
             run_id: run_id.clone(),
-            turn_id,
+            turn_id: run_state.and_then(|(turn_id, _)| turn_id),
         },
     )
     .await?;
@@ -284,6 +292,9 @@ pub(in crate::web) async fn follow_run(
     loop {
         let record = if let Some(record) = subscription.pending.pop_front() {
             record
+        } else if finished {
+            // 补完就收：这一轮已经结束，不会再有新事件了，等下去只会挂死。
+            break;
         } else {
             match subscription.receiver.recv().await {
                 Ok(record) => record,
@@ -307,6 +318,12 @@ pub(in crate::web) async fn follow_run(
             continue;
         };
         if data.get("run_id").and_then(Value::as_str) != Some(run_id.as_str()) {
+            // 补发一轮已经结束的记录时，缓冲里夹着别的轮的事件是常态：跳过
+            // 就是了，不能在这儿 break——一 break 就把本轮还没补完的尾巴切掉。
+            // 补发的收口在上面「pending 空了就 break」那一处。
+            if finished {
+                continue;
+            }
             // The run may have finished before we saw a frame; stop when it
             // is no longer active and nothing more will arrive for it.
             if !state
