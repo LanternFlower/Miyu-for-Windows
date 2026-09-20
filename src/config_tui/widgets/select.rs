@@ -5,19 +5,15 @@
 
 use crate::config_tui::*;
 
-pub(in crate::config_tui) fn select_bool(
-    stdout: &mut io::Stdout,
-    label: &str,
-    current: bool,
-) -> Result<bool> {
+pub(in crate::config_tui) fn select_bool(ui: &mut Ui, label: &str, current: bool) -> Result<bool> {
     let mut selected = if current { 0 } else { 1 };
     let options = [
         boolean_label(true).to_string(),
         boolean_label(false).to_string(),
     ];
     loop {
-        draw_menu(stdout, label, &options, selected, "")?;
-        match read_key()? {
+        draw_menu(ui, label, &options, selected, "")?;
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(current),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
@@ -28,7 +24,7 @@ pub(in crate::config_tui) fn select_bool(
 }
 
 pub(in crate::config_tui) fn select_choice(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     label: &str,
     current: &str,
     choices: &[String],
@@ -41,8 +37,8 @@ pub(in crate::config_tui) fn select_choice(
             .iter()
             .map(|choice| choice_display_label(choice, empty_label, raw_choice_labels))
             .collect::<Vec<_>>();
-        draw_menu(stdout, label, &options, selected, "")?;
-        match read_key()? {
+        draw_menu(ui, label, &options, selected, "")?;
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(current.to_string()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(choices.len() - 1),
@@ -53,7 +49,7 @@ pub(in crate::config_tui) fn select_choice(
 }
 
 pub(in crate::config_tui) fn select_multi_choice(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     label: &str,
     current: &str,
     choices: &[String],
@@ -76,7 +72,7 @@ pub(in crate::config_tui) fn select_multi_choice(
             })
             .collect::<Vec<_>>();
         draw_menu(
-            stdout,
+            ui,
             label,
             &options,
             selected,
@@ -85,7 +81,7 @@ pub(in crate::config_tui) fn select_multi_choice(
                 "[Tab]选择/取消 [Enter/q]确认",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
                 return Ok(choices
                     .iter()

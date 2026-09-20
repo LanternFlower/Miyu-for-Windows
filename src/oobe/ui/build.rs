@@ -632,9 +632,12 @@ pub(super) fn build(app: &App, cx: &Cx) -> View {
         body,
         cursor_row,
         caret,
-        footer,
+        footer: footer.into_iter().collect(),
         footer_caret,
         counter,
-        keys,
+        keys: keys
+            .into_iter()
+            .map(|(key, label)| (key.to_string(), label.to_string()))
+            .collect(),
     }
 }

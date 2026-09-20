@@ -25,6 +25,8 @@ pub(in crate::config_tui) struct ProviderBrowser<'a> {
     pub(in crate::config_tui) orgs: Vec<String>,
     pub(in crate::config_tui) models: Vec<ModelEntry>,
     pub(in crate::config_tui) status: String,
+    /// 状态行是「说一声」还是「出错了」——两者颜色不同。
+    pub(in crate::config_tui) status_error: bool,
     pub(in crate::config_tui) loading: bool,
     pub(in crate::config_tui) fetch_seq: u64,
     /// 删供应商牵连很广（连带清掉它在各个池子与路由里的每一处引用），
@@ -158,13 +160,13 @@ pub(in crate::config_tui) fn remove_custom_model(
 }
 
 pub(in crate::config_tui) fn select_active_provider(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &mut AppConfig,
 ) -> Result<()> {
     let mut choices = config.text_provider_model_choices();
     if choices.is_empty() {
         message(
-            stdout,
+            ui,
             t(
                 "No text models are selected. Activate one with Tab under Providers and models first.",
                 "没有已勾选的文本模型，请先在供应商和模型里用 Tab 激活模型。",
@@ -191,7 +193,7 @@ pub(in crate::config_tui) fn select_active_provider(
             })
             .collect::<Vec<_>>();
         draw_menu(
-            stdout,
+            ui,
             t(" SELECT TEXT MODEL ", " 选择文本模型 "),
             &options,
             selected,
@@ -204,7 +206,7 @@ pub(in crate::config_tui) fn select_active_provider(
                 undo.hint()
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
@@ -222,7 +224,7 @@ pub(in crate::config_tui) fn select_active_provider(
                     // 列表空了就退不回来了(界面没东西可画),所以当场撤销并说明
                     undo.undo(config);
                     message(
-                        stdout,
+                        ui,
                         t(
                             "That was the last model; removal was undone.",
                             "这是最后一个模型，已撤销该删除。",
@@ -320,7 +322,7 @@ fn embedding_row_is_current(config: &AppConfig, row: &EmbeddingRow) -> bool {
 }
 
 pub(in crate::config_tui) fn edit_embedding_model(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &mut AppConfig,
 ) -> Result<()> {
     // 候选每轮从 config 重建：删除和撤销都改的是 config 本身，重建比两边各维护
@@ -366,7 +368,7 @@ pub(in crate::config_tui) fn edit_embedding_model(
             .collect();
         selected = selected.min(options.len() - 1);
         draw_menu(
-            stdout,
+            ui,
             t(" EMBEDDING MODEL ", " EMBEDDING 模型 "),
             &options,
             selected,
@@ -379,7 +381,7 @@ pub(in crate::config_tui) fn edit_embedding_model(
                 undo.hint()
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
@@ -412,7 +414,7 @@ pub(in crate::config_tui) fn edit_embedding_model(
                     config.embedding.backend = miyu_base::config::EmbeddingBackend::Auto;
                     return Ok(());
                 }
-                EmbeddingRow::Advanced => edit_embedding_advanced(stdout, config)?,
+                EmbeddingRow::Advanced => edit_embedding_advanced(ui, config)?,
             },
             _ => {}
         }
@@ -421,7 +423,7 @@ pub(in crate::config_tui) fn edit_embedding_model(
 
 /// 模型之外的几个数值；用哪个模型在上一层菜单里选，这里不再重复。
 pub(in crate::config_tui) fn edit_embedding_advanced(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &mut AppConfig,
 ) -> Result<()> {
     let mut fields = vec![
@@ -449,7 +451,7 @@ pub(in crate::config_tui) fn edit_embedding_advanced(
         ),
     ];
     if !run_form(
-        stdout,
+        ui,
         t(" EMBEDDING ADVANCED ", " EMBEDDING 高级设置 "),
         &mut fields,
     )? {
@@ -497,7 +499,7 @@ pub(in crate::config_tui) fn edit_embedding_advanced(
 }
 
 pub(in crate::config_tui) fn edit_provider_form(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     provider: ProviderConfig,
 ) -> Result<Option<ProviderConfig>> {
     // 将 extra_body 格式化为 JSON 字符串，方便编辑
@@ -539,7 +541,7 @@ pub(in crate::config_tui) fn edit_provider_form(
 
     // 循环直到用户取消或输入合法 JSON 对象
     loop {
-        if !run_form(stdout, t(" EDIT PROVIDER ", " 编辑供应商 "), &mut fields)? {
+        if !run_form(ui, t(" EDIT PROVIDER ", " 编辑供应商 "), &mut fields)? {
             return Ok(None);
         }
 
@@ -550,7 +552,7 @@ pub(in crate::config_tui) fn edit_provider_form(
         let extra_body = match parse_extra_body(&fields[6].value) {
             Ok(extra_body) => extra_body,
             Err(error) => {
-                message(stdout, &error)?;
+                message(ui, &error)?;
                 continue;
             }
         };
@@ -607,7 +609,7 @@ pub(in crate::config_tui) fn parse_extra_body(
 }
 
 pub(in crate::config_tui) fn edit_model_form(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     provider: &mut ProviderConfig,
     model: &str,
@@ -722,7 +724,7 @@ pub(in crate::config_tui) fn edit_model_form(
         .empty_choice_label(t("inherit global", "跟随全局")),
     ];
     loop {
-        if !run_form(stdout, t(" EDIT MODEL ", " 编辑模型 "), &mut fields)? {
+        if !run_form(ui, t(" EDIT MODEL ", " 编辑模型 "), &mut fields)? {
             return Ok(false);
         }
         // 价格:选了货币才生效;三个价按所选货币记,估算时统一折 USD。
@@ -742,7 +744,7 @@ pub(in crate::config_tui) fn edit_model_form(
                     (Some(input), Some(output)) => (input, output),
                     _ => {
                         message(
-                            stdout,
+                            ui,
                             t(
                                 "Input and output prices are required non-negative numbers",
                                 "输入价与输出价必须是非负数字",
@@ -757,7 +759,7 @@ pub(in crate::config_tui) fn edit_model_form(
                     (false, Some(price)) => Some(price),
                     (false, None) => {
                         message(
-                            stdout,
+                            ui,
                             t(
                                 "Cache-hit price must be a non-negative number",
                                 "缓存命中价必须是非负数字",
@@ -928,13 +930,13 @@ pub(in crate::config_tui) fn has_modality(value: &str, modality: &str) -> bool {
 }
 
 pub(in crate::config_tui) fn select_active_multimodal_provider(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &mut AppConfig,
 ) -> Result<()> {
     let mut choices = config.multimodal_provider_model_choices();
     if choices.is_empty() {
         message(
-            stdout,
+            ui,
             t(
                 "No models support image input. Configure Supported input under Edit model first.",
                 "没有支持图片输入的模型，请先在编辑模型里配置支持输入。",
@@ -964,7 +966,7 @@ pub(in crate::config_tui) fn select_active_multimodal_provider(
             })
             .collect::<Vec<_>>();
         draw_menu(
-            stdout,
+            ui,
             t(" SELECT MULTIMODAL MODEL ", " 选择多模态模型 "),
             &options,
             selected,
@@ -977,7 +979,7 @@ pub(in crate::config_tui) fn select_active_multimodal_provider(
                 undo.hint()
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
@@ -996,7 +998,7 @@ pub(in crate::config_tui) fn select_active_multimodal_provider(
                 choices = config.multimodal_provider_model_choices();
                 if choices.is_empty() {
                     message(
-                        stdout,
+                        ui,
                         t(
                             "The last multimodal model was removed.",
                             "已移除最后一个多模态模型。",

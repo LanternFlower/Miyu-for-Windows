@@ -2,6 +2,12 @@
 """Config menus must repaint on resize and retain editing/dialog state.
 
 Uses an isolated MIYU_HOME, a real PTY, and no model requests or daemon.
+
+2026-09-20: the config TUI paints through ratatui now, so a repaint is no
+longer announced by a full-screen erase (`ESC[2J`), and the starfield keeps
+painting a frame every 30ms -- "output went quiet" is no longer a signal
+either. The only usable signal is what the screen says.
+
 Run: python3 testkit/tui/config_resize.py --binary /absolute/path/to/miyu
 """
 
@@ -57,58 +63,59 @@ def main():
     stream = pyte.ByteStream(screen)
     sink = bytearray()
 
-    def check(name, required, since=0):
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            if select.select([master], [], [], 0.05)[0]:
+    def pump(seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if select.select([master], [], [], 0.02)[0]:
                 try:
                     chunk = os.read(master, 65536)
                 except OSError:
-                    break
+                    return
                 if not chunk:
-                    break
+                    return
                 sink.extend(chunk)
                 stream.feed(chunk)
+
+    def check(name, required, since=0):
+        deadline = time.monotonic() + 6
+        while time.monotonic() < deadline:
+            pump(0.05)
             text = "\n".join(screen.display)
-            # A new full paint is required: old screen text is not proof that
-            # the resize/key was handled. Config views flush after each frame.
-            if b"\x1b[2J" in sink[since:] and all(word in text for word in required):
-                if select.select([master], [], [], 0.05)[0]:
-                    continue
-                (sandbox / f"{name}.txt").write_text(text)
+            if all(word in text for word in required):
+                # 换屏的内容是逐行落下的，第一眼看到的屏还差下面几行。
+                pump(0.8)
+                (sandbox / f"{name}.txt").write_text("\n".join(screen.display))
                 return
         (sandbox / f"{name}.txt").write_text("\n".join(screen.display))
-        raise AssertionError(f"{name}: no new frame containing {required}. See {sandbox}")
+        raise AssertionError(f"{name}: no frame containing {required}. See {sandbox}")
 
     def send(keys, name, required):
-        mark = len(sink)
         os.write(master, keys)
-        check(name, required, mark)
+        check(name, required)
 
     def resize(cols, rows, name, required):
-        mark = len(sink)
         screen.resize(lines=rows, columns=cols)
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-        check(name, required, mark)
+        check(name, required)
 
     try:
-        check("main", ["MIYU CONFIG", "Global settings"])
-        resize(78, 24, "main-smaller", ["MIYU CONFIG", "Global settings"])
-        resize(130, 40, "main-larger", ["MIYU CONFIG", "Global settings"])
+        check("main", ["CONFIG", "Global settings"])
+        resize(78, 24, "main-smaller", ["CONFIG", "Global settings"])
+        resize(130, 40, "main-larger", ["CONFIG", "Global settings"])
         # The plain message dialog must stay open on resize, then consume a
         # real key. This provider deliberately has no image model.
-        send(b"jj\r", "message", ["No models support image input", "Press any key"])
-        resize(92, 30, "message-resized", ["No models support image input", "Press any key"])
-        send(b"x", "message-dismissed", ["MIYU CONFIG"])
+        send(b"jj\r", "message", ["No models support image input", "any key"])
+        resize(92, 30, "message-resized", ["No models support image input", "any key"])
+        send(b"x", "message-dismissed", ["CONFIG"])
         send(b"j" * 6 + b"\r", "settings", ["GLOBAL SETTINGS", "Maximum tool rounds"])
         send(b"j\r\x1b[H" + b"\x1b[3~" * 20 + b"resizecheck\x1b[D\x1b[D",
              "editing", ["resizecheck"])
         resize(110, 36, "editing-resized", ["GLOBAL SETTINGS", "resizecheck"])
         send(b"Z", "editing-cursor-retained", ["resizecheZck"])
         # Invalid numeric text triggers the separate boxed error dialog.
-        send(b"\rq", "error", ["ERROR", "Press any key"])
-        resize(88, 28, "error-resized", ["ERROR", "Press any key"])
-        send(b"x", "error-dismissed", ["MIYU CONFIG"])
+        send(b"\rq", "error", ["Something went wrong", "any key"])
+        resize(88, 28, "error-resized", ["Something went wrong", "any key"])
+        send(b"x", "error-dismissed", ["CONFIG"])
         print(f"PASS: menu resize, message/error stay open, editing text/cursor retained. {sandbox}")
     finally:
         (sandbox / "config.raw").write_bytes(sink)

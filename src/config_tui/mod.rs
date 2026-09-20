@@ -36,9 +36,8 @@ use widgets::*;
 use anyhow::{bail, Result};
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
-use crossterm::style::{Attribute, Print, SetAttribute};
+use crossterm::execute;
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
-use crossterm::{execute, queue};
 use miyu_base::config::{
     merge_group_join_approval_settings, merge_real_context_settings, ActiveProviderModelConfig,
     ApiQuotaAccountConfig, ApiQuotaProviderConfig, AppConfig, PlatformCommandPermission,
@@ -86,17 +85,17 @@ fn run_with(paths: &MiyuPaths, owns_alt_screen: bool) -> Result<bool> {
     miyu_base::models_cache::spawn_background_refresh(paths.clone());
     let config = AppConfig::load_or_default(paths)?;
     let thinking_variants = ThinkingVariantPreferences::load(paths);
-    TerminalSession::start(owns_alt_screen)?.run(paths, config, thinking_variants)
+    TerminalSession::start(paths, owns_alt_screen)?.run(paths, config, thinking_variants)
 }
 
 struct TerminalSession {
-    stdout: io::Stdout,
+    ui: Ui,
     /// 备用屏是自己进的就自己退;是别人(全屏 REPL / 引导)的就只擦干净还回去。
     owns_alt_screen: bool,
 }
 
 impl TerminalSession {
-    fn start(owns_alt_screen: bool) -> Result<Self> {
+    fn start(paths: &MiyuPaths, owns_alt_screen: bool) -> Result<Self> {
         terminal::enable_raw_mode()?;
         // 独立 `miyu config` 没有 REPL 的挂断看门狗;不发 SIGHUP 的断开
         // (tmux kill-pane、SSH 掉线)会让 crossterm 对 HUP fd 全速自旋。
@@ -113,14 +112,14 @@ impl TerminalSession {
             )?;
         }
         Ok(Self {
-            stdout,
+            ui: Ui::new(paths)?,
             owns_alt_screen,
         })
     }
 
     fn release(&mut self) {
         if self.owns_alt_screen {
-            let _ = execute!(self.stdout, Show, LeaveAlternateScreen);
+            let _ = execute!(io::stdout(), Show, LeaveAlternateScreen);
         }
         // 嵌在全屏 REPL / 引导里：画面原样留着、光标继续藏着。接手的一方会在一个
         // 同步块里整屏重画并把光标放回输入框。以前这里清屏 + 光标归零 + Show，
@@ -134,7 +133,7 @@ impl TerminalSession {
         mut config: AppConfig,
         mut thinking_variants: ThinkingVariantPreferences,
     ) -> Result<bool> {
-        let result = run_main_menu(&mut self.stdout, paths, &mut config, &mut thinking_variants);
+        let result = run_main_menu(&mut self.ui, paths, &mut config, &mut thinking_variants);
         self.release();
         result
     }
@@ -200,7 +199,7 @@ fn dirty_snapshot(config: &AppConfig) -> Option<String> {
 }
 
 fn run_main_menu(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
     thinking_variants: &mut ThinkingVariantPreferences,
@@ -256,15 +255,9 @@ fn run_main_menu(
             ),
             t("Save and exit", "保存并退出").to_string(),
         ];
-        draw_menu(
-            stdout,
-            t(" MIYU CONFIG ", " MIYU 配置 "),
-            &options,
-            selected,
-            "",
-        )?;
+        draw_menu(ui, t(" CONFIG ", " 配置 "), &options, selected, "")?;
 
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => {
                 let snapshot = dirty_snapshot(config);
                 let dirty = thinking_variants.is_dirty()
@@ -273,7 +266,7 @@ fn run_main_menu(
                 if !dirty {
                     return Ok(false);
                 }
-                if confirm_save_on_exit(stdout)? {
+                if confirm_save_on_exit(ui)? {
                     match config.save(paths) {
                         Ok(()) => {
                             thinking_variants.save(paths)?;
@@ -283,7 +276,7 @@ fn run_main_menu(
                         Err(error) => {
                             // 保存失败(如校验不过)不能崩出:崩出会丢掉本次
                             // 全部内存修改,留在菜单让用户改完再存。
-                            show_tui_error(stdout, &error)?;
+                            show_tui_error(ui, &error)?;
                             continue;
                         }
                     }
@@ -294,16 +287,16 @@ fn run_main_menu(
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter => {
                 let outcome = match selected {
-                    0 => ProviderBrowser::new(paths, config, thinking_variants).run(stdout),
-                    1 => select_active_provider(stdout, config),
-                    2 => select_active_multimodal_provider(stdout, config),
-                    3 => edit_embedding_model(stdout, config),
-                    4 => select_model_tiers(stdout, config),
-                    5 => edit_plugins(stdout, config),
-                    6 => edit_custom_prompts(stdout, paths, config),
-                    7 => select_platforms(stdout, paths, config),
-                    8 => edit_settings(stdout, config),
-                    9 => edit_voice(stdout, paths, config),
+                    0 => ProviderBrowser::new(paths, config, thinking_variants).run(ui),
+                    1 => select_active_provider(ui, config),
+                    2 => select_active_multimodal_provider(ui, config),
+                    3 => edit_embedding_model(ui, config),
+                    4 => select_model_tiers(ui, config),
+                    5 => edit_plugins(ui, config),
+                    6 => edit_custom_prompts(ui, paths, config),
+                    7 => select_platforms(ui, paths, config),
+                    8 => edit_settings(ui, config),
+                    9 => edit_voice(ui, paths, config),
                     10 => match config.save(paths) {
                         Ok(()) => {
                             thinking_variants.save(paths)?;
@@ -317,7 +310,7 @@ fn run_main_menu(
                 if let Err(error) = outcome {
                     // 子界面的表单解析/保存错误只作废当次输入,config 的
                     // 内存态还在;显示错误后回主菜单,不让 TUI 整个崩出。
-                    show_tui_error(stdout, &error)?;
+                    show_tui_error(ui, &error)?;
                 }
             }
             _ => {}
@@ -326,6 +319,18 @@ fn run_main_menu(
 }
 
 impl<'a> ProviderBrowser<'a> {
+    /// 状态行：说一声（金色）。
+    fn note(&mut self, text: String) {
+        self.status = text;
+        self.status_error = false;
+    }
+
+    /// 状态行：出错了（暖红）。拉模型失败、删不掉的东西走这条。
+    fn warn(&mut self, text: String) {
+        self.status = text;
+        self.status_error = true;
+    }
+
     fn new(
         paths: &'a MiyuPaths,
         config: &'a mut AppConfig,
@@ -348,6 +353,7 @@ impl<'a> ProviderBrowser<'a> {
             orgs: Vec::new(),
             models: Vec::new(),
             status: String::new(),
+            status_error: false,
             loading: false,
             fetch_seq: 0,
             fetch_rx: None,
@@ -355,16 +361,19 @@ impl<'a> ProviderBrowser<'a> {
         }
     }
 
-    fn run(mut self, stdout: &mut io::Stdout) -> Result<()> {
+    fn run(mut self, ui: &mut Ui) -> Result<()> {
         self.refresh_models();
         loop {
             self.poll_fetch_result();
-            self.draw(stdout)?;
-            match read_key_with_timeout(if self.loading {
-                Some(Duration::from_millis(100))
-            } else {
-                None
-            })? {
+            self.draw(ui)?;
+            match read_key_with_timeout(
+                ui,
+                if self.loading {
+                    Some(Duration::from_millis(100))
+                } else {
+                    None
+                },
+            )? {
                 None => continue,
                 Some(key) => match key {
                     key if self.filter_mode => self.handle_filter_key(key),
@@ -379,8 +388,8 @@ impl<'a> ProviderBrowser<'a> {
                         self.rebuild_models();
                     }
                     KeyCode::Char('r') => self.refresh_models(),
-                    KeyCode::Char('a') => self.add_provider(stdout)?,
-                    KeyCode::Char('n') => self.add_custom_model(stdout)?,
+                    KeyCode::Char('a') => self.add_provider(ui)?,
+                    KeyCode::Char('n') => self.add_custom_model(ui)?,
                     // 模型列的 d 是"删这一行",不是"删供应商":列表几百行、
                     // 自定义模型只在最上面几行,同一个键按行改语义会让人在
                     // 光标差一行时删掉整个供应商。删供应商去左边两列。
@@ -388,7 +397,7 @@ impl<'a> ProviderBrowser<'a> {
                     KeyCode::Char('d') => self.delete_provider(),
                     KeyCode::Char('u') => self.undo_delete(),
                     KeyCode::Tab if self.active_col == 2 => self.toggle_model_activation(),
-                    KeyCode::Enter | KeyCode::Char('i') => self.select_or_edit(stdout)?,
+                    KeyCode::Enter | KeyCode::Char('i') => self.select_or_edit(ui)?,
                     _ => {}
                 },
             }
@@ -487,7 +496,7 @@ impl<'a> ProviderBrowser<'a> {
             let (tx, rx) = mpsc::channel();
             self.fetch_rx = Some(rx);
             self.loading = true;
-            self.status = t("Fetching model list...", "正在获取模型列表...").to_string();
+            self.note(t("Fetching model list...", "正在获取模型列表...").to_string());
             std::thread::spawn(move || {
                 let result =
                     miyu_base::provider_catalog::fetch_models(&provider, cli_binary.as_deref())
@@ -519,11 +528,11 @@ impl<'a> ProviderBrowser<'a> {
         self.fetch_rx = None;
         match result {
             Ok(models) => {
-                self.status = if is_zh() {
+                self.note(if is_zh() {
                     format!("已获取 {} 个模型", models.len())
                 } else {
                     format!("Fetched {} models", models.len())
-                };
+                });
                 self.raw_models = models;
             }
             Err(err) => {
@@ -532,7 +541,7 @@ impl<'a> ProviderBrowser<'a> {
                 } else {
                     format!("Failed to fetch models: {err}")
                 };
-                self.status = format_status_line(&status);
+                self.warn(format_status_line(&status));
                 self.raw_models.clear();
             }
         }
@@ -561,8 +570,8 @@ impl<'a> ProviderBrowser<'a> {
         self.model_scroll = column_scroll(self.model_idx, self.model_scroll, column_visible_rows());
     }
 
-    fn add_provider(&mut self, stdout: &mut io::Stdout) -> Result<()> {
-        if let Some(provider) = edit_provider_form(stdout, ProviderConfig::new_custom())? {
+    fn add_provider(&mut self, ui: &mut Ui) -> Result<()> {
+        if let Some(provider) = edit_provider_form(ui, ProviderConfig::new_custom())? {
             self.config.upsert_provider(provider);
             self.provider_idx = self.config.providers.len().saturating_sub(1);
             self.refresh_models();
@@ -573,16 +582,12 @@ impl<'a> ProviderBrowser<'a> {
     /// 手填一个模型名。供应商的 `/models` 目录是它自己报的,内测模型不在
     /// 里面,只能这样进来。加完就激活——名字是用户特意打进来的,再让他按
     /// 一次 Tab 是白问一句;不想要了 Tab 取消,条目仍留在列表顶端。
-    fn add_custom_model(&mut self, stdout: &mut io::Stdout) -> Result<()> {
+    fn add_custom_model(&mut self, ui: &mut Ui) -> Result<()> {
         if self.config.providers.get(self.provider_idx).is_none() {
             return Ok(());
         }
         let mut fields = vec![Field::new(t("Model name", "模型名"), String::new())];
-        if !run_form_editing(
-            stdout,
-            t(" ADD CUSTOM MODEL ", " 添加自定义模型 "),
-            &mut fields,
-        )? {
+        if !run_form_editing(ui, t(" ADD CUSTOM MODEL ", " 添加自定义模型 "), &mut fields)? {
             return Ok(());
         }
         let name = fields[0].value.trim().to_string();
@@ -600,7 +605,7 @@ impl<'a> ProviderBrowser<'a> {
         } else {
             self.undo.undo(self.config);
         }
-        self.status = if added {
+        self.note(if added {
             if is_zh() {
                 format!("已添加并激活自定义模型: {name}")
             } else {
@@ -610,7 +615,7 @@ impl<'a> ProviderBrowser<'a> {
             format!("模型已在列表中: {name}")
         } else {
             format!("Model is already listed: {name}")
-        };
+        });
         self.reveal_model(&name);
         Ok(())
     }
@@ -656,18 +661,20 @@ impl<'a> ProviderBrowser<'a> {
         self.undo.record(self.config);
         if !remove_custom_model(self.config, self.provider_idx, &model) {
             self.undo.undo(self.config);
-            self.status = t(
-                "Only manually added models can be deleted here; delete a provider from the provider column.",
-                "这里只能删手动添加的模型;删供应商请到供应商列。",
-            )
-            .to_string();
+            self.warn(
+                t(
+                    "Only manually added models can be deleted here; delete a provider from the provider column.",
+                    "这里只能删手动添加的模型;删供应商请到供应商列。",
+                )
+                .to_string(),
+            );
             return;
         }
-        self.status = if is_zh() {
+        self.note(if is_zh() {
             format!("已删除自定义模型: {model}")
         } else {
             format!("Deleted custom model: {model}")
-        };
+        });
         self.rebuild_models();
     }
 
@@ -683,11 +690,13 @@ impl<'a> ProviderBrowser<'a> {
         {
             // 内置供应商删了下次加载也会被重新注入,徒增困惑;要停用走编辑
             // 表单里的启用开关。
-            self.status = t(
-                "This built-in CLI provider cannot be deleted; disable it in its edit form instead.",
-                "内置 CLI 供应商不可删除;要停用请在编辑表单里关掉启用开关。",
-            )
-            .to_string();
+            self.warn(
+                t(
+                    "This built-in CLI provider cannot be deleted; disable it in its edit form instead.",
+                    "内置 CLI 供应商不可删除;要停用请在编辑表单里关掉启用开关。",
+                )
+                .to_string(),
+            );
             return;
         }
         self.undo.record(self.config);
@@ -710,7 +719,7 @@ impl<'a> ProviderBrowser<'a> {
         self.refresh_models();
     }
 
-    fn select_or_edit(&mut self, stdout: &mut io::Stdout) -> Result<()> {
+    fn select_or_edit(&mut self, ui: &mut Ui) -> Result<()> {
         match self.active_col {
             0 => {
                 if let Some(provider) = self.config.providers.get(self.provider_idx).cloned() {
@@ -718,26 +727,26 @@ impl<'a> ProviderBrowser<'a> {
                     // 总开关与 CLI 中转设置。
                     let edited = if provider.is_claude_code() {
                         edit_claude_code_provider_form(
-                            stdout,
+                            ui,
                             provider,
                             &mut self.config.plugins.claude_code,
                         )?
                     } else if provider.is_antigravity() {
                         edit_antigravity_provider_form(
-                            stdout,
+                            ui,
                             provider,
                             &mut self.config.plugins.antigravity,
                         )?
                     } else if provider.is_codex() {
-                        edit_codex_provider_form(stdout, provider, &mut self.config.plugins.codex)?
+                        edit_codex_provider_form(ui, provider, &mut self.config.plugins.codex)?
                     } else if provider.is_codebuddy() {
                         edit_codebuddy_provider_form(
-                            stdout,
+                            ui,
                             provider,
                             &mut self.config.plugins.codebuddy,
                         )?
                     } else {
-                        edit_provider_form(stdout, provider)?
+                        edit_provider_form(ui, provider)?
                     };
                     if let Some(provider) = edited {
                         let old_id = self.config.providers[self.provider_idx].id.clone();
@@ -767,7 +776,7 @@ impl<'a> ProviderBrowser<'a> {
                     }
                     if let Some(provider) = self.config.providers.get_mut(self.provider_idx) {
                         if edit_model_form(
-                            stdout,
+                            ui,
                             self.paths,
                             provider,
                             &model.full,
@@ -775,11 +784,11 @@ impl<'a> ProviderBrowser<'a> {
                         )? {
                             self.config.active_provider = provider.id.clone();
                             model_updated = true;
-                            self.status = if is_zh() {
+                            self.note(if is_zh() {
                                 format!("已更新模型设置: {}", model.full)
                             } else {
                                 format!("Updated model settings: {}", model.full)
-                            };
+                            });
                         }
                     }
                 }
@@ -808,11 +817,11 @@ impl<'a> ProviderBrowser<'a> {
                 if provider.default_model == model {
                     provider.default_model = provider.models.first().cloned().unwrap_or_default();
                 }
-                self.status = if is_zh() {
+                self.note(if is_zh() {
                     format!("已取消激活模型: {model}")
                 } else {
                     format!("Deactivated model: {model}")
-                };
+                });
                 removed = Some((provider_id, model));
             } else {
                 provider.models.push(model.full.clone());
@@ -824,11 +833,11 @@ impl<'a> ProviderBrowser<'a> {
                 if provider.default_model.trim().is_empty() {
                     provider.default_model = model.full.clone();
                 }
-                self.status = if is_zh() {
+                self.note(if is_zh() {
                     format!("已激活模型: {}", model.full)
                 } else {
                     format!("Activated model: {}", model.full)
-                };
+                });
             }
         }
         if let Some((provider_id, model)) = removed {
@@ -837,19 +846,7 @@ impl<'a> ProviderBrowser<'a> {
         }
     }
 
-    fn draw(&self, stdout: &mut io::Stdout) -> Result<()> {
-        let (cols, rows) = terminal::size()?;
-        let inner_x = 0;
-        let inner_y = 0;
-        let inner_w = cols;
-        let inner_h = rows.saturating_sub(2);
-        let left_w = inner_w.saturating_mul(28).saturating_div(100).max(20);
-        let mid_w = inner_w.saturating_mul(22).saturating_div(100).max(16);
-        let right_w = inner_w
-            .saturating_sub(left_w)
-            .saturating_sub(mid_w)
-            .saturating_sub(2)
-            .max(18);
+    fn draw(&self, ui: &mut Ui) -> Result<()> {
         // 不再给 active_provider 打星号。这个菜单只回答「有哪些供应商、各自有
         // 哪些模型可用」;「现在用谁」由「配置文本模型」那个池子决定。星号标的
         // 是 `active_provider`——它现在只是 `provider(None)` 的兜底,在这里显示
@@ -860,15 +857,11 @@ impl<'a> ProviderBrowser<'a> {
             .iter()
             .map(|provider| {
                 if provider.enabled {
-                    format!("  {}", provider.display_name)
+                    provider.display_name.clone()
                 } else {
                     // 目前只有内置 Claude Code 会处于未启用态,标出来免得
                     // 用户找不到"为什么模型列表里没有它"。
-                    format!(
-                        "  {}{}",
-                        provider.display_name,
-                        t(" (disabled)", "(未启用)")
-                    )
+                    format!("{}{}", provider.display_name, t(" (disabled)", " (未启用)"))
                 }
             })
             .collect::<Vec<_>>();
@@ -914,50 +907,6 @@ impl<'a> ProviderBrowser<'a> {
             })
             .collect::<Vec<_>>();
 
-        queue!(stdout, Clear(ClearType::All))?;
-        draw_column(
-            stdout,
-            inner_x,
-            inner_y,
-            left_w,
-            inner_h,
-            t(" PROVIDERS ", " 供应商 "),
-            &providers,
-            self.provider_idx,
-            self.provider_scroll,
-            self.active_col == 0,
-        )?;
-        draw_column(
-            stdout,
-            inner_x + left_w + 1,
-            inner_y,
-            mid_w,
-            inner_h,
-            t(" ORGANIZATION ", " 组织 "),
-            &orgs,
-            self.org_idx,
-            self.org_scroll,
-            self.active_col == 1,
-        )?;
-        let title = if self.filter.is_empty() {
-            t(" MODELS ", " 模型 ").to_string()
-        } else if is_zh() {
-            format!(" 模型 /{} ", self.filter)
-        } else {
-            format!(" MODELS /{} ", self.filter)
-        };
-        draw_column(
-            stdout,
-            inner_x + left_w + mid_w + 2,
-            inner_y,
-            right_w,
-            inner_h,
-            &title,
-            &models,
-            self.model_idx,
-            self.model_scroll,
-            self.active_col == 2,
-        )?;
         let help = if self.filter_mode {
             if is_zh() {
                 format!("搜索: {}_  [Enter]确认 [Esc]取消", self.filter)
@@ -981,25 +930,47 @@ impl<'a> ProviderBrowser<'a> {
             };
             format!("{keys}{}", self.undo.hint())
         };
-        let status = if self.loading {
-            format!("{}", self.status)
+        let models_title = if self.filter.is_empty() {
+            t(" MODELS ", " 模型 ").to_string()
+        } else if is_zh() {
+            format!("{} /{}", t(" MODELS ", " 模型 ").trim(), self.filter)
         } else {
-            self.status.clone()
+            format!("{} /{}", t(" MODELS ", " 模型 ").trim(), self.filter)
         };
-        queue!(
-            stdout,
-            MoveTo(0, rows.saturating_sub(2)),
-            Clear(ClearType::CurrentLine),
-            Print(truncate(&status, cols as usize))
-        )?;
-        queue!(
-            stdout,
-            MoveTo(0, rows.saturating_sub(1)),
-            Clear(ClearType::CurrentLine),
-            Print(truncate(&help, cols as usize))
-        )?;
-        stdout.flush()?;
-        Ok(())
+        let columns = [
+            Column {
+                title: t(" PROVIDERS ", " 供应商 "),
+                items: &providers,
+                selected: self.provider_idx,
+                scroll: self.provider_scroll,
+                active: self.active_col == 0,
+                weight: 28,
+            },
+            Column {
+                title: t(" ORGANIZATION ", " 组织 "),
+                items: &orgs,
+                selected: self.org_idx,
+                scroll: self.org_scroll,
+                active: self.active_col == 1,
+                weight: 22,
+            },
+            Column {
+                title: &models_title,
+                items: &models,
+                selected: self.model_idx,
+                scroll: self.model_scroll,
+                active: self.active_col == 2,
+                weight: 50,
+            },
+        ];
+        draw_columns(
+            ui,
+            t(" PROVIDERS AND MODELS ", " 供应商和模型 "),
+            &columns,
+            &help,
+            &self.status,
+            self.status_error,
+        )
     }
 }
 

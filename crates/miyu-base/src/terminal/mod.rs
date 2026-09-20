@@ -10,6 +10,8 @@
 //!
 //! 放在基础层，两边都往下依赖，方向一致。
 pub mod chafa;
+/// 全屏 TUI 的共享版面（引导与设置界面同一张脸）。
+pub mod chrome;
 pub mod kitty;
 mod text;
 pub use text::*;

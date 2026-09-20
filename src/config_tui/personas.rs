@@ -9,7 +9,7 @@
 use crate::config_tui::*;
 
 pub(in crate::config_tui) fn edit_custom_prompts(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
 ) -> Result<()> {
@@ -22,18 +22,18 @@ pub(in crate::config_tui) fn edit_custom_prompts(
             t("Dev mode", "开发模式").to_string(),
         ];
         draw_menu(
-            stdout,
+            ui,
             t(" CUSTOM PROMPTS ", " 自定义提示词 "),
             &options,
             selected,
             t("[Enter]select [q]back", "[Enter]选择 [q]返回"),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
-            KeyCode::Enter if selected == 0 => edit_normal_mode_prompts(stdout, paths, config)?,
-            KeyCode::Enter if selected == 1 => edit_dev_prompt(stdout, paths)?,
+            KeyCode::Enter if selected == 0 => edit_normal_mode_prompts(ui, paths, config)?,
+            KeyCode::Enter if selected == 1 => edit_dev_prompt(ui, paths)?,
             _ => {}
         }
     }
@@ -42,7 +42,7 @@ pub(in crate::config_tui) fn edit_custom_prompts(
 /// 普通模式的提示词面:AI 人格与用户身份(原顶层两项下沉至此)，以及防失忆
 /// 提醒的开关与间隔(09-14 从「自定义提示词」挪进来:提醒是人格的事)。
 pub(in crate::config_tui) fn edit_normal_mode_prompts(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
 ) -> Result<()> {
@@ -78,24 +78,24 @@ pub(in crate::config_tui) fn edit_normal_mode_prompts(
             ),
         ];
         draw_menu(
-            stdout,
+            ui,
             t(" NORMAL MODE ", " 普通模式 "),
             &options,
             selected,
             t("[Enter]select/toggle [q]back", "[Enter]选择/切换 [q]返回"),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
-            KeyCode::Enter if selected == 0 => edit_personas(stdout, paths, config)?,
-            KeyCode::Enter if selected == 1 => edit_identities(stdout, paths, config)?,
+            KeyCode::Enter if selected == 0 => edit_personas(ui, paths, config)?,
+            KeyCode::Enter if selected == 1 => edit_identities(ui, paths, config)?,
             KeyCode::Enter if selected == 2 => {
                 config.prompt.persona_reminder = !config.prompt.persona_reminder;
             }
             KeyCode::Enter if selected == 3 => {
                 if let Some(value) = edit_inline_value(
-                    stdout,
+                    ui,
                     t("Send reminder every N turns", "每几轮发一次防失忆提醒"),
                     &config.prompt.persona_reminder_interval.to_string(),
                     false,
@@ -113,10 +113,7 @@ pub(in crate::config_tui) fn edit_normal_mode_prompts(
 /// 开发模式的「AI 提示词」:编辑 config/dev-prompt.md 一个文件。清空
 /// 保存=删文件,运行时回退内置默认一行;记忆按保留人格 "dev" 落库,
 /// 与这份提示词的内容完全解耦——怎么改都不会切库。
-pub(in crate::config_tui) fn edit_dev_prompt(
-    stdout: &mut io::Stdout,
-    paths: &MiyuPaths,
-) -> Result<()> {
+pub(in crate::config_tui) fn edit_dev_prompt(ui: &mut Ui, paths: &MiyuPaths) -> Result<()> {
     let path = paths.config_dir.join(miyu_base::config::DEV_PROMPT_FILE);
     let current = std::fs::read_to_string(&path).unwrap_or_default();
     let prefill = if current.trim().is_empty() {
@@ -131,7 +128,7 @@ pub(in crate::config_tui) fn edit_dev_prompt(
         ),
         prefill,
     )];
-    if !run_form(stdout, t(" DEV MODE ", " 开发模式 "), &mut fields)? {
+    if !run_form(ui, t(" DEV MODE ", " 开发模式 "), &mut fields)? {
         return Ok(());
     }
     let value = fields[0].value.trim();
@@ -149,11 +146,11 @@ pub(in crate::config_tui) fn edit_dev_prompt(
 }
 
 pub(in crate::config_tui) fn edit_personas(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
 ) -> Result<()> {
-    manage_personas(stdout, paths, config, PersonaMenuTarget::Global)?;
+    manage_personas(ui, paths, config, PersonaMenuTarget::Global)?;
     Ok(())
 }
 
@@ -234,7 +231,7 @@ impl PersonaMenuTarget {
 }
 
 pub(in crate::config_tui) fn manage_personas(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
     mut target: PersonaMenuTarget,
@@ -266,7 +263,7 @@ pub(in crate::config_tui) fn manage_personas(
         }));
         selected = selected.min(options.len().saturating_sub(1));
         draw_menu(
-            stdout,
+            ui,
             match &target {
                 PersonaMenuTarget::Global => t(" AI PERSONA ", " AI 人格 "),
                 PersonaMenuTarget::Platform(_) => {
@@ -280,7 +277,7 @@ pub(in crate::config_tui) fn manage_personas(
                 "[Tab]激活 [Enter]编辑 [a]新增 [d]删除 [j/k]移动 [q]返回",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(target.into_platform()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
@@ -294,13 +291,13 @@ pub(in crate::config_tui) fn manage_personas(
                 }
             }
             KeyCode::Char('a') => {
-                if let Some(name) = new_persona(stdout, paths, config)? {
+                if let Some(name) = new_persona(ui, paths, config)? {
                     target.activate_custom(config, name);
                 }
             }
             KeyCode::Enter if selected >= custom_offset => {
                 if let Some(name) = personas.get(selected - custom_offset) {
-                    if let Some(values) = edit_persona(stdout, paths, config, name)? {
+                    if let Some(values) = edit_persona(ui, paths, config, name)? {
                         apply_persona_edit(paths, config, name, &values.name, &values.content)?;
                         write_persona_aux(
                             paths,
@@ -316,7 +313,7 @@ pub(in crate::config_tui) fn manage_personas(
             // 默认 Miyu 人格本体只读,但防失忆提示与预设对话是独立文件
             // (hints/default.md、dialogs/default.md),回车打开精简表单。
             KeyCode::Enter if selected + 1 == custom_offset => {
-                edit_miyu_persona_extras(stdout, paths, config)?;
+                edit_miyu_persona_extras(ui, paths, config)?;
             }
             KeyCode::Char('d') if selected >= custom_offset => {
                 if let Some(name) = personas.get(selected - custom_offset) {
@@ -328,7 +325,7 @@ pub(in crate::config_tui) fn manage_personas(
                         .max(target.pending_reference_count(name));
                     if references > 0 {
                         message(
-                            stdout,
+                            ui,
                             &if is_zh() {
                                 format!(
                                     "该人格仍被 {references} 个 QQ 会话配置引用，请先解除引用。"
@@ -526,7 +523,7 @@ pub(in crate::config_tui) fn persona_aux_fields(
 }
 
 pub(in crate::config_tui) fn new_persona(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &AppConfig,
 ) -> Result<Option<String>> {
@@ -535,7 +532,7 @@ pub(in crate::config_tui) fn new_persona(
         Field::textarea(t("Content", "内容"), String::new()),
     ];
     fields.extend(persona_aux_fields(String::new(), String::new(), false));
-    if !run_form(stdout, t(" NEW PERSONA ", " 新建人格 "), &mut fields)? {
+    if !run_form(ui, t(" NEW PERSONA ", " 新建人格 "), &mut fields)? {
         return Ok(None);
     }
     let name = sanitize_persona_name(&fields[0].value)?;
@@ -552,7 +549,7 @@ pub(in crate::config_tui) fn new_persona(
 }
 
 pub(in crate::config_tui) fn edit_persona(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &AppConfig,
     current_name: &str,
@@ -571,7 +568,7 @@ pub(in crate::config_tui) fn edit_persona(
         Field::textarea(t("Content", "内容"), content),
     ];
     fields.extend(persona_aux_fields(hint, dialogs, false));
-    if !run_form(stdout, t(" EDIT PERSONA ", " 编辑人格 "), &mut fields)? {
+    if !run_form(ui, t(" EDIT PERSONA ", " 编辑人格 "), &mut fields)? {
         return Ok(None);
     }
     let name = sanitize_persona_name(&fields[0].value)?;
@@ -586,13 +583,13 @@ pub(in crate::config_tui) fn edit_persona(
 /// 默认 Miyu 人格:本体只读,回车只编辑附属的防失忆提示与预设对话
 /// (scope 固定为 default)。
 pub(in crate::config_tui) fn edit_miyu_persona_extras(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &AppConfig,
 ) -> Result<()> {
     let (hint, dialogs) = miyu_core::persona_hint::miyu_aux_prefill(config, paths);
     let mut fields = persona_aux_fields(hint, dialogs, true);
-    if !run_form(stdout, t(" MIYU EXTRAS ", " Miyu 人格附加 "), &mut fields)? {
+    if !run_form(ui, t(" MIYU EXTRAS ", " Miyu 人格附加 "), &mut fields)? {
         return Ok(());
     }
     write_persona_aux(paths, config, "default", &fields[0].value, &fields[1].value)
@@ -737,7 +734,7 @@ pub(in crate::config_tui) fn remove_dir_if_exists(path: PathBuf) -> Result<()> {
 }
 
 pub(in crate::config_tui) fn edit_identities(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
 ) -> Result<()> {
@@ -765,7 +762,7 @@ pub(in crate::config_tui) fn edit_identities(
         }));
         selected = selected.min(options.len().saturating_sub(1));
         draw_menu(
-            stdout,
+            ui,
             t(" USER IDENTITY ", " 用户身份 "),
             &options,
             selected,
@@ -774,7 +771,7 @@ pub(in crate::config_tui) fn edit_identities(
                 "[Tab]激活 [Enter]编辑 [a]新增 [d]删除 [j/k]移动 [q]返回",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
@@ -786,13 +783,13 @@ pub(in crate::config_tui) fn edit_identities(
                 };
             }
             KeyCode::Char('a') => {
-                if let Some(name) = new_identity(stdout, paths, config)? {
+                if let Some(name) = new_identity(ui, paths, config)? {
                     config.prompt.active_identity = name;
                 }
             }
             KeyCode::Enter if selected > 0 => {
                 if let Some(name) = identities.get(selected - 1) {
-                    if let Some(new_name) = edit_identity(stdout, paths, config, name)? {
+                    if let Some(new_name) = edit_identity(ui, paths, config, name)? {
                         if config.prompt.active_identity == *name {
                             config.prompt.active_identity = new_name;
                         }
@@ -817,12 +814,12 @@ pub(in crate::config_tui) fn edit_identities(
 }
 
 pub(in crate::config_tui) fn new_identity(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &AppConfig,
 ) -> Result<Option<String>> {
     edit_prompt_file_form(
-        stdout,
+        ui,
         t(" NEW IDENTITY ", " 新建用户身份 "),
         None,
         String::new(),
@@ -831,14 +828,14 @@ pub(in crate::config_tui) fn new_identity(
 }
 
 pub(in crate::config_tui) fn edit_identity(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &AppConfig,
     current_name: &str,
 ) -> Result<Option<String>> {
     let content = read_identity(paths, config, current_name)?;
     edit_prompt_file_form(
-        stdout,
+        ui,
         t(" EDIT IDENTITY ", " 编辑用户身份 "),
         Some(current_name),
         content,
@@ -889,7 +886,7 @@ pub(in crate::config_tui) fn write_identity(
 }
 
 pub(in crate::config_tui) fn edit_prompt_file_form<F>(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     title: &str,
     current_name: Option<&str>,
     content: String,
@@ -898,8 +895,7 @@ pub(in crate::config_tui) fn edit_prompt_file_form<F>(
 where
     F: FnOnce(&str, &str) -> Result<()>,
 {
-    let Some((name, content)) = edit_prompt_file_values(stdout, title, current_name, content)?
-    else {
+    let Some((name, content)) = edit_prompt_file_values(ui, title, current_name, content)? else {
         return Ok(None);
     };
     write(&name, &content)?;
@@ -907,7 +903,7 @@ where
 }
 
 pub(in crate::config_tui) fn edit_prompt_file_values(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     title: &str,
     current_name: Option<&str>,
     content: String,
@@ -922,7 +918,7 @@ pub(in crate::config_tui) fn edit_prompt_file_values(
         ),
         Field::textarea(t("Content", "内容"), content),
     ];
-    if !run_form(stdout, title, &mut fields)? {
+    if !run_form(ui, title, &mut fields)? {
         return Ok(None);
     }
     let name = sanitize_persona_name(&fields[0].value)?;

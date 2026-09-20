@@ -183,7 +183,7 @@ pub(in crate::config_tui) fn pool_ref_summary(
 }
 
 pub(in crate::config_tui) fn select_qq_model_assignment(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &mut AppConfig,
 ) -> Result<()> {
     let mut selected = 0usize;
@@ -205,7 +205,7 @@ pub(in crate::config_tui) fn select_qq_model_assignment(
             })
             .collect();
         draw_menu(
-            stdout,
+            ui,
             t(" QQ · CONFIGURE MODELS ", " QQ · 配置模型 "),
             &options,
             selected,
@@ -214,7 +214,7 @@ pub(in crate::config_tui) fn select_qq_model_assignment(
                 "[Enter]打开 [d]恢复缺省 [j/k]移动 [q]返回",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => {
@@ -223,7 +223,7 @@ pub(in crate::config_tui) fn select_qq_model_assignment(
             KeyCode::Enter => {
                 if let Some(slot) = slots.get(selected) {
                     let mut value = (slot.get)(config);
-                    select_pool_ref(stdout, config, slot, &mut value)?;
+                    select_pool_ref(ui, config, slot, &mut value)?;
                     (slot.set)(config, value);
                 }
             }
@@ -246,7 +246,7 @@ enum PickRow {
 /// 池单选 + 模型多选。上半区 Tab 选定一个池并清空模型区；下半区 Tab 勾选模型
 /// 并清掉池区的圆点。Enter / q 确认。
 pub(in crate::config_tui) fn select_pool_ref(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &AppConfig,
     slot: &PoolSlot,
     value: &mut ModelPoolRef,
@@ -311,7 +311,7 @@ pub(in crate::config_tui) fn select_pool_ref(
             })
             .collect();
         draw_menu(
-            stdout,
+            ui,
             &title,
             &options,
             selected,
@@ -320,7 +320,7 @@ pub(in crate::config_tui) fn select_pool_ref(
                 "[Tab]选定/加入 [j/k]移动 [Enter/q]确认",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => {
                 selected = selected.saturating_sub(1);
@@ -366,7 +366,7 @@ pub(in crate::config_tui) fn select_pool_ref(
 
 /// 插件页里保留的第二入口：同一个选择框，作用在插件自己的设置值上。
 pub(in crate::config_tui) fn select_plugin_pool_ref(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &AppConfig,
     label: &'static str,
     inherit_label: &'static str,
@@ -383,5 +383,5 @@ pub(in crate::config_tui) fn select_plugin_pool_ref(
         get: |_| ModelPoolRef::inherit(),
         set: |_, _| {},
     };
-    select_pool_ref(stdout, config, &slot, value)
+    select_pool_ref(ui, config, &slot, value)
 }

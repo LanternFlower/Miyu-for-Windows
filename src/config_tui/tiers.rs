@@ -75,10 +75,7 @@ fn step(selected: usize, delta: isize) -> usize {
     next
 }
 
-pub(in crate::config_tui) fn select_model_tiers(
-    stdout: &mut io::Stdout,
-    config: &mut AppConfig,
-) -> Result<()> {
+pub(in crate::config_tui) fn select_model_tiers(ui: &mut Ui, config: &mut AppConfig) -> Result<()> {
     let mut selected = 0usize;
     loop {
         // 两组共用一个左列宽度，冒号才能对齐；按显示宽度算，中文双宽不会错位。
@@ -111,7 +108,7 @@ pub(in crate::config_tui) fn select_model_tiers(
             )
         }));
         draw_menu(
-            stdout,
+            ui,
             t(" TIERED MODEL POOLS ", " 分级模型池 "),
             &options,
             selected,
@@ -120,16 +117,16 @@ pub(in crate::config_tui) fn select_model_tiers(
                 "[Enter]打开 [d]恢复缺省 [j/k]移动 [q]返回",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = step(selected, -1),
             KeyCode::Down | KeyCode::Char('j') => selected = step(selected, 1),
             KeyCode::Enter if selected < SEPARATOR_ROW => {
-                select_tier_models(stdout, config, ModelTier::ALL[selected])?
+                select_tier_models(ui, config, ModelTier::ALL[selected])?
             }
             KeyCode::Enter if selected > SEPARATOR_ROW => {
                 let role = AuxRole::ALL[selected - SEPARATOR_ROW - 1];
-                select_aux_role_tier(stdout, config, role)?
+                select_aux_role_tier(ui, config, role)?
             }
             KeyCode::Char('d') if selected > SEPARATOR_ROW => {
                 let role = AuxRole::ALL[selected - SEPARATOR_ROW - 1];
@@ -143,14 +140,14 @@ pub(in crate::config_tui) fn select_model_tiers(
 /// Model multi-select for one tier pool, mirroring the text-model picker:
 /// candidates are the configured text models, Tab toggles membership.
 pub(in crate::config_tui) fn select_tier_models(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &mut AppConfig,
     tier: ModelTier,
 ) -> Result<()> {
     let choices = config.text_provider_model_choices();
     if choices.is_empty() {
         message(
-            stdout,
+            ui,
             t(
                 "No text models are configured. Add models under Providers and models first.",
                 "没有可用的文本模型，请先在供应商和模型里添加模型。",
@@ -173,7 +170,7 @@ pub(in crate::config_tui) fn select_tier_models(
             })
             .collect::<Vec<_>>();
         draw_menu(
-            stdout,
+            ui,
             &title,
             &options,
             selected,
@@ -182,7 +179,7 @@ pub(in crate::config_tui) fn select_tier_models(
                 "[Tab]加入/移出 [Enter/q]确认",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
@@ -197,7 +194,7 @@ pub(in crate::config_tui) fn select_tier_models(
 
 /// 旁路请求的档位单选：四档 + 全局池。选定即写入显式值（含 global）。
 pub(in crate::config_tui) fn select_aux_role_tier(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &mut AppConfig,
     role: AuxRole,
 ) -> Result<()> {
@@ -218,7 +215,7 @@ pub(in crate::config_tui) fn select_aux_role_tier(
     options.push(t("global text pool", "全局文本池").to_string());
     loop {
         draw_menu(
-            stdout,
+            ui,
             &title,
             &options,
             selected,
@@ -227,7 +224,7 @@ pub(in crate::config_tui) fn select_aux_role_tier(
                 "[Enter]选定 [j/k]移动 [q]取消",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),

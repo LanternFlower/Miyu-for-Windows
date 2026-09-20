@@ -7,7 +7,7 @@ use crate::config_tui::*;
 
 /// true = save and exit, false = discard and exit. A choice is mandatory:
 /// `q`/`Esc` are ignored so an accidental key press cannot lose edits.
-pub(in crate::config_tui) fn confirm_save_on_exit(stdout: &mut io::Stdout) -> Result<bool> {
+pub(in crate::config_tui) fn confirm_save_on_exit(ui: &mut Ui) -> Result<bool> {
     let options = [
         t("Save", "保存").to_string(),
         t("Discard", "不保存").to_string(),
@@ -15,13 +15,13 @@ pub(in crate::config_tui) fn confirm_save_on_exit(stdout: &mut io::Stdout) -> Re
     let mut selected = 0usize;
     loop {
         draw_menu(
-            stdout,
+            ui,
             t(" SAVE EDITED CHANGES? ", " 是否保存已编辑内容 "),
             &options,
             selected,
             t("[j/k]move [Enter]confirm", "[j/k]移动 [Enter]确认"),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(1),
             KeyCode::Enter => return Ok(selected == 0),
@@ -30,10 +30,7 @@ pub(in crate::config_tui) fn confirm_save_on_exit(stdout: &mut io::Stdout) -> Re
     }
 }
 
-pub(in crate::config_tui) fn edit_settings(
-    stdout: &mut io::Stdout,
-    config: &mut AppConfig,
-) -> Result<()> {
+pub(in crate::config_tui) fn edit_settings(ui: &mut Ui, config: &mut AppConfig) -> Result<()> {
     let language = language_choice_value(&config.display.language).unwrap_or("auto");
     let mut fields = vec![
         Field::boolean(t("Enable tools", "工具启用"), config.tools.enabled),
@@ -133,7 +130,7 @@ pub(in crate::config_tui) fn edit_settings(
         18,
         "global settings fields changed: update the positional read-back below"
     );
-    run_form_without_buttons(stdout, t(" GLOBAL SETTINGS ", " 全局设置 "), &mut fields)?;
+    run_form_without_buttons(ui, t(" GLOBAL SETTINGS ", " 全局设置 "), &mut fields)?;
     config.tools.enabled = parse_bool_field(&fields[0].value)?;
     config.tools.max_rounds = fields[1].value.trim().parse::<usize>()?;
     config.tools.loading_mode = normalize_tools_loading_mode(&fields[2].value);

@@ -5,101 +5,71 @@
 //! TUI 框架。
 
 use crate::config_tui::*;
+use miyu_base::terminal::chrome::View;
 
-pub(in crate::config_tui) fn edit_plugins(
-    stdout: &mut io::Stdout,
-    config: &mut AppConfig,
-) -> Result<()> {
+pub(in crate::config_tui) fn edit_plugins(ui: &mut Ui, config: &mut AppConfig) -> Result<()> {
     let mut selected = 0usize;
     loop {
         let count = plugin_names().len();
-        draw_plugin_menu(stdout, config, selected)?;
-        match read_key()? {
+        draw_plugin_menu(ui, config, selected)?;
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(count - 1),
             KeyCode::Char(' ') => toggle_plugin(config, selected),
-            KeyCode::Enter | KeyCode::Char('i') => edit_plugin_detail(stdout, config, selected)?,
+            KeyCode::Enter | KeyCode::Char('i') => edit_plugin_detail(ui, config, selected)?,
             _ => {}
         }
     }
 }
 
+/// 插件总表：一行一个插件，`[*]` 是开关、右边是一句说明——和引导里那张
+/// 「自选功能」表同一个样子。
 pub(in crate::config_tui) fn draw_plugin_menu(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &AppConfig,
     selected: usize,
 ) -> Result<()> {
-    let (cols, rows) = terminal::size()?;
-    let width = cols.saturating_sub(4).max(60);
-    let height = rows.saturating_sub(2).max(10);
-    let x = 2;
-    let y = 1;
-    queue!(stdout, Clear(ClearType::All))?;
-    draw_box(stdout, x, y, width, height, t(" PLUGINS ", " 插件 "))?;
-    queue!(
-        stdout,
-        MoveTo(x + 2, y + 1),
-        Print(t(
-            "[Space]enable/disable [Enter]configure [j/k]move [q]back",
-            "[Space]启用/禁用 [Enter]配置 [j/k]移动 [q]返回",
-        ))
-    )?;
-    queue!(
-        stdout,
-        MoveTo(x + 2, y + 3),
-        SetAttribute(Attribute::Bold),
-        Print(pad(
-            &plugin_row(
-                t("Status", "状态"),
-                t("Plugin", "插件"),
-                t("Description", "说明"),
-                width.saturating_sub(4) as usize,
-            ),
-            width.saturating_sub(4) as usize,
-        )),
-        SetAttribute(Attribute::Reset)
-    )?;
+    let cx = ui.cx();
     let plugins = plugin_names();
-    let visible_rows = height.saturating_sub(6) as usize;
-    let start = selected.saturating_sub(visible_rows.saturating_sub(1));
-    for row in 0..visible_rows {
-        let index = start + row;
-        if index >= plugins.len() {
-            break;
-        }
-        let (_, name, description) = plugins[index];
-        let state = if plugin_enabled(config, index) {
-            t("[ON]", "[开]")
-        } else {
-            t("[OFF]", "[关]")
-        };
-        let line = plugin_row(state, name, description, width.saturating_sub(4) as usize);
-        queue!(stdout, MoveTo(x + 2, y + row as u16 + 4))?;
-        if index == selected {
-            queue!(
-                stdout,
-                SetAttribute(Attribute::Reverse),
-                Print(pad(&line, width.saturating_sub(4) as usize)),
-                SetAttribute(Attribute::Reset)
-            )?;
-        } else {
-            queue!(stdout, Print(pad(&line, width.saturating_sub(4) as usize)))?;
-        }
-    }
-    stdout.flush()?;
-    Ok(())
-}
-
-pub(in crate::config_tui) fn plugin_row(
-    state: &str,
-    name: &str,
-    description: &str,
-    width: usize,
-) -> String {
-    let fixed = pad(state, 8) + &pad(name, 24);
-    let remaining = width.saturating_sub(display_width(&fixed)).max(10);
-    fixed + &truncate(description, remaining)
+    let name_col = plugins
+        .iter()
+        .map(|(_, name, _)| display_width(name) + 8)
+        .max()
+        .unwrap_or(NAME_COL_MIN)
+        .clamp(NAME_COL_MIN, NAME_COL_MAX)
+        .min(ui.body_width().saturating_sub(16).max(NAME_COL_MIN));
+    let body = plugins
+        .iter()
+        .enumerate()
+        .map(|(index, (_, name, description))| {
+            cx.check(
+                index == selected,
+                plugin_enabled(config, index),
+                name,
+                description,
+                name_col,
+            )
+        })
+        .collect();
+    let (footer, keys) = key_bar(
+        &cx,
+        t(
+            "[Space]enable/disable [⏎]configure [↑↓ jk]move [Esc]back",
+            "[空格]启用/禁用 [⏎]配置 [↑↓ jk]移动 [Esc]返回",
+        ),
+    );
+    ui.show(
+        t(" PLUGINS ", " 插件 "),
+        View {
+            body,
+            cursor_row: selected,
+            footer,
+            counter: Some(format!("{}/{}", selected + 1, plugins.len())),
+            keys,
+            ..View::default()
+        },
+    )
 }
 
 pub(in crate::config_tui) fn plugin_names() -> [(&'static str, &'static str, &'static str); 10] {
@@ -209,18 +179,18 @@ pub(in crate::config_tui) fn toggle_plugin(config: &mut AppConfig, index: usize)
 }
 
 pub(in crate::config_tui) fn edit_plugin_detail(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &mut AppConfig,
     index: usize,
 ) -> Result<()> {
     // api_quota 是 plugin_names() 的最后一项(下标 9):它有专门的账号
     // 管理界面,不走通用表单。
     if index == plugin_names().len() - 1 {
-        return edit_api_quota(stdout, config);
+        return edit_api_quota(ui, config);
     }
     let title = format!(" {}: {} ", t("PLUGIN", "插件"), plugin_names()[index].1);
     let mut fields = plugin_fields(config, index);
-    if !run_form(stdout, &title, &mut fields)? {
+    if !run_form(ui, &title, &mut fields)? {
         return Ok(());
     }
     apply_plugin_fields(config, index, &fields)

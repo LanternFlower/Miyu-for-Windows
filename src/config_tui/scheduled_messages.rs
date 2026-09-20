@@ -201,7 +201,7 @@ fn task_fields(task: Option<&serde_json::Value>) -> Vec<Field> {
 }
 
 fn write_back(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &mut AppConfig,
     enabled: bool,
     tasks: Vec<serde_json::Value>,
@@ -219,7 +219,7 @@ fn write_back(
         .settings
         .insert("tasks".to_string(), serde_json::json!(tasks));
     if let Err(error) = candidate.validate() {
-        message(stdout, &error.to_string())?;
+        message(ui, &error.to_string())?;
         return Ok(());
     }
     *config = candidate;
@@ -227,7 +227,7 @@ fn write_back(
 }
 
 pub(in crate::config_tui) fn edit_scheduled_messages(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &mut AppConfig,
 ) -> Result<()> {
     let mut selected = 0usize;
@@ -253,7 +253,7 @@ pub(in crate::config_tui) fn edit_scheduled_messages(
         options.push(t("Add task…", "新增任务…").to_string());
         selected = selected.min(options.len() - 1);
         draw_menu(
-            stdout,
+            ui,
             t(" QQ SCHEDULED MESSAGES ", " QQ 定时消息 "),
             &options,
             selected,
@@ -262,37 +262,37 @@ pub(in crate::config_tui) fn edit_scheduled_messages(
                 "[Enter]切换/编辑 [d]删除 [j/k]移动 [q]返回",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter | KeyCode::Char(' ') => {
                 if selected == 0 {
-                    write_back(stdout, config, !enabled, tasks)?;
+                    write_back(ui, config, !enabled, tasks)?;
                 } else if selected <= tasks.len() {
                     let index = selected - 1;
                     let mut fields = task_fields(tasks.get(index));
-                    if run_form(stdout, t(" EDIT TASK ", " 编辑任务 "), &mut fields)? {
+                    if run_form(ui, t(" EDIT TASK ", " 编辑任务 "), &mut fields)? {
                         let mut tasks = tasks;
                         match task_from_fields(&fields) {
                             Ok(task) => tasks[index] = task,
                             Err(error) => {
-                                message(stdout, &error.to_string())?;
+                                message(ui, &error.to_string())?;
                                 continue;
                             }
                         }
-                        write_back(stdout, config, enabled, tasks)?;
+                        write_back(ui, config, enabled, tasks)?;
                     }
                 } else {
                     let mut fields = task_fields(None);
-                    if run_form(stdout, t(" ADD TASK ", " 新增任务 "), &mut fields)? {
+                    if run_form(ui, t(" ADD TASK ", " 新增任务 "), &mut fields)? {
                         match task_from_fields(&fields) {
                             Ok(task) => {
                                 let mut tasks = tasks;
                                 tasks.push(task);
-                                write_back(stdout, config, enabled, tasks)?;
+                                write_back(ui, config, enabled, tasks)?;
                             }
-                            Err(error) => message(stdout, &error.to_string())?,
+                            Err(error) => message(ui, &error.to_string())?,
                         }
                     }
                 }
@@ -301,7 +301,7 @@ pub(in crate::config_tui) fn edit_scheduled_messages(
                 let index = selected - 1;
                 let mut tasks = tasks;
                 tasks.remove(index);
-                write_back(stdout, config, enabled, tasks)?;
+                write_back(ui, config, enabled, tasks)?;
             }
             _ => {}
         }

@@ -9,7 +9,7 @@ const TOOL_SCOPES: &[&str] = &["off", "dev", "normal", "all"];
 const SANDBOX_MODES: &[&str] = &["danger-full-access", "workspace-write", "read-only"];
 
 pub(in crate::config_tui) fn edit_codex_provider_form(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     provider: ProviderConfig,
     plugin: &mut miyu_base::config::CodexPluginConfig,
 ) -> Result<Option<ProviderConfig>> {
@@ -53,20 +53,20 @@ pub(in crate::config_tui) fn edit_codex_provider_form(
         ),
     ];
     loop {
-        if !run_form(stdout, t(" EDIT CODEX ", " 编辑 Codex "), &mut fields)? {
+        if !run_form(ui, t(" EDIT CODEX ", " 编辑 Codex "), &mut fields)? {
             return Ok(None);
         }
         let enabled = match parse_bool_field(&fields[0].value) {
             Ok(value) => value,
             Err(error) => {
-                message(stdout, &format!("{error:#}"))?;
+                message(ui, &format!("{error:#}"))?;
                 continue;
             }
         };
         let ignore_user_config = match parse_bool_field(&fields[6].value) {
             Ok(value) => value,
             Err(error) => {
-                message(stdout, &format!("{error:#}"))?;
+                message(ui, &format!("{error:#}"))?;
                 continue;
             }
         };

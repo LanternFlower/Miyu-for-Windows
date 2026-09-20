@@ -12,7 +12,7 @@ const TOOL_SCOPES: &[&str] = &["off", "dev", "normal", "all"];
 /// CodeBuddy 特殊供应商的编辑表单。不是 HTTP 端点,所以没有
 /// base_url/协议/API Key/超时/额外请求体。
 pub(in crate::config_tui) fn edit_codebuddy_provider_form(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     provider: ProviderConfig,
     plugin: &mut miyu_base::config::CodeBuddyPluginConfig,
 ) -> Result<Option<ProviderConfig>> {
@@ -56,17 +56,13 @@ pub(in crate::config_tui) fn edit_codebuddy_provider_form(
         ),
     ];
     loop {
-        if !run_form(
-            stdout,
-            t(" EDIT CODEBUDDY ", " 编辑 CodeBuddy "),
-            &mut fields,
-        )? {
+        if !run_form(ui, t(" EDIT CODEBUDDY ", " 编辑 CodeBuddy "), &mut fields)? {
             return Ok(None);
         }
         let enabled = match parse_bool_field(&fields[0].value) {
             Ok(value) => value,
             Err(error) => {
-                message(stdout, &format!("{error:#}"))?;
+                message(ui, &format!("{error:#}"))?;
                 continue;
             }
         };

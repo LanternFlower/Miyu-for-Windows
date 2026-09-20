@@ -24,7 +24,7 @@ use ratatui::style::Modifier;
 use std::cell::RefCell;
 
 /// 用户自带艺术字的文件名（放在配置目录下）。
-pub(in crate::cli) const BANNER_FILE: &str = "banner.txt";
+pub(in crate::cli) use miyu_base::terminal::chrome::BANNER_FILE;
 
 /// 扫光的周期（帧）与一次扫过的速度（列/帧）。空闲 tick 是 80ms 一帧。
 const GLINT_PAUSE: usize = 25;

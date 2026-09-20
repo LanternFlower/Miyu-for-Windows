@@ -7,7 +7,7 @@
 use crate::config_tui::*;
 
 pub(in crate::config_tui) fn select_platform_model_routes(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
 ) -> Result<()> {
@@ -25,7 +25,7 @@ pub(in crate::config_tui) fn select_platform_model_routes(
         );
         selected = selected.min(options.len().saturating_sub(1));
         draw_menu(
-            stdout,
+            ui,
             t(" QQ CONVERSATIONS ", " 私聊/群聊专属配置 "),
             &options,
             selected,
@@ -34,16 +34,14 @@ pub(in crate::config_tui) fn select_platform_model_routes(
                 "[Enter]新增/编辑 [d]删除 [j/k]移动 [q]返回",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => {
                 selected = (selected + 1).min(options.len().saturating_sub(1));
             }
-            KeyCode::Enter if selected == 0 => {
-                edit_platform_model_route(stdout, paths, config, None)?
-            }
-            KeyCode::Enter => edit_platform_model_route(stdout, paths, config, Some(selected - 1))?,
+            KeyCode::Enter if selected == 0 => edit_platform_model_route(ui, paths, config, None)?,
+            KeyCode::Enter => edit_platform_model_route(ui, paths, config, Some(selected - 1))?,
             KeyCode::Char('d') | KeyCode::Delete if selected > 0 => {
                 config.platforms.qq.conversations.remove(selected - 1);
                 selected = selected.min(config.platforms.qq.conversations.len());
@@ -85,7 +83,7 @@ pub(in crate::config_tui) fn platform_model_route_label(route: &PlatformModelRou
 }
 
 pub(in crate::config_tui) fn edit_platform_model_route(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
     route_index: Option<usize>,
@@ -168,20 +166,20 @@ pub(in crate::config_tui) fn edit_platform_model_route(
             ),
         ];
         draw_menu(
-            stdout,
+            ui,
             t(" EDIT QQ CONVERSATION ", " 编辑 QQ 会话配置 "),
             &options,
             selected,
             "",
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => {
                 route.normalize();
                 if let Err(error) = config.validate_platform_model_route(&route) {
                     if route_index.is_none() {
                         return Ok(());
                     }
-                    message(stdout, &error.to_string())?;
+                    message(ui, &error.to_string())?;
                     continue;
                 }
                 if config
@@ -195,7 +193,7 @@ pub(in crate::config_tui) fn edit_platform_model_route(
                     })
                 {
                     message(
-                        stdout,
+                        ui,
                         t(
                             "A configuration for this QQ conversation already exists.",
                             "该 QQ 会话的配置已存在。",
@@ -212,34 +210,34 @@ pub(in crate::config_tui) fn edit_platform_model_route(
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter => match selected {
-                0 => select_platform_conversation_kind(stdout, &mut route.conversation.kind)?,
+                0 => select_platform_conversation_kind(ui, &mut route.conversation.kind)?,
                 1 => {
                     let title = format!(" {id_label} ");
                     if let Some(value) =
-                        edit_inline_value(stdout, &title, &route.conversation.id, false)?
+                        edit_inline_value(ui, &title, &route.conversation.id, false)?
                     {
                         route.conversation.id = value.trim().to_string();
                     }
                 }
-                2 => edit_platform_personas(stdout, paths, config, &mut route.persona)?,
+                2 => edit_platform_personas(ui, paths, config, &mut route.persona)?,
                 3 => select_platform_route_models(
-                    stdout,
+                    ui,
                     config,
                     &mut route.text_models,
                     &mut route.text_models_inheritance,
                     false,
                 )?,
                 4 => select_platform_route_models(
-                    stdout,
+                    ui,
                     config,
                     &mut route.multimodal_models,
                     &mut route.multimodal_models_inheritance,
                     true,
                 )?,
-                5 => edit_conversation_extra_prompt(stdout, &mut route.extra_prompt)?,
+                5 => edit_conversation_extra_prompt(ui, &mut route.extra_prompt)?,
                 6 => {
                     let enabled = select_bool(
-                        stdout,
+                        ui,
                         t("Override QQ concurrency", "覆盖 QQ 并发配置"),
                         route.session_limits.is_some(),
                     )?;
@@ -247,7 +245,7 @@ pub(in crate::config_tui) fn edit_platform_model_route(
                         let limits = route
                             .session_limits
                             .get_or_insert(config.platforms.qq.session_limits);
-                        edit_platform_session_limits(stdout, limits)?;
+                        edit_platform_session_limits(ui, limits)?;
                     } else {
                         route.session_limits = None;
                     }
@@ -260,7 +258,7 @@ pub(in crate::config_tui) fn edit_platform_model_route(
                     ];
                     let current = probability_reply_label(route.probability_reply);
                     let picked = select_choice(
-                        stdout,
+                        ui,
                         t(" RANDOM ACTIVE REPLIES ", " 概率主动回复 "),
                         current,
                         &choices,
@@ -284,7 +282,7 @@ pub(in crate::config_tui) fn edit_platform_model_route(
                     ];
                     let current = ignore_sleep_label(route.ignore_sleep_hours);
                     let picked = select_choice(
-                        stdout,
+                        ui,
                         t(" IGNORE SLEEP HOURS ", " 忽略睡眠时间 "),
                         current,
                         &choices,
@@ -344,13 +342,13 @@ pub(in crate::config_tui) fn platform_persona_summary(persona: &PlatformPersonaO
 }
 
 pub(in crate::config_tui) fn edit_platform_personas(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
     persona: &mut PlatformPersonaOverride,
 ) -> Result<()> {
     if let Some(updated) = manage_personas(
-        stdout,
+        ui,
         paths,
         config,
         PersonaMenuTarget::Platform(persona.clone()),
@@ -361,7 +359,7 @@ pub(in crate::config_tui) fn edit_platform_personas(
 }
 
 pub(in crate::config_tui) fn select_platform_conversation_kind(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     kind: &mut PlatformConversationKind,
 ) -> Result<()> {
     let choices = [
@@ -370,7 +368,7 @@ pub(in crate::config_tui) fn select_platform_conversation_kind(
     ];
     let current = platform_conversation_kind_label(*kind);
     let selected = select_choice(
-        stdout,
+        ui,
         t("Conversation type", "会话类型"),
         current,
         &choices,
@@ -386,10 +384,10 @@ pub(in crate::config_tui) fn select_platform_conversation_kind(
 }
 
 pub(in crate::config_tui) fn edit_conversation_extra_prompt(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     prompt: &mut String,
 ) -> Result<()> {
-    edit_textarea(stdout, prompt)?;
+    edit_textarea(ui, prompt)?;
     Ok(())
 }
 
@@ -410,7 +408,7 @@ pub(in crate::config_tui) fn route_pool_summary(
 }
 
 pub(in crate::config_tui) fn select_platform_route_models(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &AppConfig,
     pool: &mut Option<Vec<ActiveProviderModelConfig>>,
     inheritance: &mut PlatformModelPoolInheritance,
@@ -463,7 +461,7 @@ pub(in crate::config_tui) fn select_platform_route_models(
             format!("{marker}{}", choice.label())
         }));
         draw_menu(
-            stdout,
+            ui,
             if multimodal {
                 t(" SESSION MULTIMODAL MODELS ", " 会话多模态模型 ")
             } else {
@@ -476,7 +474,7 @@ pub(in crate::config_tui) fn select_platform_route_models(
                 "[Tab]加入/移出 [Enter/q]确认",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),

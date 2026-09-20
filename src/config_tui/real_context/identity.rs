@@ -6,7 +6,7 @@
 use crate::config_tui::*;
 
 pub(in crate::config_tui) fn edit_real_context_identities(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     settings: &mut RealContextPluginSettings,
 ) -> Result<()> {
     let mut selected = 0usize;
@@ -23,7 +23,7 @@ pub(in crate::config_tui) fn edit_real_context_identities(
         );
         selected = selected.min(options.len() - 1);
         draw_menu(
-            stdout,
+            ui,
             t(" IDENTITY MAPPINGS ", " 识人映射 "),
             &options,
             selected,
@@ -32,12 +32,12 @@ pub(in crate::config_tui) fn edit_real_context_identities(
                 "[Enter]配置 [Delete]删除 [j/k]移动 [q]返回",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter if selected == 0 => {
-                if let Some(mapping) = prompt_real_context_identity(stdout, None)? {
+                if let Some(mapping) = prompt_real_context_identity(ui, None)? {
                     upsert_real_context_identity(&mut settings.identity_mappings, mapping);
                 }
             }
@@ -49,20 +49,20 @@ pub(in crate::config_tui) fn edit_real_context_identities(
                         "每行一项：昵称<Tab>QQ号"
                     )
                 );
-                edit_textarea(stdout, &mut raw)?;
+                edit_textarea(ui, &mut raw)?;
                 match parse_real_context_identity_lines(&raw) {
                     Ok(mappings) => {
                         for mapping in mappings {
                             upsert_real_context_identity(&mut settings.identity_mappings, mapping);
                         }
                     }
-                    Err(error) => message(stdout, &error)?,
+                    Err(error) => message(ui, &error)?,
                 }
             }
             KeyCode::Enter => {
                 let index = selected - 2;
                 if let Some(mapping) = prompt_real_context_identity(
-                    stdout,
+                    ui,
                     settings.identity_mappings.get(index).cloned(),
                 )? {
                     if settings
@@ -71,7 +71,7 @@ pub(in crate::config_tui) fn edit_real_context_identities(
                         .enumerate()
                         .any(|(other, item)| other != index && item.nickname == mapping.nickname)
                     {
-                        message(stdout, t("That nickname already exists.", "该昵称已存在。"))?;
+                        message(ui, t("That nickname already exists.", "该昵称已存在。"))?;
                     } else if let Some(item) = settings.identity_mappings.get_mut(index) {
                         *item = mapping;
                     }
@@ -87,7 +87,7 @@ pub(in crate::config_tui) fn edit_real_context_identities(
 }
 
 pub(in crate::config_tui) fn prompt_real_context_identity(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     current: Option<RealContextIdentityMapping>,
 ) -> Result<Option<RealContextIdentityMapping>> {
     let mut fields = vec![
@@ -106,11 +106,7 @@ pub(in crate::config_tui) fn prompt_real_context_identity(
                 .unwrap_or_default(),
         ),
     ];
-    if !run_form(
-        stdout,
-        t(" IDENTITY MAPPING ", " 编辑识人映射 "),
-        &mut fields,
-    )? {
+    if !run_form(ui, t(" IDENTITY MAPPING ", " 编辑识人映射 "), &mut fields)? {
         return Ok(None);
     }
     let nickname = fields[0].value.trim();
@@ -119,7 +115,7 @@ pub(in crate::config_tui) fn prompt_real_context_identity(
         || nickname.chars().any(char::is_control)
     {
         message(
-            stdout,
+            ui,
             t(
                 "Nickname must be 1-128 characters without control characters.",
                 "昵称必须为 1 到 128 个字符，且不能包含控制字符。",
@@ -130,7 +126,7 @@ pub(in crate::config_tui) fn prompt_real_context_identity(
     let user_id = match parse_positive_id(&fields[1].value) {
         Ok(user_id) => user_id,
         Err(error) => {
-            message(stdout, &error)?;
+            message(ui, &error)?;
             return Ok(None);
         }
     };
@@ -205,16 +201,16 @@ pub(in crate::config_tui) fn parse_real_context_identity_lines(
 }
 
 pub(in crate::config_tui) fn edit_real_context_string_lines(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     _title: &'static str,
     values: &mut Vec<String>,
     maximum_chars: usize,
 ) -> Result<()> {
     let mut raw = values.join("\n");
-    edit_textarea(stdout, &mut raw)?;
+    edit_textarea(ui, &mut raw)?;
     match parse_real_context_string_lines(&raw, maximum_chars) {
         Ok(parsed) => *values = parsed,
-        Err(error) => message(stdout, &error)?,
+        Err(error) => message(ui, &error)?,
     }
     Ok(())
 }

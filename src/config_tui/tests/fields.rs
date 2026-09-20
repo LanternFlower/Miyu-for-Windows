@@ -1,8 +1,8 @@
-//! 字段显示：脱敏、变体、语言、菜单窗口。
+//! 字段显示：脱敏、变体、语言。
 
 use crate::config_tui::{
     choice_display_label, field_display_value, language_choice_label, language_choice_value,
-    menu_window, parse_extra_body, t, thinking_variant_field, Field,
+    parse_extra_body, t, thinking_variant_field, Field,
 };
 use miyu_core::llm::ThinkingVariantOptions;
 
@@ -108,15 +108,6 @@ fn language_choice_labels_map_to_stable_values() {
         assert_eq!(language_choice_value(value), Some("zh"));
     }
     assert_eq!(language_choice_value("unsupported"), None);
-}
-
-#[test]
-fn menu_window_keeps_selection_visible_for_long_lists() {
-    assert_eq!(menu_window(100, 0, 5), 0..5);
-    assert_eq!(menu_window(100, 50, 5), 48..53);
-    assert_eq!(menu_window(100, 99, 5), 95..100);
-    assert_eq!(menu_window(3, 2, 10), 0..3);
-    assert_eq!(menu_window(0, 0, 5), 0..0);
 }
 
 #[test]

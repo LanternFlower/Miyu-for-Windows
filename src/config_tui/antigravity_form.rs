@@ -9,7 +9,7 @@ use crate::config_tui::*;
 const TOOL_SCOPES: &[&str] = &["off", "dev", "normal", "all"];
 
 pub(in crate::config_tui) fn edit_antigravity_provider_form(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     provider: ProviderConfig,
     plugin: &mut miyu_base::config::AntigravityPluginConfig,
 ) -> Result<Option<ProviderConfig>> {
@@ -74,7 +74,7 @@ pub(in crate::config_tui) fn edit_antigravity_provider_form(
     ];
     loop {
         if !run_form(
-            stdout,
+            ui,
             t(" EDIT ANTIGRAVITY ", " 编辑 Antigravity "),
             &mut fields,
         )? {
@@ -83,14 +83,14 @@ pub(in crate::config_tui) fn edit_antigravity_provider_form(
         let enabled = match parse_bool_field(&fields[0].value) {
             Ok(value) => value,
             Err(error) => {
-                message(stdout, &format!("{error:#}"))?;
+                message(ui, &format!("{error:#}"))?;
                 continue;
             }
         };
         let eager = match parse_bool_field(&fields[5].value) {
             Ok(value) => value,
             Err(error) => {
-                message(stdout, &format!("{error:#}"))?;
+                message(ui, &format!("{error:#}"))?;
                 continue;
             }
         };
