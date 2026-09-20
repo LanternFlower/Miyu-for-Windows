@@ -30,7 +30,29 @@ pub(in crate::cli) fn read_live_repl_input(
         synchronized_terminal_update(CursorAfterUpdate::Shown, || live.resume())?;
     }
     let mut last_key_at = Instant::now();
+    // 大厅动画的下一拍。**按时刻推**，不按「这一轮没有输入」推。
+    //
+    // 原来只有空闲分支（`!has_input`）里才 `tick_banner()`：按键比 40ms 一拍还
+    // 密时，`poll` 每次都立刻报就绪，那条分支一次都进不去，星空和扫光就定格了
+    // （用户 09-20 实测「空会话按住退格键时动画会暂停」，真机验证本修复有效）。
+    // 09-17 修面板动画时踩的是同一个坑，当时只改了面板那条路。
+    //
+    // **沙箱走查复现不出来**（`testkit/tui/lobby_anim.py` 的 holding-* 三场改前
+    // 改后都是 6/6）：pty 里灌按键和真实终端的按键重复不是一回事。所以这条修复
+    // 的证据是用户真机，不是走查——走查只负责守住「按住键时还在动」这条线。
+    const BANNER_TICK: Duration = Duration::from_millis(40);
+    let mut next_banner_at = Instant::now() + BANNER_TICK;
+    /// 到点就推一帧大厅动画。放在**每一处会长时间不回到循环顶端的地方**。
+    macro_rules! tick_banner_if_due {
+        () => {
+            if live.banner.is_some() && Instant::now() >= next_banner_at {
+                live.tick_banner()?;
+                next_banner_at = Instant::now() + BANNER_TICK;
+            }
+        };
+    }
     loop {
+        tick_banner_if_due!();
         // 等待权自持:PTY 死亡后 crossterm 的 poll 会在内部对 HUP fd
         // 无限自旋、永不返回(实测),所以不能把"等 80ms"交给它——用裸
         // poll 等待并率先识别挂断,有输入就绪时才让 crossterm 取事件。
@@ -154,13 +176,18 @@ pub(in crate::cli) fn read_live_repl_input(
                 synchronized_terminal_update(CursorAfterUpdate::Preserve, || live.redraw())?;
             } else {
                 live.tick_job_strip()?;
-                // 空会话的 banner:星星闪、扫光过。打字时和上面一样停。
-                live.tick_banner()?;
+                // banner 的帧不在这儿推了：循环顶上按时刻推，打字期间也照走
+                // （见 `next_banner_at`）。留在这里会变成一拍推两帧。
             }
             continue;
         }
         // 抽干本轮就绪的全部事件再回到等待,粘贴/快速输入不积压。
+        //
+        // **这条循环出不来时也要推帧**：按住键时按键来得比处理得快（每下都要
+        // 重画一次活动区），`poll(ZERO)` 一直报就绪，这里能连转很久都回不到
+        // 循环顶端。只在循环顶端放一处挡不住这种情形。
         while event::poll(Duration::ZERO)? {
+            tick_banner_if_due!();
             // read 前再验挂断:HUP 的 fd 会让 poll 报就绪却读不出事件,
             // 直接 read 就掉进 crossterm 的自旋。
             if terminal_hangup() {
