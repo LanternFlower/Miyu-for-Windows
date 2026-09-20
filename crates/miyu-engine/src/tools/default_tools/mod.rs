@@ -271,6 +271,13 @@ fn ensure_safe_trash_target(path: &Path) -> Result<()> {
         Path::new("/tmp"),
         Path::new("/usr"),
         Path::new("/var"),
+        // macOS 的系统目录。判定是**精确相等**,所以这几条在 Linux 上永远匹配
+        // 不到——纯增一层保险,不改任何现有行为。
+        Path::new("/Applications"),
+        Path::new("/Library"),
+        Path::new("/System"),
+        Path::new("/Users"),
+        Path::new("/Volumes"),
     ];
     if dangerous.iter().any(|item| path == *item) {
         bail!(
@@ -658,5 +665,22 @@ mod tests {
             "没被压就别提请求值，省得模型以为它另有含义：{plain}"
         );
         assert!(plain.contains("background=true"), "{plain}");
+    }
+
+    /// 危险系统目录一个都不许扔。macOS 那几条在 Linux 上匹配不到，但清单里必须
+    /// 有——判定是精确相等，漏一条就是那台机器上少一层保险。
+    #[test]
+    fn refuses_to_trash_system_directories() {
+        for path in [
+            "/", "/etc", "/usr", "/var",
+            "/Applications", "/Library", "/System", "/Users", "/Volumes",
+        ] {
+            let error = super::ensure_safe_trash_target(std::path::Path::new(path))
+                .expect_err(&format!("{path} 该被拒"));
+            assert!(
+                error.to_string().contains("dangerous system path"),
+                "{path}: {error}"
+            );
+        }
     }
 }
