@@ -179,6 +179,13 @@ impl OpenAiCompatibleClient {
                 provider_npm: None,
                 variants: codex_reasoning_variants(&self.provider.default_model),
             }
+        } else if provider_uses_codebuddy(&self.provider) {
+            // CodeBuddy 的 CLI 没有 `--effort`(09-20 核过 `-h`):一档都不给,
+            // 免得菜单里摆出选了也不生效的档位。
+            ModelReasoningInfo {
+                provider_npm: None,
+                variants: Vec::new(),
+            }
         } else {
             models_cache::reasoning_info(&self.provider.id, &self.provider.default_model)?
         };

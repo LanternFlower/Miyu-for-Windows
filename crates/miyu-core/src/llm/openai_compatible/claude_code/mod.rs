@@ -10,7 +10,7 @@
 //! claude 特有的三样:命令行怎么拼(`--system-prompt` 整体替换、`--mcp-config`
 //! 内联 JSON、`--resume`)、事件怎么解析([`stream`])、清空时删哪里的转录。
 
-mod stream;
+pub(in crate::llm::openai_compatible) mod stream;
 
 use crate::llm::openai_compatible::cli_relay::{
     self, payload, RelayOutcome, ResumePlan, ToolScopes,
@@ -148,7 +148,20 @@ impl OpenAiCompatibleClient {
             // conversation 是续传哈希链的原料,录下来才能诊断"为什么没命中"。
             &json!({ "args": args, "stdin": payload, "conversation": plan.conversation() }),
         );
-        stream::run_claude_turn(runtime, workdir, &args, &payload, request_id, on_chunk).await
+        let launch = stream::RelayLaunch {
+            binary: &runtime.binary,
+            idle_timeout: runtime.idle_timeout,
+            strip_anthropic_keys: runtime.prefer_subscription,
+            label: "claude-code",
+            missing_hint: || {
+                t(
+                    "Claude Code CLI not found; install it or set plugins.claude_code.binary",
+                    "找不到 Claude Code CLI;请安装它或配置 plugins.claude_code.binary",
+                )
+                .to_string()
+            },
+        };
+        stream::run_claude_turn(&launch, workdir, &args, &payload, request_id, on_chunk).await
     }
 
     fn claude_code_args(
@@ -268,7 +281,9 @@ pub const BRIDGE_DUPLICATE_TOOLS: &[&str] = &[
 /// `miyu tool-call` 同一条会话→模式→registry 解析链。没有会话作用域(测试
 /// /直连辅助请求)就不挂桥。claude 给 MCP server 的是洁净环境,home/runtime
 /// 识别变量要显式带(如实透传,见 cli_relay::bridge_env_passthrough)。
-fn mcp_bridge_config(exclude_duplicates: bool) -> Option<String> {
+pub(in crate::llm::openai_compatible) fn mcp_bridge_config(
+    exclude_duplicates: bool,
+) -> Option<String> {
     let session = miyu_base::workspace::try_session()?;
     let exe = miyu_base::paths::miyu_executable().ok()?;
     let origin = serde_json::to_string(&miyu_base::workspace::current_turn_origin()).ok()?;

@@ -573,7 +573,7 @@ fn the_embedding_model_moves_out_from_under_the_knowledge_base() {
 #[test]
 fn real_context_models_follow_provider_lifecycle() {
     let mut config = route_test_config();
-    let old_id = config.providers[0].id.clone();
+    let old_id = first_http_provider(&mut config).id.clone();
     let settings = RealContextPluginSettings {
         text_models: crate::config::ModelPoolRef::models(vec![ActiveProviderModelConfig {
             provider_id: old_id.clone(),
@@ -592,7 +592,7 @@ fn real_context_models_follow_provider_lifecycle() {
         .plugins
         .insert(REAL_CONTEXT_PLUGIN_ID.to_string(), instance);
 
-    config.providers[0].id = "renamed".to_string();
+    first_http_provider(&mut config).id = "renamed".to_string();
     config.rename_provider_references(&old_id, "renamed");
     let instance = &config.platforms.qq.plugins[REAL_CONTEXT_PLUGIN_ID];
     let reparsed = RealContextPluginSettings::from_instance(instance).unwrap();
@@ -613,7 +613,7 @@ fn real_context_models_follow_provider_lifecycle() {
 #[test]
 fn provider_reference_updates_cover_every_model_pool_and_plugin() {
     let mut config = route_test_config();
-    let old_id = config.providers[0].id.clone();
+    let old_id = route_test_provider_id(&config);
     config.active_provider = old_id.clone();
     config.active_provider_models = Some(vec![ActiveProviderModelConfig {
         provider_id: old_id.clone(),
@@ -638,7 +638,7 @@ fn provider_reference_updates_cover_every_model_pool_and_plugin() {
     config.plugins.knowledge_base.embedding_provider_id = old_id.clone();
     config.plugins.knowledge_base.embedding_model = "text-only".to_string();
 
-    config.providers[0].id = "renamed".to_string();
+    first_http_provider(&mut config).id = "renamed".to_string();
     config.rename_provider_references(&old_id, "renamed");
 
     assert_eq!(config.active_provider, "renamed");
@@ -674,9 +674,14 @@ fn provider_reference_updates_cover_every_model_pool_and_plugin() {
         config.plugins.knowledge_base.embedding_provider_id,
         "renamed"
     );
-    assert!(config.validate().is_ok());
+    assert!(config.validate().is_ok(), "{:?}", config.validate().err());
 
-    config.providers.remove(0);
+    let renamed_at = config
+        .providers
+        .iter()
+        .position(|provider| provider.id == "renamed")
+        .expect("改名后的那条还在");
+    config.providers.remove(renamed_at);
     config.remove_provider_references("renamed");
     assert!(config.active_provider_models.is_none());
     assert!(config.active_multimodal_provider_models.is_none());
@@ -696,7 +701,7 @@ fn provider_reference_updates_cover_every_model_pool_and_plugin() {
 #[test]
 fn model_capability_pruning_clears_all_invalid_image_references() {
     let mut config = route_test_config();
-    let provider_id = config.providers[0].id.clone();
+    let provider_id = route_test_provider_id(&config);
     config.active_multimodal_provider_models = Some(vec![ActiveProviderModelConfig {
         provider_id: provider_id.clone(),
         model: "vision".to_string(),
@@ -704,7 +709,7 @@ fn model_capability_pruning_clears_all_invalid_image_references() {
     config.platforms.qq.conversations.push(test_route(&config));
     config.plugins.vision.vision_provider_id = provider_id;
     config.plugins.vision.vision_model = "vision".to_string();
-    config.providers[0]
+    first_http_provider(&mut config)
         .model_modalities
         .insert("vision".to_string(), vec!["text".to_string()]);
 
@@ -729,7 +734,7 @@ fn duplicate_provider_ids_are_rejected() {
 fn platform_multimodal_pruning_tracks_provider_capabilities() {
     let mut config = route_test_config();
     config.platforms.qq.conversations.push(test_route(&config));
-    config.providers[0]
+    first_http_provider(&mut config)
         .model_modalities
         .insert("vision".to_string(), vec!["text".to_string()]);
 
@@ -1088,8 +1093,8 @@ fn claude_code_builtin_provider_is_injected_disabled_with_preset_models() {
         .iter()
         .find(|provider| provider.is_claude_code())
         .expect("内置 Claude Code 供应商应被注入");
-    // 用户拍板的列表次序:恒置顶。
-    assert!(config.providers[0].is_claude_code());
+    // 内置 CLI 中转整体置顶、按字母序(09-20);Claude Code 排在 Antigravity 后。
+    assert!(config.providers[1].is_claude_code());
     assert_eq!(provider.id, "claude-code");
     assert!(!provider.enabled, "默认必须是禁用态");
     assert_eq!(provider.models, ["fable", "opus", "sonnet", "haiku"]);
@@ -1125,22 +1130,25 @@ fn claude_code_builtin_provider_is_injected_disabled_with_preset_models() {
     );
 }
 
-/// 09-03:Antigravity 是第二个内置 CLI 中转供应商——normalize 注入、紧随
-/// Claude Code 之后、默认禁用、模型预置 agy 别名;未启用不进选择器。
+/// 09-03:Antigravity 是内置 CLI 中转之一——normalize 注入、默认禁用、模型预置
+/// agy 别名;未启用不进选择器。09-20 起次序改成「内置 CLI 整体置顶 + 字母序」
+/// (用户拍板:Antigravity → Claude Code → CodeBuddy → Codex)。
 #[test]
-fn antigravity_builtin_provider_is_injected_disabled_after_claude_code() {
+fn builtin_cli_providers_sit_on_top_in_alphabetical_order() {
     let mut config = AppConfig::default();
     config.normalize_builtin_providers();
-    assert!(config.providers[0].is_claude_code());
-    assert!(config.providers[1].is_antigravity());
+    assert!(config.providers[0].is_antigravity());
+    assert!(config.providers[1].is_claude_code());
+    assert!(config.providers[2].is_codebuddy());
+    assert!(config.providers[3].is_codex());
     assert!(
-        config.providers[2].is_codex(),
-        "Codex 紧随 Antigravity 之后"
+        !config.providers[4].is_builtin_cli_provider(),
+        "第五位起就该是普通供应商了"
     );
-    assert!(!config.providers[2].enabled);
-    assert_eq!(config.providers[2].default_model, "gpt-5.6-terra");
+    assert!(!config.providers[3].enabled);
+    assert_eq!(config.providers[3].default_model, "gpt-5.6-terra");
     assert!(!config.codex_enabled());
-    let provider = &config.providers[1];
+    let provider = &config.providers[0];
     assert_eq!(provider.id, "antigravity");
     assert!(!provider.enabled, "默认必须是禁用态");
     assert_eq!(provider.default_model, "gemini-3.8-flash-high");
@@ -1154,14 +1162,17 @@ fn antigravity_builtin_provider_is_injected_disabled_after_claude_code() {
         .iter()
         .any(|choice| choice.provider_id == "antigravity"));
 
-    // 存量配置把它排到后面:normalize 搬回第二位;重复 normalize 不二次注入。
-    let moved = config.providers.remove(1);
-    config.providers.push(moved);
-    let moved = config.providers.remove(1);
-    config.providers.push(moved);
+    // 存量配置把它们踢到末尾(新增的那条内置 CLI 就是这么掉下去的,用户 09-20
+    // 截图:CodeBuddy 在最后一行):normalize 要整体搬回最前并重新排好。
+    for _ in 0..4 {
+        let moved = config.providers.remove(0);
+        config.providers.push(moved);
+    }
     config.normalize_builtin_providers();
-    assert!(config.providers[1].is_antigravity());
-    assert!(config.providers[2].is_codex());
+    assert!(config.providers[0].is_antigravity());
+    assert!(config.providers[1].is_claude_code());
+    assert!(config.providers[2].is_codebuddy());
+    assert!(config.providers[3].is_codex());
     assert_eq!(
         config
             .providers

@@ -220,6 +220,8 @@ pub const CLAUDE_CODE_PROTOCOL: &str = "claude-code";
 pub const ANTIGRAVITY_PROTOCOL: &str = "antigravity";
 /// Codex(OpenAI codex CLI)特殊供应商的内部协议标识。
 pub const CODEX_PROTOCOL: &str = "codex";
+/// CodeBuddy(腾讯 codebuddy CLI)特殊供应商的内部协议标识。
+pub const CODEBUDDY_PROTOCOL: &str = "codebuddy";
 
 /// CLI 中转线的工具作用域(off/dev/normal/all)在本模式下是否放行。
 /// 中转层与 agent 侧共用这一份判定,免得两边各写一套 match。
@@ -242,6 +244,26 @@ pub const CODEX_PRESET_MODELS: &[&str] = &[
     "gpt-5.4",
     "gpt-5.4-mini",
     "gpt-5.2",
+];
+/// CodeBuddy 预置模型:`codebuddy -h` 的 `--model` 清单(09-20,codebuddy 2.52.3)。
+/// 本机 CLI 没有 /models 端点,目录就是这份别名。
+pub const CODEBUDDY_PRESET_MODELS: &[&str] = &[
+    "hy4-preview-f",
+    "hy3",
+    "hy3-x",
+    "deepseek-v4.1-flash",
+    "glm-5.3",
+    "glm-5.3-flash",
+    "glm-5.2",
+    "glm-5.1",
+    "glm-5v-turbo",
+    "minimax-m3",
+    "minimax-m2.7",
+    "kimi-k3-1",
+    "kimi-k2.8-preview",
+    "kimi-k2.7",
+    "kimi-k2.6",
+    "deepseek-v4-pro",
 ];
 /// Antigravity 预置模型:`agy models` 的输出(09-03);本机 CLI 没有 /models
 /// 端点,列表就是这份别名。gemini 的思考档位编码在模型名后缀里。
@@ -617,6 +639,28 @@ impl ProviderConfig {
         }
     }
 
+    /// 内置的 CodeBuddy 特殊供应商:本机 `codebuddy` CLI 的腾讯登录态中转。
+    pub fn codebuddy_template() -> Self {
+        Self {
+            enabled: false,
+            protocol: CODEBUDDY_PROTOCOL.to_string(),
+            models: CODEBUDDY_PRESET_MODELS
+                .iter()
+                .map(|model| model.to_string())
+                .collect(),
+            default_model: "glm-5.3".to_string(),
+            ..Self::template("codebuddy", "CodeBuddy", "")
+        }
+    }
+
+    /// 该条目是否 CodeBuddy 特殊供应商(按协议判定)。
+    pub fn is_codebuddy(&self) -> bool {
+        let protocol = self.protocol.trim();
+        protocol.eq_ignore_ascii_case(CODEBUDDY_PROTOCOL)
+            || protocol.eq_ignore_ascii_case("codebuddy-cli")
+            || protocol.eq_ignore_ascii_case("cbc")
+    }
+
     /// 该条目是否 Codex 特殊供应商(按协议判定)。
     pub fn is_codex(&self) -> bool {
         let protocol = self.protocol.trim();
@@ -634,7 +678,7 @@ impl ProviderConfig {
     /// 内置的本机 CLI 中转供应商(Claude Code / Antigravity):没有 URL、
     /// API key 概念,列表里恒存在且不可删除。
     pub fn is_builtin_cli_provider(&self) -> bool {
-        self.is_claude_code() || self.is_antigravity() || self.is_codex()
+        self.is_claude_code() || self.is_antigravity() || self.is_codex() || self.is_codebuddy()
     }
 
     /// 见 `tool_result_media` 字段。
@@ -667,6 +711,8 @@ impl ProviderConfig {
             ANTIGRAVITY_PRESET_MODELS
         } else if self.is_codex() {
             CODEX_PRESET_MODELS
+        } else if self.is_codebuddy() {
+            CODEBUDDY_PRESET_MODELS
         } else {
             &[]
         }
@@ -694,10 +740,18 @@ impl ProviderConfig {
             Self::template("ollama", "Ollama", "http://localhost:11434/v1"),
             Self::template("lmstudio", "LMStudio", "http://localhost:1234/v1"),
         ]);
-        // Claude Code 置顶:用户拍板的列表次序;Antigravity 紧随其后。
-        providers.insert(0, Self::claude_code_template());
-        providers.insert(1, Self::antigravity_template());
-        providers.insert(2, Self::codex_template());
+        // 内置 CLI 中转整体置顶,彼此按显示名字母序(用户 09-20 拍板)。这里只
+        // 管「都在最前」,真正的排序由 `normalize_builtin_providers` 统一做——
+        // 存量配置也要走那一遍,两处各排一次只会分叉。
+        let mut cli = vec![
+            Self::antigravity_template(),
+            Self::claude_code_template(),
+            Self::codebuddy_template(),
+            Self::codex_template(),
+        ];
+        cli.extend(providers);
+        let mut providers = cli;
+        crate::config::io::sort_builtin_cli_providers_to_front(&mut providers);
         providers
     }
 

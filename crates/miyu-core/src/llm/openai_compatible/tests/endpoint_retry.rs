@@ -361,6 +361,7 @@ async fn invalid_request_does_not_fail_over_to_another_endpoint() {
         claude_code: None,
         antigravity: None,
         codex: None,
+        codebuddy: None,
         claude_code_dev_mode: false,
         zen_session: None,
         continuation_health: ResponsesContinuationHealth::detached(),

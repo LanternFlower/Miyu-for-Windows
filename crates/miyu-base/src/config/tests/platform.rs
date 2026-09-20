@@ -184,7 +184,7 @@ fn platform_command_defaults_overrides_and_validation() {
 #[test]
 fn qq_platform_model_pools_validate_and_round_trip() {
     let mut config = route_test_config();
-    let provider_id = config.providers[0].id.clone();
+    let provider_id = route_test_provider_id(&config);
     config.platforms.qq.text_models =
         crate::config::ModelPoolRef::models(vec![ActiveProviderModelConfig {
             provider_id: provider_id.clone(),
@@ -245,7 +245,7 @@ fn qq_platform_model_pools_validate_and_round_trip() {
 #[test]
 fn qq_non_whitelist_model_pool_normalizes_for_dynamic_inheritance() {
     let mut config = route_test_config();
-    let provider_id = config.providers[0].id.clone();
+    let provider_id = route_test_provider_id(&config);
     config.platforms.qq.non_whitelist_text_models = crate::config::ModelPoolRef::models(vec![
         ActiveProviderModelConfig {
             provider_id: format!(" {provider_id} "),
@@ -351,7 +351,7 @@ fn session_limits_resolve_from_conversation_then_kind_then_qq() {
 #[test]
 fn qq_text_model_pool_resolution_preserves_conversation_priority() {
     let mut config = route_test_config();
-    let provider_id = config.providers[0].id.clone();
+    let provider_id = route_test_provider_id(&config);
     let pool = |model: &str| {
         vec![ActiveProviderModelConfig {
             provider_id: provider_id.clone(),
@@ -537,7 +537,7 @@ fn platform_model_routes_roundtrip_lookup_and_plugin_shape() {
         .platform_model_route(PlatformConversationKind::Group, "20002")
         .unwrap();
     assert_eq!(found, &route);
-    assert!(config.validate().is_ok());
+    assert!(config.validate().is_ok(), "{:?}", config.validate().err());
 
     let json = serde_json::to_string(&config).unwrap();
     let reparsed: AppConfig = serde_json::from_str(&json).unwrap();
@@ -866,7 +866,7 @@ fn qq_default_non_whitelist_rate_limits_match_the_deployed_contract() {
 #[test]
 fn platform_model_route_normalization_uses_none_for_inheritance() {
     let mut config = route_test_config();
-    let provider_id = config.providers[0].id.clone();
+    let provider_id = route_test_provider_id(&config);
     let mut route = test_route(&config);
     route.conversation.id = " 20002 ".to_string();
     route.extra_prompt = "  group prompt  ".to_string();
@@ -931,7 +931,7 @@ fn platform_model_route_validation_rejects_bad_identity_models_and_duplicates() 
 #[test]
 fn platform_model_references_are_renamed_and_pruned() {
     let mut config = route_test_config();
-    let old_provider = config.providers[0].id.clone();
+    let old_provider = route_test_provider_id(&config);
     config.platforms.qq.non_whitelist_text_models =
         crate::config::ModelPoolRef::models(vec![ActiveProviderModelConfig {
             provider_id: old_provider.clone(),

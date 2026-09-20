@@ -237,7 +237,7 @@ pub(super) fn options(config: &AppConfig, has_cli: impl Fn(&str) -> bool) -> Vec
         &str,
         fn(&ProviderConfig) -> bool,
         fn() -> ProviderConfig,
-    ); 3] = [
+    ); 4] = [
         (
             "claude",
             "借 Claude Code 的订阅",
@@ -255,6 +255,12 @@ pub(super) fn options(config: &AppConfig, has_cli: impl Fn(&str) -> bool) -> Vec
             "借 Antigravity 的订阅",
             ProviderConfig::is_antigravity,
             ProviderConfig::antigravity_template,
+        ),
+        (
+            "codebuddy",
+            "借 CodeBuddy 的订阅",
+            ProviderConfig::is_codebuddy,
+            ProviderConfig::codebuddy_template,
         ),
     ];
     for (binary, label, matches, fallback) in clis {

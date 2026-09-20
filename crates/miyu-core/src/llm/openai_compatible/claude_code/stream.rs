@@ -14,7 +14,7 @@ use crate::llm::openai_compatible::cli_relay::{
 use crate::llm::openai_compatible::*;
 
 /// `--resume` 目标在 claude 侧已不存在(过期/被清理)的签名。
-pub(super) fn resume_session_lost(error: &anyhow::Error) -> bool {
+pub(in crate::llm::openai_compatible) fn resume_session_lost(error: &anyhow::Error) -> bool {
     format!("{error:#}")
         .to_ascii_lowercase()
         .contains("no conversation found")
@@ -51,8 +51,25 @@ fn classify_claude_failure(text: &str) -> Option<HttpStatusFailure> {
     None
 }
 
-pub(super) async fn run_claude_turn<F>(
-    runtime: &ClaudeCodeRuntime,
+/// 一条 stream-json 中转线的进程参数。
+///
+/// CodeBuddy 是 Claude Code 的分叉(09-20 实测事件逐字段一致),事件解析这一整
+/// 段两家共用;只有「哪个二进制、空闲多久算死、找不到时怎么说」不一样,提成
+/// 参数而不是让 codebuddy 抄一份 560 行的解析器。
+pub(in crate::llm::openai_compatible) struct RelayLaunch<'a> {
+    pub(in crate::llm::openai_compatible) binary: &'a std::path::Path,
+    pub(in crate::llm::openai_compatible) idle_timeout: Duration,
+    /// 从子进程环境剥离 `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`:按量
+    /// API key 会抢走订阅登录态。CodeBuddy 走腾讯登录态,与这两个变量无关。
+    pub(in crate::llm::openai_compatible) strip_anthropic_keys: bool,
+    /// 日志/错误里这条线叫什么(`claude-code` / `codebuddy`)。
+    pub(in crate::llm::openai_compatible) label: &'static str,
+    /// 二进制找不到时给用户的那句话。
+    pub(in crate::llm::openai_compatible) missing_hint: fn() -> String,
+}
+
+pub(in crate::llm::openai_compatible) async fn run_claude_turn<F>(
+    launch: &RelayLaunch<'_>,
     workdir: &std::path::Path,
     args: &[String],
     stdin_payload: &str,
@@ -63,30 +80,29 @@ where
     F: FnMut(ChatStreamChunk) -> Result<()>,
 {
     // MCP 工具调用的客户端超时:ask_question 这类交互工具要等人回答,
-    // claude 默认的 MCP 超时等不起,放宽到 30 分钟。
+    // CLI 默认的 MCP 超时等不起,放宽到 30 分钟。
     let mut env: Vec<(String, Option<String>)> =
         vec![("MCP_TOOL_TIMEOUT".into(), Some("1800000".into()))];
-    if runtime.prefer_subscription {
+    if launch.strip_anthropic_keys {
         // 环境里的按量 API key 会抢走订阅登录态,中转的意义就没了。
         env.push(("ANTHROPIC_API_KEY".into(), None));
         env.push(("ANTHROPIC_AUTH_TOKEN".into(), None));
     }
+    let stage: &'static str = if launch.label == "codebuddy" {
+        "codebuddy.stream"
+    } else {
+        "claude-code.stream"
+    };
     let mut process = RelayProcess::spawn(
-        &runtime.binary,
+        launch.binary,
         args,
         workdir,
         &env,
         stdin_payload,
-        runtime.idle_timeout,
-        "claude-code.stream",
-        "claude-code",
-        || {
-            t(
-                "Claude Code CLI not found; install it or set plugins.claude_code.binary",
-                "找不到 Claude Code CLI;请安装它或配置 plugins.claude_code.binary",
-            )
-            .to_string()
-        },
+        launch.idle_timeout,
+        stage,
+        launch.label,
+        launch.missing_hint,
     )
     .await?;
 
@@ -109,7 +125,7 @@ where
         let value: Value = match serde_json::from_str(trimmed) {
             Ok(value) => value,
             Err(error) => {
-                tracing::warn!(request_id, %error, "claude-code emitted a non-JSON stdout line");
+                tracing::warn!(request_id, %error, "relay emitted a non-JSON stdout line");
                 continue;
             }
         };
@@ -142,7 +158,7 @@ where
                         Err(error) => tracing::debug!(
                             request_id,
                             %error,
-                            "claude-code stream event did not parse; skipped"
+                            "relay stream event did not parse; skipped"
                         ),
                     }
                 }
@@ -158,7 +174,8 @@ where
 
     let Some(final_frame) = final_frame else {
         let mut error = anyhow::anyhow!(
-            "claude-code exited (code {exit_code}) without a result frame: {}",
+            "{} exited (code {exit_code}) without a result frame: {}",
+            launch.label,
             stderr_text.trim()
         );
         if let Some(failure) = classify_claude_failure(&stderr_text) {
@@ -188,7 +205,11 @@ where
         } else {
             result_text.clone()
         };
-        let mut error = anyhow::anyhow!("claude-code turn failed ({subtype}): {}", detail.trim());
+        let mut error = anyhow::anyhow!(
+            "{} turn failed ({subtype}): {}",
+            launch.label,
+            detail.trim()
+        );
         if let Some(failure) = classify_claude_failure(&format!("{detail}\n{stderr_text}")) {
             error = error.context(failure);
         }

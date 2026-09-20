@@ -290,7 +290,7 @@ fn real_context_plugin_rejects_invalid_types_ranges_and_models() {
 
     let mut settings = RealContextPluginSettings {
         text_models: crate::config::ModelPoolRef::models(vec![ActiveProviderModelConfig {
-            provider_id: config.providers[0].id.clone(),
+            provider_id: route_test_provider_id(&config),
             model: "missing".to_string(),
         }]),
         ..RealContextPluginSettings::default()

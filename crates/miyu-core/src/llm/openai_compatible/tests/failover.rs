@@ -92,6 +92,7 @@ async fn response_header_timeout_fails_over_to_the_next_endpoint() {
         claude_code: None,
         antigravity: None,
         codex: None,
+        codebuddy: None,
         claude_code_dev_mode: false,
         zen_session: None,
     };
@@ -529,6 +530,7 @@ async fn endpoint_failover_resets_partial_reasoning_before_retry() {
         claude_code: None,
         antigravity: None,
         codex: None,
+        codebuddy: None,
         claude_code_dev_mode: false,
         zen_session: None,
         continuation_health: ResponsesContinuationHealth::detached(),
@@ -620,6 +622,7 @@ async fn buffered_completion_fails_over_after_partial_content() {
         claude_code: None,
         antigravity: None,
         codex: None,
+        codebuddy: None,
         claude_code_dev_mode: false,
         zen_session: None,
         continuation_health: ResponsesContinuationHealth::detached(),

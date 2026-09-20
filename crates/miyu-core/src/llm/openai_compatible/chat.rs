@@ -404,6 +404,10 @@ impl OpenAiCompatibleClient {
         if protocol == ProviderProtocol::Codex {
             return Box::pin(self.chat_codex_stream(messages, tools, request_id, on_chunk)).await;
         }
+        if protocol == ProviderProtocol::CodeBuddy {
+            return Box::pin(self.chat_codebuddy_stream(messages, tools, request_id, on_chunk))
+                .await;
+        }
         let uses_responses = protocol == ProviderProtocol::OpenAiResponses
             || (protocol == ProviderProtocol::Auto && self.uses_openai_responses());
         if previous_response_id.is_some() && !uses_responses {

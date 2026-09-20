@@ -50,6 +50,7 @@ impl OpenAiCompatibleClient {
         let claude_code = claude_code_runtime(&endpoints, config);
         let antigravity = antigravity_runtime(&endpoints, config);
         let codex = codex_runtime(&endpoints, config);
+        let codebuddy = codebuddy_runtime(&endpoints, config);
         let mut client = Self {
             client: first.client.clone(),
             provider: first.provider.clone(),
@@ -66,6 +67,7 @@ impl OpenAiCompatibleClient {
             claude_code,
             antigravity,
             codex,
+            codebuddy,
             claude_code_dev_mode: false,
             zen_session: None,
         };
@@ -144,6 +146,7 @@ impl OpenAiCompatibleClient {
         let claude_code = claude_code_runtime(&endpoints, config);
         let antigravity = antigravity_runtime(&endpoints, config);
         let codex = codex_runtime(&endpoints, config);
+        let codebuddy = codebuddy_runtime(&endpoints, config);
         let mut client = Self {
             client: first.client.clone(),
             provider: first.provider.clone(),
@@ -160,6 +163,7 @@ impl OpenAiCompatibleClient {
             claude_code,
             antigravity,
             codex,
+            codebuddy,
             claude_code_dev_mode: false,
             zen_session: None,
         };
@@ -277,6 +281,7 @@ impl OpenAiCompatibleClient {
         let claude_code = claude_code_runtime(&endpoints, config);
         let antigravity = antigravity_runtime(&endpoints, config);
         let codex = codex_runtime(&endpoints, config);
+        let codebuddy = codebuddy_runtime(&endpoints, config);
         let mut client = Self {
             client,
             provider: provider.clone(),
@@ -293,6 +298,7 @@ impl OpenAiCompatibleClient {
             claude_code,
             antigravity,
             codex,
+            codebuddy,
             claude_code_dev_mode: false,
             zen_session: None,
         };
@@ -417,6 +423,7 @@ impl OpenAiCompatibleClient {
             claude_code: self.claude_code.clone(),
             antigravity: self.antigravity.clone(),
             codex: self.codex.clone(),
+            codebuddy: self.codebuddy.clone(),
             claude_code_dev_mode: self.claude_code_dev_mode,
             zen_session: self.zen_session.clone(),
         }
@@ -460,6 +467,17 @@ impl OpenAiCompatibleClient {
     pub(crate) fn uses_anthropic_messages(&self) -> bool {
         provider_looks_anthropic(&self.provider)
     }
+}
+
+/// 端点池里出现 codebuddy 协议端点时,解析一份共享运行时参数。
+pub(in crate::llm::openai_compatible) fn codebuddy_runtime(
+    endpoints: &[LlmEndpoint],
+    config: &AppConfig,
+) -> Option<Arc<CodeBuddyRuntime>> {
+    endpoints
+        .iter()
+        .any(|endpoint| provider_uses_codebuddy(&endpoint.provider))
+        .then(|| Arc::new(CodeBuddyRuntime::from_config(config)))
 }
 
 /// 端点池里出现 codex 协议端点时,解析一份共享运行时参数。

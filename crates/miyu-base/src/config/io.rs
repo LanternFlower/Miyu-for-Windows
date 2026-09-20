@@ -179,32 +179,7 @@ impl AppConfig {
                 self.providers.push(provider);
             }
         }
-        // Claude Code 恒置顶(用户拍板的列表次序);存量配置若排在后面搬到最前。
-        if let Some(position) = self
-            .providers
-            .iter()
-            .position(ProviderConfig::is_claude_code)
-        {
-            if position != 0 {
-                let provider = self.providers.remove(position);
-                self.providers.insert(0, provider);
-            }
-        }
-        // Antigravity、Codex 紧随其后(同样是内置 CLI 中转),顺序固定。
-        let mut target = usize::from(
-            self.providers
-                .first()
-                .is_some_and(ProviderConfig::is_claude_code),
-        );
-        for predicate in [ProviderConfig::is_antigravity, ProviderConfig::is_codex] {
-            if let Some(position) = self.providers.iter().position(predicate) {
-                if position != target && target < self.providers.len() {
-                    let provider = self.providers.remove(position);
-                    self.providers.insert(target, provider);
-                }
-                target += 1;
-            }
-        }
+        sort_builtin_cli_providers_to_front(&mut self.providers);
         if self.active_provider == "opencodezen" {
             self.active_provider = OPENCODE_PROVIDER_ID.to_string();
         }
@@ -527,4 +502,36 @@ impl AppConfig {
         }
         Ok(())
     }
+}
+
+/// 内置 CLI 中转供应商恒在列表最前,彼此按显示名的字母序(用户 09-20 拍板:
+/// Antigravity → Claude Code → CodeBuddy → Codex)。
+///
+/// 原来是硬编码的「Claude Code 置顶,Antigravity、Codex 紧随」——每加一条 CLI
+/// 线就要改一次,而且新来的那条在**存量配置**里会被 `normalize_builtin_providers`
+/// 追加到列表末尾(用户截图:CodeBuddy 掉在最后一行)。改成规则之后,加线零改动。
+///
+/// 其余供应商之间的相对次序一个不动:那是用户自己排的。
+pub(crate) fn sort_builtin_cli_providers_to_front(providers: &mut Vec<ProviderConfig>) {
+    let mut cli: Vec<ProviderConfig> = Vec::new();
+    let mut rest: Vec<ProviderConfig> = Vec::new();
+    for provider in providers.drain(..) {
+        if provider.is_builtin_cli_provider() {
+            cli.push(provider);
+        } else {
+            rest.push(provider);
+        }
+    }
+    // 按显示名排,大小写不敏感;显示名空了退回 id,免得排序键是空串。
+    cli.sort_by_key(|provider| {
+        let name = provider.display_name.trim();
+        let key = if name.is_empty() {
+            provider.id.trim()
+        } else {
+            name
+        };
+        key.to_lowercase()
+    });
+    providers.extend(cli);
+    providers.extend(rest);
 }

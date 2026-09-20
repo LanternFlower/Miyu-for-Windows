@@ -377,6 +377,7 @@ fn mixed_client_keeps_variants_per_provider_and_model() {
         claude_code: None,
         antigravity: None,
         codex: None,
+        codebuddy: None,
         claude_code_dev_mode: false,
         zen_session: None,
         continuation_health: ResponsesContinuationHealth::detached(),

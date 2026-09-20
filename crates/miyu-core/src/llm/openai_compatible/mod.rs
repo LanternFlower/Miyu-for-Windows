@@ -5,6 +5,7 @@ mod chat;
 mod chat_consume;
 mod claude_code;
 mod cli_relay;
+mod codebuddy;
 mod codex;
 mod dsml;
 mod endpoints;
@@ -27,6 +28,7 @@ pub use antigravity::BRIDGE_DUPLICATE_TOOLS as ANTIGRAVITY_BRIDGE_DUPLICATE_TOOL
 use claude_code::ClaudeCodeRuntime;
 pub use claude_code::BRIDGE_DUPLICATE_TOOLS as CLAUDE_CODE_BRIDGE_DUPLICATE_TOOLS;
 pub use cli_relay::forget_relay_sessions;
+use codebuddy::CodeBuddyRuntime;
 use codex::CodexRuntime;
 pub use codex::BRIDGE_DUPLICATE_TOOLS as CODEX_BRIDGE_DUPLICATE_TOOLS;
 use dsml::*;
@@ -113,6 +115,7 @@ pub struct OpenAiCompatibleClient {
     antigravity: Option<Arc<AntigravityRuntime>>,
     /// codex 协议的运行时参数;端点池里没有该协议的端点时为 None。
     codex: Option<Arc<CodexRuntime>>,
+    codebuddy: Option<Arc<CodeBuddyRuntime>>,
     /// 本会话是否 dev 模式(Agent 构造时置位),claude-code 的双四档工具
     /// 作用域(native_tools/miyu_tools)按它判定。
     claude_code_dev_mode: bool,

@@ -31,6 +31,8 @@ pub fn builtin_cli_binary(config: &AppConfig, provider: &ProviderConfig) -> Opti
         Some(pick(&config.plugins.antigravity.binary, "agy"))
     } else if provider.is_codex() {
         Some(pick(&config.plugins.codex.binary, "codex"))
+    } else if provider.is_codebuddy() {
+        Some(pick(&config.plugins.codebuddy.binary, "codebuddy"))
     } else {
         None
     }
@@ -70,9 +72,49 @@ fn live_catalog(provider: &ProviderConfig, binary: &str) -> Result<Vec<String>> 
     } else if provider.is_codex() {
         let stdout = run_with_timeout(binary, &["debug", "models"], CLI_LIST_TIMEOUT)?;
         parse_codex_models(&stdout)
+    } else if provider.is_codebuddy() {
+        let stdout = run_with_timeout(binary, &["-h"], CLI_LIST_TIMEOUT)?;
+        Ok(parse_codebuddy_models(&stdout))
     } else {
         bail!("this CLI has no model listing command")
     }
+}
+
+/// CodeBuddy 没有列模型的子命令,清单写在 `codebuddy -h` 的 `--model` 描述里:
+///
+/// ```text
+///   --model <model>    Model for the current session. Please provide the
+///                      model ID. Currently supported: (hy4-preview-f, hy3,
+///                      …, deepseek-v4-pro)
+/// ```
+///
+/// 那一段**按终端宽度换行**(没有 TTY 时 commander 折到 80 列),所以不能逐行
+/// 匹配:先把整篇的空白折成单空格把续行接回去,再取 `supported:` 后面第一个
+/// 括号组。解析不出来就返回空,调用方按「CLI 没列出模型」处理,退回预置表。
+pub(crate) fn parse_codebuddy_models(stdout: &str) -> Vec<String> {
+    let flat = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+    let Some(rest) = flat.split_once("supported:").map(|(_, rest)| rest) else {
+        return Vec::new();
+    };
+    let Some(open) = rest.find('(') else {
+        return Vec::new();
+    };
+    let Some(close) = rest[open..].find(')') else {
+        return Vec::new();
+    };
+    rest[open + 1..open + close]
+        .split(',')
+        .map(str::trim)
+        .filter(|name| {
+            // 只收像模型 id 的:CodeBuddy 的清单里都是 [a-z0-9.-]。混进说明
+            // 文字(它哪天改了措辞)时宁可漏也不要把整句话当成模型名。
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '.' | '_' | ':'))
+        })
+        .map(str::to_string)
+        .collect()
 }
 
 /// `agy models`:每行 `slug<TAB>显示名`;首行 "Fetching available models..."
@@ -147,6 +189,45 @@ fn run_with_timeout(binary: &str, args: &[&str], timeout: Duration) -> Result<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `codebuddy -h` 的 `--model` 描述按终端宽度换行,续行必须先接回去。
+    /// 这段原文是 09-20 从 codebuddy 2.52.3 抓的(无 TTY,折到 80 列)。
+    #[test]
+    fn codebuddy_help_yields_the_model_ids_across_wrapped_lines() {
+        let out = "\
+Options:
+  --model <model>                     Model for the current session. Please
+                                      provide the model ID. Currently
+                                      supported: (hy4-preview-f, hy3, hy3-x,
+                                      deepseek-v4.1-flash, glm-5.3,
+                                      glm-5.3-flash, glm-5v-turbo, minimax-m3,
+                                      kimi-k2.8-preview, deepseek-v4-pro)
+  --text-to-image-model <model>       Model for text-to-image generation
+";
+        assert_eq!(
+            parse_codebuddy_models(out),
+            vec![
+                "hy4-preview-f",
+                "hy3",
+                "hy3-x",
+                "deepseek-v4.1-flash",
+                "glm-5.3",
+                "glm-5.3-flash",
+                "glm-5v-turbo",
+                "minimax-m3",
+                "kimi-k2.8-preview",
+                "deepseek-v4-pro",
+            ]
+        );
+    }
+
+    /// 它哪天改了措辞就解析不出来——这时要给空,让调用方退回预置表,
+    /// 而不是把一整句说明当成模型名。
+    #[test]
+    fn codebuddy_help_without_the_marker_yields_nothing() {
+        assert!(parse_codebuddy_models("Options:\n  --model <model>  pick one\n").is_empty());
+        assert!(parse_codebuddy_models("supported: none listed").is_empty());
+    }
 
     #[test]
     fn agy_listing_skips_the_banner_and_keeps_slugs() {

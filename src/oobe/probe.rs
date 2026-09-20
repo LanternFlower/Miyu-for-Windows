@@ -201,7 +201,7 @@ impl Loader {
                 ("输入法", "fcitx5 · 编辑态托管".into(), true)
             }
             Step::Channels => {
-                let clis: Vec<(&'static str, bool)> = ["claude", "codex", "agy"]
+                let clis: Vec<(&'static str, bool)> = ["claude", "codex", "agy", "codebuddy"]
                     .into_iter()
                     .map(|name| (name, which(name)))
                     .collect();

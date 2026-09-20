@@ -38,6 +38,8 @@ pub struct PluginsConfig {
     pub antigravity: AntigravityPluginConfig,
     #[serde(default)]
     pub codex: CodexPluginConfig,
+    #[serde(default)]
+    pub codebuddy: CodeBuddyPluginConfig,
 }
 
 /// 本机 Claude Code CLI 接入:`claude-code` 供应商协议的运行参数。CLI 用
@@ -176,6 +178,49 @@ impl Default for CodexPluginConfig {
             sandbox_mode: default_codex_sandbox_mode(),
             ignore_user_config: true,
             idle_timeout_seconds: default_codex_idle_timeout_seconds(),
+        }
+    }
+}
+
+/// 本机 CodeBuddy CLI(`codebuddy` / `cbc`)接入:`codebuddy` 供应商协议的运行
+/// 参数。CLI 用用户既有的腾讯登录态(`apiKeySource: copilot.tencent.com`),
+/// Miyu 不经手任何凭据。
+///
+/// CodeBuddy 是 Claude Code 的分叉:09-20 实测 stream-json 事件逐字段一致
+/// (`system/init` → `stream_event`/`content_block_delta`/`thinking_delta` →
+/// `result`),`--system-prompt` / `--tools ""` / `--strict-mcp-config` /
+/// `--input-format stream-json` 全都认,所以事件解析整条复用 claude-code 的。
+/// 差别只有两个 flag:它**没有** `--effort`(思考档)也**没有**
+/// `--no-session-persistence`(一次性会话),拼参数时跳过。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeBuddyPluginConfig {
+    /// 空 = 从 PATH 解析 `codebuddy`。
+    #[serde(default)]
+    pub binary: String,
+    /// 原生工具开启时的 --permission-mode。同 claude-code:无头模式没有交互
+    /// 审批,默认 bypassPermissions 让 Bash 可用。
+    #[serde(default = "default_codebuddy_permission_mode")]
+    pub permission_mode: String,
+    /// 哪些模式的会话让 codebuddy 用自带原生工具(Bash/Edit/Read…):
+    /// off/dev/normal/all,默认 all。
+    #[serde(default = "default_codebuddy_native_tools")]
+    pub native_tools: String,
+    /// 哪些模式的会话把 Miyu 工具经 MCP 桥挂给 codebuddy:off/dev/normal/all。
+    #[serde(default = "default_codebuddy_miyu_tools")]
+    pub miyu_tools: String,
+    /// 流空闲看门狗(秒)。
+    #[serde(default = "default_codebuddy_idle_timeout_seconds")]
+    pub idle_timeout_seconds: u64,
+}
+
+impl Default for CodeBuddyPluginConfig {
+    fn default() -> Self {
+        Self {
+            binary: String::new(),
+            permission_mode: default_codebuddy_permission_mode(),
+            native_tools: default_codebuddy_native_tools(),
+            miyu_tools: default_codebuddy_miyu_tools(),
+            idle_timeout_seconds: default_codebuddy_idle_timeout_seconds(),
         }
     }
 }
@@ -527,6 +572,7 @@ impl Default for PluginsConfig {
             claude_code: ClaudeCodePluginConfig::default(),
             antigravity: AntigravityPluginConfig::default(),
             codex: CodexPluginConfig::default(),
+            codebuddy: CodeBuddyPluginConfig::default(),
         }
     }
 }

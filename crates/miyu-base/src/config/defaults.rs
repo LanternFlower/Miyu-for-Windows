@@ -472,6 +472,22 @@ pub(crate) fn default_codex_idle_timeout_seconds() -> u64 {
     300
 }
 
+pub(crate) fn default_codebuddy_permission_mode() -> String {
+    "bypassPermissions".to_string()
+}
+
+pub(crate) fn default_codebuddy_native_tools() -> String {
+    "all".to_string()
+}
+
+pub(crate) fn default_codebuddy_miyu_tools() -> String {
+    "all".to_string()
+}
+
+pub(crate) fn default_codebuddy_idle_timeout_seconds() -> u64 {
+    300
+}
+
 /// 终端集成会话默认跑普通模式。
 pub(crate) fn default_terminal_session_mode() -> String {
     "normal".to_string()

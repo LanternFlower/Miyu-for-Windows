@@ -26,6 +26,11 @@ pub(in crate::llm::openai_compatible) enum ProviderProtocol {
     Antigravity,
     /// 本机 OpenAI Codex CLI 中转:`codex exec --json` 的 JSONL。
     Codex,
+    /// 本机 CodeBuddy CLI(`codebuddy`)中转。它是 Claude Code 的分叉,
+    /// stream-json 事件逐字段一致(09-20 实测),所以事件解析复用
+    /// `claude_code::stream`;独立成一档是因为二进制、配置块、模型清单、
+    /// 以及「没有 --effort / --no-session-persistence」这两处都不一样。
+    CodeBuddy,
 }
 
 impl ProviderProtocol {
@@ -42,6 +47,7 @@ impl ProviderProtocol {
             "claude-code" | "claude-code-cli" => Ok(Self::ClaudeCode),
             "antigravity" | "antigravity-cli" | "agy" => Ok(Self::Antigravity),
             "codex" | "codex-cli" => Ok(Self::Codex),
+            "codebuddy" | "codebuddy-cli" | "cbc" => Ok(Self::CodeBuddy),
             protocol => bail!("unsupported provider protocol: {protocol}"),
         }
     }
@@ -68,6 +74,16 @@ pub(in crate::llm::openai_compatible) fn provider_uses_antigravity(
     )
 }
 
+/// 该 provider 是否走 CodeBuddy CLI 中转。
+pub(in crate::llm::openai_compatible) fn provider_uses_codebuddy(
+    provider: &ProviderConfig,
+) -> bool {
+    matches!(
+        ProviderProtocol::from_provider(provider),
+        Ok(ProviderProtocol::CodeBuddy)
+    )
+}
+
 /// 该 provider 是否走 Codex CLI 中转。
 pub(in crate::llm::openai_compatible) fn provider_uses_codex(provider: &ProviderConfig) -> bool {
     matches!(
@@ -83,6 +99,7 @@ pub(in crate::llm::openai_compatible) fn provider_uses_cli_relay(
     provider_uses_claude_code(provider)
         || provider_uses_antigravity(provider)
         || provider_uses_codex(provider)
+        || provider_uses_codebuddy(provider)
 }
 
 /// Codex 的思考档:config 的 `model_reasoning_effort` 五档,所有模型通用。
@@ -230,6 +247,9 @@ pub(in crate::llm::openai_compatible) fn reasoning_variant_supported_for_protoco
         ProviderProtocol::ClaudeCode | ProviderProtocol::Antigravity | ProviderProtocol::Codex => {
             matches!(variant.setting, ReasoningSetting::Effort(_))
         }
+        // CodeBuddy 的 CLI 没有 `--effort`（09-20 对着 `codebuddy -h` 核过），
+        // 思考档没有可落地的开关，一律不支持。
+        ProviderProtocol::CodeBuddy => false,
         ProviderProtocol::OpenAiResponses => matches!(
             variant.setting,
             ReasoningSetting::Effort(_) | ReasoningSetting::Toggle(_) | ReasoningSetting::Disabled

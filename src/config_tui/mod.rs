@@ -1,5 +1,6 @@
 mod antigravity_form;
 mod claude_code_form;
+mod codebuddy_form;
 mod codex_form;
 mod personas;
 mod platforms;
@@ -16,6 +17,7 @@ mod voice;
 mod widgets;
 use antigravity_form::*;
 use claude_code_form::*;
+use codebuddy_form::edit_codebuddy_provider_form;
 use codex_form::*;
 use personas::*;
 use platforms::*;
@@ -728,6 +730,12 @@ impl<'a> ProviderBrowser<'a> {
                         )?
                     } else if provider.is_codex() {
                         edit_codex_provider_form(stdout, provider, &mut self.config.plugins.codex)?
+                    } else if provider.is_codebuddy() {
+                        edit_codebuddy_provider_form(
+                            stdout,
+                            provider,
+                            &mut self.config.plugins.codebuddy,
+                        )?
                     } else {
                         edit_provider_form(stdout, provider)?
                     };
