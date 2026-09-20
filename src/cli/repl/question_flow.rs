@@ -23,7 +23,22 @@ pub(in crate::cli) async fn handle_question_requested(
     renderer: &mut render::StreamRenderer,
     data: &serde_json::Value,
     run_id: &str,
+    // 在 herdr 里跑时这一轮的守卫。她反问 = 「卡住等人」，侧栏把整条 tab /
+    // workspace 标红；答完报回 `working`。两条泵都要，所以放在这里而不是各自
+    // 的分发表里（09-20：one_shot 那边只报了 blocked 没报 resumed，wake 那边
+    // 两个都没报）。
+    herdr_turn: Option<&crate::cli::repl::herdr::TurnGuard>,
 ) -> Result<()> {
+    // 报回 `working` 走 RAII：这个函数有好几条出口（答完、关掉、取消、各种
+    // `?`），只在成功路径上报的话，答完侧栏还一直红着——herdr 那一项就是这么
+    // 栽的（九条出口只报了一条）。
+    let _resume_on_exit = HerdrBlocked::begin(
+        herdr_turn,
+        data.get("questions")
+            .and_then(|questions| questions.get(0))
+            .and_then(|question| question.get("question"))
+            .and_then(serde_json::Value::as_str),
+    );
     // 只让屏、不切线：这一步得等答案到手才补得进去。
     renderer.prepare_for_panel()?;
     if let Some(live) = live.as_deref_mut() {
@@ -117,4 +132,27 @@ pub(in crate::cli) async fn handle_question_requested(
         live.resume_at(live.output_cursor)?;
     }
     Ok(())
+}
+
+/// 「她在等你回话」的 herdr 状态，作用域结束（不管怎么结束）就报回 `working`。
+struct HerdrBlocked<'a>(Option<&'a crate::cli::repl::herdr::TurnGuard>);
+
+impl<'a> HerdrBlocked<'a> {
+    fn begin(
+        guard: Option<&'a crate::cli::repl::herdr::TurnGuard>,
+        question: Option<&str>,
+    ) -> Self {
+        if let Some(guard) = guard {
+            guard.blocked(question);
+        }
+        Self(guard)
+    }
+}
+
+impl Drop for HerdrBlocked<'_> {
+    fn drop(&mut self) {
+        if let Some(guard) = self.0 {
+            guard.resumed();
+        }
+    }
 }

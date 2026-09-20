@@ -721,13 +721,8 @@ pub(in crate::cli) async fn try_run_remote_chat(
             }
             "question.requested" => {
                 // 她反问了：herdr 侧栏把整条 tab / workspace 标红，人在别的
-                // pane 干活时余光就知道「这儿在等我回话」。
-                herdr_turn.blocked(
-                    data.get("questions")
-                        .and_then(|questions| questions.get(0))
-                        .and_then(|question| question.get("question"))
-                        .and_then(serde_json::Value::as_str),
-                );
+                // pane 干活时余光就知道「这儿在等我回话」；答完报回 working。
+                // 两件事都在 `question_flow` 里做（那边有 RAII 兜住所有出口）。
                 crate::cli::repl::question_flow::handle_question_requested(
                     paths,
                     &config,
@@ -735,6 +730,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                     &mut renderer,
                     &data,
                     &run_id,
+                    Some(&herdr_turn),
                 )
                 .await?;
             }

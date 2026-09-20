@@ -26,6 +26,7 @@ agent 留的官方接口 `herdr pane report-agent`。
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -115,8 +116,12 @@ def arg_of(argv, flag):
     return argv[argv.index(flag) + 1] if flag in argv else None
 
 
-def run_repl(tui, herdr_env, prompt, seconds=25):
-    """起一个 REPL，发一句，等它说完，然后退出。"""
+def run_repl(tui, herdr_env, prompt, seconds=25, answer_after=None, capture=None):
+    """起一个 REPL，发一句，等它说完，然后退出。
+
+    `answer_after` = 过这么多秒之后按一下回车。她反问时提问面板是盖上去的，
+    回车 = 选中第一个选项并回答，这一轮接着往下跑。
+    """
     import pty
     import fcntl
     import struct
@@ -133,21 +138,31 @@ def run_repl(tui, herdr_env, prompt, seconds=25):
     os.close(slave)
     alive = [True]
 
+    sink = bytearray()
+
     def pump():
         while alive[0]:
             ready, _, _ = select.select([master], [], [], 0.1)
             if not ready:
                 continue
             try:
-                if not os.read(master, 65536):
+                chunk = os.read(master, 65536)
+                if not chunk:
                     return
+                if capture is not None:
+                    sink.extend(chunk)
             except OSError:
                 return
 
     threading.Thread(target=pump, daemon=True).start()
     time.sleep(3.0)
     os.write(master, f"{prompt}\r".encode())
-    time.sleep(seconds)
+    if answer_after is not None:
+        time.sleep(answer_after)
+        os.write(master, b"\r")
+        time.sleep(max(seconds - answer_after, 0))
+    else:
+        time.sleep(seconds)
     # 空输入时 **Ctrl+D** 是退出（`LiveEditorAction::Exit`，走正常收尾路径）。
     # Ctrl+C 不行：它是「中断」，而且两下也没让这个 REPL 退出。
     os.write(master, b"\x04")
@@ -156,12 +171,63 @@ def run_repl(tui, herdr_env, prompt, seconds=25):
     if exited is None:
         print("    [探针] Ctrl+D 之后还没退出", flush=True)
     alive[0] = False
+    if capture is not None:
+        (OUT / capture).write_bytes(bytes(sink))
     if process.poll() is None:
         process.terminate()
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
+
+
+def require_free_port(port, who):
+    """这个端口上不能已经有人在听，否则这一跑测的是别人的进程。"""
+    with socket.socket() as probe:
+        if probe.connect_ex(("127.0.0.1", port)) == 0:
+            raise RuntimeError(
+                f"{who}的端口 {port} 上已经有别的进程在听。"
+                f"先清掉它（`ss -ltnp | grep {port}` 找 pid），或者给这一跑"
+                f"换一套端口（PORT= / STUB_PORT=）。"
+            )
+
+
+def restart_stub_with_ask(stub):
+    """把桩换成**会提问**的那一只，并当场验证它真的会提问。
+
+    第一版只 `terminate()` 就接着起新的：旧桩没死透、端口还占着，新桩起不来，
+    `wait_http` 探到的还是旧桩——于是那一场根本没提问，走查却把「没报 blocked」
+    当成产品的错（09-20 白查一轮）。杀干净、等端口真的空、起新的、再发一条
+    请求确认回的是 `ask_question`：无声失败变成当场报错。
+    """
+    stub.kill()
+    stub.wait(timeout=10)
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{STUB_PORT}/v1/models", timeout=1)
+        except Exception:
+            break
+        time.sleep(0.3)
+    else:
+        raise RuntimeError("旧桩没退干净，端口还在应答")
+    fresh = subprocess.Popen(
+        [sys.executable, str(SMOKE / "stub_llm.py")],
+        env=dict(os.environ, STUB_PORT=str(STUB_PORT), STUB_REPLY="好了", STUB_ASK="1"),
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    wait_http(f"http://127.0.0.1:{STUB_PORT}/v1/models")
+    probe = urllib.request.Request(
+        f"http://127.0.0.1:{STUB_PORT}/v1/chat/completions",
+        data=json.dumps(
+            {"model": "stub", "stream": True, "messages": [{"role": "user", "content": "hi"}]}
+        ).encode(),
+        headers={"content-type": "application/json"},
+    )
+    with urllib.request.urlopen(probe, timeout=10) as response:
+        if b"ask_question" not in response.read():
+            raise RuntimeError("换上来的桩不会提问，这一场测不出东西")
+    return fresh
 
 
 def main():
@@ -184,6 +250,13 @@ def main():
         tui.ENV.pop(stale, None)
     tui.write_config()
 
+    # 端口上先来后到：已经有人在应答就**当场报错**，别默默借用别人的桩。
+    #
+    # 09-20 实测：一只 36000 秒前遗留的老桩一直占着这个端口，走查自己起的桩
+    # 根本没绑上，所有请求都打给了它——它的环境变量是上一轮的，于是「换成会
+    # 提问的桩」那一场怎么都提不了问，红的却记在产品头上。
+    require_free_port(STUB_PORT, "桩模型")
+    require_free_port(PORT, "沙箱 daemon")
     stub = subprocess.Popen(
         [sys.executable, str(SMOKE / "stub_llm.py")],
         env=dict(os.environ, STUB_PORT=str(STUB_PORT), STUB_REPLY="好了"),
@@ -305,6 +378,43 @@ def main():
         report["重开之后的上报没被当成过期丢掉"] = not any(
             c.get("stale") for c in every
         )
+
+        # ── 四点五、她反问时报 blocked，答完报回 working ──
+        #
+        # 09-20 真机漏的就是后半截：`TurnGuard::resumed()` 写了一次都没调，
+        # 答完之后 herdr 侧栏一直红着「在等你回话」，其实她早就接着干活了
+        # （编译器的 `never used` 警告先看出来的，走查当时没覆盖这一段）。
+        # 桩模型换成会提问的那一只：`STUB_ASK` 是进程启动时读的，得重起。
+        LOG.unlink(missing_ok=True)
+        stub = restart_stub_with_ask(stub)
+        run_repl(
+            tui,
+            {
+                "HERDR_ENV": "1",
+                "HERDR_PANE_ID": PANE_ID,
+                "HERDR_BIN_PATH": str(fake),
+            },
+            "问我一个问题",
+            seconds=40,
+            answer_after=20,
+            capture="ask-round.bin",
+        )
+        (OUT / "ask-round-calls.json").write_text(
+            json.dumps([c["argv"] for c in calls(True)], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        ask_states = [
+            arg_of(c["argv"], "--state")
+            for c in calls()
+            if c["argv"][:2] == ["pane", "report-agent"]
+        ]
+        report["_反问那轮的序列"] = ask_states
+        report["她反问时报 blocked"] = "blocked" in ask_states
+        report["答完报回 working（不是一直红着）"] = (
+            "blocked" in ask_states
+            and "working" in ask_states[ask_states.index("blocked") + 1 :]
+        )
+        report["反问那轮最后也回到 idle"] = bool(ask_states) and ask_states[-1] == "idle"
 
         # ── 五、一次性 / shellhook：收尾要把 pane 还回去，且不许改终端标题 ──
         #
