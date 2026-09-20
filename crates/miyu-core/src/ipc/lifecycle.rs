@@ -511,6 +511,11 @@ pub(crate) fn start_daemon_process(
         .context("resolving the Miyu executable to spawn the daemon")?;
     let mut command = std::process::Command::new(executable);
     command.arg("__daemon");
+    // 这是「故意要活过启动者」的那一种 daemon：下面 setsid 已经把它挪出本会话，
+    // 终端关了也该继续跑。带上标记，daemon 入口看到就不把命捆在我们身上
+    // （见 `miyu_base::orphan_guard`）。测具直接 spawn `__daemon` 的那 66 处
+    // 没有这个标记，于是谁起的谁死它就跟着走，不再攒孤儿（用户 09-20）。
+    command.env(miyu_base::orphan_guard::DETACHED_ENV, "1");
     append_daemon_process_args(&mut command, launch);
     command
         .stdin(Stdio::null())

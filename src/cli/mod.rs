@@ -275,6 +275,9 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
     match cli.command {
         Some(Command::AlarmWorker(args)) => run_alarm_worker(args),
         Some(Command::DaemonWorker(args)) => {
+            // 谁起的谁死就跟着死（真 daemon 除外，它带着 detached 标记）。
+            // 放在最前面：越早捆上，能漏掉的窗口越小。
+            miyu_base::orphan_guard::tie_lifetime_to_launcher();
             let _logging_guard = miyu_base::logging::init(&paths, cli.debug).ok();
             // daemon 的 stdout/stderr 被重定向进 daemon.log，而 tracing 写的是
             // 另一个按天滚动的文件。出了事翻错文件是常态——排查一次长回复不转

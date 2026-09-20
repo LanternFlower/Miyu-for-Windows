@@ -17,6 +17,7 @@ pub mod media_mime;
 pub mod memory_types;
 pub mod models_cache;
 pub mod notify;
+pub mod orphan_guard;
 pub mod paths;
 pub mod platform_types;
 pub mod process;
