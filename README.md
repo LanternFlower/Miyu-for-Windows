@@ -14,7 +14,7 @@ Miyu 是从我曾经很喜欢的动画中的角色身上汲取灵感制作的虚
 
 ## 有什么功能？
 
-`miyu` 由大模型驱动，默认接入了 [opencode](https://github.com/anomalyco/opencode) 的公共模型服务，你也可以配置自己的大模型服务。
+`miyu` 由大模型驱动，默认接入了 [opencodezen](https://github.com/anomalyco/opencode) 的免费模型，你也可以配置自己的大模型 API，或者使用 Claudecode、Codex 之类的软件作为供应商后端。
 
 `miyu` 拥有两个模式
 
@@ -28,25 +28,25 @@ Miyu 是从我曾经很喜欢的动画中的角色身上汲取灵感制作的虚
 
 `miyu` 可以与 `fish`、`zsh`、`bash` 集成，终端打字直接无缝对话！
 
-![](./pics/shell-init.png)
+![](./pics/fish集成.png)
 
-有终端交互模式
+有 TUI 对话模式：
 
-![](./pics/REPL.png)
+![](./pics/maintui.png)
 
-自带了 TUI 方便修改配置。
+自带了配置 TUI 方便修改配置：
 
 ```
 miyu config
 ```
 
-![](./pics/tui.png)
+![](./pics/configtui.png)
 
-还有 WebUI 
+还有 WebUI ：
 
 ![](./pics/webui.png)
 
-还可以接入 QQ，远程操作电脑；亦或是加入群聊，陪网友吹水，帮助你管理群聊。
+还可以接入 QQ，远程操作电脑；亦或是加入群聊，陪网友吹水，帮助你管理群聊：
 
 ![](./pics/qq私聊.png)
 
@@ -80,15 +80,15 @@ miyu config
 
 安装完成后可以运行 `miyu init` 初始化配置和状态文件；也可以直接运行 `miyu daemon start`，首次启动会自动初始化。查看完整帮助信息可以运行 `miyu -h`。
 
-## 三种触发
+## 多种触发
 
 > 与 `miyu` 运行最适配的是 `kitty`终端
 
-- REPL TUI
+- TUI
 
   裸 `miyu` 进入普通模式的 REPL； `miyu dev` 进入开发预设的 REPL。
 
-- webui 局域网网页
+- WebUI
 
   ```
   miyu web
@@ -145,6 +145,8 @@ miyu import miyu-export-*.tar.gz
 
 <details><summary>[展开/收起] 具体介绍</summary>
 <br>
+
+>此处的演示图片是旧版的 REPL 和工具输出日志，新版已经大不同了
 
 - 表情包
   
