@@ -47,6 +47,12 @@
 
 ## 修复
 
+- **macOS 上四处修复**（Linux 侧行为一字未变）：
+  - **fish 集成以前装了等于没装**。hook 被写到 `~/Library/Application Support/fish/conf.d/`，而 fish 只读 `~/.config/fish`（或 `$XDG_CONFIG_HOME`），所以 `miyu fish-init` 跑完毫无反应也不报错。现在按 fish 自己的规矩放。
+  - **剪贴板读写**补上 `pbpaste` / `pbcopy`（内置的 `read_clipboard` 脚本早就分好平台了，Rust 这边一直没跟上，同一台机器上脚本读得到、Miyu 自己读不到）。只做纯文本，图片仍按「这台机器没有剪贴板后端」处理。
+  - **认不出当前 shell 时退回 `$SHELL`**。原来只看 `/proc`，macOS 没有这个目录，装完 hook 那句「当前 shell 要不要重载一下」的判断彻底失效。
+  - **删除守卫补上 macOS 的系统目录**（`/System`、`/Library`、`/Applications`、`/Users`、`/Volumes`），以前那张危险目录表只有 Linux 那一套。
+
 - **思考内容那扇滚动小窗左边的竖线不再被滚走**。窗里的字往上滚时，那根线会跟着一起滚上去，窗口顶上空一截。
 
 - **全屏 TUI 里点链接在 macOS 上一直没反应**。打开链接写死了 `xdg-open`，那是 Linux 桌面的命令，macOS 上根本没有。现在按平台取（macOS 用 `open`）。顺带：`file://` 开头的链接以前也点不开，只认 http/https。
