@@ -447,7 +447,7 @@
       reasoning: "summary",
       tool_calls: "summary",
       readable_tool_names: true,
-      command_output_lines: 10,
+      command_output_lines: 8,
       thinking_scroll_lines: 10,
       mixed_model_endpoint_display: "interactive",
       show_mixed_model_endpoint: false
@@ -838,6 +838,27 @@
     };
     const first = center(nodes[0]);
     let last = center(nodes[nodes.length - 1]);
+    // 末尾那一步要是带着命令行（命令签的抬头底下那几行），线得跟到它们下面。
+    // 只算到最后一个**节点圆心**的话，末尾那段命令旁边就是空的——后面再跟一个
+    // 工具时才"看起来有线"，那根其实是下一段的连线（用户 09-20）。
+    // 只在这条时间线**展开着**（或正在开合）时才延伸——收起态的线必须收到 0，
+    // 而那几行命令这时还在布局里、只是被裁掉了，不判一下就会把线又拉出来
+    // （`rail_sized` / `fold_synced` 两条回归就是这么挂的）。
+    const lastStep =
+      line.classList.contains("is-open") || proc.folding
+        ? [...proc.steps.children].reverse().find((step) => {
+            const node = step.querySelector(PROC_NODE_SELECTOR);
+            return node && node.offsetParent;
+          })
+        : null;
+    const trailing = lastStep
+      ? [...lastStep.querySelectorAll(":scope > .tool-command-preview, :scope > .tool-command-more")]
+          .filter((el) => !el.hidden && el.getBoundingClientRect().height > 0)
+      : [];
+    for (const el of trailing) {
+      const rect = el.getBoundingClientRect();
+      last = Math.max(last, (rect.bottom - box.top) / zoom);
+    }
     // 开合动画进行中:内层在被裁剪,线的终点不能超过当前可见底边,否则内容收完了线还拖在外面
     const clip = proc.steps.parentElement.getBoundingClientRect();
     last = Math.min(last, (clip.bottom - box.top) / zoom);
@@ -6411,7 +6432,10 @@
       ls.textContent = `${Math.max(0, Math.floor((performance.now() - start) / 1000))}s`;
     }
     // 前台子代理行的读秒(09-12 #6):跑着时逐秒走,卡片进入成功/失败即定格。
-    for (const el of document.querySelectorAll(".tool-card.is-task .tool-task-seconds[data-task-start]")) {
+    for (const el of document.querySelectorAll(
+      ".tool-card.is-task .tool-task-seconds[data-task-start]," +
+        " .tool-card.is-command .tool-command-seconds[data-task-start]"
+    )) {
       const start = Number(el.dataset.taskStart);
       if (!Number.isFinite(start)) continue;
       const card = el.closest(".tool-card");
@@ -8031,12 +8055,142 @@
     return rest || s;
   }
 
+  function commandPreviewBudget() {
+    return Math.max(0, Number(state.display?.command_output_lines ?? 8) || 0);
+  }
+
+  /** 命令抬头底下露几行命令本身，跟 `display.command_output_lines`（默认 8）。
+   *
+   * 这个数是**屏幕上占几行**，不是「命令有几行」：一条很长的单行命令会软换行
+   * 把这几行空间用满（用户 09-20），而不是截成一行加省略号。取源码时按逻辑行
+   * 切到同样的数就够了——每条逻辑行至少占一行，多切也填不进去。
+   *
+   * 留头不留尾：超出的在**底部**换成一个 `⋮`。前几行才说明这条命令在干什么，
+   * 尾巴通常是重定向和管道。0 = 一行都不露。
+   */
+  function commandPreviewRows(text) {
+    const max = commandPreviewBudget();
+    const lines = String(text || "").replace(/\s+$/, "").split("\n");
+    if (max === 0 || (lines.length === 1 && !lines[0])) return { lines: [], omitted: false };
+    if (lines.length <= max) return { lines, omitted: false };
+    return { lines: lines.slice(0, max), omitted: true };
+  }
+
+  /** 裁到 `max` 个**可见**行；裁着了就让出最后一行给 `⋮`。
+   *
+   * 只能量出来，算不出来——软换行占几行取决于卡片当时多宽。宽度变了要重量，
+   * 所以下面挂了 ResizeObserver；只在**宽度**真的变了才重跑，不然改高度这件事
+   * 自己会把观察器再触发一遍，绕不出来。
+   */
+  function clipCommandPreview(tool) {
+    const host = tool.commandPreview;
+    if (!host || host.hidden) return;
+    const max = commandPreviewBudget();
+    if (max <= 0) return;
+    host.style.setProperty("--command-rows", String(max));
+    const clipped = host.scrollHeight > host.clientHeight + 1;
+    const more = clipped || tool.commandOmitted;
+    if (more && max > 1) host.style.setProperty("--command-rows", String(max - 1));
+    if (tool.commandMore) tool.commandMore.hidden = !more;
+    // 行数一定，连线的终点跟着变（末尾那一步的线要盖到命令行底下）。
+    railSnapFit(host);
+  }
+
+  function watchCommandPreviewWidth(tool) {
+    if (tool.commandWidthWatcher || !tool.commandPreview || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    let lastWidth = -1;
+    tool.commandWidthWatcher = new ResizeObserver((entries) => {
+      const width = Math.round(entries[0]?.contentRect?.width ?? 0);
+      if (width === lastWidth) return;
+      lastWidth = width;
+      clipCommandPreview(tool);
+    });
+    tool.commandWidthWatcher.observe(tool.commandPreview);
+  }
+
+  /** 造出「命令那几行 + ⋮」这一对，并把点击/裁剪都接好。
+   *
+   * 实时那条路（`createTool`）和刷新重建那条路（`createPersistedToolCard`）**都要
+   * 用它**。以前只改了实时那条，于是一刷新命令签就退回老样子：命令挤回抬头当窥视、
+   * 底下没有命令行（用户 09-20）。
+   */
+  function buildCommandRows(commandText, head) {
+    const preview = document.createElement("div");
+    preview.className = "tool-command-preview";
+    preview.setAttribute("aria-label", "命令");
+    const more = document.createElement("span");
+    more.className = "tool-command-more";
+    more.textContent = "⋮";
+    more.title = "还有，点开看完整命令";
+    more.hidden = true;
+    // 命令那几行在 `.tool-head`（button）**外面**，不接就只有抬头那一条窄缝可点，
+    // 而视线正落在命令上。拖着选文字不算点：有选区就放过，否则复制命令会顺手把
+    // 卡片折起来。
+    const expandOnClick = (event) => {
+      if (String(window.getSelection?.() || "").length) return;
+      event.preventDefault();
+      head.click();
+    };
+    for (const node of [preview, more]) {
+      node.addEventListener("click", expandOnClick);
+    }
+    const handle = { commandPreview: preview, commandMore: more, commandText };
+    paintCommandPreview(handle);
+    return { preview, more, handle };
+  }
+
+  /** 第一块可见详情不带分界线，后面每块都带。`root` 是放详情的那层容器。 */
+  function markFirstDetail(root) {
+    let first = true;
+    for (const detail of root.querySelectorAll(".tool-detail")) {
+      const visible = !detail.hidden;
+      detail.classList.toggle("is-first-detail", visible && first);
+      if (visible) first = false;
+    }
+  }
+
+  function paintCommandPreview(tool) {
+    const host = tool.commandPreview;
+    if (!host) return;
+    const { lines, omitted } = commandPreviewRows(tool.commandText);
+    tool.commandOmitted = omitted;
+    host.textContent = "";
+    for (const line of lines) {
+      const row = document.createElement("span");
+      row.className = "tool-command-line";
+      // 空行也得占一行高，否则命令里的空行会让行数对不上。
+      row.textContent = line || " ";
+      host.appendChild(row);
+    }
+    host.hidden = lines.length === 0;
+    if (tool.commandMore) tool.commandMore.hidden = true;
+    if (host.hidden) return;
+    // 量高度得等这一帧排完版。
+    requestAnimationFrame(() => {
+      clipCommandPreview(tool);
+      watchCommandPreviewWidth(tool);
+    });
+  }
+
+  /** 展开态里，除第一块可见详情外都带一道分界线。
+   *
+   * CSS 选不出「前一个**可见**兄弟」——中间那几块（进度／命令输出／错误输出）
+   * 是 `hidden` 的，相邻选择器照样匹配它们，所以第一块由这儿打标记。
+   */
+  function refreshDetailDividers(tool) {
+    markFirstDetail(tool.card);
+  }
+
   function updateToolSummary(tool) {
     const details = [];
     const subject = dedupeToolSubject(tool.titleText, tool.subject);
+    refreshDetailDividers(tool);
     if (tool.commandPreview) {
-      tool.commandPreview.textContent = tool.commandText || subject || "等待命令";
-      tool.summary.textContent = tool.commandText || subject || "";
+      paintCommandPreview(tool);
+      // 抬头右边给 short_title；没填就空着，不退回塞命令文本——命令就在下面。
+      tool.summary.textContent = tool.commandTitle || "";
       return;
     }
     if (subject) details.push(subject);
@@ -8115,7 +8269,13 @@
     realName.textContent = name;
     const summary = document.createElement("small");
     summary.className = "tool-summary";
-    summary.textContent = toolSubject(name, call?.arguments) || "";
+    const persistedArgs = parsedToolArguments(call?.arguments);
+    const isCommandCall = name === "run_command" || name === "Bash";
+    // 命令签的抬头右边给 short_title（模型自报的 `title`），命令本身排到下面；
+    // 别的工具照旧给主语。两条路必须一致，否则一刷新命令签就变回老样子。
+    summary.textContent = isCommandCall
+      ? String(persistedArgs?.title || "").trim()
+      : toolSubject(name, call?.arguments) || "";
     title.append(displayName, realName, summary);
     // 与实时那份同构：head 是 icon / title / status / chevron 四段。少了
     // status 这段，回看时卡片会比实时的窄一块，右边空一片。
@@ -8129,11 +8289,25 @@
     statusText.textContent = ok ? (hasSpan ? formatToolDuration(finishedMs - startedMs) || "完成" : "完成") : "失败";
     status.append(makeIconSlot(ok ? "check" : "circle-alert"), statusText);
     head.append(icon, title, status, makeIconSlot("chevron-down", "tool-chevron"));
+    // 读秒：落库的起止时间算得出真实耗时，和实时那条定格的是同一个数。
+    if (isCommandCall && ok && hasSpan) {
+      const seconds = document.createElement("small");
+      seconds.className = "tool-command-seconds";
+      seconds.textContent = statusText.textContent;
+      title.insertBefore(seconds, summary);
+    }
     head.addEventListener("click", () => {
       const collapsed = card.classList.toggle("collapsed");
       head.setAttribute("aria-expanded", String(!collapsed));
       railSnapFit(card);
     });
+
+    const commandRows = isCommandCall
+      ? buildCommandRows(
+          String(persistedArgs?.command || persistedArgs?.cmd || "").trim(),
+          head
+        )
+      : null;
 
     const body = document.createElement("div");
     body.className = "tool-body";
@@ -8176,10 +8350,16 @@
       body.insertBefore(subBlocks, body.firstChild);
       card.classList.add("is-task");
     }
+    markFirstDetail(body);
     const fold = document.createElement("div");
     fold.className = "tool-fold";
     fold.appendChild(body);
     card.append(head, fold);
+    // 命令那几行排在抬头和展开区之间——和实时那条同一个次序。
+    if (commandRows) {
+      card.insertBefore(commandRows.preview, fold);
+      card.insertBefore(commandRows.more, fold);
+    }
     // 待办列表挂在签外面,收起态也看得见——那是给人看的产出,不是调试信息。
     const todos = window.MiyuTodos?.isTodoTool(name) ? window.MiyuTodos.render(output) : null;
     if (todos) card.appendChild(todos);
@@ -8203,6 +8383,13 @@
 
   function updateToolStatus(tool, status, iconName, statusClass = "") {
     tool.statusText.textContent = status;
+    // 命令签的读秒定格成**真实耗时**（`status` 里就是它，比如「23 ms」），并停掉
+    // ticker。ticker 算的是「卡片建出来到现在」，对一条 23ms 就跑完的命令毫无
+    // 意义——它会一直涨到下一次 tick 才停在一个错数上。
+    if (tool.commandSeconds && iconName !== "loader-circle") {
+      delete tool.commandSeconds.dataset.taskStart;
+      tool.commandSeconds.textContent = status === "失败" ? "" : status;
+    }
     tool.statusIcon.replaceChildren(createIcon(iconName));
     tool.statusIcon.classList.toggle("is-spinning", iconName === "loader-circle");
     tool.card.classList.remove("is-success", "is-failure");
@@ -8400,11 +8587,42 @@
       head.append(icon, title, status, chevron);
     }
     let commandPreview = null;
+    let commandMore = null;
     let commandOutputPreview = null;
+    let commandSeconds = null;
     if (isCommand) {
-      commandPreview = document.createElement("pre");
+      // 读秒塞进 `.tool-title` 里（工具名和 short_title 之间），不挪 `.tool-summary`：
+      // 现有 CSS 有一堆 `.tool-title .tool-summary` 的选择器（失败变红、省略、悬浮），
+      // 把它移出去会牵动别的工具签。`.tool-status` 那个位置指望不上——它的文字被
+      // `.tool-status > span:not(.icon-slot){display:none}` 全局藏着，成功的行上
+      // 图标也藏了，所以那儿从来什么都没有。
+      commandSeconds = document.createElement("small");
+      commandSeconds.className = "tool-command-seconds";
+      commandSeconds.dataset.taskStart = String(performance.now());
+      commandSeconds.textContent = "0s";
+      title.insertBefore(commandSeconds, summary);
+      // 命令本身按行排在抬头底下，靠时间线那根竖线（`.proc-rail`）串起来。
+      commandPreview = document.createElement("div");
       commandPreview.className = "tool-command-preview";
-      commandPreview.textContent = commandText || subjectText || "等待命令";
+      commandPreview.setAttribute("aria-label", "命令");
+      // `⋮` 得在裁剪容器**外面**，否则它自己也被 max-height 裁掉。
+      commandMore = document.createElement("span");
+      commandMore.className = "tool-command-more";
+      commandMore.textContent = "⋮";
+      commandMore.title = "还有，点开看完整命令";
+      commandMore.hidden = true;
+      // 命令那几行也要能点开——它们在 `.tool-head`（button）**外面**，不点就
+      // 只有抬头那一条窄缝可点，而视线正落在命令上（用户 09-20）。
+      // 拖着选文字不算点：有选区就放过，否则复制命令会顺手把卡片折起来。
+      const expandOnClick = (event) => {
+        if (String(window.getSelection?.() || "").length) return;
+        event.preventDefault();
+        head.click();
+      };
+      for (const node of [commandPreview, commandMore]) {
+        node.addEventListener("click", expandOnClick);
+        node.style.cursor = "pointer";
+      }
       commandOutputPreview = document.createElement("div");
       commandOutputPreview.className = "tool-command-output-preview";
       commandOutputPreview.setAttribute("aria-label", "最近命令输出");
@@ -8457,6 +8675,7 @@
     } else {
       card.append(head);
       if (commandPreview) card.appendChild(commandPreview);
+      if (commandMore) card.appendChild(commandMore);
       if (commandOutputPreview) card.appendChild(commandOutputPreview);
       const fold = document.createElement("div");
       fold.className = "tool-fold";
@@ -8466,6 +8685,11 @@
     const tool = {
       id: toolId,
       name: String(data?.name || ""),
+      // 抬头右边那句：命令给的是模型自报的 `title`，不是命令文本——命令印在抬头
+      // 底下（和 Rust 侧 `tool_display::command_peek()` 同口径）。没填就空着。
+      commandTitle: isCommand ? String(commandArguments?.title || "").trim() : "",
+      commandSeconds,
+      commandMore,
       card,
       head,
       body,
