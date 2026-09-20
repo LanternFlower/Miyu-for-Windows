@@ -278,6 +278,11 @@ pub(crate) struct HistoryMessage {
     pub(crate) sent_at: i64,
     pub(crate) ingress_order: Option<i64>,
     pub(crate) recalled_at: Option<i64>,
+    /// 谁撤的。`None` = 没撤回，或者上游没报操作者。
+    ///
+    /// 群里 17% 的撤回是**别人**撤的（真实库 794 条有主的撤回里 134 条），
+    /// 管理员撤群友的话和本人收回自己的话是两回事，值得分开（用户 09-20）。
+    pub(crate) recalled_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

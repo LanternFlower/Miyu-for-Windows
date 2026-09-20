@@ -151,7 +151,7 @@ async fn reset_boundary_only_changes_automatic_context() {
 }
 
 #[tokio::test]
-async fn recall_before_or_after_message_is_applied_and_hidden() {
+async fn recall_shows_up_in_history_and_stays_out_of_live_context() {
     let (_temp, store) = test_store();
     let key = group("bot", "group");
     let early = store
@@ -184,19 +184,36 @@ async fn recall_before_or_after_message_is_applied_and_hidden() {
         .unwrap();
     assert!(late.matched_message);
 
-    let visible = store
+    // 历史出口默认带撤回（09-20）：撤回本身就是「发生过的事」，查历史的人
+    // 要看得见。以前这里默认不带，那条消息在历史里凭空消失。
+    let page = store
         .recent(RecentQuery::for_history(key.clone(), 20))
         .await
         .unwrap();
-    assert_eq!(visible.messages.len(), 1);
-    assert_eq!(visible.messages[0].message_id, "visible");
-
-    let mut with_recalls = RecentQuery::for_history(key, 20);
-    with_recalls.include_recalled = true;
-    let page = store.recent(with_recalls).await.unwrap();
     assert_eq!(page.messages.len(), 3);
     assert_eq!(page.messages[0].recalled_at, Some(12));
     assert_eq!(page.messages[1].recalled_at, Some(22));
+    assert_eq!(page.messages[2].recalled_at, None);
+    // 操作者从 `recalls` 表捞回来（09-20）：群里 17% 的撤回是别人撤的，
+    // 管理员撤群友的话得看得出来。上游没报操作者时给 None。
+    assert_eq!(page.messages[0].recalled_by.as_deref(), Some("moderator"));
+    assert_eq!(page.messages[1].recalled_by, None);
+    assert_eq!(page.messages[2].recalled_by, None, "没撤回的不该有操作者");
+
+    // 实时上下文出口不带：撤回发生在她看见之前，就不该再喂给她。
+    let context = store
+        .recent(RecentQuery::for_context(key.clone(), "default", 20))
+        .await
+        .unwrap();
+    assert_eq!(context.messages.len(), 1);
+    assert_eq!(context.messages[0].message_id, "visible");
+
+    // 好感度那条路显式关掉（用户 09-20 拍板），这里守住「关得掉」。
+    let mut scoring = RecentQuery::for_history(key, 20);
+    scoring.include_recalled = false;
+    let page = store.recent(scoring).await.unwrap();
+    assert_eq!(page.messages.len(), 1);
+    assert_eq!(page.messages[0].message_id, "visible");
 }
 
 #[tokio::test]

@@ -48,6 +48,15 @@ impl RecentQuery {
         }
     }
 
+    /// 历史出口(`search_real_chat_history` 与仪表盘背后的那条)。
+    ///
+    /// 带上撤回的消息:撤回本来就写进库了(`recalls` 表 + `messages.recalled_at`),
+    /// 09-20 以前却没有任何一处把 `include_recalled` 置真——查历史时那条消息
+    /// 直接凭空消失,连「这里被撤回过一条」都看不出来(用户 09-20)。渲染层早就
+    /// 备好了 `(recalled)` 标记,一直是死代码。
+    ///
+    /// 好感度评分另算:它也拿这个构造器,但撤回的话不该继续算进印象里
+    /// (用户 09-20 拍板),那边显式关掉。
     pub(crate) fn for_history(group: GroupKey, limit: usize) -> Self {
         Self {
             group,
@@ -55,7 +64,7 @@ impl RecentQuery {
             before: None,
             limit,
             respect_context_boundary: false,
-            include_recalled: false,
+            include_recalled: true,
             before_ingress_order: None,
             after_ingress_order: None,
         }
@@ -86,6 +95,9 @@ pub(crate) struct SearchQuery {
 }
 
 impl SearchQuery {
+    /// 检索只有历史工具在用，同 [`RecentQuery::for_history`]：撤回的消息照样
+    /// 返回，渲染层给它挂 `(recalled)`。查历史的人要的是「当时发生过什么」，
+    /// 一条消息被撤回本身就是发生过的事。
     pub fn new(scope: HistoryScope, text: impl Into<String>, limit: usize) -> Self {
         Self {
             scope,
@@ -95,7 +107,7 @@ impl SearchQuery {
             since: None,
             until: None,
             limit,
-            include_recalled: false,
+            include_recalled: true,
             include_bot: true,
         }
     }
@@ -136,9 +148,24 @@ pub(crate) struct ActivityRanking {
     pub(crate) items: Vec<ActivityRankingItem>,
 }
 
+/// 撤回的操作者挂成相关子查询而不是 JOIN：`MESSAGE_COLUMNS` 被三条 SQL 共用
+/// （recent / search / 仪表盘），JOIN 要改三处 FROM，而且一旦哪天 `recalls` 的
+/// 唯一约束松了就会让消息行翻倍。子查询没有这个风险——`recalls` 对
+/// (platform, account_id, conversation_kind, conversation_id, message_id)
+/// 有唯一约束，最多命中一行。
+///
+/// `CASE WHEN m.recalled_at IS NULL` 先短路：实测真实库里 98% 的行没被撤回
+/// （43406 条里 795 条），不短路就是白扫。
 pub(crate) const MESSAGE_COLUMNS: &str = "m.id, m.platform, m.account_id, m.conversation_kind, \
     m.conversation_id, m.message_id, m.sender_id, m.sender_name, m.text, m.media_json, \
-    m.mentions_json, m.reply_to_message_id, m.is_bot, m.sent_at, m.ingress_order, m.recalled_at";
+    m.mentions_json, m.reply_to_message_id, m.is_bot, m.sent_at, m.ingress_order, m.recalled_at, \
+    CASE WHEN m.recalled_at IS NULL THEN NULL ELSE ( \
+        SELECT r.operator_id FROM recalls AS r \
+         WHERE r.platform = m.platform AND r.account_id = m.account_id \
+           AND r.conversation_kind = m.conversation_kind \
+           AND r.conversation_id = m.conversation_id \
+           AND r.message_id = m.message_id \
+    ) END";
 
 pub(crate) fn query_recent(conn: &Connection, query: RecentQuery) -> Result<HistoryPage> {
     let page_size = page_size(query.limit);
@@ -462,6 +489,7 @@ pub(crate) fn map_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryMe
         sent_at: row.get(13)?,
         ingress_order: row.get(14)?,
         recalled_at: row.get(15)?,
+        recalled_by: row.get(16)?,
     })
 }
 

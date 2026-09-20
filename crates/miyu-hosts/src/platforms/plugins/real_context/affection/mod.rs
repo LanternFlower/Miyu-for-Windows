@@ -520,12 +520,18 @@ async fn run_update(job: AffectionUpdateJob) -> Result<()> {
 
     let history = job
         .history_store
-        .recent(RecentQuery::for_history(
-            job.group.clone(),
-            // 09-19:和主动回复判断同一个窗口——两者都是「判断」，没有理由各用
-            // 各的数（原来硬编码 12）。
-            job.settings.judge_context_window.max(1),
-        ))
+        .recent({
+            let mut query = RecentQuery::for_history(
+                job.group.clone(),
+                // 09-19:和主动回复判断同一个窗口——两者都是「判断」，没有理由各用
+                // 各的数（原来硬编码 12）。
+                job.settings.judge_context_window.max(1),
+            );
+            // 撤回的话不算进印象里（用户 09-20 拍板）。`for_history` 的默认是
+            // 「带上撤回」——那是查历史的语义，打分不是。
+            query.include_recalled = false;
+            query
+        })
         .await?
         .messages;
     let history = super::format_history(

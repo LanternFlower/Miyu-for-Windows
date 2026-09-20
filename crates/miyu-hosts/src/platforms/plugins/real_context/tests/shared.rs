@@ -89,6 +89,7 @@ pub(super) fn history_message(message_id: &str, text: &str) -> HistoryMessage {
         sent_at: 1,
         ingress_order: Some(1),
         recalled_at: None,
+        recalled_by: None,
     }
 }
 

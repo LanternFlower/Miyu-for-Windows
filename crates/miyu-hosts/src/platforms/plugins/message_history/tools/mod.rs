@@ -242,7 +242,11 @@ pub(crate) const HISTORY_TOOL_DESCRIPTION: &str =
      Omitting query and sender_id replays the most recent messages in range. \
      Ask for the whole range in ONE call with a large limit: splitting a day into \
      several windows costs far more than one big page, because every extra call \
-     re-sends the entire conversation.";
+     re-sends the entire conversation. \
+     Recalled messages are included and tagged `(recalled)` — the history is what \
+     happened, and someone taking a message back is part of it. A message a \
+     moderator removed rather than its own sender is tagged \
+     `(recalled by qq=<operator>)`.";
 
 pub(crate) fn history_limit_description(maximum: usize) -> String {
     format!(
@@ -320,10 +324,16 @@ fn format_history_output(
         } else {
             String::new()
         };
-        let recalled = if message.recalled_at.is_some() {
-            " (recalled)"
-        } else {
-            ""
+        // 撤回标记。操作者只在**不是本人**撤的时候点名：真实库里 794 条有主的
+        // 撤回有 660 条是自己收回，再重复一遍发送者的号纯属占字节（08-21
+        // token-diet 的老账）；剩下 134 条是管理员撤别人的话，那是另一回事，
+        // 她该看得出来（用户 09-20）。
+        let recalled = match (&message.recalled_at, &message.recalled_by) {
+            (None, _) => String::new(),
+            (Some(_), Some(operator)) if *operator != message.sender_id => {
+                format!(" (recalled by qq={})", safe_prompt_field(operator))
+            }
+            (Some(_), _) => " (recalled)".to_string(),
         };
         output.push_str(&format!(
             "[{time}] {conversation}{sender} [msg={}]{recalled}: {content}\n",
@@ -745,6 +755,84 @@ mod tests {
             history_scope(&json!({ "all_conversations": true }), &admin, true).unwrap(),
             HistoryScope::Account(_)
         ));
+    }
+
+    /// 撤回过的消息在历史里要看得出来（用户 09-20：「撤回不会反映在 qq 历史
+    /// 消息记录里面」）。`(recalled)` 这个标记 09-20 以前是死代码——查询默认
+    /// 把撤回的行全滤掉了，渲染层永远见不到 `recalled_at`。
+    #[test]
+    fn recalled_messages_are_tagged_in_the_history_output() {
+        let plain = history_message("m1", "在的", None, None);
+        let recalled = history_message("m2", "说错了", Some(1_700_000_050), None);
+        // 管理员撤的：她要看得出不是本人收回的（用户 09-20）。
+        let by_admin = history_message("m3", "违规词", Some(1_700_000_060), Some("99999"));
+        // 自己撤的：操作者就是发送者，不再重复点名。
+        let by_self = history_message("m4", "打错字", Some(1_700_000_070), Some("u1"));
+        let output = format_history_output(
+            "4 message(s)".to_string(),
+            &[plain, recalled, by_admin, by_self],
+            false,
+            false,
+            "",
+        );
+        let lines: Vec<&str> = output.lines().collect();
+        assert!(
+            lines.iter().any(|line| line.contains("[msg=m1]:")),
+            "没撤回的那条不该带标记：{output}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("[msg=m2] (recalled):")),
+            "撤回的那条要带 (recalled)：{output}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("[msg=m3] (recalled by qq=99999):")),
+            "别人撤的要点名操作者：{output}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("[msg=m4] (recalled):")),
+            "自己撤的不重复点名：{output}"
+        );
+        assert!(
+            output.contains("说错了"),
+            "正文照样给出来，不然「反映在历史里」等于没反映：{output}"
+        );
+    }
+
+    fn history_message(
+        message_id: &str,
+        text: &str,
+        recalled_at: Option<i64>,
+        recalled_by: Option<&str>,
+    ) -> crate::platforms::plugins::message_history::store::HistoryMessage {
+        let recalled_by = recalled_by.map(str::to_string);
+        use crate::platforms::plugins::message_history::store::{
+            GroupKey, HistoryMessage, SanitizedContent,
+        };
+        HistoryMessage {
+            row_id: 1,
+            group: GroupKey {
+                platform: "onebot".to_string(),
+                account_id: "10000".to_string(),
+                conversation_kind: "group".to_string(),
+                conversation_id: "42".to_string(),
+            },
+            message_id: message_id.to_string(),
+            sender_id: "u1".to_string(),
+            sender_name: "甲".to_string(),
+            content: SanitizedContent::new(text, Vec::new()),
+            reply_to_message_id: None,
+            is_bot: false,
+            sent_at: 1_700_000_000,
+            ingress_order: Some(1),
+            recalled_at,
+            recalled_by,
+        }
     }
 
     /// 省略 `limit` 给一大页（用户 09-19 定的 500）：分次查比一次拿够贵得多。
