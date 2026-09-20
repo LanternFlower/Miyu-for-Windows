@@ -495,7 +495,10 @@ mod tests {
     fn a_flowchart_renders_to_svg() {
         let svg = render_svg(FLOW).expect("流程图该渲染得出来");
         assert!(svg.starts_with("<svg"), "{}", &svg[..svg.len().min(80)]);
-        assert!(svg.contains("width=") && svg.contains("height="), "要有尺寸");
+        assert!(
+            svg.contains("width=") && svg.contains("height="),
+            "要有尺寸"
+        );
         // 中文标签要进得去(字体找不到时会整段丢字)。
         assert!(svg.contains("开始"), "中文节点名没进 SVG");
     }
@@ -541,10 +544,17 @@ mod tests {
     #[test]
     fn the_svg_cache_stays_bounded() {
         for index in 0..(SVG_CACHE_ENTRIES + 20) {
-            svg_cache_put(blake3::hash(format!("满不满 {index}").as_bytes()).into(), "<svg/>");
+            svg_cache_put(
+                blake3::hash(format!("满不满 {index}").as_bytes()).into(),
+                "<svg/>",
+            );
         }
         let guard = svg_cache().lock().unwrap();
-        assert!(guard.0.len() <= SVG_CACHE_ENTRIES, "缓存涨过头:{}", guard.0.len());
+        assert!(
+            guard.0.len() <= SVG_CACHE_ENTRIES,
+            "缓存涨过头:{}",
+            guard.0.len()
+        );
         assert_eq!(guard.0.len(), guard.1.len(), "表和次序队列对不上");
     }
 
@@ -586,7 +596,11 @@ mod tests {
     fn a_tall_diagram_keeps_its_natural_scale() {
         let mut lines = vec!["flowchart TD".to_string()];
         for index in 0..23 {
-            lines.push(format!("    N{index}[步骤{index}] --> N{}[步骤{}]", index + 1, index + 1));
+            lines.push(format!(
+                "    N{index}[步骤{index}] --> N{}[步骤{}]",
+                index + 1,
+                index + 1
+            ));
         }
         let svg = render_svg(&lines.join("\n")).unwrap();
         let png = rasterize(&svg, CELL.0, CELL.1, 100).unwrap();
@@ -660,8 +674,16 @@ mod tests {
         assert_ne!(base, cache_path(FLOW, 10, 20, 100).unwrap(), "格宽没进键");
         assert_ne!(base, cache_path(FLOW, 9, 21, 100).unwrap(), "格高没进键");
         assert_ne!(base, cache_path(FLOW, 9, 20, 80).unwrap(), "宽度上限没进键");
-        assert_ne!(base, cache_path("flowchart TD\n A-->B", 9, 20, 100).unwrap(), "源码没进键");
-        assert_eq!(base, cache_path(FLOW, 9, 20, 100).unwrap(), "同样的输入该同一个键");
+        assert_ne!(
+            base,
+            cache_path("flowchart TD\n A-->B", 9, 20, 100).unwrap(),
+            "源码没进键"
+        );
+        assert_eq!(
+            base,
+            cache_path(FLOW, 9, 20, 100).unwrap(),
+            "同样的输入该同一个键"
+        );
     }
 
     /// 各段耗时与传输量。**不是断言,是量尺**——默认不跑,要数时:

@@ -1025,12 +1025,18 @@ mod hazard_tests {
         use super::shell_from_env;
         use std::path::Path;
 
-        assert_eq!(shell_from_env(Some(Path::new("/bin/zsh"))).as_deref(), Some("zsh"));
+        assert_eq!(
+            shell_from_env(Some(Path::new("/bin/zsh"))).as_deref(),
+            Some("zsh")
+        );
         assert_eq!(
             shell_from_env(Some(Path::new("/opt/homebrew/bin/fish"))).as_deref(),
             Some("fish")
         );
-        assert_eq!(shell_from_env(Some(Path::new("/bin/bash"))).as_deref(), Some("bash"));
+        assert_eq!(
+            shell_from_env(Some(Path::new("/bin/bash"))).as_deref(),
+            Some("bash")
+        );
         // 认不出的别硬凑：宁可答「不知道」，也不要把 hook 装错 shell。
         assert_eq!(shell_from_env(Some(Path::new("/usr/bin/nu"))), None);
         assert_eq!(shell_from_env(Some(Path::new("/bin/"))), None);

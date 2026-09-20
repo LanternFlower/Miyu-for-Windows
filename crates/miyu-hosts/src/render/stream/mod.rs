@@ -349,11 +349,21 @@ impl StreamRenderer {
     /// 切了之后"询问用户"那一步就只能落进下一段——屏幕上成了
     /// 「Worked for… ／ 问答块 ／ 询问用户」，因果整个倒过来。正确顺序是：
     /// 面板退场、答案到手、把这一步补进当前这一段，再连着一起收。
+    /// 给面板让屏（她反问的提问面板、`/models` `/session` 这些）。
+    ///
+    /// **要把时间线切进回放缓冲**，不能只把活动区撤下来：活动区那几行（「已思考
+    /// · 334 词元 · 3.4s」「准备问题 · 644ms」）还没落盘，撤掉就等于从屏幕上
+    /// 消失，面板收掉才重新冒出来——用户 09-20 截图：「面板开启时当前输出内容
+    /// 会消失，面板关闭后又出现。我记得之前只是顶上去而已啊？」
+    ///
+    /// 和 `prepare_for_external_output`（给终端图片让路）同一套动作，连那面
+    /// 「这次收尾只是让路、不是回合结束」的旗子一起用：不挡这一下的话，正在跑
+    /// 的那一步会被记成红色的「已中断」，而真结果回来时又记一次（09-19 在
+    /// shellhook 里实测过一次发图两行报错）。
     pub fn prepare_for_panel(&mut self) -> Result<()> {
         self.preparing_question_started_at = None;
         self.tool_preparing = None;
         self.tool_preparing_since = None;
-        self.release_transient_output()?;
         self.show_cursor()?;
         Ok(())
     }

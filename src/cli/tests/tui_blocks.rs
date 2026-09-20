@@ -471,9 +471,7 @@ fn clicking_a_link_finds_its_target() {
     // `file://`：图表下面那行「点开看大图」指的是缓存里那张 SVG，可见文字里
     // 一个 URL 都没有。只认 http 的话点了没反应（用户 09-20 实测）。
     let mut screen = Screen::detached(80, 24);
-    screen.feed_for_test(
-        "\x1b]8;;file:///tmp/d.svg\x07点开看大图\x1b]8;;\x07\r\n".as_bytes(),
-    );
+    screen.feed_for_test("\x1b]8;;file:///tmp/d.svg\x07点开看大图\x1b]8;;\x07\r\n".as_bytes());
     let row = screen.view_row(0);
     assert_eq!(
         url_at(&row, 1).as_deref(),

@@ -672,8 +672,15 @@ mod tests {
     #[test]
     fn refuses_to_trash_system_directories() {
         for path in [
-            "/", "/etc", "/usr", "/var",
-            "/Applications", "/Library", "/System", "/Users", "/Volumes",
+            "/",
+            "/etc",
+            "/usr",
+            "/var",
+            "/Applications",
+            "/Library",
+            "/System",
+            "/Users",
+            "/Volumes",
         ] {
             let error = super::ensure_safe_trash_target(std::path::Path::new(path))
                 .expect_err(&format!("{path} 该被拒"));
