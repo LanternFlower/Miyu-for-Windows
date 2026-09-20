@@ -676,104 +676,15 @@ pub(in crate::cli) async fn try_run_remote_chat(
                         .and_then(|question| question.get("question"))
                         .and_then(serde_json::Value::as_str),
                 );
-                // 只让屏、不切线：这一步得等答案到手才补得进去。
-                renderer.prepare_for_panel()?;
-                if let Some(live) = live.as_deref_mut() {
-                    live.apply_renderer_frame(&mut renderer)?;
-                    synchronized_terminal_update(CursorAfterUpdate::Hidden, || live.suspend())?;
-                }
-                let request = miyu_base::question::QuestionRequest {
-                    questions: serde_json::from_value(
-                        data.get("questions").cloned().unwrap_or_default(),
-                    )?,
-                };
-                notify_if_unfocused(
+                crate::cli::repl::question_flow::handle_question_requested(
+                    paths,
                     &config,
-                    live.as_deref().map(|live| live.editor.focused),
-                    t("Miyu is waiting on you", "Miyu 在等你回答"),
-                    // 问题正文同样不外泄，理由同上。
-                    t("waiting for you", "正在等待处理"),
-                    miyu_base::notify::NotifySound::Question,
-                );
-                // A panel that cannot be shown is not a reason to abort the
-                // turn: fall through to the same path a closed panel takes, so
-                // the daemon gets an answer instead of the run dying on an
-                // error the user cannot act on. The direct-mode handler has
-                // always done this; this branch used to propagate instead.
-                let asked = {
-                    let mut scroll = |delta: isize, panel_rows: u16| {
-                        if let Some(live) = live.as_deref_mut() {
-                            if let Some(screen) = live.screen.as_mut() {
-                                let _ = screen.scroll_question_body(delta, panel_rows);
-                            }
-                        }
-                    };
-                    // 详情就地印的面自己把一问一答写成那一步的正文，面板退场别留东西。
-                    let leave_summary = !renderer.caps().detail_inline();
-                    crate::question_tui::ask_with(&request, Some(&mut scroll), leave_summary)
-                        .unwrap_or_else(|err| {
-                            miyu_base::question::QuestionResponse::Unavailable(err.to_string())
-                        })
-                };
-                // 全屏下面板退场之后，下一帧就按缓冲恢复正文和输入区，
-                // 问了什么、答了什么会一起消失（用户原话「回答完问题也没输出」）。
-                // 写进缓冲它才算进了历史、回翻找得到。
-                renderer.timeline_push_question(&request, &asked)?;
-                // 这一步补进去了，现在才切：屏幕上的顺序就成了
-                // 「…询问用户 → Worked for… → 问答块」，和实际发生的顺序一致。
-                //
-                // 静态时间线不切：一问一答已经是那一步的正文了，切了这一段就断
-                // 成两截（问答块底下空一行、下一步没有连线接上来）。
-                if !renderer.caps().commit_immediately {
-                    renderer.prepare_for_external_output()?;
-                    renderer.write_question_exchange(&request, &asked)?;
-                }
-                match asked {
-                    miyu_base::question::QuestionResponse::Answered(answers) => {
-                        send_ipc_command(
-                            paths,
-                            IpcCommand::AnswerQuestion {
-                                question_id: ipc_text(&data, "question_id").to_string(),
-                                answers,
-                            },
-                        )
-                        .await?;
-                        // 答完了，回合接着跑：侧栏从红色回到「运行中」。不报的话
-                        // 它会一直红到整轮结束。
-                        herdr_turn.resumed();
-                        renderer.start_waiting()?;
-                    }
-                    // Nobody could be shown the panel — no tty, or it failed to
-                    // open. That is not the user calling the turn off, so the
-                    // question is resolved and the turn carries on; the tool
-                    // that asked finds out that nobody answered and can say so.
-                    miyu_base::question::QuestionResponse::Unavailable(_) => {
-                        let _ = send_ipc_command(
-                            paths,
-                            IpcCommand::CloseQuestion {
-                                question_id: ipc_text(&data, "question_id").to_string(),
-                            },
-                        )
-                        .await;
-                    }
-                    // The terminal question UI maps its close gestures to
-                    // Cancelled; that one really is "stop this turn".
-                    miyu_base::question::QuestionResponse::Closed
-                    | miyu_base::question::QuestionResponse::Cancelled => {
-                        let _ = send_ipc_command(
-                            paths,
-                            IpcCommand::Cancel {
-                                run_id: run_id.clone(),
-                            },
-                        )
-                        .await;
-                    }
-                }
-                if let Some(live) = live.as_deref_mut() {
-                    live.external_output_active = false;
-                    live.output_cursor = cursor_position_or(live.output_cursor);
-                    live.resume_at(live.output_cursor)?;
-                }
+                    live.as_deref_mut(),
+                    &mut renderer,
+                    &data,
+                    &run_id,
+                )
+                .await?;
             }
             // 别的端往这一轮排了一条消息：画进自己的排队列表，两边看到的队列
             // 才是同一份（用户 09-19：「TUIA 发消息进入排队，TUIB 也能看到」）。

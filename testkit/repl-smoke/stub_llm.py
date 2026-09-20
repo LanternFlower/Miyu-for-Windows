@@ -280,12 +280,30 @@ class Handler(BaseHTTPRequestHandler):
                      "title": os.environ.get("STUB_TOOL_TITLE", "跑个命令")},
                     ensure_ascii=False,
                 )
-            self._sse({"choices": [{"index": 0, "delta": {"tool_calls": [{
-                "index": 0,
-                "id": f"call_stub_{done}",
-                "type": "function",
-                "function": {"name": name, "arguments": arguments},
-            }]}, "finish_reason": None}]})
+            # 参数分片吐（`STUB_TOOL_ARG_CHUNK=<每片字符数>`）：真供应商是先把
+            # 工具名解码出来、参数随后才流完，中间那段窗口才是「准备执行 /
+            # 准备问题」的显示。默认仍一次吐完，免得改动现有走查的时序。
+            arg_chunk = int(os.environ.get("STUB_TOOL_ARG_CHUNK", "0"))
+            if arg_chunk > 0:
+                self._sse({"choices": [{"index": 0, "delta": {"tool_calls": [{
+                    "index": 0,
+                    "id": f"call_stub_{done}",
+                    "type": "function",
+                    "function": {"name": name},
+                }]}, "finish_reason": None}]})
+                for start in range(0, len(arguments), arg_chunk):
+                    time.sleep(CHUNK_SLEEP)
+                    self._sse({"choices": [{"index": 0, "delta": {"tool_calls": [{
+                        "index": 0,
+                        "function": {"arguments": arguments[start:start + arg_chunk]},
+                    }]}, "finish_reason": None}]})
+            else:
+                self._sse({"choices": [{"index": 0, "delta": {"tool_calls": [{
+                    "index": 0,
+                    "id": f"call_stub_{done}",
+                    "type": "function",
+                    "function": {"name": name, "arguments": arguments},
+                }]}, "finish_reason": None}]})
             # 带工具调用的那一轮也报 usage。真供应商都报，而子代理跑到一半时
             # 面板标题与状态行上的词元数就是从这儿来的——不报的话那两个数一路
             # 是 0，测具看着"有数"其实什么都没验到。

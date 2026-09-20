@@ -564,6 +564,21 @@ pub(in crate::cli) async fn follow_wake_run(
                     received_at: Instant::now(),
                 },
             )?,
+            // daemon 自己开的轮里模型也会提问（目标续轮最常见）。这一条以前
+            // 没接，事件落进底下的 `_ => {}`：面板不弹、没人回答，那一步就停在
+            // 「准备问题」上直到回合循环 30 分钟的兜底超时（用户 09-20）。
+            // 处理与自己起的那一轮共用一份，见 `question_flow`。
+            "question.requested" => {
+                crate::cli::repl::question_flow::handle_question_requested(
+                    paths,
+                    &config,
+                    Some(live),
+                    &mut renderer,
+                    &data,
+                    run_id,
+                )
+                .await?;
+            }
             "run.completed" | "run.failed" | "run.cancelled" => {
                 break;
             }

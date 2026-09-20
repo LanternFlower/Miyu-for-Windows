@@ -12,6 +12,7 @@ pub(in crate::cli) mod layout;
 pub(in crate::cli) mod panel;
 pub(in crate::cli) mod pickers;
 pub(in crate::cli) mod placeholder;
+pub(in crate::cli) mod question_flow;
 pub(in crate::cli) mod session;
 mod session_picker;
 
