@@ -12,7 +12,9 @@
 4. **新增 `workflows` 作业跑 actionlint**（1.7.12，下载后校验 SHA256 才执行），以及把「模型可见面无 CJK」门禁搬进 `format-and-python`——它原来只在本机 `refactor-check.sh` 里跑。
 5. **`build-package-verify.yml` 超时 210 → 240 分钟**：`gnu-x86_64` 现在要装五个发行版（多了 Linux Mint 22.3）。
 
-仍然缺的（登记在案，不谎报）：`ci.yml` 没有任何 cargo 缓存，每次都是冷编译；`refactor-check.sh` 里的行数、层序两道门禁和 `cargo test --workspace` 仍只在本机跑（远端只有 `--suite source-unit`，即根 crate 的 lib 测试）。
+6. **新增 `cargo check --features voice --all-targets`**（1.96.1 那档）。默认 feature 是空的，所以这一面平时一行都不编——0.6.1 打包时才发现 `src/bin/voice.rs` 自 09-16 拆 crate 起就编不过（`miyu::voice::*` 早就搬进 `miyu-engine` 了）。sherpa 的静态库由 build.rs 现下。
+
+仍然缺的（登记在案，不谎报）：`ci.yml` 没有任何 cargo 缓存，每次都是冷编译（本机实测冷构建光依赖就 40 分钟，`vars.LINUX_X64_RUNNER` 指自托管 runner 时尤其值得加）；`refactor-check.sh` 里的行数、层序两道门禁和 `cargo test --workspace` 仍只在本机跑（远端只有 `--suite source-unit`，即根 crate 的 lib 测试）。0.6.1 的本机实测：`cargo test --workspace` 2621 条用例、约 13 个测试目标，远端要跑得先解决缓存与时长。
 
 ## 工作流职责
 

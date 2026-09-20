@@ -250,6 +250,48 @@ release tag 对应真实构建源码，附件精确六个且 hash/正文/图片�
 本机版本及实际 exe 正确，测试资源无残留。源码/CI 修复必须有修前红测和修后绿测；
 新 CI 若失败先读测试日志与清理记录，不以“只有清理失败”推断 Rust 已全过。
 
+## 9b. 0.6.1 实录（2026-09-20/21）与量出来的数
+
+| 环节 | 实测 |
+| --- | --- |
+| 冷构建（四条并行，容器内 jobs=2 各条） | 依赖阶段约 40 分钟 |
+| 改一处源码后重构建（`--target-cache` 指回上一轮） | **core 9m06s / voice 5m12s**，只重编 5 个单元 |
+| 六目标容器验收 | 约 12 分钟，42 项必需检查全 PASS |
+| AUR 包装包重包 + 真装验收 | 6/6 PASS |
+| 全量测试（`refactor-check.sh`） | 2621 条用例 |
+
+**重构建为什么这么快**：vendor 出来的依赖是「registry 形态带 checksum」，cargo 不按
+mtime 判它们，所以把 `--target-cache` 指回上一轮的缓存目录，只有 `/source` 里那
+5 个 path crate 会重编。代价是那份 target 缓存约 8 GB——留着省半小时，删掉下一轮
+从依赖重来。
+
+这一轮撞到的四件事（都已经变成门禁或清单）：
+
+1. **`--features voice` 那一面平时一行都不编**。默认 feature 是空的，`cargo check
+   --workspace --all-targets` 与 `cargo test --workspace` 都不碰它，只有打包那一步会
+   真去构建 `--bin miyu-voice --features voice`。0.6.1 构建当天才发现 `src/bin/voice.rs`
+   自 09-16 拆 crate 起就编不过。`refactor-check.sh` 与 `ci.yml` 已各加一步
+   `cargo check --features voice --all-targets`。
+2. **测试环境必须给中文 locale**（见第 1 节）。
+3. **`.SRCINFO` 不要手改**，用 `makepkg --printsrcinfo` 生成——这次正是靠它发现
+   `miyu-git/.SRCINFO` 少了 09-18 给 PKGBUILD 加的两条 `optdepends`。
+   `channel_update.py` 只管 `miyu` / `miyu-voice` 两个包装包，`miyu-git` 的快照 pkgver
+   （`<版本>.r<提交数>.g<短 SHA>`，按**已推送的 main**算）要自己更新。
+4. **新发行版目标先用旧包探一次依赖**：`docker run <镜像> apt-get install --dry-run
+   <上一版的 deb>` 就能看出除 glibc 之外的依赖在那家源里解不解得开。Mint 22.3 这次
+   的输出正好是「只有 `libc6 (>= 2.41) but 2.39` 不满足」，于是新基座这一版必然能装。
+
+**发布说明里的 SHA256 与 tag 的先后**：hash 只能在包构建出来之后才有，而包的字节
+又包含正文所在的源码快照。所以 tag 停在被构建的那个提交，校验值随后单独提交进
+main（0.6.0 与 0.6.1 都是这么做的）——不要为了把 hash 塞进 tag 而重编。
+
+**清理**：删本轮 builder 镜像（两个共约 5.7 GB，从固定 Dockerfile 重建即可）、
+`inputs`/`source`/`ci-*`/重包工作目录；保留 `publish`（最终 bundle）、`reports`、
+`release-input.json` 与各步日志。按 digest 固定的六个安装镜像（Mint 那个 2.96 GB
+最大）留着下一轮直接用，要腾空间就单独 `docker rmi`。别做全局 prune——本机有别人
+的长期容器在跑。⚠️ 门禁跑完 `target/` 会长一大截（这次 136 → 169 GB），那是主检出
+的编译缓存，不属于本轮产物，别顺手 `cargo clean`。
+
 ## 10. 同版本重编（仅在用户明确要求替换发布包时）
 
 默认应发布新的应用补丁版本。用户明确要求同版本重编时，递增 package revision，
