@@ -2449,6 +2449,76 @@ a.path-link {
   color: var(--code-ink);
 }
 
+/* ```mermaid 卡片：图直接画在回复里，源码折在后面（用户 09-20 拍板：卡片式
+   内联，不走 artifact——聊天里的图是回答的一部分）。 */
+.mermaid-figure {
+  display: flex;
+  justify-content: center;
+  padding: 10px 14px 14px;
+  overflow-x: auto;
+  color: color-mix(in srgb, var(--code-ink) 55%, transparent);
+  font-size: 12px;
+}
+
+/* 渲染器给的是浅底图：暗色主题下衬一层白，免得深色线条糊进背景。
+   限高：聊天流里一张几千像素高的图会把整段对话挤没，而这里**点一下就能在
+   灯箱里看原图**（终端那边没有灯箱，所以那边反过来不限高）。SVG 是矢量，
+   缩着看不掉精度。 */
+.mermaid-figure svg {
+  max-width: 100%;
+  max-height: min(60vh, 520px);
+  height: auto;
+  border-radius: calc(var(--radius) - 4px);
+  background: #fff;
+}
+
+.mermaid-figure.is-zoomable {
+  cursor: zoom-in;
+}
+
+.mermaid-figure.is-zoomable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 折在卡片里的源码块：外层已经有底色和圆角了，别再套一层。 */
+.mermaid-block .mermaid-source {
+  margin: 0;
+  border-radius: 0;
+}
+
+.mermaid-block .mermaid-source .code-toolbar {
+  display: none;
+}
+
+/* 「源码」开关 + 复制按钮成一组靠右。 */
+.mermaid-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* 文字按钮：`.code-copy-button` 那套是 25×23 的图标格子，中文会被挤断行。 */
+.mermaid-source-toggle {
+  height: 23px;
+  padding: 0 8px;
+  border-radius: var(--radius);
+  background: transparent;
+  color: color-mix(in srgb, var(--code-ink) 60%, transparent);
+  font-family: inherit;
+  font-size: inherit;
+  letter-spacing: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.mermaid-source-toggle:hover,
+.mermaid-source-toggle.is-active {
+  background: color-mix(in srgb, var(--code-ink) 12%, transparent);
+  color: var(--code-ink);
+}
+
 .code-toolbar {
   display: flex;
   min-height: 30px;

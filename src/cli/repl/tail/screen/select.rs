@@ -131,7 +131,12 @@ pub(in crate::cli) fn url_at(spans: &[AnsiSpan], column: u16) -> Option<String> 
         let span_width: usize = span.text.chars().map(char_columns).sum();
         if target < width + span_width {
             if let Some(link) = &span.link {
-                if link.starts_with("http://") || link.starts_with("https://") {
+                // `file://` 也认:图表下面那行「点开看大图」指的就是缓存里那张
+                // SVG,只放 http 的话点了没反应(用户 09-20 实测)。
+                if link.starts_with("http://")
+                    || link.starts_with("https://")
+                    || link.starts_with("file://")
+                {
                     return Some(link.clone());
                 }
             }
@@ -170,8 +175,24 @@ pub(in crate::cli) fn url_at(spans: &[AnsiSpan], column: u16) -> Option<String> 
 }
 
 /// 交给桌面去开。开不了就算了——为了一个链接把整个界面弄崩没道理。
+/// 交给系统去开。
+///
+/// **`xdg-open` 是 freedesktop 的东西,macOS 上根本没有**——原来写死它,于是
+/// mac 上全屏里点任何链接都悄无声息(09-20 发现)。按平台取:macOS 用 `open`,
+/// 其余用 `xdg-open`。
+///
+/// 只在**全屏**下需要走这条:全屏把鼠标捕获走了,终端自己那套「点链接」失效。
+/// inline 那边链接照样是终端在管,轮不到我们开进程。
+fn opener() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    }
+}
+
 pub(in crate::cli) fn open_url(url: &str) {
-    let _ = std::process::Command::new("xdg-open")
+    let _ = std::process::Command::new(opener())
         .arg(url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

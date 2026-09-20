@@ -386,6 +386,7 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
         .route("/assets/miyu-logo.png", get(logo_asset))
         .route("/assets/miyuwallpaper.png", get(wallpaper_asset))
         .route("/api/health", get(health))
+        .route("/api/mermaid", post(mermaid_svg))
         .route("/api/auth/login", post(auth_login))
         .route("/api/auth/logout", post(auth_logout))
         .route("/api/auth/register", post(auth_register))
@@ -713,6 +714,36 @@ pub(in crate::web) async fn theme_css(State(state): State<DaemonState>) -> Respo
     match tokio::fs::read(&path).await {
         Ok(bytes) => finish_asset_response(bytes.into_response(), "text/css; charset=utf-8"),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// ```mermaid 围栏 → SVG。WebUI 的卡片把源码 POST 过来,拿渲染好的图回去。
+///
+/// 图在服务端渲染(与终端同一个 `render::mermaid`),而不是在前端 vendor 一份
+/// mermaid.js:终端那边本来就需要 Rust 渲染器,两边共用才不会出图不一致,
+/// 前端也省掉 800KB 脚本与那份 CPU。
+///
+/// 画不出来回 422 + 原因,前端照常显示源码——和终端退回代码块一个规矩。
+pub(in crate::web) async fn mermaid_svg(Json(body): Json<Value>) -> Response {
+    let source = body
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    // 上限与渲染器同一个常量;这里先挡一道只是为了给 413 而不是 422。
+    if source.len() > crate::render::mermaid::MAX_SOURCE {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({ "error": "mermaid source too large" })),
+        )
+            .into_response();
+    }
+    match crate::render::mermaid::render_svg(source) {
+        Ok(svg) => Json(json!({ "svg": svg })).into_response(),
+        Err(error) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": error })),
+        )
+            .into_response(),
     }
 }
 

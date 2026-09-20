@@ -47,6 +47,8 @@ ratex-parser = { workspace = true }
 ratex-layout = { workspace = true }
 ratex-types = { workspace = true }
 ratex-render = { workspace = true }
+mermaid-rs-renderer = { workspace = true }
+resvg = { workspace = true }
 
 [features]
 # 测试夹具与测试态行为开关(终端探测固定路径、块标记线程局部等)也编给根包的测试用

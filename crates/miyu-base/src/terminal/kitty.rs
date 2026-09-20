@@ -313,6 +313,43 @@ fn write_image(
     Ok(())
 }
 
+/// 把**已经是 PNG 的字节**按 c×r 网格发过去，占位格照常。
+///
+/// 和 [`kitty_sequence_with_grid`] 的差别只在传输格式：那条走 `f=32`（裸 RGBA），
+/// 这条走 `f=100`（PNG，kitty 自己解）。对图表这类大片留白的图差着一个数量级
+/// ——一张 198×2400 的流程图裸像素是 1.9MB，PNG 不到十分之一（09-20 实测）。
+///
+/// 只在调用方**手上本来就有 PNG** 时用它：为了省传输去做一次 PNG 编码通常不划算
+/// （照片尤其），而且那样还得先解码再编码。图表这条路的 PNG 是渲染时顺手落盘的，
+/// 白捡的便宜——连解码都省了。
+pub fn kitty_png_sequence_with_grid(png: &[u8], cols: u16, rows: u16) -> Result<String> {
+    let image_id = (rand::random::<u32>() & 0x00ff_ffff).max(1);
+    let mut buffer = Vec::new();
+    let chunks = png.chunks(RAW_CHUNK_BYTES);
+    let chunk_count = chunks.len();
+    IMAGES_EMITTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    for (index, chunk) in chunks.enumerate() {
+        write!(&mut buffer, "\x1b_Gq=2,")?;
+        if index == 0 {
+            // `f=100` 下不带 `s`/`v`：尺寸由 kitty 从 PNG 头里读，多写一份反而
+            // 有对不上的风险。
+            write!(
+                &mut buffer,
+                "i={image_id},a=T,U=1,f=100,t=d,c={cols},r={rows},"
+            )?;
+        }
+        let more = u8::from(index + 1 < chunk_count);
+        write!(&mut buffer, "m={more};")?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(chunk);
+        buffer.write_all(encoded.as_bytes())?;
+        write!(&mut buffer, "\x1b\\")?;
+    }
+    for line in placeholder_grid(image_id, cols, rows)? {
+        writeln!(&mut buffer, "{line}")?;
+    }
+    String::from_utf8(buffer).context("kitty sequence is not utf-8")
+}
+
 /// 只把像素传过去，不画占位符。
 fn write_transfer(
     output: &mut impl Write,

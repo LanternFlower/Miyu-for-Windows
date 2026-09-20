@@ -4298,7 +4298,141 @@
     flushPlain(text.length);
   }
 
+  // 已经渲染过的图：同一段源码不重复往服务端跑（流式重绘会把同一块反复重建）。
+  const mermaidCache = new Map();
+
+  /** ```mermaid 卡片：图直接画在回复里，源码折在后面。
+   *
+   * 图在**服务端**渲染（`POST /api/mermaid`，与终端同一个 Rust 渲染器），
+   * 前端不 vendor mermaid.js：终端那边本来就需要 Rust 渲染器，两边共用才不会
+   * 出图不一致，也省掉 800KB 脚本。画不出来就退回普通代码块——和终端一个规矩。
+   */
+  function mermaidBlock(codeText) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "code-block mermaid-block";
+    const toolbar = document.createElement("div");
+    toolbar.className = "code-toolbar";
+    const label = document.createElement("span");
+    label.textContent = "图表";
+    const sourceToggle = document.createElement("button");
+    sourceToggle.type = "button";
+    // 不蹭 `.code-copy-button`：那是给图标用的 25×23 定宽格子，塞中文会断成两行。
+    sourceToggle.className = "mermaid-source-toggle";
+    sourceToggle.textContent = "源码";
+    const copy = makeCopyButton(codeText, "复制源码");
+    copy.className = "code-copy-button";
+    // 两个按钮成一组靠右：工具栏是 space-between，散着放中间那个会飘到正中。
+    const actions = document.createElement("div");
+    actions.className = "mermaid-actions";
+    actions.append(sourceToggle, copy);
+    toolbar.append(label, actions);
+
+    const figure = document.createElement("div");
+    figure.className = "mermaid-figure";
+    figure.textContent = "正在画图…";
+
+    const source = plainCodeBlock("mermaid", codeText);
+    source.hidden = true;
+    source.classList.add("mermaid-source");
+    // 图和源码是同一块地方的两个视图，**互相替换**而不是源码追加在图下面
+    // （用户 09-20）。按钮上写的是「点了会切到哪儿」。
+    sourceToggle.addEventListener("click", () => {
+      const showSource = source.hidden;
+      source.hidden = !showSource;
+      figure.hidden = showSource;
+      sourceToggle.textContent = showSource ? "图表" : "源码";
+      sourceToggle.classList.toggle("is-active", showSource);
+      sourceToggle.setAttribute("aria-expanded", String(showSource));
+    });
+
+    wrapper.append(toolbar, figure, source);
+
+    const paint = (svg) => {
+      figure.textContent = "";
+      // 服务端来的 SVG 当 HTML 插：它是我们自己的渲染器产出的，不是模型原文。
+      figure.innerHTML = svg;
+      const node = figure.querySelector("svg");
+      if (!node) return;
+      // `width`/`height` 留着：渲染器给的是图的**自然尺寸**，摘掉之后 SVG 会
+      // 撑满卡片宽度——一张 200px 宽的小流程图被放大四倍，字大得离谱。
+      // 只加一道上限，宽过卡片才等比缩。
+      node.style.maxWidth = "100%";
+      node.style.height = "auto";
+      // 点图放大：走和图片一样的灯箱，SVG 包成 blob 给它。
+      figure.classList.add("is-zoomable");
+      figure.tabIndex = 0;
+      figure.setAttribute("role", "button");
+      figure.setAttribute("aria-label", "放大查看图表");
+      const open = () => {
+        const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+        window.MiyuLightbox?.open({ url, name: "图表" });
+      };
+      figure.addEventListener("click", open);
+      // 卡片限了高（见 styles.css），高图会被缩着放。缩了就在工具栏说一句，
+      // 否则「这张图其实不是原尺寸、点开能看全」没人知道。
+      requestAnimationFrame(() => {
+        const natural = parseFloat(node.getAttribute("height") || "0");
+        if (natural > 0 && node.getBoundingClientRect().height < natural - 2) {
+          wrapper.classList.add("is-scaled");
+          label.textContent = "图表 · 点开看原图";
+        }
+      });
+      figure.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          open();
+        }
+      });
+    };
+
+    const fallback = () => {
+      // 画不出来就只剩源码：把卡片整个换成那块普通代码块。
+      //
+      // `replaceWith` 对**还没插进 DOM** 的节点是静默无效的，所以这条路只留给
+      // 异步失败（那时卡片已经在页面上了）；「缓存里已知画不出来」在下面直接
+      // 返回代码块，不再造一个卡片出来再拆——那样会剩一个空壳裹着源码（09-20
+      // 走查抓到）。
+      source.hidden = false;
+      source.classList.remove("mermaid-source");
+      if (wrapper.parentNode) wrapper.replaceWith(source);
+    };
+
+    const cached = mermaidCache.get(codeText);
+    if (cached === null) {
+      return plainCodeBlock("mermaid", codeText);
+    } else if (cached) {
+      paint(cached);
+    } else {
+      apiRequest("/api/mermaid", { method: "POST", body: JSON.stringify({ source: codeText }) })
+        .then((response) => response.json())
+        .then((data) => {
+          if (!data || typeof data.svg !== "string") throw new Error("no svg");
+          mermaidCache.set(codeText, data.svg);
+          paint(data.svg);
+        })
+        .catch(() => {
+          mermaidCache.set(codeText, null);
+          fallback();
+        });
+    }
+    return wrapper;
+  }
+
   function codeBlock(language, codeText, settled = true) {
+    // 闭合的 ```mermaid 走图表卡片；还在流的时候先当代码块画，
+    // 半截语法渲染出来的图只会闪。
+    if (settled && String(language || "").trim().toLowerCase() === "mermaid" && codeText.trim()) {
+      return mermaidBlock(codeText);
+    }
+    return plainCodeBlock(language, codeText, settled);
+  }
+
+  /** 带语法高亮的代码块本体。
+   *
+   * 和 `codeBlock` 分开，是因为 mermaid 卡片里折着的那份源码也要用它——走
+   * `codeBlock` 的话会被那条 mermaid 分支再接回卡片，无限递归。
+   */
+  function plainCodeBlock(language, codeText, settled = true) {
     const wrapper = document.createElement("div");
     wrapper.className = "code-block";
     const toolbar = document.createElement("div");

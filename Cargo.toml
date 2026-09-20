@@ -136,6 +136,12 @@ ratex-parser = "0.1.12"
 ratex-layout = "0.1.12"
 ratex-types = "0.1.12"
 ratex-render = { version = "0.1.12", features = ["embed-fonts"] }
+mermaid-rs-renderer = "0.3"
+# 自己光栅化 SVG（终端那条路）：按终端要显示的像素数直接渲染，而不是
+# 「自然尺寸 PNG → 重采样」。顺带把字体库缓存住——mermaid-rs-renderer 的
+# write_output_png 每次调用都重扫一遍系统字体。resvg 会把 usvg 与
+# tiny-skia 一起 re-export，所以只挂它一个，版本不会打架。
+resvg = { version = "0.47", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
 sherpa-onnx = { version = "1.13.7" }
 cpal = { version = "0.15" }
 pinyin = { version = "0.10" }

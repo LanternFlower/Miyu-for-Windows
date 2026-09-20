@@ -235,9 +235,47 @@ def main():
         wait_quiet(2.5, timeout=120)
         log("第二轮跑完")
         probe.screenshot("tui-table-math")
+
+        # SHOT_REPAINT_LAST=1：第二轮也来一次「敲个字逼它重画」。正文里带图时
+        # （比如 ```mermaid）要验的是同一件事——占位格进了缓冲，重画之后图还在。
+        if os.environ.get("SHOT_REPAINT_LAST"):
+            probe.kitten("send-text", "x")
+            time.sleep(1.2)
+            probe.screenshot("tui-table-math-repaint")
+            probe.kitten("send-key", "backspace")
+            time.sleep(0.4)
         (OUT / "screen.txt").write_text(screen_text(), encoding="utf-8")
+
+        # SHOT_CLICK_TEXT=<一段文字>：在屏幕上找到它，往那儿真点一下。
+        #
+        # 全屏把鼠标捕获走了，"点链接"是 Miyu 自己接的（`select::url_at` +
+        # `open_url`），所以「点了有没有反应」只有真点一次才验得到。无头 cage 里
+        # 没有指针设备，于是直接把 **SGR 鼠标序列**当输入喂进去——crossterm 认的
+        # 就是这个，和真鼠标走的是同一条路。
+        click_text = os.environ.get("SHOT_CLICK_TEXT")
+        if click_text:
+            lines = screen_text().splitlines()
+            hit = next(
+                ((y, line.index(click_text)) for y, line in enumerate(lines) if click_text in line),
+                None,
+            )
+            if hit is None:
+                log(f"! 屏幕上找不到 {click_text!r}，没法点")
+            else:
+                # SGR：行列都是 1 起算；`M` 是按下、`m` 是松开。列取标签中间，
+                # 免得压在边界上。
+                row, col = hit[0] + 1, hit[1] + 2
+                probe.kitten("send-text", f"\x1b[<0;{col};{row}M")
+                time.sleep(0.15)
+                probe.kitten("send-text", f"\x1b[<0;{col};{row}m")
+                time.sleep(1.5)
+                log(f"点了 ({row},{col}) 上的 {click_text!r}")
+                probe.screenshot("tui-after-click")
         log(f"产物：{OUT}")
-        for name in ("tui-start", "tui-image", "tui-image-repaint", "tui-table-math"):
+        names = ["tui-start", "tui-image", "tui-image-repaint", "tui-table-math"]
+        if os.environ.get("SHOT_REPAINT_LAST"):
+            names.append("tui-table-math-repaint")
+        for name in names:
             path = OUT / f"{name}.png"
             log(f"  {path}  {'有' if path.exists() else '缺'}")
         return 0
