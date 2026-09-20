@@ -138,7 +138,7 @@ impl MiyuPaths {
                 skills_dir: config_dir.join("skills"),
                 scripts_dir: config_dir.join("scripts"),
                 pictures_dir: data_dir.join("pictures"),
-                fish_hook_file: base.config_dir().join("fish/conf.d/miyu.fish"),
+                fish_hook_file: fish_hook_path(base.home_dir()),
                 bash_hook_file: config_dir.join("shell/bash-hook.sh"),
                 zsh_hook_file: config_dir.join("shell/zsh-hook.zsh"),
                 system_scripts_dir,
@@ -237,7 +237,7 @@ impl MiyuPaths {
         } else {
             data_dir.join("pictures")
         };
-        let fish_hook_file = base.config_dir().join("fish/conf.d/miyu.fish");
+        let fish_hook_file = fish_hook_path(base.home_dir());
         let bash_hook_file = config_dir.join("shell/bash-hook.sh");
         let zsh_hook_file = config_dir.join("shell/zsh-hook.zsh");
         let resource_config_dir = if use_legacy_temporarily || resource_migration_deferred {
@@ -603,6 +603,73 @@ impl MiyuPaths {
             "{}: {}",
             t("system scripts directory", "系统 scripts 目录"),
             self.system_scripts_dir.display()
+        );
+    }
+}
+
+/// fish 的 `conf.d`——**不能用 `BaseDirs::config_dir()`**。
+///
+/// fish 自己的规矩是「`$XDG_CONFIG_HOME/fish`，没设就 `~/.config/fish`」，和平台
+/// 无关（见 fish 文档的 configuration 一节）;而 `directories` 在 macOS 上把
+/// `config_dir()` 映射到 `~/Library/Application Support`。两者一对，hook 就被写到
+/// 一个 fish 永远不会去读的地方——装完毫无反应，还不报错。
+///
+/// Linux 上两种算法**结果完全一样**（`directories` 的 `config_dir()` 在 Linux 就是
+/// 这段逻辑），所以这不是分平台的两套行为，只是把 fish 的规矩写对。
+/// fish 的 `conf.d`——**不能用 `BaseDirs::config_dir()`**。
+///
+/// fish 自己的规矩是「`$XDG_CONFIG_HOME/fish`，没设就 `~/.config/fish`」，和平台
+/// 无关（见 fish 文档的 configuration 一节）;而 `directories` 在 macOS 上把
+/// `config_dir()` 映射到 `~/Library/Application Support`。两者一对，hook 就被写到
+/// 一个 fish 永远不会去读的地方——装完毫无反应，还不报错。
+///
+/// Linux 上两种算法**结果完全一样**（`directories` 的 `config_dir()` 在 Linux 就是
+/// 这段逻辑），所以这不是分平台的两套行为，只是把 fish 的规矩写对。
+/// 环境变量当参数传进来,函数保持纯粹:测试不必改进程环境(并行跑会打架,
+/// Rust 2024 里 `set_var` 还是 unsafe)。
+fn fish_conf_dir(home_dir: &Path, xdg_config_home: Option<&Path>) -> PathBuf {
+    xdg_config_home
+        .filter(|path| path.is_absolute())
+        .map_or_else(|| home_dir.join(".config"), Path::to_path_buf)
+        .join("fish/conf.d")
+}
+
+fn fish_hook_path(home_dir: &Path) -> PathBuf {
+    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+    fish_conf_dir(home_dir, xdg.as_deref()).join("miyu.fish")
+}
+
+#[cfg(test)]
+mod fish_conf_dir_tests {
+    use super::fish_conf_dir;
+    use std::path::{Path, PathBuf};
+
+    /// 没设 `XDG_CONFIG_HOME` 就是 `~/.config/fish/conf.d`——fish 的默认。
+    /// 这也正是 `directories` 在 **Linux** 上给出的路径,所以这次改动在 Linux
+    /// 上逐字节不变,只是在 macOS 上不再跑去 `Library/Application Support`。
+    #[test]
+    fn falls_back_to_dot_config() {
+        assert_eq!(
+            fish_conf_dir(Path::new("/home/tester"), None),
+            PathBuf::from("/home/tester/.config/fish/conf.d")
+        );
+    }
+
+    /// 设了绝对路径就听它的。
+    #[test]
+    fn honours_absolute_xdg_config_home() {
+        assert_eq!(
+            fish_conf_dir(Path::new("/home/tester"), Some(Path::new("/tmp/cfg"))),
+            PathBuf::from("/tmp/cfg/fish/conf.d")
+        );
+    }
+
+    /// 相对路径不算数(和 `directories` 同规矩),退回 `~/.config`。
+    #[test]
+    fn ignores_relative_xdg_config_home() {
+        assert_eq!(
+            fish_conf_dir(Path::new("/home/tester"), Some(Path::new("cfg"))),
+            PathBuf::from("/home/tester/.config/fish/conf.d")
         );
     }
 }
