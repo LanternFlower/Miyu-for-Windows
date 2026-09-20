@@ -222,17 +222,37 @@ pub fn print_reload_hint(shell: &str, hook_file: &Path) {
     }
 }
 
+/// 往上数几层父进程,看看是谁在跑我们——装 hook 之后那句「当前 shell 要不要
+/// source 一下」靠它判断。
+///
+/// 走 `/proc`,**macOS 上没有这个文件系统**,于是每一层都拿不到、恒返回 `None`。
+/// 拿不到就退回 `$SHELL`:它说的是登录 shell 而不是当前这一层,不如进程树准
+/// (在 bash 里 `exec fish` 之后就会答错),但比什么都不知道强。
 pub fn current_parent_shell() -> Option<String> {
     let mut pid = std::process::id();
     for _ in 0..8 {
-        let parent = parent_pid(pid)?;
-        let name = process_name(parent)?;
-        if matches!(name.as_str(), "fish" | "bash" | "zsh") {
+        let Some(parent) = parent_pid(pid) else {
+            break;
+        };
+        let Some(name) = process_name(parent) else {
+            break;
+        };
+        if is_known_shell(&name) {
             return Some(name);
         }
         pid = parent;
     }
-    None
+    shell_from_env(std::env::var_os("SHELL").as_deref().map(Path::new))
+}
+
+fn is_known_shell(name: &str) -> bool {
+    matches!(name, "fish" | "bash" | "zsh")
+}
+
+/// `$SHELL` → 认得的 shell 名。纯函数,好测。
+fn shell_from_env(shell: Option<&Path>) -> Option<String> {
+    let name = shell?.file_name()?.to_str()?;
+    is_known_shell(name).then(|| name.to_string())
 }
 
 fn parent_pid(pid: u32) -> Option<u32> {
@@ -997,5 +1017,23 @@ mod hazard_tests {
             "链接被换成了普通文件"
         );
         assert_eq!(fs::read_to_string(&real).unwrap(), fish::hook());
+    }
+
+    /// `/proc` 拿不到时（macOS 上恒如此）退回 `$SHELL`；认不出的一律不猜。
+    #[test]
+    fn falls_back_to_the_shell_env_var() {
+        use super::shell_from_env;
+        use std::path::Path;
+
+        assert_eq!(shell_from_env(Some(Path::new("/bin/zsh"))).as_deref(), Some("zsh"));
+        assert_eq!(
+            shell_from_env(Some(Path::new("/opt/homebrew/bin/fish"))).as_deref(),
+            Some("fish")
+        );
+        assert_eq!(shell_from_env(Some(Path::new("/bin/bash"))).as_deref(), Some("bash"));
+        // 认不出的别硬凑：宁可答「不知道」，也不要把 hook 装错 shell。
+        assert_eq!(shell_from_env(Some(Path::new("/usr/bin/nu"))), None);
+        assert_eq!(shell_from_env(Some(Path::new("/bin/"))), None);
+        assert_eq!(shell_from_env(None), None);
     }
 }
