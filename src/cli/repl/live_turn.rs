@@ -226,9 +226,26 @@ pub(in crate::cli) async fn run_live_agent_turn(
                         parse_repl_input(live.editor.input.trim_start()),
                         ReplInput::Slash(..)
                     ) {
-                        // 静默吞掉这次回车：流式渲染中间插系统消息会写坏终端
-                        // 帧。输入原样留着，这一轮结束后再回车即可。直连模式
-                        // 没有续轮驱动器，`/goal` 也没有运行中执行的意义。
+                        let ReplInput::Slash(command, args) =
+                            parse_repl_input(live.editor.input.trim_start())
+                        else {
+                            unreachable!("just matched")
+                        };
+                        // 直连模式（`MIYU_DIRECT=1`）没有 daemon，回合就跑在这
+                        // 个进程里，做不了远端那条路的「分离 → 执行 → 挂回来」
+                        // （09-20）。所以这里仍然吞掉这次回车——但**把原因说
+                        // 出来**：原来是全静默，屏幕上一点反应都没有，用户以为
+                        // 回车坏了。输入原样留着，这一轮结束后再回车即可。
+                        let reason = miyu_core::slash_commands::during_turn(command, args)
+                            .reason()
+                            .unwrap_or(t(
+                                "commands run after this reply finishes (direct mode)",
+                                "直连模式下命令要等这一轮说完才能执行",
+                            ));
+                        live.toast_note(reason);
+                        let _ = synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
+                            live.redraw()
+                        });
                         continue;
                     }
                     let mode_before = live.mode();

@@ -59,6 +59,38 @@ impl RemoteRepl {
                     "Miyu Web 核心已停止；请重新启动 REPL 以使用直连模式"
                 )
             ),
+            // 回合跑着的时候敲了一条要占屏的斜杠命令（用户 09-20）：这一轮
+            // 已经分离到后台（daemon 照跑），这里执行命令，然后按事件号挂回来
+            // 接着看——已经看过的那半截不会再来一遍。
+            Err(err) if take_remote_turn_suspended(&err).is_some() => {
+                let suspended = take_remote_turn_suspended(&err).expect("just matched");
+                let (command, args, run_id, last_event_id, session_id) = (
+                    suspended.command,
+                    suspended.args.clone(),
+                    suspended.run_id.clone(),
+                    suspended.last_event_id,
+                    suspended.session_id.clone(),
+                );
+                let step = self.dispatch_slash(command, &args).await?;
+                if step == LoopStep::Break {
+                    return Ok(step);
+                }
+                // 命令把会话换走了（`/new` `/session` `/dev` `/normal`）就不挂
+                // 回去了：那一轮在 daemon 里继续跑，属于**另一条**会话。
+                if self.active_session_id != session_id {
+                    return Ok(step);
+                }
+                // 0 = 一个事件都没看到（命令敲在回合刚起的那一瞬）：走「从头
+                // 补」，否则开头那截永远看不到了。
+                return self
+                    .follow_run_with_commands(
+                        &run_id,
+                        "",
+                        last_event_id == 0,
+                        (last_event_id > 0).then_some(last_event_id),
+                    )
+                    .await;
+            }
             Err(err) if is_remote_turn_detached(&err) => {
                 let frame = format!(
                     "\x1b[2m{}\x1b[0m\n",

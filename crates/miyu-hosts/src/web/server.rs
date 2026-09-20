@@ -244,6 +244,8 @@ pub(in crate::web) async fn follow_run(
     stream: &mut tokio::net::UnixStream,
     run_id: String,
     from_start: bool,
+    // 显式续点（回合中执行命令后挂回来）。给了它就不看 `from_start`。
+    after_id: Option<u64>,
 ) -> Result<()> {
     // 订阅起点要在**查这一轮之前**定:先查再订阅的话,两步之间发生的事件谁也
     // 收不到。`from_start` 取这一轮登记时记下的序号,把整轮补一遍。
@@ -254,8 +256,14 @@ pub(in crate::web) async fn follow_run(
             .get(&run_id)
             .map(|info| (info.turn_id.clone(), info.first_event_id))
     };
-    let after = match (from_start, run_state.as_ref().and_then(|(_, id)| *id)) {
-        (true, Some(first)) => first,
+    let after = match (
+        after_id,
+        from_start,
+        run_state.as_ref().and_then(|(_, id)| *id),
+    ) {
+        // 客户端说了从哪儿接着看就听它的:它知道自己最后看到的是第几号。
+        (Some(after), _, _) => after,
+        (None, true, Some(first)) => first,
         // 不知道从哪儿补(老路径起的轮)就退回只接实时:少看半截好过报错。
         _ => state.events.latest_id(),
     };

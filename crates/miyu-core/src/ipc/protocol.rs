@@ -169,6 +169,11 @@ pub enum Command {
         run_id: String,
         #[serde(default)]
         from_start: bool,
+        /// 从**这个事件号之后**接着看。回合中执行斜杠命令走的是「分离 → 执行
+        /// → 挂回来」，挂回来时已经看过的那半截不能再来一遍（09-20）。
+        /// 给了它就不看 `from_start`。
+        #[serde(default)]
+        after: Option<u64>,
     },
     /// Stop all running background commands of a session (REPL exit).
     StopSessionJobs {
@@ -341,6 +346,13 @@ pub enum Command {
         /// `"dev"` 取 dev 人格的 REPL 指针(无则自举一个 dev 会话)。
         #[serde(default)]
         mode: Option<String>,
+        /// **启动**一个 REPL:开新会话,除非指针那条本来就是空的(用户 09-20
+        /// 拍板,见 `fresh_repl_session`)。会话里的 `/dev` `/normal` 不带它,
+        /// 它们仍然切到那条车道最近用的会话。
+        ///
+        /// `serde(default)` 是为了老客户端:不带这个字段就是原来的语义。
+        #[serde(default)]
+        fresh: bool,
     },
     SetReplSession {
         target: SessionRef,

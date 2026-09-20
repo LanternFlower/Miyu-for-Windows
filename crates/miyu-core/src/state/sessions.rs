@@ -173,6 +173,35 @@ impl StateStore {
         }
     }
 
+    /// 启动一个 REPL 时用的会话：**开新的**，除非指针指的那条本来就是空的。
+    ///
+    /// 用户 09-20 拍板：`miyu` / `miyu dev` 从「打开最近的会话」改成「打开新
+    /// 会话」——接着上次聊是 `/session` 的事，敲 `miyu` 想要的是一张白纸。
+    /// 会话里的 `/dev` `/normal` **不走这里**，它们仍然切到那条车道最近用的
+    /// 会话（同一次拍板里明确保留）。
+    ///
+    /// 空的就原地复用，是为了不让「开一次 miyu 就攒一条空会话」：一条没说过
+    /// 话的会话和一条新建的会话，用户分不出来，但会话列表分得出来。
+    pub fn fresh_repl_session(&self, persona: &str) -> Result<String> {
+        match self.repl_session(persona)? {
+            Some(session_id)
+                if session_id != crate::state::DEFAULT_SESSION_ID
+                    && self.session_is_empty(&session_id) =>
+            {
+                Ok(session_id)
+            }
+            _ => self.new_repl_session(persona),
+        }
+    }
+
+    /// 这条会话有没有可见回合。读不到就当**非空**（保守：宁可多开一条新的，
+    /// 也不要把用户正在用的会话当空的复用掉）。
+    pub fn session_is_empty(&self, session_id: &str) -> bool {
+        self.conv_db
+            .load_visible_turns(session_id)
+            .is_ok_and(|turns| turns.is_empty())
+    }
+
     /// 给这条人格车道新建一个会话并钉住指针。
     ///
     /// 名字留空是有意的：首条消息会自动命名。不动 `session_id()`——终端车道

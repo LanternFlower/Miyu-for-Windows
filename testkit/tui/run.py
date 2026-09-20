@@ -277,7 +277,10 @@ def render(raw):
     而这份代码一轮循环里要调好几次。等「正在思考」这种转瞬即逝的状态时，光是
     等的开销就足够把它等没——item06 第一版就是这么假报红的。
 
-    流回退（换了一个 TUI 进程、另起一个 sink）就重建。
+    流回退（换了一个 TUI 进程、另起一个 sink）就重建——但**只看长度**是不够的：
+    第二个 TUI 头 4 秒吐的字节可能比第一个多，长度没回退，于是上一个进程画的
+    东西还留在虚拟屏上，走查就会以为「新会话里还看得见上一句」（09-20 实测，
+    白查了一轮）。换进程时请显式调 `reset_view()`。
     """
     import codecs
 
@@ -291,7 +294,29 @@ def render(raw):
         _VIEW["fed"] = len(raw)
         if text:
             _VIEW["stream"].feed(text)
-    return [line.rstrip() for line in _VIEW["screen"].display]
+    try:
+        return [line.rstrip() for line in _VIEW["screen"].display]
+    except IndexError:
+        # pyte 偶尔会在宽字符被覆写成空串的格子上炸（`char[0]` 越界）。
+        # 整屏重建一次通常就过去了，别让测具的库 bug 顶掉整场走查。
+        reset_view()
+        _VIEW["screen"] = pyte.Screen(COLS, ROWS)
+        _VIEW["stream"] = pyte.Stream(_VIEW["screen"])
+        _VIEW["decoder"] = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        _VIEW["fed"] = len(raw)
+        _VIEW["stream"].feed(_VIEW["decoder"].decode(bytes(raw)))
+        try:
+            return [line.rstrip() for line in _VIEW["screen"].display]
+        except IndexError:
+            return []
+
+
+def reset_view():
+    """扔掉虚拟屏。换了 TUI 进程就要调一次，否则上一个进程画的东西还在。"""
+    _VIEW["screen"] = None
+    _VIEW["stream"] = None
+    _VIEW["decoder"] = None
+    _VIEW["fed"] = 0
 
 
 def kill_stale_daemon():
@@ -1530,6 +1555,21 @@ def main():
         report["item24_reopen_has_no_zero_seconds"] = False
         tui, master = spawn_tui()
         again = bytearray()
+        reset_view()
+        # 09-20 起 `miyu` 启动开的是**新会话**（用户拍板），所以重开之后屏幕
+        # 上什么都没有——要验回放就得先用 `/session` 切回刚才那条。
+        # 「刚才那条」= 列表里第一条不叫「新会话」的（新开的那条还没命名）。
+        settle(master, again, quiet=1.0, timeout=20.0)
+        os.write(master, b"/session\r")
+        settle(master, again, quiet=0.8, timeout=20.0)
+        for _ in range(12):
+            rows = render(bytes(again))
+            picked = next((line for line in rows if "›" in line and " · " in line), "")
+            if picked and "新会话" not in picked and "New session" not in picked:
+                break
+            os.write(master, b"j")
+            settle(master, again, quiet=0.25, timeout=5.0)
+        os.write(master, b"\r")
         # 重开要先连 daemon 再查库回放，中间可能安静好几秒：等到正文真出现。
         deadline = time.time() + 60.0
         while time.time() < deadline:

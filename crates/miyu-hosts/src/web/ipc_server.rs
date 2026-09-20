@@ -184,8 +184,12 @@ async fn dispatch_ipc_connection(
             )
             .await?;
         }
-        IpcCommand::FollowRun { run_id, from_start } => {
-            follow_run(&state, &mut stream, run_id, from_start).await?;
+        IpcCommand::FollowRun {
+            run_id,
+            from_start,
+            after,
+        } => {
+            follow_run(&state, &mut stream, run_id, from_start, after).await?;
         }
         IpcCommand::VoiceAttach => {
             voice_bridge::handle_voice_attach(&state, &mut stream).await?;
@@ -257,7 +261,7 @@ async fn dispatch_ipc_connection(
             )
             .await?;
         }
-        IpcCommand::GetReplSession { mode } => {
+        IpcCommand::GetReplSession { mode, fresh } => {
             let dev = mode.as_deref() == Some("dev");
             let persona = if dev {
                 miyu_core::state::DEV_PERSONA.to_string()
@@ -274,9 +278,22 @@ async fn dispatch_ipc_connection(
             //
             // 空名字是有意的:首条消息会自动命名(与 dev 同路)。不动
             // `store.session_id()`,终端车道保持原样;要回去用 `/session`。
-            let session_id = store
-                .ensure_repl_session(&persona)
-                .map_err(|error| anyhow::anyhow!(safe_error_message(&error)))?;
+            // 启动开新会话时,上键历史会跟着空掉——输入历史是**按会话**存的
+            // (`repl_history_file(paths, session_id)`)。把换掉的那条带回去,
+            // 客户端拿它补历史,否则每次敲 `miyu` 上键都调不出昨天说过的话。
+            let previous_repl_session = if fresh {
+                store.repl_session(&persona).ok().flatten()
+            } else {
+                None
+            };
+            // `fresh` = 这是一次**启动**(`miyu` / `miyu dev`):开新会话,
+            // 除非指针那条本来就是空的。会话里的 `/dev` `/normal` 不带它。
+            let session_id = if fresh {
+                store.fresh_repl_session(&persona)
+            } else {
+                store.ensure_repl_session(&persona)
+            }
+            .map_err(|error| anyhow::anyhow!(safe_error_message(&error)))?;
             // 指针有效但会话已归档/不是本地会话时同样换一条新的,别把 REPL
             // 卡在一个进不去的会话上。
             let target = ipc::SessionRef::Id { id: session_id };
@@ -317,10 +334,17 @@ async fn dispatch_ipc_connection(
                 &mut stream,
                 &IpcFrame::AdminResult {
                     state: session_state_for(&state, &session_id)?,
-                    data: if stale_models.is_empty() {
-                        json!({})
-                    } else {
-                        json!({ "stale_model_override": stale_models })
+                    data: {
+                        let mut data = json!({});
+                        if !stale_models.is_empty() {
+                            data["stale_model_override"] = json!(stale_models);
+                        }
+                        if let Some(previous) =
+                            previous_repl_session.filter(|previous| previous != &session_id)
+                        {
+                            data["previous_repl_session"] = json!(previous);
+                        }
+                        data
                     },
                 },
             )
@@ -1031,7 +1055,7 @@ pub(in crate::web) async fn handle_ipc_turn(
                 // 排完接着把那一轮的事件推给它:发问的人得看得到回答。从**当下**
                 // 接(不补前面那半截)——那半截是另一个终端的对话,倒进这个终端
                 // 只会让人莫名其妙。
-                return follow_run(&state, stream, target_run, false).await;
+                return follow_run(&state, stream, target_run, false, None).await;
             }
             Err(error) => {
                 tracing::debug!(

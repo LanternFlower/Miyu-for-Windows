@@ -21,6 +21,9 @@ pub(in crate::cli) async fn follow_wake_run(
     // 把这一轮**从头**补一遍吗。后台唤醒轮是刚刚才起的，接实时就够；
     // 同一个会话的第二个 TUI 挂到一轮**已经在跑**的轮上时要补。
     from_start: bool,
+    // 从这个事件号之后接着看。回合中执行斜杠命令后挂回来时给它（09-20）：
+    // 已经看过的那半截不能再来一遍。给了它就不看 `from_start`。
+    after: Option<u64>,
     // 附着期间静默执行的 `/goal` 要落在**这个 REPL 的会话**上，不能拿
     // daemon 的当前会话指针顶替——普通模式的 REPL 早就有自己的会话了。
     session_id: &str,
@@ -28,12 +31,17 @@ pub(in crate::cli) async fn follow_wake_run(
     jobs_shared: &std::sync::Arc<SharedJobsFeed>,
 ) -> Result<()> {
     let config = AppConfig::load_or_default(paths)?;
+    // 回合中执行完斜杠命令**挂回来**（09-20）：正文本来就在流，这里既不该打
+    // 抬头（那不是一件新事），也不该起等待转轮（回放下一帧就接上了，先画一个
+    // 转轮就是 09-19 那个「多一个错位的 spinner」）。
+    let resuming = after.is_some();
     let mut stream = ipc::connect(&paths.ipc_socket()).await?;
     ipc::send(
         &mut stream,
         &IpcRequest::new(IpcCommand::FollowRun {
             run_id: run_id.to_string(),
             from_start,
+            after,
         }),
     )
     .await?;
@@ -69,13 +77,14 @@ pub(in crate::cli) async fn follow_wake_run(
         // 挂到**别人起的轮**上也不打：那不是后台任务完成，是这个会话里另一个
         // 端正在说话。它自己的用户消息会从 `turn.started` 画出来，那才是该有
         // 的抬头（用户 09-19 实测：第二个 TUI 顶上写着「后台任务完成」）。
-        let header = if from_start || label == miyu_engine::tools::goal::GOAL_ROUND_LABEL {
-            String::new()
-        } else if label.is_empty() {
-            miyu_base::i18n::text("⚙ background task finished", "⚙ 后台任务完成").to_string()
-        } else {
-            format!("⚙ {label}")
-        };
+        let header =
+            if from_start || resuming || label == miyu_engine::tools::goal::GOAL_ROUND_LABEL {
+                String::new()
+            } else if label.is_empty() {
+                miyu_base::i18n::text("⚙ background task finished", "⚙ 后台任务完成").to_string()
+            } else {
+                format!("⚙ {label}")
+            };
         if crate::cli::in_fullscreen() {
             // 全屏：表头走缓冲。`suspend` + 直写 stdout + `resume_at` 那条路是
             // inline 的写法——全屏下直写的字节进不了缓冲，而 `resume_at` 会整屏
@@ -109,8 +118,10 @@ pub(in crate::cli) async fn follow_wake_run(
     //
     // 回放一来事件就接上了，转轮由渲染器自己按事件带起来；万一回放是空的
     // （那一轮刚好没赶上），下面收到第一条事件后补起一次，不会一直没有。
+    // 回合中执行斜杠命令要按这个号挂回来（09-20），和 `one_shot.rs` 同一套。
+    let mut last_event_id = after.unwrap_or(0);
     let mut waiting_started = false;
-    if !from_start {
+    if !from_start && !resuming {
         renderer.start_waiting()?;
         live.apply_renderer_frame(&mut renderer)?;
         waiting_started = true;
@@ -232,9 +243,45 @@ pub(in crate::cli) async fn follow_wake_run(
                                 }
                                 continue;
                             }
-                            // 其他命令运行中不可用，也不打提示（流中间的系统
-                            // 消息会写坏渲染）：吞掉回车，输入原样留在输入框。
-                            miyu_core::slash_commands::ReplInput::Slash(..) => continue,
+                            // 其余命令按「回合中能不能做」分流（用户 09-20），
+                            // 和 `one_shot.rs` 那条路同一张表。
+                            miyu_core::slash_commands::ReplInput::Slash(command, args) => {
+                                use miyu_core::slash_commands::DuringTurn;
+                                let verdict =
+                                    miyu_core::slash_commands::during_turn(command, args);
+                                match verdict {
+                                    DuringTurn::Inline => continue,
+                                    DuringTurn::Blocked { .. } => {
+                                        if let Some(reason) = verdict.reason() {
+                                            // 输入原样留着，这一轮说完再回车。
+                                            live.toast_note(reason);
+                                            if !live.external_output_active {
+                                                synchronized_terminal_update(
+                                                    CursorAfterUpdate::Preserve,
+                                                    || live.redraw(),
+                                                )?;
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                    DuringTurn::Detach => {
+                                        let args = args.trim().to_string();
+                                        live.editor.clear();
+                                        renderer.finish()?;
+                                        live.stop_footer_spinner()?;
+                                        live.apply_renderer_frame(&mut renderer)?;
+                                        return Err(anyhow::Error::new(
+                                            crate::cli::repl::session::RemoteTurnSuspended {
+                                                command,
+                                                args,
+                                                run_id: run_id.to_string(),
+                                                last_event_id,
+                                                session_id: session_id.to_string(),
+                                            },
+                                        ));
+                                    }
+                                }
+                            }
                             miyu_core::slash_commands::ReplInput::Chat => {}
                         }
                     }
@@ -316,6 +363,9 @@ pub(in crate::cli) async fn follow_wake_run(
                 }
             }
         };
+        if let Some(IpcFrame::Event { id, .. }) = &frame {
+            last_event_id = *id;
+        }
         let Some(IpcFrame::Event { kind, data, .. }) = frame else {
             break;
         };

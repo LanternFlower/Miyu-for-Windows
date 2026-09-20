@@ -340,9 +340,18 @@ pub(in crate::cli) async fn run_direct_repl(
     } else {
         config.active_persona_scope()
     };
-    // 与远端 `GetReplSession` 同一条语义（见 `ensure_repl_session`）：指针缺失
-    // 就自举本车道的会话，绝不退到终端集成那条。
-    let repl_session_id = state.ensure_repl_session(&persona)?;
+    // 与远端 `GetReplSession { fresh: true }` 同一条语义：**启动**一律开新
+    // 会话（用户 09-20 拍板），指针那条本来就空则原地复用；绝不退到终端集成
+    // 那条车道。
+    // 上键历史是按会话存的，开新会话后得从被换掉的那条接着来（远端那条路由
+    // daemon 用 `previous_repl_session` 带回，这里自己读指针）。
+    let previous_repl_session = state
+        .repl_session(&persona)
+        .ok()
+        .flatten()
+        .filter(|previous| previous != &state.session_id().to_string());
+    let repl_session_id = state.fresh_repl_session(&persona)?;
+    let previous_repl_session = previous_repl_session.filter(|it| it != &repl_session_id);
     state.adopt_session(&repl_session_id);
     apply_session_model_override(&state, &mut config);
     let memory_organizer = MemoryOrganizer::spawn()?;
@@ -350,7 +359,10 @@ pub(in crate::cli) async fn run_direct_repl(
     memory_organizer_handle.wake(config.clone(), paths.clone(), state.clone());
     let mut client = OpenAiCompatibleClient::from_config(&config, paths)?;
     let mut mode = initial_mode;
-    let mut input_history = load_repl_input_history(&state, paths)?;
+    let mut input_history = match &previous_repl_session {
+        Some(previous) => load_repl_input_history(&state.pinned(previous), paths)?,
+        None => load_repl_input_history(&state, paths)?,
+    };
     let mut prefill = None::<String>;
     let mut live_repl = None::<LiveReplTail>;
 

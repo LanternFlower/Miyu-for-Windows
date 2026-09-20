@@ -144,6 +144,39 @@ impl std::fmt::Display for RemoteTurnDetached {
 
 impl std::error::Error for RemoteTurnDetached {}
 
+/// 回合跑着的时候敲了一条要占屏的斜杠命令（用户 09-20：「应该区分能执行和
+/// 不能执行的命令」）。
+///
+/// 这一轮**分离到后台**（daemon 照跑），由上层执行这条命令，执行完再按
+/// `last_event_id` 挂回来接着看——已经看过的那半截不会再来一遍。
+///
+/// 走「分离」而不是就地执行，是因为命令的实现都挂在 `RemoteRepl` 上（它同时
+/// 持有活动区的可变借用），回合循环够不到；在回合循环里重写一份就是第二套
+/// 事实来源。代价是正文上会留一道接缝（渲染器收口再重开）。
+#[derive(Debug)]
+pub(in crate::cli) struct RemoteTurnSuspended {
+    pub(in crate::cli) command: miyu_core::slash_commands::ReplSlashCommand,
+    pub(in crate::cli) args: String,
+    pub(in crate::cli) run_id: String,
+    /// 最后看到的事件号；挂回来时从它之后接着看。0 = 一个都没看到。
+    pub(in crate::cli) last_event_id: u64,
+    pub(in crate::cli) session_id: String,
+}
+
+impl std::fmt::Display for RemoteTurnSuspended {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(t("suspended for a command", "为执行命令暂离"))
+    }
+}
+
+impl std::error::Error for RemoteTurnSuspended {}
+
+pub(in crate::cli) fn take_remote_turn_suspended(
+    error: &anyhow::Error,
+) -> Option<&RemoteTurnSuspended> {
+    error.downcast_ref::<RemoteTurnSuspended>()
+}
+
 pub(in crate::cli) fn is_remote_turn_detached(error: &anyhow::Error) -> bool {
     error.downcast_ref::<RemoteTurnDetached>().is_some()
 }
@@ -260,8 +293,16 @@ pub(in crate::cli) async fn switch_repl_lane(
     cumulative_tokens: &mut TurnTokens,
 ) -> Result<()> {
     let lane = mode.is_dev().then(|| "dev".to_string());
-    let (state, _) =
-        send_ipc_admin(paths, IpcCommand::GetReplSession { mode: lane.clone() }).await?;
+    let (state, _) = send_ipc_admin(
+        paths,
+        IpcCommand::GetReplSession {
+            mode: lane.clone(),
+            // 空会话里按 Tab 换车道:要的是那条车道**当前**的会话(下面自己
+            // 判空、非空才新开),不是每次都新建。
+            fresh: false,
+        },
+    )
+    .await?;
     let state = if session_is_empty(paths, &state.session_id) {
         state
     } else {
@@ -837,6 +878,8 @@ pub(in crate::cli) async fn repl_fallback_session_state(
             live,
             IpcCommand::GetReplSession {
                 mode: Some("dev".to_string()),
+                // 兜底取回一条能用的会话,不是启动。
+                fresh: false,
             },
         )
         .await?

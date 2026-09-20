@@ -21,18 +21,26 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mode: PersonaLane
     let paths = &refreshed;
     initialize_models_cache(paths);
     let config = AppConfig::load_or_default(paths)?;
-    // The REPL resumes its own lane rather than the terminal session, so
-    // reopening a REPL lands back where the last one left off while shell-hook
-    // keeps talking to whatever session it was on.
+    // REPL 走的是自己的车道(不是 shellhook 那条终端会话),而**启动**一律
+    // 开新会话:用户 09-20 拍板,敲 `miyu` 要的是一张白纸,接着上次聊是
+    // `/session` 的事。指针那条本来就空就原地复用(见 `fresh_repl_session`)。
     let (daemon_state, repl_session_data) = send_ipc_admin(
         paths,
         IpcCommand::GetReplSession {
             mode: mode.is_dev().then(|| "dev".to_string()),
+            fresh: true,
         },
     )
     .await?;
     let active_session_id = daemon_state.session_id.clone();
-    let history_state = StateStore::new(paths)?.pinned(&active_session_id);
+    // 上键历史是**按会话**存的。启动开新会话后这条会话还什么都没有,历史得从
+    // 被换掉的那条 REPL 会话接着来(daemon 在 `previous_repl_session` 里带回),
+    // 否则每次敲 `miyu` 上键都调不出昨天说过的话。
+    let history_source = repl_session_data
+        .get("previous_repl_session")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(active_session_id.as_str());
+    let history_state = StateStore::new(paths)?.pinned(history_source);
     let history = load_repl_input_history(&history_state, paths)?;
     drop(history_state);
     let cumulative_tokens = state_cumulative(&daemon_state);
@@ -164,6 +172,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mode: PersonaLane
         live_repl,
         jobs_shared,
         jobs_feed,
+        follow_depth: 0,
     };
     let outcome = repl.run().await;
     // 正常退出也要把 pane 的权威还回去（信号那条路另有一处）。跑不跑得成都要还，
@@ -181,6 +190,8 @@ pub(super) struct RemoteRepl {
     pub(super) active_session_id: String,
     pub(super) history: Vec<ReplHistoryEntry>,
     pub(super) cumulative_tokens: TurnTokens,
+    /// 「换会话后挂上它正在跑的那一轮」嵌了几层（见 `follow_active_run_here`）。
+    pub(super) follow_depth: u8,
     pub(super) footer: ReplFooterStatus,
     pub(super) live_repl: LiveReplTail,
     pub(super) jobs_shared: std::sync::Arc<SharedJobsFeed>,
@@ -289,19 +300,12 @@ impl RemoteRepl {
                     label,
                     from_start,
                 } => {
-                    if let Err(error) = follow_wake_run(
-                        &self.paths,
-                        &mut self.live_repl,
-                        &run_id,
-                        &label,
-                        from_start,
-                        &self.active_session_id,
-                        &self.jobs_feed,
-                        &self.jobs_shared,
-                    )
-                    .await
+                    if self
+                        .follow_run_with_commands(&run_id, &label, from_start, None)
+                        .await?
+                        == LoopStep::Break
                     {
-                        tracing::debug!(error = %error, "wake follow detached with an error");
+                        break;
                     }
                     continue;
                 }
@@ -370,33 +374,7 @@ impl RemoteRepl {
                     )?;
                     continue;
                 }
-                let step = match command {
-                    ReplSlashCommand::Exit => LoopStep::Break,
-                    ReplSlashCommand::Help => self.cmd_help().await?,
-                    ReplSlashCommand::Stt => self.cmd_stt().await?,
-                    ReplSlashCommand::History => self.cmd_history().await?,
-                    ReplSlashCommand::Clear => self.cmd_clear().await?,
-                    ReplSlashCommand::New => self.cmd_new(command_args).await?,
-                    ReplSlashCommand::Session => self.cmd_session(command_args).await?,
-                    ReplSlashCommand::Dev => self.cmd_lane(PersonaLane::Dev).await?,
-                    ReplSlashCommand::Normal => self.cmd_lane(PersonaLane::Active).await?,
-                    ReplSlashCommand::Rename => self.cmd_rename(command_args).await?,
-                    ReplSlashCommand::Delete => self.cmd_delete(command_args).await?,
-                    ReplSlashCommand::Sandbox => self.cmd_sandbox(command_args).await?,
-                    ReplSlashCommand::Goal => self.cmd_goal(command_args).await?,
-                    ReplSlashCommand::Usage => self.cmd_usage().await?,
-                    ReplSlashCommand::Persona => self.cmd_persona(command_args).await?,
-                    ReplSlashCommand::Models => self.cmd_models(command_args).await?,
-                    ReplSlashCommand::Config => self.cmd_config().await?,
-                    ReplSlashCommand::Effort => self.cmd_effort(command_args).await?,
-                    ReplSlashCommand::Undo => self.cmd_undo().await?,
-                    ReplSlashCommand::Pop => self.cmd_pop(command_args).await?,
-                    ReplSlashCommand::Compact => self.cmd_compact().await?,
-                    ReplSlashCommand::ResetMemory => self.cmd_reset_memory().await?,
-                    ReplSlashCommand::ResetAllMemory => self.cmd_reset_all_memory().await?,
-                    ReplSlashCommand::Reset => self.cmd_reset().await?,
-                    ReplSlashCommand::Wipe => self.cmd_wipe().await?,
-                };
+                let step = self.dispatch_slash(command, command_args).await?;
                 if step == LoopStep::Break {
                     break;
                 }
@@ -408,5 +386,97 @@ impl RemoteRepl {
             self.submit_chat(input, &images, &history_entry).await?;
         }
         Ok(())
+    }
+
+    /// 挂到一条正在跑的轮上看它说完，中途敲的斜杠命令照常能执行。
+    ///
+    /// 回合中要占屏的命令走「分离 → 执行 → 挂回来」（用户 09-20）。挂回来之后
+    /// 还能再敲一条，所以这里是个**循环**而不是一次性的；每次都从上次看到的
+    /// 事件号之后接着看，已经看过的那半截不会重来。
+    pub(super) async fn follow_run_with_commands(
+        &mut self,
+        run_id: &str,
+        label: &str,
+        mut from_start: bool,
+        mut after: Option<u64>,
+    ) -> Result<LoopStep> {
+        loop {
+            let session_id = self.active_session_id.clone();
+            let outcome = follow_wake_run(
+                &self.paths,
+                &mut self.live_repl,
+                run_id,
+                label,
+                from_start,
+                after,
+                &session_id,
+                &self.jobs_feed,
+                &self.jobs_shared,
+            )
+            .await;
+            let error = match outcome {
+                Ok(()) => return Ok(LoopStep::Continue),
+                Err(error) => error,
+            };
+            let Some(suspended) = take_remote_turn_suspended(&error) else {
+                tracing::debug!(error = %error, "wake follow detached with an error");
+                return Ok(LoopStep::Continue);
+            };
+            let (command, args, last_event_id, suspended_session) = (
+                suspended.command,
+                suspended.args.clone(),
+                suspended.last_event_id,
+                suspended.session_id.clone(),
+            );
+            let step = self.dispatch_slash(command, &args).await?;
+            if step == LoopStep::Break {
+                return Ok(step);
+            }
+            // 命令把会话换走了（`/new` `/session` `/dev` `/normal`）就不挂回去：
+            // 那一轮在 daemon 里继续跑，属于**另一条**会话。
+            if self.active_session_id != suspended_session {
+                return Ok(step);
+            }
+            // 0 = 一个事件都没看到（命令敲在刚挂上的那一瞬）：从头补，否则
+            // 开头那截永远看不到了。
+            from_start = last_event_id == 0;
+            after = (last_event_id > 0).then_some(last_event_id);
+        }
+    }
+
+    /// 执行一条斜杠命令。**唯一**的执行入口：主循环走它，回合中暂离后回来补
+    /// 执行的那条路（`RemoteTurnSuspended`，09-20）也走它——分两份迟早分叉。
+    pub(super) async fn dispatch_slash(
+        &mut self,
+        command: ReplSlashCommand,
+        command_args: &str,
+    ) -> Result<LoopStep> {
+        Ok(match command {
+            ReplSlashCommand::Exit => LoopStep::Break,
+            ReplSlashCommand::Help => self.cmd_help().await?,
+            ReplSlashCommand::Stt => self.cmd_stt().await?,
+            ReplSlashCommand::History => self.cmd_history().await?,
+            ReplSlashCommand::Clear => self.cmd_clear().await?,
+            ReplSlashCommand::New => self.cmd_new(command_args).await?,
+            ReplSlashCommand::Session => self.cmd_session(command_args).await?,
+            ReplSlashCommand::Dev => self.cmd_lane(PersonaLane::Dev, command_args).await?,
+            ReplSlashCommand::Normal => self.cmd_lane(PersonaLane::Active, command_args).await?,
+            ReplSlashCommand::Rename => self.cmd_rename(command_args).await?,
+            ReplSlashCommand::Delete => self.cmd_delete(command_args).await?,
+            ReplSlashCommand::Sandbox => self.cmd_sandbox(command_args).await?,
+            ReplSlashCommand::Goal => self.cmd_goal(command_args).await?,
+            ReplSlashCommand::Usage => self.cmd_usage().await?,
+            ReplSlashCommand::Persona => self.cmd_persona(command_args).await?,
+            ReplSlashCommand::Models => self.cmd_models(command_args).await?,
+            ReplSlashCommand::Config => self.cmd_config().await?,
+            ReplSlashCommand::Effort => self.cmd_effort(command_args).await?,
+            ReplSlashCommand::Undo => self.cmd_undo().await?,
+            ReplSlashCommand::Pop => self.cmd_pop(command_args).await?,
+            ReplSlashCommand::Compact => self.cmd_compact().await?,
+            ReplSlashCommand::ResetMemory => self.cmd_reset_memory().await?,
+            ReplSlashCommand::ResetAllMemory => self.cmd_reset_all_memory().await?,
+            ReplSlashCommand::Reset => self.cmd_reset().await?,
+            ReplSlashCommand::Wipe => self.cmd_wipe().await?,
+        })
     }
 }

@@ -61,13 +61,33 @@ impl RemoteRepl {
         Ok(LoopStep::Continue)
     }
 
-    /// `/dev` 与 `/normal`：去那条车道上的会话（车道指针指向的那条，
-    /// `GetReplSession{dev|None}`——`/dev` 和 `miyu dev` 启动拿到的是同一条），**不是**
+    /// `/dev` 与 `/normal`：去那条车道上的会话（车道指针指向的那条），**不是**
     /// 把当前会话改成另一个模式：模式钉在会话上（daemon `turn_mode_for_session`），
     /// 换模式就是换会话。所以它不受 Tab 那条「空会话才能换车道」的限制。已经在
     /// 那条车道上就只提示一句。
-    pub(super) async fn cmd_lane(&mut self, lane: PersonaLane) -> Result<LoopStep> {
-        if self.mode == lane {
+    ///
+    /// 加 `new`（`/dev new` / `/normal new`，用户 09-20 要的）就**开一条新的**，
+    /// 语义和 `miyu dev` / `miyu` 启动完全一样（`fresh`：那条车道指针指的会话
+    /// 本来就空就原地用，不然新建）——一条没说过话的会话和一条新建的会话用户
+    /// 分不出来，但会话列表分得出来。已经在那条车道上时 `new` 照做，不再只
+    /// 提示一句：你要的就是新会话，跟人在哪条车道没关系。
+    pub(super) async fn cmd_lane(&mut self, lane: PersonaLane, args: &str) -> Result<LoopStep> {
+        let args = args.trim();
+        let fresh = args.eq_ignore_ascii_case("new");
+        if !args.is_empty() && !fresh {
+            repl_note(
+                &mut self.live_repl,
+                &format!(
+                    "\x1b[2m{}\x1b[0m\n",
+                    t(
+                        "only `new` is accepted here (start a fresh session)",
+                        "这里只认 new（开一条新会话）"
+                    )
+                ),
+            )?;
+            return Ok(LoopStep::Continue);
+        }
+        if self.mode == lane && !fresh {
             let note = if lane.is_dev() {
                 t(
                     "already in dev mode; /normal goes back",
@@ -87,6 +107,9 @@ impl RemoteRepl {
             &mut self.live_repl,
             IpcCommand::GetReplSession {
                 mode: lane.is_dev().then(|| "dev".to_string()),
+                // 不带参数时**保留**「切到那条车道最近用的会话」(用户 09-20
+                // 明确要留)；`new` 走和启动同一条「开新会话」的路。
+                fresh,
             },
         )
         .await?
@@ -123,6 +146,48 @@ impl RemoteRepl {
         )
         .await?;
         self.mode = lane;
+        // 任务条/目标提示都按**这个 REPL 的会话**过滤，换了会话要跟着换，
+        // 否则状态行上还挂着上一条会话的东西。
+        *self.jobs_shared.repl_session.lock().unwrap() = Some(self.active_session_id.clone());
+        self.follow_active_run_here().await?;
+        Ok(())
+    }
+
+    /// 切进这条会话之后：它要是有**正在跑**的回合，就从头挂上去跟着看。
+    ///
+    /// 换会话会先 `wipe_transcript` 再按库回放，而 `session_replay` 只收
+    /// `completed` / `interrupted` 的轮——**正在跑的那一轮不在回放里**（它的
+    /// 正文还没落库）。不挂回去的话，那一轮连同用户刚说的那句话在屏幕上整个
+    /// 消失（用户 09-20 实测：回合跑着时 `/dev` 切走再 `/normal` 切回来，
+    /// 「之前说的那句话就看不到了」）。
+    ///
+    /// 从头挂（`from_start`）而不是接实时：要的就是被回放漏掉的那前半截，
+    /// 用户消息由 `turn.started` 的 `display_content` 画出来——和同一个会话
+    /// 开第二个 TUI 是同一条路（09-19）。
+    pub(super) async fn follow_active_run_here(&mut self) -> Result<()> {
+        // 这条路会递归：跟随 → 中途敲命令 → 换会话 → 又挂上去跟随。每次都是
+        // 用户亲手切一次，正常用不了几层；加道闸免得哪天循环起来。
+        if self.follow_depth >= 8 {
+            return Ok(());
+        }
+        // 元组的第四项是 `(run_id, session_id)`：所有活动回合（own 的过滤是
+        // 客户端自己做的，这里要的正是自己刚分离掉的那一轮）。
+        let Ok((_, _, _, active_runs)) = fetch_jobs_overview(&self.paths).await else {
+            return Ok(());
+        };
+        let session = self.active_session_id.clone();
+        let Some((run_id, _)) = active_runs
+            .into_iter()
+            .find(|(_, run_session)| run_session == &session)
+        else {
+            return Ok(());
+        };
+        // `Box::pin`：`follow_run_with_commands` 会走回这里，async fn 的自递归
+        // 要装箱才编得过。
+        self.follow_depth += 1;
+        let outcome = Box::pin(self.follow_run_with_commands(&run_id, "", true, None)).await;
+        self.follow_depth -= 1;
+        outcome?;
         Ok(())
     }
 

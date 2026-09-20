@@ -182,6 +182,9 @@ pub(in crate::cli) async fn try_run_remote_chat(
     }
     let mut content = String::new();
     let mut reasoning = String::new();
+    // 最后看到的事件号。回合中执行斜杠命令走「分离 → 执行 → 挂回来」，挂回来
+    // 时从它之后接着看，已经看过的那半截不会再来一遍（09-20）。
+    let mut last_event_id = 0u64;
     // 攒着还没打的图（非全屏那条路）。见 `tool.image` / `tool.finished`。
     let mut deferred_images: Vec<(serde_json::Value, Option<String>)> = Vec::new();
     let mut spinner_tick = tokio::time::interval(Duration::from_millis(33));
@@ -288,9 +291,55 @@ pub(in crate::cli) async fn try_run_remote_chat(
                                 }
                                 continue;
                             }
-                            // 其余命令静默吞掉回车，输入原样留着，这一轮
-                            // 结束后再回车即可。
-                            ReplInput::Slash(..) => continue,
+                            // 其余命令按「回合中能不能做」分流（用户 09-20：
+                            // 「应该区分能执行和不能执行的命令」）。原来这里
+                            // 一律**静默**吞掉，屏幕上一点反应都没有。
+                            ReplInput::Slash(command, args) => {
+                                use miyu_core::slash_commands::DuringTurn;
+                                match miyu_core::slash_commands::during_turn(command, args) {
+                                    DuringTurn::Inline => continue,
+                                    DuringTurn::Blocked { .. } => {
+                                        if let Some(reason) = miyu_core::slash_commands::during_turn(
+                                            command, args,
+                                        )
+                                        .reason()
+                                        {
+                                            // 输入原样留着：这一轮说完再回车
+                                            // 就能执行，不用重打。
+                                            //
+                                            // 走**右上角**那条通知带，不是输入
+                                            // 框旁边：命令候选面板就浮在输入框
+                                            // 上方，放那儿会被它盖掉（09-20
+                                            // 实测，屏幕上只看得到候选面板）。
+                                            live_tail.toast_note(reason);
+                                            if !live_tail.external_output_active {
+                                                synchronized_terminal_update(
+                                                    CursorAfterUpdate::Preserve,
+                                                    || live_tail.redraw(),
+                                                )?;
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                    DuringTurn::Detach => {
+                                        let args = args.trim().to_string();
+                                        live_tail.editor.clear();
+                                        // 和 Ctrl+D 那条路同一套收尾：渲染器
+                                        // 收口、把帧落到屏幕上、交接 raw 模式。
+                                        renderer.finish()?;
+                                        live_tail.stop_footer_spinner()?;
+                                        live_tail.apply_renderer_frame(&mut renderer)?;
+                                        handoff_raw!();
+                                        return Err(anyhow::Error::new(RemoteTurnSuspended {
+                                            command,
+                                            args,
+                                            run_id: run_id.clone(),
+                                            last_event_id,
+                                            session_id: turn_session_id.clone(),
+                                        }));
+                                    }
+                                }
+                            }
                             ReplInput::Chat => {}
                         }
                     }
@@ -442,6 +491,9 @@ pub(in crate::cli) async fn try_run_remote_chat(
             handoff_raw!();
             bail!("Miyu core disconnected during the turn");
         };
+        if let IpcFrame::Event { id, .. } = &frame {
+            last_event_id = *id;
+        }
         let IpcFrame::Event { kind, data, .. } = frame else {
             if let IpcFrame::Error { message, .. } = frame {
                 renderer.finish()?;

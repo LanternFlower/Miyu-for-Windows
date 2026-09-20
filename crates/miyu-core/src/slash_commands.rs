@@ -159,18 +159,18 @@ pub const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
         name: "/dev",
         aliases: &[],
         command: ReplSlashCommand::Dev,
-        arg_hint: "",
-        help_en: "switch to the dev lane's session (same as `miyu dev`)",
-        help_zh: "切到开发模式那条车道的会话（等同 miyu dev）",
+        arg_hint: "[new]",
+        help_en: "go to the dev lane's latest session; `new` starts a fresh one",
+        help_zh: "去开发模式那条车道最近用的会话；加 new 开一条新的",
         web: false,
     },
     ReplCommandSpec {
         name: "/normal",
         aliases: &[],
         command: ReplSlashCommand::Normal,
-        arg_hint: "",
-        help_en: "switch back to the normal lane's session",
-        help_zh: "切回普通模式那条车道的会话",
+        arg_hint: "[new]",
+        help_en: "go to the normal lane's latest session; `new` starts a fresh one",
+        help_zh: "去普通模式那条车道最近用的会话；加 new 开一条新的",
         web: false,
     },
     ReplCommandSpec {
@@ -438,4 +438,95 @@ pub fn names_repl_command(name: &str, command: ReplSlashCommand) -> bool {
 /// 的 if 链和泄漏守门都问它，不再走前缀展开（理由见 `parse_repl_input`）。
 pub fn is_repl_command(name: &str) -> bool {
     repl_command_spec_for_name(name).is_some()
+}
+
+/// 一条斜杠命令在**回合跑着的时候**能不能执行，以及怎么执行。
+///
+/// 用户 09-20 拍板：原来回合中所有命令一律静默吞掉（连 `/new` `/goal` 都做不
+/// 到），实际上三类东西的约束完全不同，分开对待。判据是「**要不要往屏幕上写
+/// 东西**」——全屏 TUI 的正文是按块记账的，回合中往缓冲里插字会把正在开的块
+/// 写坏（09-19 那个「滚动思考点开出现两份」就是块半开）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DuringTurn {
+    /// 就地执行，不打断跟随。只发 IPC、最多出一条 ≤2 行的浮层提示——浮层是逐
+    /// 帧画上去的，根本不碰正文缓冲。
+    Inline,
+    /// 先把这一轮**分离到后台**（daemon 照跑），执行完再按事件号挂回来接着
+    /// 看。要占屏的（全屏面板、超过 2 行的长文）和会换走会话的都走这条。
+    Detach,
+    /// 回合中做不了。`reason_*` 是给用户看的一句话——原来是**静默**吞掉，
+    /// 屏幕上一点反应都没有，比拒绝本身更难受。
+    Blocked {
+        reason_en: &'static str,
+        reason_zh: &'static str,
+    },
+}
+
+impl DuringTurn {
+    pub fn reason(&self) -> Option<&'static str> {
+        match self {
+            DuringTurn::Blocked {
+                reason_en,
+                reason_zh,
+            } => Some(if miyu_base::i18n::is_zh() {
+                reason_zh
+            } else {
+                reason_en
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// 回合跑着时这条命令怎么办。`args` 参与判断：`/effort max` 只是改个配置，
+/// `/effort` 不带参数要弹面板，两者不是一回事。
+pub fn during_turn(command: ReplSlashCommand, args: &str) -> DuringTurn {
+    use ReplSlashCommand::*;
+    let _ = args;
+    match command {
+        // ── 就地执行 ──
+        // `/goal` 09-19 就破例放行了：它**完全不往屏幕上写**（成功静默，
+        // 后果由 daemon 的续轮体现），所以跟随一点都不用断。
+        //
+        // 别的命令即使也不占屏（`/rename` `/sandbox` 就一条 IPC + 浮层），
+        // 实现都挂在 `RemoteRepl` 上，回合循环够不到——在这里重写一遍就是
+        // 第二份事实来源，迟早分叉。宁可让它们和面板类走同一条「分离 →
+        // 执行 → 挂回来」，代价是正文上留一道接缝。
+        Goal => DuringTurn::Inline,
+
+        // ── 分离 → 执行 → 挂回来 ──
+        // 换会话的：换走之后这一轮就不该再跟了，它在 daemon 里继续跑。
+        New | Dev | Normal | Session => DuringTurn::Detach,
+        // 要占屏的面板；`/effort <档位>` 带参数不弹面板，但仍走同一条路。
+        Effort | Models | Persona | Config => DuringTurn::Detach,
+        // 长文（超过 2 行就落回正文缓冲，回合中写缓冲会写坏正在开的块）。
+        Help | Usage | History => DuringTurn::Detach,
+        // 一条 IPC + 浮层，不占屏，但实现在 `RemoteRepl` 上（见上）。
+        Rename | Sandbox | Stt => DuringTurn::Detach,
+        // 退出：Ctrl+D 本来就能在回合中退（回合留在 daemon 里继续跑），
+        // `/exit` 只是被这道闸吞掉了。
+        Exit => DuringTurn::Detach,
+
+        // ── 回合中做不了 ──
+        // 前四个 daemon 自己就拒：`reserve_admin_for_session` 看到这条会话
+        // 有活动回合直接 409。客户端提前说清楚，别等它报一句 admin busy。
+        Undo | Pop | Compact | Reset => DuringTurn::Blocked {
+            reason_en: "this rewrites the conversation the running reply is still appending to; wait for it to finish",
+            reason_zh: "这要改写正在被续写的对话，等这一轮说完再来",
+        },
+        Delete | Wipe => DuringTurn::Blocked {
+            reason_en: "this would kill the running reply; interrupt it first (Esc) if that is what you want",
+            reason_zh: "这会把正在跑的这一轮掐掉；真要这么做就先按 Esc 打断",
+        },
+        // 全屏下清屏是「把视口顶空」，而正文还在往里写——顶完下一帧新内容
+        // 接着冒出来，屏幕既没干净也没保住上文。
+        Clear => DuringTurn::Blocked {
+            reason_en: "the reply is still being written; clearing now keeps neither the screen nor the scrollback",
+            reason_zh: "正文还在往屏幕上写，这会儿清屏既清不干净也保不住上文",
+        },
+        ResetMemory | ResetAllMemory => DuringTurn::Blocked {
+            reason_en: "she may be writing memory this very turn; wait for it to finish",
+            reason_zh: "她这一轮可能正在写记忆，等说完再来",
+        },
+    }
 }
