@@ -270,7 +270,16 @@ pub struct ClipboardPath {
     pub is_media: bool,
 }
 
+/// 纯文本读。
+///
+/// macOS 走 `pbpaste`,没有 `wl-paste`/`xclip` 那一套。内置脚本 `read_clipboard`
+/// 09-15 起就分好了平台,Rust 这边一直没跟上——同一台机器上脚本读得到、Rust 读
+/// 不到。**只管文本**:图片那条要在 macOS 上靠 `osascript` 折腾,没有把握就别写,
+/// 照旧走「这台机器没有剪贴板后端」那条既有退路。
 pub fn read_clipboard_text() -> Result<Option<String>> {
+    if cfg!(target_os = "macos") {
+        return try_text_command("pbpaste", &[]);
+    }
     if let Some(text) = try_text_command("wl-paste", &[])? {
         return Ok(Some(text));
     }
@@ -283,7 +292,11 @@ pub fn read_clipboard_text() -> Result<Option<String>> {
     Ok(None)
 }
 
+/// 纯文本写。macOS 走 `pbcopy`,理由同 [`read_clipboard_text`]。
 pub fn write_clipboard_text(text: &str) -> Result<bool> {
+    if cfg!(target_os = "macos") {
+        return try_write_text_command("pbcopy", &[], text);
+    }
     if try_write_text_command("wl-copy", &[], text)? {
         return Ok(true);
     }
