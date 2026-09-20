@@ -128,30 +128,6 @@ impl HttpFailureKind {
             Self::Status => t("the provider returned an error", "供应商报错"),
         }
     }
-
-    /// 给人看的那句：该怎么办。没有可说的就 `None`。
-    pub(in crate::llm::openai_compatible) fn advice(self, relay: bool) -> Option<&'static str> {
-        Some(match self {
-            Self::RateLimit if relay => t(
-                "wait for the quota to reset, or switch providers",
-                "等额度刷新，或换一个供应商",
-            ),
-            Self::RateLimit => t(
-                "wait out the cooldown, or switch providers",
-                "等冷却结束，或换一个供应商",
-            ),
-            Self::Authentication if relay => {
-                t("sign in again in that CLI", "去那个 CLI 里重新登录")
-            }
-            Self::Authentication => t("check the API key", "检查一下 API key"),
-            Self::EndpointUnavailable => t(
-                "check the model name in the provider's model list",
-                "对一下供应商的模型清单里有没有这个名字",
-            ),
-            Self::ContentPolicy => t("rephrase and send again", "换个说法再发一次"),
-            Self::EndpointIncompatible | Self::InvalidRequest | Self::Status => return None,
-        })
-    }
 }
 
 #[derive(Debug)]

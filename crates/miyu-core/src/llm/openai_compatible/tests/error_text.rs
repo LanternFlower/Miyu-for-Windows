@@ -45,9 +45,10 @@ fn every_failure_kind_has_a_human_label() {
     }
 }
 
-/// 全池失败那一段：一句结论 + 每个端点一行 + 一句该怎么办。
+/// 全池失败那一段：一句结论 + 每个端点一行。不再多一句「该怎么办」——
+/// 端点行里已经说了「被限流」「暂停 10 分钟」，那句是同义反复（用户 09-20）。
 #[test]
-fn the_all_failed_message_lists_every_endpoint_and_what_to_do() {
+fn the_all_failed_message_lists_every_endpoint_and_nothing_else() {
     let lines = vec![
         format!(
             "opencodego / deepseek-v4.1-flash（key#1）：{}；该端点暂停 10 分钟",
@@ -69,13 +70,17 @@ fn the_all_failed_message_lists_every_endpoint_and_what_to_do() {
         "{message}"
     );
     assert!(message.contains("暂停 10 分钟"), "冷却时长要说: {message}");
-    assert!(message.contains("换一个供应商"), "该怎么办要说: {message}");
-    assert_eq!(message.lines().count(), 4, "结论 + 两条端点 + 一句建议");
+    assert!(
+        !message.contains("→"),
+        "不再给「该怎么办」那一行: {message}"
+    );
+    assert_eq!(message.lines().count(), 3, "结论 + 两条端点，没有第四行");
 }
 
-/// 一半限流一半认证失败时不给建议：给哪句都是误导。
+/// 任何组合都不再有建议行。原来只在「所有端点栽在同一件事上」时才给，
+/// 09-20 起一概不给。
 #[test]
-fn mixed_failures_get_no_advice() {
+fn no_combination_of_failures_adds_an_advice_line() {
     let lines = vec![
         format!(
             "a / m（key#1）：{}",

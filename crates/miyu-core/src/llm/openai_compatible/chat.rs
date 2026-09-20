@@ -636,9 +636,13 @@ pub(in crate::llm::openai_compatible) fn humanize_duration(duration: Duration) -
 
 /// 池里每个端点都失败了，写给人看的那一段。
 ///
-/// 形状是「一句结论 + 每个端点一行 + 一句该怎么办」：原来是一句英文
+/// 形状是「一句结论 + 每个端点一行」：原来是一句英文
 /// `no LLM provider/model endpoint succeeded` 加一串原始错误链，人看完不知道
-/// 发生了什么、更不知道下一步做什么（BUG-16）。
+/// 发生了什么（BUG-16）。
+///
+/// 09-19 曾在末尾再加一句 `→ 该怎么办`（等冷却结束、检查 API key 之类），
+/// 09-20 用户点名去掉：每条端点行里已经写了「被限流」「该端点暂停 10 分钟」，
+/// 那句话没有增量信息，只是把同一件事再说一遍。
 pub(in crate::llm::openai_compatible) fn all_endpoints_failed_message(
     errors: &[String],
     request_id: &str,
@@ -653,46 +657,5 @@ pub(in crate::llm::openai_compatible) fn all_endpoints_failed_message(
         message.push_str("\n  · ");
         message.push_str(line);
     }
-    if let Some(advice) = shared_advice(errors) {
-        message.push_str("\n  ");
-        message.push_str(&advice);
-    }
     message
-}
-
-/// 所有端点栽在同一件事上时，给一句该怎么办。
-///
-/// 只在**一致**时给：一半限流一半认证失败的话，给哪句都是误导。
-pub(in crate::llm::openai_compatible) fn shared_advice(errors: &[String]) -> Option<String> {
-    let kinds = [
-        (
-            HttpFailureKind::RateLimit,
-            [
-                HttpFailureKind::RateLimit.label(false),
-                HttpFailureKind::RateLimit.label(true),
-            ],
-        ),
-        (
-            HttpFailureKind::Authentication,
-            [
-                HttpFailureKind::Authentication.label(false),
-                HttpFailureKind::Authentication.label(true),
-            ],
-        ),
-        (
-            HttpFailureKind::ContentPolicy,
-            [
-                HttpFailureKind::ContentPolicy.label(false),
-                HttpFailureKind::ContentPolicy.label(true),
-            ],
-        ),
-    ];
-    let (kind, _) = kinds.into_iter().find(|(_, labels)| {
-        errors
-            .iter()
-            .all(|line| labels.iter().any(|label| line.contains(label)))
-    })?;
-    // 中转线那档的措辞不一样（没登录 / 额度用完），全是中转线时给中转线那句。
-    let relay = errors.iter().all(|line| line.contains(kind.label(true)));
-    Some(format!("→ {}", kind.advice(relay)?))
 }
