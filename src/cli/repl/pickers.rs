@@ -222,6 +222,43 @@ pub(in crate::cli) fn pick_multi_with(
     panel::pick(live, &mut list)
 }
 
+/// 全屏下不带参数的 `/models`：面板多选 → 落成会话覆盖 → 一行回执。返回真的改了没。
+///
+/// 空闲时（`RemoteRepl::cmd_models`）和回合跑着时（`midturn_panel`，09-20）
+/// 共用：只要路径 + 会话 id，不碰 `RemoteRepl` 的状态，所以回合循环里也调得了。
+pub(in crate::cli) async fn pick_models_panel(
+    paths: &MiyuPaths,
+    live: &mut LiveReplTail,
+    session_id: &str,
+) -> Result<bool> {
+    let config = AppConfig::load(paths)?;
+    let choices = config.text_provider_model_choices();
+    if choices.is_empty() {
+        bail!(
+            "{}",
+            t(
+                "no configured provider models; configure a model first",
+                "没有已配置的 provider 模型；请先配置模型",
+            )
+        );
+    }
+    let menu = SessionModelMenu::new(&config, choices, paths, Some(session_id))?;
+    let rule = menu.toggle_rule();
+    let Some(active) = pick_multi_with(
+        live,
+        t("Select model", "选择模型"),
+        &menu.labels,
+        menu.initial.clone(),
+        Some(&rule),
+    )?
+    else {
+        return Ok(false);
+    };
+    let (changed, message) = menu.apply(paths, Some(session_id), active).await?;
+    repl_note(live, &format!("\x1b[2m{message}\x1b[0m\n"))?;
+    Ok(changed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

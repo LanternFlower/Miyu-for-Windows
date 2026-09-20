@@ -9,6 +9,7 @@ pub(in crate::cli) mod herdr;
 pub(in crate::cli) mod input_layout;
 pub(in crate::cli) mod jobs;
 pub(in crate::cli) mod layout;
+pub(in crate::cli) mod midturn_panel;
 pub(in crate::cli) mod panel;
 pub(in crate::cli) mod pickers;
 pub(in crate::cli) mod placeholder;

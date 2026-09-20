@@ -182,25 +182,15 @@ impl RemoteRepl {
                 return Ok(LoopStep::Continue);
             }
         };
-        let session_config =
-            footer_config_for_session(&self.paths, &self.config, &self.active_session_id);
-        let (state, _) = await_in_lobby(
+        let (footer, cumulative) = session_footer_status(
+            &self.paths,
+            &self.config,
             &mut self.live_repl,
-            repl_active_or_default_state(&self.paths, &self.active_session_id),
+            &self.active_session_id,
         )
         .await?;
-        self.cumulative_tokens = state_cumulative(&state);
-        self.footer = ReplFooterStatus::from_config(
-            &session_config,
-            state.context_tokens,
-            self.cumulative_tokens,
-        );
-        let client = OpenAiCompatibleClient::from_config(&session_config, &self.paths)?;
-        let thinking_summary = client.thinking_variant_summary();
-        self.footer
-            .update_thinking_variant(thinking_summary.as_deref());
-        self.footer
-            .update_context_window(state.context_window, state.context_window_assumed);
+        self.cumulative_tokens = cumulative;
+        self.footer = footer;
         // 重绘着推进去:set_footer 只换数据不画,后面那条提示走的
         // 输出帧也不重画 footer 行,于是模型标签要等下一次按键才换
         // (09-10 用户截图:提示已说「已更新」,footer 仍是旧模型)。
@@ -223,36 +213,11 @@ impl RemoteRepl {
     }
 
     /// 全屏下不带参数的 /models：面板多选。返回真的改了没。
+    ///
+    /// 流程本体在 `pickers::pick_models_panel`：回合跑着时寄宿的那条路
+    /// （`midturn_panel`，09-20）也是它，这里只是把 `RemoteRepl` 的字段递过去。
     async fn pick_models_fullscreen(&mut self) -> Result<bool> {
-        let config = AppConfig::load(&self.paths)?;
-        let choices = config.text_provider_model_choices();
-        if choices.is_empty() {
-            bail!(
-                "{}",
-                t(
-                    "no configured provider models; configure a model first",
-                    "没有已配置的 provider 模型；请先配置模型",
-                )
-            );
-        }
-        let menu =
-            SessionModelMenu::new(&config, choices, &self.paths, Some(&self.active_session_id))?;
-        let rule = menu.toggle_rule();
-        let Some(active) = pick_multi_with(
-            &mut self.live_repl,
-            t("Select model", "选择模型"),
-            &menu.labels,
-            menu.initial.clone(),
-            Some(&rule),
-        )?
-        else {
-            return Ok(false);
-        };
-        let (changed, message) = menu
-            .apply(&self.paths, Some(&self.active_session_id), active)
-            .await?;
-        repl_note(&mut self.live_repl, &format!("\x1b[2m{message}\x1b[0m\n"))?;
-        Ok(changed)
+        pick_models_panel(&self.paths, &mut self.live_repl, &self.active_session_id).await
     }
 
     pub(super) async fn cmd_config(&mut self) -> Result<LoopStep> {

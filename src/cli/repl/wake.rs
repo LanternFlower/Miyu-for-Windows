@@ -264,7 +264,40 @@ pub(in crate::cli) async fn follow_wake_run(
                                         }
                                         continue;
                                     }
-                                    DuringTurn::Detach => {
+                                    // 面板寄宿在这个循环里跑（09-20），和
+                                    // `one_shot.rs` 那条泵同一份处理。
+                                    DuringTurn::Panel if live.screen.is_some() => {
+                                        live.editor.clear();
+                                        use crate::cli::repl::midturn_panel::{
+                                            host_panel, HostedPanel,
+                                        };
+                                        match host_panel(
+                                            paths,
+                                            live,
+                                            &mut renderer,
+                                            command,
+                                            session_id,
+                                        )
+                                        .await?
+                                        {
+                                            HostedPanel::Stayed => continue,
+                                            HostedPanel::SwitchSession(state) => {
+                                                renderer.finish()?;
+                                                live.stop_footer_spinner()?;
+                                                live.apply_renderer_frame(&mut renderer)?;
+                                                return Err(anyhow::Error::new(
+                                                    crate::cli::repl::session::RemoteTurnSuspended {
+                                                        action: crate::cli::repl::session::SuspendedAction::SwitchSession(state),
+                                                        run_id: run_id.to_string(),
+                                                        last_event_id,
+                                                        session_id: session_id.to_string(),
+                                                    },
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    // 行内 REPL 没有面板：`Panel` 退回分离那条路。
+                                    DuringTurn::Panel | DuringTurn::Detach => {
                                         let args = args.trim().to_string();
                                         live.editor.clear();
                                         renderer.finish()?;
@@ -272,8 +305,10 @@ pub(in crate::cli) async fn follow_wake_run(
                                         live.apply_renderer_frame(&mut renderer)?;
                                         return Err(anyhow::Error::new(
                                             crate::cli::repl::session::RemoteTurnSuspended {
-                                                command,
-                                                args,
+                                                action: crate::cli::repl::session::SuspendedAction::Command {
+                                                    command,
+                                                    args,
+                                                },
                                                 run_id: run_id.to_string(),
                                                 last_event_id,
                                                 session_id: session_id.to_string(),

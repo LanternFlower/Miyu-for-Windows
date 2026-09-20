@@ -452,8 +452,19 @@ pub enum DuringTurn {
     /// 帧画上去的，根本不碰正文缓冲。
     Inline,
     /// 先把这一轮**分离到后台**（daemon 照跑），执行完再按事件号挂回来接着
-    /// 看。要占屏的（全屏面板、超过 2 行的长文）和会换走会话的都走这条。
+    /// 看。要占屏的（超过 2 行的长文、要重载 daemon 的面板）和会换走会话的
+    /// 都走这条。
     Detach,
+    /// 面板**寄宿在回合循环里**跑：键盘交给面板，事件流在 socket 里排队，
+    /// 面板收掉接着画，全程同一个渲染器（09-20）。
+    ///
+    /// 原来 `/models` `/session` 走 `Detach`：每分离一次就把当前渲染段收尾
+    /// 定稿吐一行小结、挂回来又是全新的渲染器重新计时——用户开三次面板，
+    /// 同一段思考就成了三行「Worked for … 1 thought」。这不是收尾方式选错，
+    /// 是段落被切开这件事本身躲不掉，只有不分离才没有接缝。
+    ///
+    /// 只有全屏 TUI 有面板；行内 REPL 拿到它就当 `Detach` 处理。
+    Panel,
     /// 回合中做不了。`reason_*` 是给用户看的一句话——原来是**静默**吞掉，
     /// 屏幕上一点反应都没有，比拒绝本身更难受。
     Blocked {
@@ -482,7 +493,7 @@ impl DuringTurn {
 /// `/effort` 不带参数要弹面板，两者不是一回事。
 pub fn during_turn(command: ReplSlashCommand, args: &str) -> DuringTurn {
     use ReplSlashCommand::*;
-    let _ = args;
+    let bare = args.trim().is_empty();
     match command {
         // ── 就地执行 ──
         // `/goal` 09-19 就破例放行了：它**完全不往屏幕上写**（成功静默，
@@ -493,6 +504,13 @@ pub fn during_turn(command: ReplSlashCommand, args: &str) -> DuringTurn {
         // 第二份事实来源，迟早分叉。宁可让它们和面板类走同一条「分离 →
         // 执行 → 挂回来」，代价是正文上留一道接缝。
         Goal => DuringTurn::Inline,
+
+        // ── 面板寄宿在回合里 ──
+        // 这两个不带参数就是弹面板，而且落地不用重载 daemon：`/models` 只要
+        // 路径 + 会话 id 就能就地落盘；`/session` 挑完把结果带回 `RemoteRepl`
+        // 去切（换走之后这一轮本来就不再跟）。`/effort` `/persona` 的面板选完
+        // 要 `ReloadConfig`、还可能连带换会话，仍走下面的分离路。
+        Models | Session if bare => DuringTurn::Panel,
 
         // ── 分离 → 执行 → 挂回来 ──
         // 换会话的：换走之后这一轮就不该再跟了，它在 daemon 里继续跑。
@@ -528,5 +546,27 @@ pub fn during_turn(command: ReplSlashCommand, args: &str) -> DuringTurn {
             reason_en: "she may be writing memory this very turn; wait for it to finish",
             reason_zh: "她这一轮可能正在写记忆，等说完再来",
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 回合中 `/models` `/session` 不带参数是面板，寄宿在回合里；带了参数不弹
+    /// 面板（`/models default` 直接打印、`/session <名字>` 直接切），仍走分离
+    /// （09-20）。`/effort` `/persona` 的面板选完要重载 daemon，也仍走分离。
+    #[test]
+    fn bare_models_and_session_are_hosted_panels_during_a_turn() {
+        use ReplSlashCommand::*;
+        assert_eq!(during_turn(Models, ""), DuringTurn::Panel);
+        assert_eq!(during_turn(Session, "   "), DuringTurn::Panel);
+        assert_eq!(during_turn(Models, "default"), DuringTurn::Detach);
+        assert_eq!(during_turn(Session, "昨天那条"), DuringTurn::Detach);
+        assert_eq!(during_turn(Effort, ""), DuringTurn::Detach);
+        assert_eq!(during_turn(Persona, ""), DuringTurn::Detach);
+        assert_eq!(during_turn(Goal, "看看"), DuringTurn::Inline);
+        assert!(during_turn(Compact, "").reason().is_some());
+        assert!(during_turn(Models, "").reason().is_none());
     }
 }

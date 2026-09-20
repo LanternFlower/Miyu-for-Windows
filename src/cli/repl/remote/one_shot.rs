@@ -321,7 +321,46 @@ pub(in crate::cli) async fn try_run_remote_chat(
                                         }
                                         continue;
                                     }
-                                    DuringTurn::Detach => {
+                                    // 面板寄宿在这个循环里跑（09-20）：不分离、
+                                    // 不换渲染器，事件在 socket 里排队，面板收掉
+                                    // 接着画——同一段思考不会被切成几行小结。
+                                    // 只有 `/session` 挑了别的会话才借暂离那条路
+                                    // 把结果带回 `RemoteRepl`。
+                                    DuringTurn::Panel if live_tail.screen.is_some() => {
+                                        live_tail.editor.clear();
+                                        use crate::cli::repl::midturn_panel::{
+                                            host_panel, HostedPanel,
+                                        };
+                                        match host_panel(
+                                            paths,
+                                            live_tail,
+                                            &mut renderer,
+                                            command,
+                                            &turn_session_id,
+                                        )
+                                        .await?
+                                        {
+                                            HostedPanel::Stayed => continue,
+                                            HostedPanel::SwitchSession(state) => {
+                                                renderer.finish()?;
+                                                live_tail.stop_footer_spinner()?;
+                                                live_tail.apply_renderer_frame(&mut renderer)?;
+                                                handoff_raw!();
+                                                return Err(anyhow::Error::new(
+                                                    RemoteTurnSuspended {
+                                                        action: SuspendedAction::SwitchSession(
+                                                            state,
+                                                        ),
+                                                        run_id: run_id.clone(),
+                                                        last_event_id,
+                                                        session_id: turn_session_id.clone(),
+                                                    },
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    // 行内 REPL 没有面板：`Panel` 退回分离那条路。
+                                    DuringTurn::Panel | DuringTurn::Detach => {
                                         let args = args.trim().to_string();
                                         live_tail.editor.clear();
                                         // 和 Ctrl+D 那条路同一套收尾：渲染器
@@ -331,8 +370,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                                         live_tail.apply_renderer_frame(&mut renderer)?;
                                         handoff_raw!();
                                         return Err(anyhow::Error::new(RemoteTurnSuspended {
-                                            command,
-                                            args,
+                                            action: SuspendedAction::Command { command, args },
                                             run_id: run_id.clone(),
                                             last_event_id,
                                             session_id: turn_session_id.clone(),

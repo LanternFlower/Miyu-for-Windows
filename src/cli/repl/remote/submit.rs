@@ -29,6 +29,10 @@ impl RemoteRepl {
         .await
         {
             Ok(Some(summary)) => {
+                // 回合中寄宿的 `/models` 改了会话模型（09-20）：先按新模型把
+                // 手里这份 footer 重算，再往上叠这一轮的用量，不然下面那次
+                // `refresh_footer` 会把旧模型标签盖回去。
+                self.adopt_stale_footer().await?;
                 self.cumulative_tokens = summary.cumulative_tokens;
                 self.footer.update_token_usage(
                     &summary.result,
@@ -64,14 +68,13 @@ impl RemoteRepl {
             // 接着看——已经看过的那半截不会再来一遍。
             Err(err) if take_remote_turn_suspended(&err).is_some() => {
                 let suspended = take_remote_turn_suspended(&err).expect("just matched");
-                let (command, args, run_id, last_event_id, session_id) = (
-                    suspended.command,
-                    suspended.args.clone(),
+                let (action, run_id, last_event_id, session_id) = (
+                    suspended.action.clone(),
                     suspended.run_id.clone(),
                     suspended.last_event_id,
                     suspended.session_id.clone(),
                 );
-                let step = self.dispatch_slash(command, &args).await?;
+                let step = self.perform_suspended_action(action).await?;
                 if step == LoopStep::Break {
                     return Ok(step);
                 }

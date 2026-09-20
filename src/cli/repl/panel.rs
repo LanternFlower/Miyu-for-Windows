@@ -63,7 +63,16 @@ pub(in crate::cli) fn pick<M: PanelModel>(
 
 fn run<M: PanelModel>(live: &mut LiveReplTail, model: &mut M) -> Result<M::Output> {
     const TICK: std::time::Duration = std::time::Duration::from_millis(40);
-    let _raw = LiveRawMode::start()?;
+    // 回合跑着时面板是**嵌在回合循环里**跑的（09-20），那把 `LiveRawMode`
+    // 还握在回合循环手里。这时再开一把、退出时 Drop 把 raw 关掉，回合循环接
+    // 着读键就落回了行编辑 + 回显，键盘增强也被弹掉一层——和 `question_tui`
+    // 的处理一样：终端已经在 raw 里就不碰它。空闲时开面板（输入循环的守卫已
+    // 经放了，终端是 cooked 的）照旧自己开自己收。
+    let _raw = if terminal::is_raw_mode_enabled().unwrap_or(false) {
+        None
+    } else {
+        Some(LiveRawMode::start()?)
+    };
     let mut body_delta = 0isize;
     let mut layout: Option<((u16, u16, u16), Panel)> = None;
     let mut next_tick = std::time::Instant::now() + TICK;

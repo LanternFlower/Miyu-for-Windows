@@ -211,6 +211,9 @@ impl RemoteRepl {
         loop {
             // Keep the poll thread's session filter in step with /new & /session.
             *self.jobs_shared.repl_session.lock().unwrap() = Some(self.active_session_id.clone());
+            // 回合中 `/models` 改过会话模型的话，先把手里的 footer 追上（09-20）；
+            // 下面那次 set_footer 是整份覆盖，不追就把旧模型标签盖回去。
+            self.adopt_stale_footer().await?;
             // 目标提示是输入循环里一秒一拍自己往前走的（`tick_goal_hint` 写在
             // tail 的 footer 上），这儿先收回来：下面那次 set_footer 是整份覆盖，
             // 不收就拿上一轮的旧值盖掉它，一秒后才由下一拍补上——屏幕上是闪一下。
@@ -422,13 +425,12 @@ impl RemoteRepl {
                 tracing::debug!(error = %error, "wake follow detached with an error");
                 return Ok(LoopStep::Continue);
             };
-            let (command, args, last_event_id, suspended_session) = (
-                suspended.command,
-                suspended.args.clone(),
+            let (action, last_event_id, suspended_session) = (
+                suspended.action.clone(),
                 suspended.last_event_id,
                 suspended.session_id.clone(),
             );
-            let step = self.dispatch_slash(command, &args).await?;
+            let step = self.perform_suspended_action(action).await?;
             if step == LoopStep::Break {
                 return Ok(step);
             }
@@ -442,6 +444,41 @@ impl RemoteRepl {
             from_start = last_event_id == 0;
             after = (last_event_id > 0).then_some(last_event_id);
         }
+    }
+
+    /// 回合循环暂离之后要做的事（`RemoteTurnSuspended`，09-20）：发回合和挂上去
+    /// 跟的两条路都从这儿过。
+    pub(super) async fn perform_suspended_action(
+        &mut self,
+        action: SuspendedAction,
+    ) -> Result<LoopStep> {
+        match action {
+            SuspendedAction::Command { command, args } => self.dispatch_slash(command, &args).await,
+            // `/session` 面板已经在回合里跑完，人挑好了：只管切过去。
+            SuspendedAction::SwitchSession(state) => {
+                self.switch_to_session(&state).await?;
+                Ok(LoopStep::Continue)
+            }
+        }
+    }
+
+    /// 回合中寄宿的 `/models` 面板改了会话模型（09-20）：活动区那份 footer 已经
+    /// 按新模型重算过，这里手里的还是旧的——主循环每圈都会拿它盖回去。旗子立着
+    /// 就先重算一次再盖。
+    pub(super) async fn adopt_stale_footer(&mut self) -> Result<()> {
+        if !std::mem::take(&mut self.live_repl.session_footer_stale) {
+            return Ok(());
+        }
+        let (footer, cumulative) = session_footer_status(
+            &self.paths,
+            &self.config,
+            &mut self.live_repl,
+            &self.active_session_id,
+        )
+        .await?;
+        self.cumulative_tokens = cumulative;
+        self.footer = footer;
+        Ok(())
     }
 
     /// 执行一条斜杠命令。**唯一**的执行入口：主循环走它，回合中暂离后回来补

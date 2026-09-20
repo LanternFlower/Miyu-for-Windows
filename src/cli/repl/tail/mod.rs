@@ -206,6 +206,11 @@ pub(in crate::cli) struct LiveReplTail {
     /// 空会话按 Tab 换车道:下一次会话切换不打「已切换到会话」——用户看到的是
     /// 模式行变色,不是换会话。一次性,用过即清。
     pub(in crate::cli) suppress_switch_note: bool,
+    /// 回合跑着时寄宿的 `/models` 面板改了会话模型（09-20）：这里的 footer 已
+    /// 经按新模型重算过，可 `RemoteRepl` 手里那份还是旧的，回合一结束它会拿旧
+    /// 的盖回来（主循环每圈 `set_footer`）。立这面旗让它在盖之前先重算一次。
+    /// 一次性，用过即清。
+    pub(in crate::cli) session_footer_stale: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -626,6 +631,7 @@ impl LiveReplTail {
             banner_rows: 0,
             lobby_panel_rows: 0,
             suppress_switch_note: false,
+            session_footer_stale: false,
         })
     }
 

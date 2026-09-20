@@ -153,14 +153,31 @@ impl std::error::Error for RemoteTurnDetached {}
 /// 走「分离」而不是就地执行，是因为命令的实现都挂在 `RemoteRepl` 上（它同时
 /// 持有活动区的可变借用），回合循环够不到；在回合循环里重写一份就是第二套
 /// 事实来源。代价是正文上会留一道接缝（渲染器收口再重开）。
+///
+/// `/models` `/session` 的面板不走这条（09-20）：它们寄宿在回合循环里跑完，
+/// 只有「人挑了另一条会话」这一件事回合循环自己做不了，才借这个错误把选好的
+/// 会话带回 `RemoteRepl`（见 [`SuspendedAction::SwitchSession`]）。
 #[derive(Debug)]
 pub(in crate::cli) struct RemoteTurnSuspended {
-    pub(in crate::cli) command: miyu_core::slash_commands::ReplSlashCommand,
-    pub(in crate::cli) args: String,
+    pub(in crate::cli) action: SuspendedAction,
     pub(in crate::cli) run_id: String,
     /// 最后看到的事件号；挂回来时从它之后接着看。0 = 一个都没看到。
     pub(in crate::cli) last_event_id: u64,
     pub(in crate::cli) session_id: String,
+}
+
+/// 回合循环暂离之后要上层做的事。
+#[derive(Debug, Clone)]
+pub(in crate::cli) enum SuspendedAction {
+    /// 命令还没执行：交给 `RemoteRepl::dispatch_slash`，做完按事件号挂回来。
+    Command {
+        command: miyu_core::slash_commands::ReplSlashCommand,
+        args: String,
+    },
+    /// `/session` 面板已经在回合里跑完、人挑了另一条会话（09-20）：换会话要
+    /// 动 footer / 历史 / 车道，只有 `RemoteRepl` 做得了。换走之后这一轮不再
+    /// 跟——它在 daemon 里继续跑，属于原来那条会话。
+    SwitchSession(ipc::SessionState),
 }
 
 impl std::fmt::Display for RemoteTurnSuspended {
@@ -1004,6 +1021,29 @@ pub(in crate::cli) async fn repl_active_or_default_state(
             Ok((state, changed))
         }
     }
+}
+
+/// 按**会话作用域**重算一份 footer：模型标签、思考档位、上下文窗口、累计
+/// 词元都从会话钉的模型池推导（验收 #23 的同源约束）。返回 (footer, 累计)。
+///
+/// `/models` 改完会话模型要它；回合中寄宿的 `/models` 面板（09-20）也要它
+/// ——两处各写一遍迟早分叉。取会话状态那一趟 IPC 套 `await_in_lobby`：大厅
+/// 里开 `/models` 时星空不能定格（09-17）。
+pub(in crate::cli) async fn session_footer_status(
+    paths: &MiyuPaths,
+    config: &AppConfig,
+    live: &mut LiveReplTail,
+    session_id: &str,
+) -> Result<(ReplFooterStatus, TurnTokens)> {
+    let session_config = footer_config_for_session(paths, config, session_id);
+    let (state, _) = await_in_lobby(live, repl_active_or_default_state(paths, session_id)).await?;
+    let cumulative = state_cumulative(&state);
+    let mut footer =
+        ReplFooterStatus::from_config(&session_config, state.context_tokens, cumulative);
+    let client = OpenAiCompatibleClient::from_config(&session_config, paths)?;
+    footer.update_thinking_variant(client.thinking_variant_summary().as_deref());
+    footer.update_context_window(state.context_window, state.context_window_assumed);
+    Ok((footer, cumulative))
 }
 
 /// Ensures the daemon is running, then sends one admin command; used by the
