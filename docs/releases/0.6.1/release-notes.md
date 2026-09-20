@@ -98,3 +98,17 @@ sudo dnf install ./miyu-0.6.1-1.fc44.x86_64.rpm
 这六个包这一轮在 **Arch、Debian 13、Ubuntu 24.04、Ubuntu 26.04、Linux Mint 22.3、Fedora 44** 的干净容器里逐个真实安装，并各自跑通了一次真实模型回复。Arch 用户也可以走 AUR 的 `miyu` / `miyu-voice`（二进制包装）或 `miyu-git`（源码构建）。
 
 [完整更新记录（根据 next-release-note 归档）](https://github.com/SHORiN-KiWATA/miyu-agent/blob/v0.6.1/docs/releases/0.6.1/changelog.md)
+
+<details>
+<summary>SHA256 校验值（六个安装包）</summary>
+
+```text
+277f396250b4c7715d5cabcdc8acc06a5aee5ac4f57cbb2d4449ced9326bc8b6  miyu-0.6.1-1-x86_64.pkg.tar.zst
+a369fff1fa7274385e8e275f175b1b05074af113cfe388a1c5106c159e110e4e  miyu-0.6.1-1.fc44.x86_64.rpm
+6d68cec4ce3ed6a0bc3774b0386edcad9c36e88d8444fee2e8ab0a965101d01e  miyu-voice-0.6.1-1-x86_64.pkg.tar.zst
+b28f73301a41ef90a71a0bdb4eca56bdfc5113a7ae26ff8a09d570abb5dcf219  miyu-voice-0.6.1-1.fc44.x86_64.rpm
+192fae688e41530d96567dcbfe44f90a11d0b7f31fe50282c51b0a36dc55b24b  miyu-voice_0.6.1-1_amd64.deb
+e3b907ca8f9c3f5589a3cb6c8f7a2d2923290a8744628be433c88c2dfe7f54ff  miyu_0.6.1-1_amd64.deb
+```
+
+</details>
