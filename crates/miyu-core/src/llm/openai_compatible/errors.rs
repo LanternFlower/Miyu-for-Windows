@@ -159,12 +159,6 @@ impl HttpStatusFailure {
         }
     }
 
-    /// 配上供应商/子进程自己那句话（会裁短）。
-    pub(in crate::llm::openai_compatible) fn with_detail(mut self, detail: &str) -> Self {
-        self.detail = clip_detail(detail);
-        self
-    }
-
     pub(in crate::llm::openai_compatible) fn classify(status: u16, body: &str) -> Self {
         let kind = match status {
             401 | 403 => HttpFailureKind::Authentication,

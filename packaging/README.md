@@ -4,12 +4,21 @@
 `ci/stage.py` 用它生成完整目录，GNU DEB/RPM/tar 与 Arch 包都从这个目录打包。
 资源随主包提供，voice 是可选包，不存在独立 assets 包。
 
-Linux 0.6.0 已发布并通过容器安装和真实模型输出验收：Arch x86_64、Debian 13、Ubuntu 25.10/26.04、固定的
-Fedora 稳定版。macOS 尚未通过原生验收，本轮不发布 Mac 资产。
-具体输入、资产和必需检查以冻结的 release input 与报告为准。
+Linux 0.6.1 已发布并通过容器安装和真实模型输出验收：Arch x86_64、Debian 13、
+Ubuntu 24.04 LTS/26.04、Linux Mint 22.3、固定的 Fedora 稳定版。macOS 尚未通过原生验收，
+本轮不发布 Mac 资产。具体输入、资产和必需检查以冻结的 release input 与报告为准。
+
+**2026-09-20 起 GNU 渠道的支持下限是 Ubuntu 24.04 LTS**（此前是 25.10）。下限由构建
+基座决定：GNU builder 从 Debian 13（glibc 2.41）换成 `ubuntu:24.04`（glibc 2.39），
+包里的 `libc6` 下限不再写字面量、从 `common/toolchain.lock.json` 的
+`builders.gnu-x86_64.glibc` 读。安装验收的两个 Ubuntu 目标改成一头一尾：
+`ubuntu2404-x86_64`（下限）与 `ubuntu2604-x86_64`（最新）。同一份 DEB 另外在
+`mint22-x86_64` 上验收——Linux Mint 22.x 的基座正是 Ubuntu 24.04，镜像固定在最新
+稳定版 22.3（zena）。它是 Ubuntu 派生但自带一套软件源，装 DEB 时拉的依赖
+（`ripgrep`、`chafa`、`libasound2t64`）来自 Mint 自己的镜像，值得单独装一次证明。
 
 GitHub Release 附件只提供 Arch、DEB、RPM 三种格式的主包与可选 voice 包，共六个。
-Debian 与两个 Ubuntu 版本共用 DEB，不需要为每个发行版重复上传。GNU tar、OOBE
+Debian、两个 Ubuntu 与 Linux Mint 共用同一个 DEB，不需要为每个发行版重复上传。GNU tar、OOBE
 截图、SHA256SUMS、验收 JSON、SBOM、provenance、release input 和 release manifest
 保留在完整验证 bundle 或 CI artifact 中，不上传 Release。OOBE 截图从仓库资源嵌入
 发布说明。公开附件名单由冻结资产清单中的 `archlinux`、`deb`、`rpm` 格式集中选出；

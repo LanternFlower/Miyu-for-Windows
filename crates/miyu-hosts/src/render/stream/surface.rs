@@ -81,6 +81,7 @@ impl SurfaceCaps {
 
 /// 两个子代理面板共用的能力位：面板自带登记处（每一步都能点开），内容整块重灌
 /// 而不是逐步落地，段末自己写收缩行。
+#[cfg(test)]
 pub const PANEL_CAPS: SurfaceCaps = SurfaceCaps {
     expandable: true,
     commit_immediately: false,

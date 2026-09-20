@@ -220,10 +220,10 @@ tokio::task_local! {
     /// 本回合跑在哪条人格车道上(daemon 的 actor 套)。`subagent` 工具据它判「这一层
     /// 已经是开发模式」:开发子代理开的孙代理不管传没传 dev 都是开发模式(人格跟父),
     /// 任务条与状态行的标签要按实际模式写,不能只看模型传的那个布尔(用户 09-18)。
-    static TURN_LANE: crate::config::PersonaLane;
+    static TURN_LANE: crate::persona_lane::PersonaLane;
 }
 
-pub async fn with_turn_lane<F>(lane: crate::config::PersonaLane, future: F) -> F::Output
+pub async fn with_turn_lane<F>(lane: crate::persona_lane::PersonaLane, future: F) -> F::Output
 where
     F: std::future::Future,
 {
@@ -231,7 +231,7 @@ where
 }
 
 /// 回合外(直连 CLI / 测试)为 None。
-pub fn current_turn_lane() -> Option<crate::config::PersonaLane> {
+pub fn current_turn_lane() -> Option<crate::persona_lane::PersonaLane> {
     TURN_LANE.try_with(|lane| *lane).ok()
 }
 

@@ -67,6 +67,28 @@ miyu config
 
   装好后运行 `miyu config`，在「全局设置」里开启「语音功能」，daemon 会自动拉起 `miyu-voice` 进程。
 
+- Debian / Ubuntu / Linux Mint
+
+  从 [Releases](https://github.com/SHORiN-KiWATA/miyu-agent/releases/latest) 下载 `.deb`（`miyu_<版本>_amd64.deb`，
+  语音包是 `miyu-voice_<版本>_amd64.deb`），再本地安装——用 `apt` 而不是 `dpkg -i`，依赖才会自动装上：
+
+  ```
+  sudo apt install ./miyu_<版本>_amd64.deb
+  # 想要语音就和主包一起装，两个包的版本必须相同
+  sudo apt install ./miyu_<版本>_amd64.deb ./miyu-voice_<版本>_amd64.deb
+  ```
+
+  支持 **Ubuntu 24.04 LTS 及更新**、**Debian 13** 与 **Linux Mint 22**（22.x 的基座就是 Ubuntu 24.04）。
+  更老的发行版装不上：包里的 `libc6` 下限跟着构建基座走（当前 glibc 2.39）。
+
+- Fedora
+
+  同样从 Releases 下载 `.rpm`：
+
+  ```
+  sudo dnf install ./miyu-<版本>.fc<N>.x86_64.rpm
+  ```
+
 - 从源码构建
 
   ```

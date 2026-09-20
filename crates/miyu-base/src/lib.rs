@@ -19,6 +19,7 @@ pub mod models_cache;
 pub mod notify;
 pub mod orphan_guard;
 pub mod paths;
+pub mod persona_lane;
 pub mod platform_types;
 pub mod process;
 pub mod prompts;

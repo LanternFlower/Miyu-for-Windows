@@ -53,7 +53,8 @@ TIERS = [
     ("基础", ["i18n", "logging", "json_extract", "token_estimate", "token_counter", "prompts",
              "default_models", "provider_url", "memory_types", "platform_types", "host_info",
              "paths", "shell", "notify", "clipboard", "terminal", "question",
-             "process", "durations", "media_mime", "http_response",
+             "process", "durations", "media_mime", "http_response", "orphan_guard",
+             "persona_lane",
              "tool_names", "random_id",
              "workspace", "sandbox"]),
     ("配置", ["config", "host_ports", "provider_catalog", "models_cache", "embedding"]),
@@ -62,7 +63,9 @@ TIERS = [
     ("传输", ["ipc", "args", "slash_commands"]),
     ("工具与引擎", ["tools", "voice", "transfer", "agent", "default_kb"]),
     ("场所与展示", ["platforms", "runtime", "web", "daemon", "render"]),
-    ("入口", ["pm", "oobe", "config_tui", "cli", "question_tui", "bin"]),
+    # feature_sources 是引导与设置界面共用的那张功能表(它要问 tools/skills 有什么,
+    # 所以只能待在工具与引擎之上),消费者就是 oobe 与 config_tui,同层。
+    ("入口", ["pm", "oobe", "config_tui", "cli", "question_tui", "bin", "feature_sources"]),
 ]
 TIER_OF = {module: index for index, (_, modules) in enumerate(TIERS) for module in modules}
 

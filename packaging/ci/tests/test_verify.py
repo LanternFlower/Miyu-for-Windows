@@ -54,7 +54,12 @@ class InstallationRecipeTests(unittest.TestCase):
                          ['lib/miyu','share/miyu','bin/miyu'])
         self.assertEqual(package_inventory({'format':'deb'},entries),entries)
 
+    def test_mint_installs_through_apt_like_its_ubuntu_base(self):
+        commands=install_commands('mint22-x86_64',['/package/test.deb'])
+        self.assertEqual(commands[0],['apt-get','update'])
+        self.assertEqual(commands[-1][:3],['apt-get','install','-y'])
+
     def test_ubuntu_uses_image_sources_without_guessing_archive_migration(self):
-        commands=install_commands('ubuntu2510-x86_64',['/package/test.deb'])
+        commands=install_commands('ubuntu2404-x86_64',['/package/test.deb'])
         self.assertEqual(commands[0],['apt-get','update'])
         self.assertFalse(any('old-releases' in arg for command in commands for arg in command))

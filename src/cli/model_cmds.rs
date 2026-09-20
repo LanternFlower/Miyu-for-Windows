@@ -308,7 +308,7 @@ pub(in crate::cli) async fn run_models_for_session(
 /// 模型菜单同款：会话没有自己的覆盖时它就是当前状态。此前想恢复继承只能记住
 /// `miyu models default` 这个隐藏写法，菜单里根本看不到这条路。
 ///
-/// 行内（`inline_fuzzy_select`）与全屏面板（`pick_multi`）共用：菜单项、入场勾选
+/// 行内（`inline_fuzzy_select`）与全屏面板（`pick_multi_with`）共用：菜单项、入场勾选
 /// 在这里算，选完交回 `apply` 落盘——两条路一个规矩。
 pub(in crate::cli) struct SessionModelMenu {
     choices: Vec<miyu_base::config::ProviderModelChoice>,

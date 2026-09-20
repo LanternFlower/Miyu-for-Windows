@@ -2,7 +2,6 @@
   "arch": "amd64",
   "platform": "linux",
   "depends": [
-    "glibc >= 2.41",
     "libgcc",
     "libstdc++",
     "alsa-lib",

@@ -1,14 +1,17 @@
 # Miyu 发布流程
 
-本手册按 2026-09-14 的 **0.6.0-2** 实际构建、容器验收、发布、AUR 推送与本机升级更新。工具入口在
+本手册按 2026-09-20 的 **0.6.1** 实际构建、容器验收、发布、AUR 推送与本机升级更新。工具入口在
 `packaging/ci/`，资源清单在 `packaging/common/assets.json`，Arch 四份配方仍以
 `packaging/arch/` 为真相源。远端 CI 的职责与凭据契约见
 [CI 说明](docs/plan/distribution/ci.md)。
 
 ## 范围与工作区
 
-0.6.0 使用 `linux-smoke`：Arch、Debian 13、Ubuntu 25.10、Ubuntu 26.04、Fedora 44，
-均为 Linux x86_64。公开附件仅为 Arch、DEB、RPM 的主程序与 voice，共六个包。GNU tar 仅保留内部验收。
+`linux-smoke` 的目标：Arch、Debian 13、Ubuntu 24.04 LTS、Ubuntu 26.04、
+Linux Mint 22.3、Fedora 44，均为 Linux x86_64。两个 Ubuntu 一头一尾：24.04 是声称
+支持的**下限**，26.04 是最新。（0.6.0 当时验的是 25.10 而不是 24.04；2026-09-20 起
+构建基座降到 24.04，往下多盖了两个 LTS 周期的用户。）Mint 22.x 的基座就是
+Ubuntu 24.04，但它自带软件源，DEB 的依赖是从 Mint 自己的镜像拉的，所以单独装一次。公开附件仅为 Arch、DEB、RPM 的主程序与 voice，共六个包。GNU tar 仅保留内部验收。
 主程序要求真实安装、资源/版本校验及指定供应商正常回复；voice 要求实际安装和版本校验。
 GNU tar 使用独立安装前缀与 MIYU_HOME。物理麦克风、Mac 和完整升级恢复不在这次验收范围。
 
@@ -26,6 +29,14 @@ GNU tar 使用独立安装前缀与 MIYU_HOME。物理麦克风、Mac 和完整�
 `cargo check --locked --all-targets` 和 Python 打包测试。产品测试必须使用临时
 HOME/MIYU_HOME/XDG；进程与目录清理由 `Sandbox`、`ProcessSupervisor` 管理。
 `packaging/ci/run_tests.py` 提供预定义源码测试入口。
+
+跑测试的环境必须给到中文 locale（`LANG=zh_CN.UTF-8`，或直接 `MIYU_LANG=zh`）。界面文案
+按 locale 走、兜底是英文，而一批用例断言的正是中文那份——2026-09-20 在 `systemd --user`
+的 `en_US.UTF-8` 环境里实测 12 条红，换上 locale 后 2621 条全绿。别把这类红当成回归。
+
+手册里那条 `docker build … .` 依赖仓库根的 `.dockerignore`（内容是一个 `*`）：两个 builder
+镜像一行 `COPY` 都没有，上下文应当是空的；少了那份清单，docker 会把整个工作区
+（开发机 `target/` 实测 136 GB）当上下文收走。
 
 CI 的本机开发依赖还必须包含 **ripgrep**；搜索测试会实际调用 `rg`，缺失即 ENOENT。
 图片/表情包尺寸在 `cfg(test)` 下固定为 80×24，测试不得依赖 runner 是否有控制终端或 TERM。
@@ -46,15 +57,15 @@ python3 packaging/ci/run_tests.py --suite source-unit --report-dir out/distribut
 
 ## 2. 冻结并准备最终输入
 
-以下参数对应 0.6.0-2。每次构建使用新的空输出目录，不能覆盖上一轮证据。
+以下参数对应 0.6.1（revision 1）。每次构建使用新的空输出目录，不能覆盖上一轮证据。
 metadata 同时保存源码快照和文件清单。运行前必须检出待发布源码提交；不要在后续
 渠道/文档提交的 HEAD 上直接重跑旧版本 tag。新版本使用 revision 1，同版本重编见最后一节。
 
 ```bash
-python3 packaging/ci/metadata.py --mode release --source-ref HEAD --tag v0.6.0 \
-  --profile linux-smoke --revision 2 --out out/distribution/revision-2/release-input.json
-python3 packaging/ci/prepare.py --manifest out/distribution/revision-2/release-input.json \
-  --out out/distribution/revision-2/inputs
+python3 packaging/ci/metadata.py --mode release --source-ref HEAD --tag v0.6.1 \
+  --profile linux-smoke --revision 1 --out out/distribution/release-0.6.1/release-input.json
+python3 packaging/ci/prepare.py --manifest out/distribution/release-0.6.1/release-input.json \
+  --out out/distribution/release-0.6.1/inputs
 ```
 
 已验证的下载缓存和相同 Cargo.lock 的 vendor 可通过 `--cache`、`--vendor-cache` 复用；
@@ -74,7 +85,11 @@ docker build -t miyu-release-arch -f packaging/linux/builders/Dockerfile.arch .
 
 对 `gnu-x86_64`、`arch-x86_64` 各构建 core/voice。`build.py` 必须接收 manifest、inputs、
 build-id、component、out、builder-image；可指定该 component 独占的 `--target-cache`。
-最多两条构建并行，每条 jobs=2。编译在 `--network none` 容器内以 `--release --frozen` 执行，
+容器内 `CARGO_BUILD_JOBS=2` 是冻结在源码快照里的（`ci/lib/container_build.py`），所以
+并行度只看同时起几条。CI 上是两条（GNU 与 Arch 各一条，各自 core→voice 串行）；开发机
+核多的时候可以把四条（两个 build-id × core/voice）一起起，4×2=8 核，墙钟时间对折——
+0.6.1 就是这么构建的，`--target-cache` 按 component 分开所以不抢 Cargo 锁。
+编译在 `--network none` 容器内以 `--release --frozen` 执行，
 保留 thin LTO/codegen-units=1；链接几分钟属正常，不能因日志暂时不变就重启构建。
 
 每个 build-id 依次调用 `stage.py` 和 `package.py`。stage 接收对应 `--build-root`；package
@@ -87,12 +102,12 @@ GNU 使用私有 CPU ORT。Arch namcap E 会拒绝打包，RPM 不声明发行�
 
 ## 4. 实际安装与模型验收
 
-对 manifest 的五个 target-id 分别运行 `verify.py`：
+对 manifest 的六个 target-id 分别运行 `verify.py`：
 
 ```bash
-python3 packaging/ci/verify.py --manifest out/distribution/revision-2/release-input.json \
-  --packages out/distribution/revision-2/packages --target-id debian13-x86_64 \
-  --report-dir out/distribution/revision-2/reports/debian13-x86_64 \
+python3 packaging/ci/verify.py --manifest out/distribution/release-0.6.1/release-input.json \
+  --packages out/distribution/release-0.6.1/packages --target-id debian13-x86_64 \
+  --report-dir out/distribution/release-0.6.1/reports/debian13-x86_64 \
   --provider-config /home/shorin/.miyu/config/config.jsonc
 ```
 
@@ -101,8 +116,9 @@ python3 packaging/ci/verify.py --manifest out/distribution/revision-2/release-in
 上传为 artifact。成功要求请求退出正常、最终回复非空、provider/model 正确，不要求人格
 逐字照抄某个测试口令。
 
-五个目标是 `arch-x86_64`、`debian13-x86_64`、`ubuntu2510-x86_64`、
-`ubuntu2604-x86_64`、`fedora-current-x86_64`。0.6.0-2 共 36 项必需检查，均需 PASS。
+六个目标是 `arch-x86_64`、`debian13-x86_64`、`ubuntu2404-x86_64`、
+`ubuntu2604-x86_64`、`mint22-x86_64`、`fedora-current-x86_64`。0.6.1 共 42 项必需
+检查（六个目标 × 主包 4 项 + voice 2 项，外加 GNU tar 的 6 项），均需 PASS。
 变更 CLI 默认行为时还要运行真实 PTY：本次确认不设置 MIYU_TUI 默认全屏，
 MIYU_TUI=0 回退 inline。不能在验收命令里继续设置 MIYU_TUI=1 而把默认行为缺陷藏起来。
 
@@ -113,11 +129,11 @@ MIYU_TUI=0 回退 inline。不能在验收命令里继续设置 MIYU_TUI=1 而�
 ## 5. 聚合、上传与回读
 
 ```bash
-python3 packaging/ci/verify_release.py --manifest out/distribution/revision-2/release-input.json \
-  --artifacts out/distribution/revision-2/packages --reports out/distribution/revision-2/reports \
-  --publish-dir out/distribution/revision-2/publish
-python3 packaging/ci/publish.py --manifest out/distribution/revision-2/release-input.json \
-  --dir out/distribution/revision-2/publish --dry-run
+python3 packaging/ci/verify_release.py --manifest out/distribution/release-0.6.1/release-input.json \
+  --artifacts out/distribution/release-0.6.1/packages --reports out/distribution/release-0.6.1/reports \
+  --publish-dir out/distribution/release-0.6.1/publish
+python3 packaging/ci/publish.py --manifest out/distribution/release-0.6.1/release-input.json \
+  --dir out/distribution/release-0.6.1/publish --dry-run
 ```
 
 ### 公开附件与内部证据
@@ -145,14 +161,14 @@ release-input / release-manifest 分别记录输入与输出，不是供用户�
 
 图片放在仓库 `docs/releases/<version>/`，使用 `raw.githubusercontent.com` 的 tag 或
 确定提交链接嵌入正文。可以收折次要图片，保留真实截图，不将截图作为 Release 附件。
-0.6.0-2 使用四张 OOBE 图和三张实机截图。发布前逐个读取图片 URL，核对返回内容与
+0.6.0-2 用过四张 OOBE 图和三张实机截图；0.6.1 的正文是纯文字（用户要求简短）。用图时发布前逐个读取图片 URL，核对返回内容与
 仓库原图 hash；删除旧图片附件前先更新正文链接。六个最终包的 SHA256 放正文
 `<details>` 折叠区，并链接完整 changelog。正文完成并确认没有遗漏后才清空已归档记录。
 
 ### 上传与回读
 
 全部验证成功后推送已授权的分支和 tag，再把 dry-run 换为 `--execute`，同时传
-`--notes docs/releases/0.6.0/release-notes.md`。首次上传创建 draft，每个包上传后下载
+`--notes docs/releases/0.6.1/release-notes.md`。首次上传创建 draft，每个包上传后下载
 回读 hash，六附件名单核对后才转正式。已有同名异内容或额外远端资产会失败，不能
 使用 clobber 绕过；同版本替换按最后一节的单独迁移步骤处理。
 
@@ -171,10 +187,10 @@ release-input / release-manifest 分别记录输入与输出，不是供用户�
 
 ```bash
 python3 packaging/ci/channel_update.py \
-  --manifest out/distribution/revision-2/release-input.json \
-  --release-output out/distribution/revision-2/publish/release-manifest-0.6.0-2.json \
-  --published-url https://github.com/SHORiN-KiWATA/miyu-agent/releases/tag/v0.6.0 \
-  --out out/distribution/revision-2/channels \
+  --manifest out/distribution/release-0.6.1/release-input.json \
+  --release-output out/distribution/release-0.6.1/publish/release-manifest-0.6.1-1.json \
+  --published-url https://github.com/SHORiN-KiWATA/miyu-agent/releases/tag/v0.6.1 \
+  --out out/distribution/release-0.6.1/channels \
   --builder-image miyu-release-arch --apply
 ```
 
@@ -184,7 +200,7 @@ _release_pkgrel、URL、SHA256、精确主包依赖与 .SRCINFO 必须一致；`
 快照 pkgver，生成并维护其 .SRCINFO。VCS 的 pkgver() 在用户构建时继续计算实际源码版本。
 
 从正式 URL 下载，用新配方在容器重包并安装，检查资源、版本、别名与真实模型回复。
-0.6.0-2 的 AUR 渠道另外完成 6 项检查。
+0.6.0-2 的 AUR 渠道另外完成过 6 项检查，0.6.1 同法。
 
 同步独立 AUR 检出前 fetch 并检查 HEAD/远端与脏文件。未跟踪的旧包、日志、pkg/src
 不是未提交的配方修改，应保留；若配方本身有改动，先保留并合并，不能直接覆盖。
@@ -199,8 +215,8 @@ _release_pkgrel、URL、SHA256、精确主包依赖与 .SRCINFO 必须一致；`
 
 ```bash
 sudo pacman -U --noconfirm \
-  out/distribution/revision-2/publish/miyu-0.6.0-2-x86_64.pkg.tar.zst \
-  out/distribution/revision-2/publish/miyu-voice-0.6.0-2-x86_64.pkg.tar.zst
+  out/distribution/release-0.6.1/publish/miyu-0.6.1-1-x86_64.pkg.tar.zst \
+  out/distribution/release-0.6.1/publish/miyu-voice-0.6.1-1-x86_64.pkg.tar.zst
 MIYU_HOME="$HOME/.miyu" /usr/bin/miyu daemon stop
 ```
 

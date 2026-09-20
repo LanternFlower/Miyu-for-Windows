@@ -28,7 +28,7 @@ pub(crate) use defaults::*;
 pub use display::*;
 pub use memory::*;
 pub use paths::*;
-pub use persona_lane::PersonaLane;
+pub use crate::persona_lane::PersonaLane;
 pub use persona_manifest::PersonaManifest;
 pub use platform::*;
 pub use platform_plugins::*;

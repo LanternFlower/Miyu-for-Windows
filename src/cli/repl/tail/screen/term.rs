@@ -310,6 +310,7 @@ impl Term {
     }
 
     /// 各轮的起始行（测试用）。
+    #[cfg(test)]
     pub(in crate::cli) fn turn_starts(&self) -> &[usize] {
         &self.turn_starts
     }

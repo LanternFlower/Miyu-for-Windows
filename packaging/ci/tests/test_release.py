@@ -152,7 +152,7 @@ class BundleTests(unittest.TestCase):
         acceptance=next(f for f in result['files'] if f['kind']=='acceptance')
         path=self.root/'publish'/acceptance['filename']
         reports=load_json(path)['reports']
-        self.assertEqual(len(reports),5)
+        self.assertEqual(len(reports),6)
         self.assertTrue(all(r['cleanup']['remaining']=='' for r in reports))
         self.assertIn('Hello from the test fixture.',path.read_text())
         for private in ('fixture-secret','/private/test/home','api_key','commands'):
@@ -211,7 +211,7 @@ class BundleTests(unittest.TestCase):
                 with self.assertRaises(ValueError):self.aggregate()
 
     def test_deleted_report_rejected(self):
-        (self.reports/'ubuntu2510-x86_64/report.json').unlink()
+        (self.reports/'ubuntu2404-x86_64/report.json').unlink()
         with self.assertRaises(OSError):
             self.aggregate()
 

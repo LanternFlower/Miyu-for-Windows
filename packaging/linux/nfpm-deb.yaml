@@ -4,7 +4,6 @@
   "section": "utils",
   "priority": "optional",
   "depends": [
-    "libc6 (>= 2.41)",
     "libgcc-s1",
     "libstdc++6",
     "libasound2t64",

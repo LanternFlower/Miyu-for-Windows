@@ -1,0 +1,4 @@
+# 两个 builder 镜像（packaging/linux/builders/）一行 COPY 都没有，构建上下文
+# 应当是空的。没有这份清单时 `docker build … .` 会把整个仓库塞给守护进程——
+# 本机实测 target/ 有 136 GB，等于把磁盘和时间一起烧掉。
+*

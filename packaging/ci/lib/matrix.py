@@ -1,8 +1,9 @@
 """Frozen profile and asset mapping shared by metadata and release validation."""
 from .common import load_json
 
-TARGET_IDS = ('arch-x86_64', 'debian13-x86_64', 'ubuntu2510-x86_64',
-              'ubuntu2604-x86_64', 'fedora-current-x86_64', 'macos-arm64')
+TARGET_IDS = ('arch-x86_64', 'debian13-x86_64', 'ubuntu2404-x86_64',
+              'ubuntu2604-x86_64', 'mint22-x86_64', 'fedora-current-x86_64',
+              'macos-arm64')
 PROFILES = ('preview-core', 'stable-core', 'stable-full', 'linux-smoke')
 CORE_CHECKS = ('artifact-identity', 'package-install', 'assets-complete', 'renderer-live',
                'embedding-live', 'embedding-degrade', 'daemon-lifecycle', 'sandbox-contract',

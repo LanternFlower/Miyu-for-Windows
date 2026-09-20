@@ -2,11 +2,11 @@
   "files": {
     "crates/miyu-base/src/clipboard.rs": {
       "tests": 89,
-      "total": 533
+      "total": 546
     },
     "crates/miyu-base/src/config/builtin_plugins.rs": {
       "tests": 67,
-      "total": 314
+      "total": 426
     },
     "crates/miyu-base/src/config/context.rs": {
       "tests": 0,
@@ -18,19 +18,19 @@
     },
     "crates/miyu-base/src/config/defaults.rs": {
       "tests": 0,
-      "total": 473
+      "total": 499
     },
     "crates/miyu-base/src/config/display.rs": {
       "tests": 0,
-      "total": 131
+      "total": 180
     },
     "crates/miyu-base/src/config/feature_catalog.rs": {
-      "tests": 158,
-      "total": 417
+      "tests": 242,
+      "total": 643
     },
     "crates/miyu-base/src/config/io.rs": {
       "tests": 0,
-      "total": 509
+      "total": 538
     },
     "crates/miyu-base/src/config/memory.rs": {
       "tests": 0,
@@ -38,7 +38,7 @@
     },
     "crates/miyu-base/src/config/mod.rs": {
       "tests": 7,
-      "total": 501
+      "total": 566
     },
     "crates/miyu-base/src/config/paths.rs": {
       "tests": 0,
@@ -46,7 +46,7 @@
     },
     "crates/miyu-base/src/config/persona_lane.rs": {
       "tests": 0,
-      "total": 73
+      "total": 19
     },
     "crates/miyu-base/src/config/persona_manifest.rs": {
       "tests": 116,
@@ -58,7 +58,7 @@
     },
     "crates/miyu-base/src/config/platform.rs": {
       "tests": 0,
-      "total": 926
+      "total": 927
     },
     "crates/miyu-base/src/config/platform_ops.rs": {
       "tests": 0,
@@ -74,7 +74,7 @@
     },
     "crates/miyu-base/src/config/platform_plugins/real_context.rs": {
       "tests": 0,
-      "total": 1017
+      "total": 1012
     },
     "crates/miyu-base/src/config/pool_ref.rs": {
       "tests": 0,
@@ -86,7 +86,7 @@
     },
     "crates/miyu-base/src/config/provider.rs": {
       "tests": 0,
-      "total": 922
+      "total": 976
     },
     "crates/miyu-base/src/config/provider/test_support.rs": {
       "tests": 0,
@@ -114,7 +114,7 @@
     },
     "crates/miyu-base/src/config/tests/defaults.rs": {
       "tests": 0,
-      "total": 197
+      "total": 272
     },
     "crates/miyu-base/src/config/tests/mod.rs": {
       "tests": 0,
@@ -126,15 +126,15 @@
     },
     "crates/miyu-base/src/config/tests/platform.rs": {
       "tests": 0,
-      "total": 1292
+      "total": 1297
     },
     "crates/miyu-base/src/config/tests/plugins.rs": {
       "tests": 0,
-      "total": 353
+      "total": 365
     },
     "crates/miyu-base/src/config/tests/provider.rs": {
       "tests": 0,
-      "total": 1328
+      "total": 1339
     },
     "crates/miyu-base/src/config/tests/quota.rs": {
       "tests": 0,
@@ -142,11 +142,11 @@
     },
     "crates/miyu-base/src/config/tests/shared.rs": {
       "tests": 0,
-      "total": 43
+      "total": 64
     },
     "crates/miyu-base/src/config/tool_plugins.rs": {
       "tests": 0,
-      "total": 793
+      "total": 848
     },
     "crates/miyu-base/src/config/voice.rs": {
       "tests": 0,
@@ -158,7 +158,7 @@
     },
     "crates/miyu-base/src/durations.rs": {
       "tests": 0,
-      "total": 17
+      "total": 33
     },
     "crates/miyu-base/src/embedding/local.rs": {
       "tests": 67,
@@ -214,11 +214,15 @@
     },
     "crates/miyu-base/src/host_ports/mod.rs": {
       "tests": 0,
-      "total": 31
+      "total": 34
     },
     "crates/miyu-base/src/host_ports/ports.rs": {
       "tests": 66,
-      "total": 173
+      "total": 232
+    },
+    "crates/miyu-base/src/host_ports/subagent.rs": {
+      "tests": 0,
+      "total": 88
     },
     "crates/miyu-base/src/http_response.rs": {
       "tests": 0,
@@ -234,7 +238,7 @@
     },
     "crates/miyu-base/src/lib.rs": {
       "tests": 0,
-      "total": 61
+      "total": 63
     },
     "crates/miyu-base/src/logging.rs": {
       "tests": 43,
@@ -265,8 +269,12 @@
       "total": 104
     },
     "crates/miyu-base/src/notify.rs": {
-      "tests": 24,
-      "total": 133
+      "tests": 96,
+      "total": 401
+    },
+    "crates/miyu-base/src/orphan_guard.rs": {
+      "tests": 0,
+      "total": 56
     },
     "crates/miyu-base/src/paths/home_layout.rs": {
       "tests": 0,
@@ -281,8 +289,8 @@
       "total": 19
     },
     "crates/miyu-base/src/paths/mod.rs": {
-      "tests": 4,
-      "total": 648
+      "tests": 38,
+      "total": 715
     },
     "crates/miyu-base/src/paths/resource_migration.rs": {
       "tests": 0,
@@ -320,13 +328,17 @@
       "tests": 0,
       "total": 24
     },
+    "crates/miyu-base/src/persona_lane.rs": {
+      "tests": 0,
+      "total": 69
+    },
     "crates/miyu-base/src/platform_types.rs": {
       "tests": 0,
-      "total": 596
+      "total": 607
     },
     "crates/miyu-base/src/platform_types/test_support.rs": {
       "tests": 0,
-      "total": 16
+      "total": 17
     },
     "crates/miyu-base/src/process.rs": {
       "tests": 0,
@@ -337,8 +349,8 @@
       "total": 35
     },
     "crates/miyu-base/src/provider_catalog/cli.rs": {
-      "tests": 67,
-      "total": 216
+      "tests": 106,
+      "total": 297
     },
     "crates/miyu-base/src/provider_catalog/http.rs": {
       "tests": 0,
@@ -390,15 +402,15 @@
     },
     "crates/miyu-base/src/shell/bash.rs": {
       "tests": 70,
-      "total": 162
+      "total": 166
     },
     "crates/miyu-base/src/shell/fish.rs": {
       "tests": 162,
-      "total": 513
+      "total": 517
     },
     "crates/miyu-base/src/shell/mod.rs": {
-      "tests": 107,
-      "total": 605
+      "tests": 316,
+      "total": 1046
     },
     "crates/miyu-base/src/shell/test_support.rs": {
       "tests": 0,
@@ -406,19 +418,23 @@
     },
     "crates/miyu-base/src/shell/zsh.rs": {
       "tests": 98,
-      "total": 246
+      "total": 250
     },
     "crates/miyu-base/src/terminal/chafa.rs": {
       "tests": 69,
       "total": 329
     },
+    "crates/miyu-base/src/terminal/chrome.rs": {
+      "tests": 163,
+      "total": 1163
+    },
     "crates/miyu-base/src/terminal/kitty.rs": {
       "tests": 186,
-      "total": 586
+      "total": 662
     },
     "crates/miyu-base/src/terminal/mod.rs": {
       "tests": 12,
-      "total": 119
+      "total": 121
     },
     "crates/miyu-base/src/terminal/palette.rs": {
       "tests": 33,
@@ -446,7 +462,7 @@
     },
     "crates/miyu-base/src/workspace.rs": {
       "tests": 101,
-      "total": 361
+      "total": 401
     },
     "crates/miyu-core/src/alarm.rs": {
       "tests": 94,
@@ -462,15 +478,15 @@
     },
     "crates/miyu-core/src/ipc/lifecycle.rs": {
       "tests": 0,
-      "total": 548
+      "total": 553
     },
     "crates/miyu-core/src/ipc/mod.rs": {
-      "tests": 517,
-      "total": 552
+      "tests": 518,
+      "total": 553
     },
     "crates/miyu-core/src/ipc/protocol.rs": {
       "tests": 0,
-      "total": 470
+      "total": 547
     },
     "crates/miyu-core/src/ledger/books.rs": {
       "tests": 0,
@@ -546,7 +562,7 @@
     },
     "crates/miyu-core/src/llm/mod.rs": {
       "tests": 108,
-      "total": 664
+      "total": 665
     },
     "crates/miyu-core/src/llm/openai_compatible/anthropic.rs": {
       "tests": 0,
@@ -554,7 +570,11 @@
     },
     "crates/miyu-core/src/llm/openai_compatible/antigravity/mod.rs": {
       "tests": 17,
-      "total": 429
+      "total": 538
+    },
+    "crates/miyu-core/src/llm/openai_compatible/antigravity/pool.rs": {
+      "tests": 144,
+      "total": 404
     },
     "crates/miyu-core/src/llm/openai_compatible/antigravity/setup.rs": {
       "tests": 67,
@@ -562,31 +582,31 @@
     },
     "crates/miyu-core/src/llm/openai_compatible/antigravity/stream.rs": {
       "tests": 71,
-      "total": 607
+      "total": 631
     },
     "crates/miyu-core/src/llm/openai_compatible/builder.rs": {
       "tests": 0,
-      "total": 518
+      "total": 536
     },
     "crates/miyu-core/src/llm/openai_compatible/chat.rs": {
       "tests": 0,
-      "total": 572
+      "total": 712
     },
     "crates/miyu-core/src/llm/openai_compatible/chat_consume.rs": {
       "tests": 0,
-      "total": 505
+      "total": 516
     },
     "crates/miyu-core/src/llm/openai_compatible/claude_code/mod.rs": {
       "tests": 0,
-      "total": 333
+      "total": 348
     },
     "crates/miyu-core/src/llm/openai_compatible/claude_code/stream.rs": {
       "tests": 0,
-      "total": 564
+      "total": 581
     },
     "crates/miyu-core/src/llm/openai_compatible/cli_relay/mod.rs": {
       "tests": 32,
-      "total": 353
+      "total": 360
     },
     "crates/miyu-core/src/llm/openai_compatible/cli_relay/payload.rs": {
       "tests": 119,
@@ -594,11 +614,15 @@
     },
     "crates/miyu-core/src/llm/openai_compatible/cli_relay/process.rs": {
       "tests": 0,
-      "total": 235
+      "total": 394
     },
     "crates/miyu-core/src/llm/openai_compatible/cli_relay/session.rs": {
       "tests": 253,
       "total": 644
+    },
+    "crates/miyu-core/src/llm/openai_compatible/codebuddy/mod.rs": {
+      "tests": 0,
+      "total": 239
     },
     "crates/miyu-core/src/llm/openai_compatible/codex/mod.rs": {
       "tests": 99,
@@ -606,7 +630,7 @@
     },
     "crates/miyu-core/src/llm/openai_compatible/codex/stream.rs": {
       "tests": 33,
-      "total": 528
+      "total": 525
     },
     "crates/miyu-core/src/llm/openai_compatible/dsml.rs": {
       "tests": 0,
@@ -622,7 +646,7 @@
     },
     "crates/miyu-core/src/llm/openai_compatible/errors.rs": {
       "tests": 41,
-      "total": 420
+      "total": 513
     },
     "crates/miyu-core/src/llm/openai_compatible/errors/test_support.rs": {
       "tests": 0,
@@ -634,11 +658,11 @@
     },
     "crates/miyu-core/src/llm/openai_compatible/mod.rs": {
       "tests": 4,
-      "total": 138
+      "total": 146
     },
     "crates/miyu-core/src/llm/openai_compatible/protocol.rs": {
       "tests": 0,
-      "total": 568
+      "total": 583
     },
     "crates/miyu-core/src/llm/openai_compatible/sse/accumulator.rs": {
       "tests": 0,
@@ -662,7 +686,7 @@
     },
     "crates/miyu-core/src/llm/openai_compatible/tests/antigravity.rs": {
       "tests": 0,
-      "total": 605
+      "total": 607
     },
     "crates/miyu-core/src/llm/openai_compatible/tests/chat_stream.rs": {
       "tests": 0,
@@ -672,13 +696,21 @@
       "tests": 0,
       "total": 489
     },
+    "crates/miyu-core/src/llm/openai_compatible/tests/codebuddy.rs": {
+      "tests": 0,
+      "total": 211
+    },
     "crates/miyu-core/src/llm/openai_compatible/tests/codex.rs": {
       "tests": 0,
       "total": 279
     },
     "crates/miyu-core/src/llm/openai_compatible/tests/endpoint_retry.rs": {
       "tests": 0,
-      "total": 475
+      "total": 478
+    },
+    "crates/miyu-core/src/llm/openai_compatible/tests/error_text.rs": {
+      "tests": 0,
+      "total": 155
     },
     "crates/miyu-core/src/llm/openai_compatible/tests/extra_body.rs": {
       "tests": 0,
@@ -686,23 +718,23 @@
     },
     "crates/miyu-core/src/llm/openai_compatible/tests/failover.rs": {
       "tests": 0,
-      "total": 746
+      "total": 749
     },
     "crates/miyu-core/src/llm/openai_compatible/tests/mod.rs": {
       "tests": 0,
-      "total": 19
+      "total": 22
     },
     "crates/miyu-core/src/llm/openai_compatible/tests/responses.rs": {
       "tests": 0,
-      "total": 720
+      "total": 722
     },
     "crates/miyu-core/src/llm/openai_compatible/tests/shared.rs": {
       "tests": 0,
-      "total": 247
+      "total": 249
     },
     "crates/miyu-core/src/llm/openai_compatible/tests/thinking.rs": {
       "tests": 0,
-      "total": 410
+      "total": 413
     },
     "crates/miyu-core/src/llm/openai_compatible/tests/tier_pool.rs": {
       "tests": 0,
@@ -712,9 +744,13 @@
       "tests": 0,
       "total": 289
     },
+    "crates/miyu-core/src/llm/openai_compatible/tests/zen_tools.rs": {
+      "tests": 0,
+      "total": 172
+    },
     "crates/miyu-core/src/llm/openai_compatible/variants.rs": {
       "tests": 0,
-      "total": 272
+      "total": 279
     },
     "crates/miyu-core/src/llm/openai_compatible/wire.rs": {
       "tests": 0,
@@ -723,6 +759,10 @@
     "crates/miyu-core/src/llm/openai_compatible/zen_headers.rs": {
       "tests": 0,
       "total": 134
+    },
+    "crates/miyu-core/src/llm/openai_compatible/zen_tools.rs": {
+      "tests": 0,
+      "total": 166
     },
     "crates/miyu-core/src/llm/provider_capabilities.rs": {
       "tests": 15,
@@ -849,8 +889,8 @@
       "total": 813
     },
     "crates/miyu-core/src/slash_commands.rs": {
-      "tests": 0,
-      "total": 336
+      "tests": 21,
+      "total": 573
     },
     "crates/miyu-core/src/state/accounts.rs": {
       "tests": 49,
@@ -890,7 +930,7 @@
     },
     "crates/miyu-core/src/state/conversation_db/history.rs": {
       "tests": 0,
-      "total": 786
+      "total": 811
     },
     "crates/miyu-core/src/state/conversation_db/history/test_support.rs": {
       "tests": 0,
@@ -902,7 +942,7 @@
     },
     "crates/miyu-core/src/state/conversation_db/mod.rs": {
       "tests": 215,
-      "total": 1092
+      "total": 1095
     },
     "crates/miyu-core/src/state/conversation_db/platform.rs": {
       "tests": 0,
@@ -930,11 +970,11 @@
     },
     "crates/miyu-core/src/state/conversation_db/rows.rs": {
       "tests": 0,
-      "total": 669
+      "total": 673
     },
     "crates/miyu-core/src/state/conversation_db/sessions.rs": {
       "tests": 0,
-      "total": 711
+      "total": 870
     },
     "crates/miyu-core/src/state/conversation_db/sessions/test_support.rs": {
       "tests": 0,
@@ -962,11 +1002,11 @@
     },
     "crates/miyu-core/src/state/conversation_db/types.rs": {
       "tests": 0,
-      "total": 582
+      "total": 599
     },
     "crates/miyu-core/src/state/history.rs": {
       "tests": 0,
-      "total": 422
+      "total": 427
     },
     "crates/miyu-core/src/state/history/test_support.rs": {
       "tests": 0,
@@ -978,15 +1018,15 @@
     },
     "crates/miyu-core/src/state/migrations/columns.rs": {
       "tests": 0,
-      "total": 344
+      "total": 369
     },
     "crates/miyu-core/src/state/migrations/mod.rs": {
       "tests": 493,
-      "total": 818
+      "total": 828
     },
     "crates/miyu-core/src/state/mod.rs": {
       "tests": 4,
-      "total": 478
+      "total": 541
     },
     "crates/miyu-core/src/state/queue.rs": {
       "tests": 0,
@@ -998,7 +1038,7 @@
     },
     "crates/miyu-core/src/state/sessions.rs": {
       "tests": 0,
-      "total": 471
+      "total": 544
     },
     "crates/miyu-core/src/state/sessions/test_support.rs": {
       "tests": 0,
@@ -1058,11 +1098,11 @@
     },
     "crates/miyu-core/src/state/tests/turns.rs": {
       "tests": 0,
-      "total": 981
+      "total": 1049
     },
     "crates/miyu-core/src/state/turns.rs": {
       "tests": 0,
-      "total": 305
+      "total": 310
     },
     "crates/miyu-core/src/state/turns/test_support.rs": {
       "tests": 0,
@@ -1102,7 +1142,7 @@
     },
     "crates/miyu-engine/src/agent/context_meter.rs": {
       "tests": 0,
-      "total": 62
+      "total": 75
     },
     "crates/miyu-engine/src/agent/control.rs": {
       "tests": 0,
@@ -1134,7 +1174,7 @@
     },
     "crates/miyu-engine/src/agent/mod.rs": {
       "tests": 4,
-      "total": 653
+      "total": 654
     },
     "crates/miyu-engine/src/agent/overflow.rs": {
       "tests": 0,
@@ -1146,7 +1186,7 @@
     },
     "crates/miyu-engine/src/agent/prompt.rs": {
       "tests": 0,
-      "total": 216
+      "total": 236
     },
     "crates/miyu-engine/src/agent/pruning.rs": {
       "tests": 0,
@@ -1162,11 +1202,11 @@
     },
     "crates/miyu-engine/src/agent/reports.rs": {
       "tests": 0,
-      "total": 277
+      "total": 281
     },
     "crates/miyu-engine/src/agent/setup.rs": {
       "tests": 0,
-      "total": 605
+      "total": 652
     },
     "crates/miyu-engine/src/agent/setup/test_support.rs": {
       "tests": 0,
@@ -1182,11 +1222,11 @@
     },
     "crates/miyu-engine/src/agent/tests/compact_extras.rs": {
       "tests": 0,
-      "total": 497
+      "total": 498
     },
     "crates/miyu-engine/src/agent/tests/context.rs": {
       "tests": 0,
-      "total": 1346
+      "total": 1350
     },
     "crates/miyu-engine/src/agent/tests/input.rs": {
       "tests": 0,
@@ -1198,7 +1238,7 @@
     },
     "crates/miyu-engine/src/agent/tests/prompt.rs": {
       "tests": 0,
-      "total": 614
+      "total": 691
     },
     "crates/miyu-engine/src/agent/tests/queue_journal.rs": {
       "tests": 0,
@@ -1234,7 +1274,7 @@
     },
     "crates/miyu-engine/src/agent/tool_report.rs": {
       "tests": 0,
-      "total": 567
+      "total": 576
     },
     "crates/miyu-engine/src/agent/turn_loop/catalog_refresh.rs": {
       "tests": 0,
@@ -1246,7 +1286,7 @@
     },
     "crates/miyu-engine/src/agent/turn_loop/mod.rs": {
       "tests": 0,
-      "total": 358
+      "total": 359
     },
     "crates/miyu-engine/src/agent/turn_loop/model_round.rs": {
       "tests": 0,
@@ -1294,7 +1334,7 @@
     },
     "crates/miyu-engine/src/agent/turn_state.rs": {
       "tests": 0,
-      "total": 128
+      "total": 132
     },
     "crates/miyu-engine/src/default_kb.rs": {
       "tests": 83,
@@ -1389,8 +1429,8 @@
       "total": 282
     },
     "crates/miyu-engine/src/tools/default_tools/mod.rs": {
-      "tests": 314,
-      "total": 663
+      "tests": 338,
+      "total": 694
     },
     "crates/miyu-engine/src/tools/default_tools/sysinfo.rs": {
       "tests": 0,
@@ -1410,7 +1450,7 @@
     },
     "crates/miyu-engine/src/tools/goal/prompt.rs": {
       "tests": 0,
-      "total": 103
+      "total": 105
     },
     "crates/miyu-engine/src/tools/goal/runtime.rs": {
       "tests": 0,
@@ -1426,11 +1466,11 @@
     },
     "crates/miyu-engine/src/tools/jobs/ledger.rs": {
       "tests": 0,
-      "total": 145
+      "total": 157
     },
     "crates/miyu-engine/src/tools/jobs/mod.rs": {
-      "tests": 30,
-      "total": 860
+      "tests": 66,
+      "total": 943
     },
     "crates/miyu-engine/src/tools/jobs/output.rs": {
       "tests": 135,
@@ -1442,7 +1482,7 @@
     },
     "crates/miyu-engine/src/tools/jobs/tests/mod.rs": {
       "tests": 0,
-      "total": 6
+      "total": 7
     },
     "crates/miyu-engine/src/tools/jobs/tests/output.rs": {
       "tests": 0,
@@ -1451,6 +1491,10 @@
     "crates/miyu-engine/src/tools/jobs/tests/shared.rs": {
       "tests": 0,
       "total": 55
+    },
+    "crates/miyu-engine/src/tools/jobs/tests/trace.rs": {
+      "tests": 0,
+      "total": 71
     },
     "crates/miyu-engine/src/tools/knowledge_base/dashboard.rs": {
       "tests": 254,
@@ -1530,7 +1574,7 @@
     },
     "crates/miyu-engine/src/tools/memes/mod.rs": {
       "tests": 620,
-      "total": 890
+      "total": 895
     },
     "crates/miyu-engine/src/tools/memes/semantic.rs": {
       "tests": 0,
@@ -1545,8 +1589,8 @@
       "total": 456
     },
     "crates/miyu-engine/src/tools/mod.rs": {
-      "tests": 42,
-      "total": 452
+      "tests": 41,
+      "total": 482
     },
     "crates/miyu-engine/src/tools/net_guard.rs": {
       "tests": 0,
@@ -1557,12 +1601,12 @@
       "total": 282
     },
     "crates/miyu-engine/src/tools/platform_outreach.rs": {
-      "tests": 88,
-      "total": 207
+      "tests": 332,
+      "total": 792
     },
     "crates/miyu-engine/src/tools/readable_names.rs": {
       "tests": 0,
-      "total": 218
+      "total": 229
     },
     "crates/miyu-engine/src/tools/registry/lazy.rs": {
       "tests": 41,
@@ -1677,20 +1721,24 @@
       "total": 194
     },
     "crates/miyu-engine/src/tools/subagent/log.rs": {
-      "tests": 0,
-      "total": 320
+      "tests": 4,
+      "total": 395
     },
     "crates/miyu-engine/src/tools/subagent/mod.rs": {
       "tests": 4,
-      "total": 648
+      "total": 944
+    },
+    "crates/miyu-engine/src/tools/subagent/protocol.rs": {
+      "tests": 347,
+      "total": 830
     },
     "crates/miyu-engine/src/tools/subagent/tests.rs": {
       "tests": 0,
-      "total": 198
+      "total": 341
     },
     "crates/miyu-engine/src/tools/subagent_runner.rs": {
-      "tests": 79,
-      "total": 881
+      "tests": 112,
+      "total": 966
     },
     "crates/miyu-engine/src/tools/test_support.rs": {
       "tests": 0,
@@ -1718,7 +1766,7 @@
     },
     "crates/miyu-engine/src/tools/tool_display.rs": {
       "tests": 0,
-      "total": 410
+      "total": 454
     },
     "crates/miyu-engine/src/tools/usage_query.rs": {
       "tests": 88,
@@ -1726,15 +1774,15 @@
     },
     "crates/miyu-engine/src/tools/vision/inline.rs": {
       "tests": 94,
-      "total": 163
+      "total": 178
     },
     "crates/miyu-engine/src/tools/vision/mod.rs": {
       "tests": 4,
-      "total": 826
+      "total": 839
     },
     "crates/miyu-engine/src/tools/vision/print.rs": {
       "tests": 0,
-      "total": 395
+      "total": 402
     },
     "crates/miyu-engine/src/tools/vision/print/test_support.rs": {
       "tests": 0,
@@ -1749,8 +1797,8 @@
       "total": 139
     },
     "crates/miyu-engine/src/tools/vision/tests.rs": {
-      "tests": 404,
-      "total": 409
+      "tests": 547,
+      "total": 553
     },
     "crates/miyu-engine/src/tools/voice_chat.rs": {
       "tests": 0,
@@ -1902,11 +1950,11 @@
     },
     "crates/miyu-hosts/src/platforms/mod.rs": {
       "tests": 7,
-      "total": 243
+      "total": 247
     },
     "crates/miyu-hosts/src/platforms/onebot/adapter.rs": {
       "tests": 0,
-      "total": 660
+      "total": 676
     },
     "crates/miyu-hosts/src/platforms/onebot/admission.rs": {
       "tests": 0,
@@ -1926,7 +1974,7 @@
     },
     "crates/miyu-hosts/src/platforms/onebot/dispatch.rs": {
       "tests": 7,
-      "total": 801
+      "total": 839
     },
     "crates/miyu-hosts/src/platforms/onebot/dispatch/test_support.rs": {
       "tests": 0,
@@ -1966,23 +2014,23 @@
     },
     "crates/miyu-hosts/src/platforms/onebot/notices.rs": {
       "tests": 0,
-      "total": 359
+      "total": 362
     },
     "crates/miyu-hosts/src/platforms/onebot/outbound.rs": {
       "tests": 0,
       "total": 335
     },
     "crates/miyu-hosts/src/platforms/onebot/proactive.rs": {
-      "tests": 0,
-      "total": 127
+      "tests": 29,
+      "total": 279
     },
     "crates/miyu-hosts/src/platforms/onebot/send.rs": {
       "tests": 0,
-      "total": 398
+      "total": 519
     },
     "crates/miyu-hosts/src/platforms/onebot/tests/admission.rs": {
       "tests": 0,
-      "total": 749
+      "total": 751
     },
     "crates/miyu-hosts/src/platforms/onebot/tests/connection.rs": {
       "tests": 0,
@@ -1990,7 +2038,7 @@
     },
     "crates/miyu-hosts/src/platforms/onebot/tests/delivery.rs": {
       "tests": 0,
-      "total": 837
+      "total": 843
     },
     "crates/miyu-hosts/src/platforms/onebot/tests/files.rs": {
       "tests": 0,
@@ -2002,7 +2050,7 @@
     },
     "crates/miyu-hosts/src/platforms/onebot/tests/identity.rs": {
       "tests": 0,
-      "total": 441
+      "total": 442
     },
     "crates/miyu-hosts/src/platforms/onebot/tests/mod.rs": {
       "tests": 0,
@@ -2026,7 +2074,7 @@
     },
     "crates/miyu-hosts/src/platforms/onebot/tests/turn.rs": {
       "tests": 0,
-      "total": 767
+      "total": 769
     },
     "crates/miyu-hosts/src/platforms/onebot/turn.rs": {
       "tests": 0,
@@ -2037,8 +2085,8 @@
       "total": 137
     },
     "crates/miyu-hosts/src/platforms/plugins/access_manager.rs": {
-      "tests": 297,
-      "total": 770
+      "tests": 298,
+      "total": 771
     },
     "crates/miyu-hosts/src/platforms/plugins/group_management/args.rs": {
       "tests": 0,
@@ -2049,8 +2097,8 @@
       "total": 51
     },
     "crates/miyu-hosts/src/platforms/plugins/group_management/mod.rs": {
-      "tests": 314,
-      "total": 1070
+      "tests": 315,
+      "total": 1071
     },
     "crates/miyu-hosts/src/platforms/plugins/group_management/records.rs": {
       "tests": 32,
@@ -2065,8 +2113,8 @@
       "total": 445
     },
     "crates/miyu-hosts/src/platforms/plugins/message_history/mod.rs": {
-      "tests": 156,
-      "total": 661
+      "tests": 157,
+      "total": 662
     },
     "crates/miyu-hosts/src/platforms/plugins/message_history/store/mod.rs": {
       "tests": 7,
@@ -2074,7 +2122,7 @@
     },
     "crates/miyu-hosts/src/platforms/plugins/message_history/store/query.rs": {
       "tests": 0,
-      "total": 497
+      "total": 525
     },
     "crates/miyu-hosts/src/platforms/plugins/message_history/store/schema.rs": {
       "tests": 0,
@@ -2090,7 +2138,7 @@
     },
     "crates/miyu-hosts/src/platforms/plugins/message_history/store/tests/query.rs": {
       "tests": 0,
-      "total": 283
+      "total": 331
     },
     "crates/miyu-hosts/src/platforms/plugins/message_history/store/tests/sanitize.rs": {
       "tests": 0,
@@ -2102,11 +2150,11 @@
     },
     "crates/miyu-hosts/src/platforms/plugins/message_history/store/tests/write.rs": {
       "tests": 0,
-      "total": 359
+      "total": 376
     },
     "crates/miyu-hosts/src/platforms/plugins/message_history/store/types.rs": {
       "tests": 4,
-      "total": 364
+      "total": 369
     },
     "crates/miyu-hosts/src/platforms/plugins/message_history/store/types/test_support.rs": {
       "tests": 0,
@@ -2118,15 +2166,15 @@
     },
     "crates/miyu-hosts/src/platforms/plugins/message_history/tools/args.rs": {
       "tests": 0,
-      "total": 343
+      "total": 354
     },
     "crates/miyu-hosts/src/platforms/plugins/message_history/tools/delete.rs": {
       "tests": 0,
       "total": 149
     },
     "crates/miyu-hosts/src/platforms/plugins/message_history/tools/mod.rs": {
-      "tests": 180,
-      "total": 801
+      "tests": 298,
+      "total": 961
     },
     "crates/miyu-hosts/src/platforms/plugins/message_recall.rs": {
       "tests": 181,
@@ -2137,8 +2185,8 @@
       "total": 896
     },
     "crates/miyu-hosts/src/platforms/plugins/real_context/active_judgement_skip.rs": {
-      "tests": 329,
-      "total": 675
+      "tests": 330,
+      "total": 676
     },
     "crates/miyu-hosts/src/platforms/plugins/real_context/affection/dashboard.rs": {
       "tests": 0,
@@ -2146,11 +2194,11 @@
     },
     "crates/miyu-hosts/src/platforms/plugins/real_context/affection/logging.rs": {
       "tests": 0,
-      "total": 285
+      "total": 287
     },
     "crates/miyu-hosts/src/platforms/plugins/real_context/affection/mod.rs": {
       "tests": 129,
-      "total": 979
+      "total": 996
     },
     "crates/miyu-hosts/src/platforms/plugins/real_context/affection/parse.rs": {
       "tests": 0,
@@ -2174,11 +2222,11 @@
     },
     "crates/miyu-hosts/src/platforms/plugins/real_context/inject.rs": {
       "tests": 0,
-      "total": 986
+      "total": 993
     },
     "crates/miyu-hosts/src/platforms/plugins/real_context/judge.rs": {
-      "tests": 218,
-      "total": 893
+      "tests": 219,
+      "total": 890
     },
     "crates/miyu-hosts/src/platforms/plugins/real_context/mod.rs": {
       "tests": 6,
@@ -2190,11 +2238,11 @@
     },
     "crates/miyu-hosts/src/platforms/plugins/real_context/runtime.rs": {
       "tests": 0,
-      "total": 307
+      "total": 308
     },
     "crates/miyu-hosts/src/platforms/plugins/real_context/targeting.rs": {
       "tests": 0,
-      "total": 695
+      "total": 726
     },
     "crates/miyu-hosts/src/platforms/plugins/real_context/tests/history.rs": {
       "tests": 0,
@@ -2206,11 +2254,11 @@
     },
     "crates/miyu-hosts/src/platforms/plugins/real_context/tests/runtime.rs": {
       "tests": 0,
-      "total": 128
+      "total": 154
     },
     "crates/miyu-hosts/src/platforms/plugins/real_context/tests/shared.rs": {
       "tests": 0,
-      "total": 189
+      "total": 191
     },
     "crates/miyu-hosts/src/platforms/plugins/real_context/tests/subsystem_gate.rs": {
       "tests": 0,
@@ -2222,11 +2270,11 @@
     },
     "crates/miyu-hosts/src/platforms/plugins/real_context/tests/targeting.rs": {
       "tests": 0,
-      "total": 180
+      "total": 181
     },
     "crates/miyu-hosts/src/platforms/plugins/real_context/tests/trigger.rs": {
       "tests": 0,
-      "total": 705
+      "total": 762
     },
     "crates/miyu-hosts/src/platforms/plugins/renderer/fonts.rs": {
       "tests": 24,
@@ -2294,7 +2342,7 @@
     },
     "crates/miyu-hosts/src/platforms/plugins/reply_processor/tests/modes.rs": {
       "tests": 0,
-      "total": 358
+      "total": 361
     },
     "crates/miyu-hosts/src/platforms/plugins/reply_processor/tests/overrides.rs": {
       "tests": 0,
@@ -2318,7 +2366,7 @@
     },
     "crates/miyu-hosts/src/platforms/reply.rs": {
       "tests": 150,
-      "total": 790
+      "total": 798
     },
     "crates/miyu-hosts/src/platforms/scheduling.rs": {
       "tests": 0,
@@ -2350,7 +2398,7 @@
     },
     "crates/miyu-hosts/src/platforms/tests/reply.rs": {
       "tests": 0,
-      "total": 858
+      "total": 865
     },
     "crates/miyu-hosts/src/platforms/tests/scheduling.rs": {
       "tests": 0,
@@ -2362,19 +2410,19 @@
     },
     "crates/miyu-hosts/src/platforms/tests/tools.rs": {
       "tests": 0,
-      "total": 354
+      "total": 360
     },
     "crates/miyu-hosts/src/platforms/tool.rs": {
       "tests": 48,
-      "total": 540
+      "total": 574
     },
     "crates/miyu-hosts/src/platforms/tool_context.rs": {
       "tests": 0,
       "total": 43
     },
     "crates/miyu-hosts/src/platforms/turn_context.rs": {
-      "tests": 4,
-      "total": 992
+      "tests": 11,
+      "total": 1027
     },
     "crates/miyu-hosts/src/platforms/turn_context/test_support.rs": {
       "tests": 0,
@@ -2390,23 +2438,23 @@
     },
     "crates/miyu-hosts/src/platforms/turn_run.rs": {
       "tests": 0,
-      "total": 313
+      "total": 314
     },
     "crates/miyu-hosts/src/render/agent_events.rs": {
       "tests": 0,
-      "total": 101
+      "total": 105
     },
     "crates/miyu-hosts/src/render/blocks.rs": {
       "tests": 0,
-      "total": 251
+      "total": 376
     },
     "crates/miyu-hosts/src/render/code.rs": {
       "tests": 0,
-      "total": 208
+      "total": 310
     },
     "crates/miyu-hosts/src/render/command.rs": {
       "tests": 4,
-      "total": 849
+      "total": 878
     },
     "crates/miyu-hosts/src/render/command/test_support.rs": {
       "tests": 0,
@@ -2418,7 +2466,7 @@
     },
     "crates/miyu-hosts/src/render/markdown.rs": {
       "tests": 0,
-      "total": 635
+      "total": 646
     },
     "crates/miyu-hosts/src/render/math/mod.rs": {
       "tests": 243,
@@ -2440,41 +2488,49 @@
       "tests": 0,
       "total": 295
     },
+    "crates/miyu-hosts/src/render/mermaid.rs": {
+      "tests": 289,
+      "total": 775
+    },
     "crates/miyu-hosts/src/render/mod.rs": {
       "tests": 4,
-      "total": 134
+      "total": 146
     },
     "crates/miyu-hosts/src/render/patch.rs": {
       "tests": 0,
-      "total": 356
+      "total": 335
     },
     "crates/miyu-hosts/src/render/stream/mod.rs": {
       "tests": 0,
-      "total": 721
+      "total": 841
     },
     "crates/miyu-hosts/src/render/stream/reasoning_phase.rs": {
       "tests": 0,
-      "total": 452
+      "total": 505
+    },
+    "crates/miyu-hosts/src/render/stream/surface.rs": {
+      "tests": 7,
+      "total": 122
     },
     "crates/miyu-hosts/src/render/stream/timeline/glyphs.rs": {
       "tests": 0,
-      "total": 137
+      "total": 152
     },
     "crates/miyu-hosts/src/render/stream/timeline/live.rs": {
       "tests": 0,
-      "total": 621
+      "total": 718
     },
     "crates/miyu-hosts/src/render/stream/timeline/mod.rs": {
       "tests": 4,
-      "total": 795
+      "total": 1204
     },
     "crates/miyu-hosts/src/render/stream/timeline/question.rs": {
       "tests": 0,
-      "total": 167
+      "total": 148
     },
     "crates/miyu-hosts/src/render/stream/timeline/subagent.rs": {
       "tests": 0,
-      "total": 708
+      "total": 790
     },
     "crates/miyu-hosts/src/render/stream/timeline/test_support.rs": {
       "tests": 0,
@@ -2482,11 +2538,11 @@
     },
     "crates/miyu-hosts/src/render/stream/tool_summary.rs": {
       "tests": 0,
-      "total": 926
+      "total": 950
     },
     "crates/miyu-hosts/src/render/style.rs": {
       "tests": 0,
-      "total": 49
+      "total": 70
     },
     "crates/miyu-hosts/src/render/table.rs": {
       "tests": 0,
@@ -2494,11 +2550,15 @@
     },
     "crates/miyu-hosts/src/render/tests/command.rs": {
       "tests": 0,
-      "total": 363
+      "total": 429
     },
     "crates/miyu-hosts/src/render/tests/command_step.rs": {
       "tests": 0,
       "total": 111
+    },
+    "crates/miyu-hosts/src/render/tests/golden.rs": {
+      "tests": 0,
+      "total": 429
     },
     "crates/miyu-hosts/src/render/tests/markdown.rs": {
       "tests": 0,
@@ -2510,7 +2570,7 @@
     },
     "crates/miyu-hosts/src/render/tests/mod.rs": {
       "tests": 0,
-      "total": 19
+      "total": 21
     },
     "crates/miyu-hosts/src/render/tests/patch.rs": {
       "tests": 0,
@@ -2518,11 +2578,15 @@
     },
     "crates/miyu-hosts/src/render/tests/reasoning.rs": {
       "tests": 0,
-      "total": 463
+      "total": 588
     },
     "crates/miyu-hosts/src/render/tests/shared.rs": {
       "tests": 0,
       "total": 27
+    },
+    "crates/miyu-hosts/src/render/tests/surface.rs": {
+      "tests": 0,
+      "total": 149
     },
     "crates/miyu-hosts/src/render/tests/table.rs": {
       "tests": 0,
@@ -2530,11 +2594,11 @@
     },
     "crates/miyu-hosts/src/render/tests/timeline.rs": {
       "tests": 0,
-      "total": 1069
+      "total": 1188
     },
     "crates/miyu-hosts/src/render/tests/timeline_panels.rs": {
       "tests": 0,
-      "total": 417
+      "total": 421
     },
     "crates/miyu-hosts/src/render/tests/todo.rs": {
       "tests": 0,
@@ -2542,7 +2606,7 @@
     },
     "crates/miyu-hosts/src/render/tests/tool_summary.rs": {
       "tests": 0,
-      "total": 1017
+      "total": 1267
     },
     "crates/miyu-hosts/src/render/tests/usage.rs": {
       "tests": 0,
@@ -2557,8 +2621,8 @@
       "total": 250
     },
     "crates/miyu-hosts/src/render/wait_spinner.rs": {
-      "tests": 212,
-      "total": 576
+      "tests": 311,
+      "total": 811
     },
     "crates/miyu-hosts/src/render/wait_spinner/test_support.rs": {
       "tests": 0,
@@ -2581,8 +2645,8 @@
       "total": 133
     },
     "crates/miyu-hosts/src/runtime/ipc_events.rs": {
-      "tests": 312,
-      "total": 533
+      "tests": 358,
+      "total": 602
     },
     "crates/miyu-hosts/src/runtime/mod.rs": {
       "tests": 0,
@@ -2594,7 +2658,7 @@
     },
     "crates/miyu-hosts/src/runtime/run.rs": {
       "tests": 0,
-      "total": 244
+      "total": 250
     },
     "crates/miyu-hosts/src/runtime/session_ops.rs": {
       "tests": 0,
@@ -2610,11 +2674,11 @@
     },
     "crates/miyu-hosts/src/runtime/stores.rs": {
       "tests": 0,
-      "total": 121
+      "total": 124
     },
     "crates/miyu-hosts/src/runtime/turn_update.rs": {
       "tests": 0,
-      "total": 108
+      "total": 111
     },
     "crates/miyu-hosts/src/web/accounts_api.rs": {
       "tests": 0,
@@ -2622,11 +2686,11 @@
     },
     "crates/miyu-hosts/src/web/actor/job_wake.rs": {
       "tests": 0,
-      "total": 646
+      "total": 654
     },
     "crates/miyu-hosts/src/web/actor/mod.rs": {
       "tests": 0,
-      "total": 696
+      "total": 725
     },
     "crates/miyu-hosts/src/web/assets.rs": {
       "tests": 0,
@@ -2654,7 +2718,7 @@
     },
     "crates/miyu-hosts/src/web/config_api.rs": {
       "tests": 0,
-      "total": 887
+      "total": 895
     },
     "crates/miyu-hosts/src/web/dashboards/affection.rs": {
       "tests": 0,
@@ -2706,15 +2770,15 @@
     },
     "crates/miyu-hosts/src/web/event_map.rs": {
       "tests": 0,
-      "total": 505
+      "total": 534
     },
     "crates/miyu-hosts/src/web/goal_driver.rs": {
       "tests": 0,
-      "total": 354
+      "total": 360
     },
     "crates/miyu-hosts/src/web/ipc_server.rs": {
       "tests": 0,
-      "total": 1059
+      "total": 1234
     },
     "crates/miyu-hosts/src/web/link_preview/fetch.rs": {
       "tests": 63,
@@ -2733,8 +2797,8 @@
       "total": 378
     },
     "crates/miyu-hosts/src/web/mod.rs": {
-      "tests": 64,
-      "total": 314
+      "tests": 65,
+      "total": 316
     },
     "crates/miyu-hosts/src/web/ownership.rs": {
       "tests": 0,
@@ -2770,11 +2834,11 @@
     },
     "crates/miyu-hosts/src/web/server.rs": {
       "tests": 0,
-      "total": 1040
+      "total": 1118
     },
     "crates/miyu-hosts/src/web/session_cmds.rs": {
       "tests": 0,
-      "total": 726
+      "total": 810
     },
     "crates/miyu-hosts/src/web/sessions/http.rs": {
       "tests": 0,
@@ -2782,15 +2846,19 @@
     },
     "crates/miyu-hosts/src/web/sessions/mod.rs": {
       "tests": 0,
-      "total": 524
+      "total": 652
     },
     "crates/miyu-hosts/src/web/sessions/state.rs": {
       "tests": 0,
-      "total": 356
+      "total": 359
     },
     "crates/miyu-hosts/src/web/shared_files.rs": {
       "tests": 0,
       "total": 222
+    },
+    "crates/miyu-hosts/src/web/subagent_host.rs": {
+      "tests": 0,
+      "total": 726
     },
     "crates/miyu-hosts/src/web/test_support.rs": {
       "tests": 0,
@@ -2802,7 +2870,7 @@
     },
     "crates/miyu-hosts/src/web/tests/commands.rs": {
       "tests": 0,
-      "total": 215
+      "total": 216
     },
     "crates/miyu-hosts/src/web/tests/events_questions.rs": {
       "tests": 0,
@@ -2810,11 +2878,11 @@
     },
     "crates/miyu-hosts/src/web/tests/http.rs": {
       "tests": 0,
-      "total": 471
+      "total": 474
     },
     "crates/miyu-hosts/src/web/tests/ipc_bridge.rs": {
       "tests": 0,
-      "total": 1000
+      "total": 1055
     },
     "crates/miyu-hosts/src/web/tests/mod.rs": {
       "tests": 0,
@@ -2822,27 +2890,27 @@
     },
     "crates/miyu-hosts/src/web/tests/session.rs": {
       "tests": 0,
-      "total": 1044
+      "total": 1235
     },
     "crates/miyu-hosts/src/web/tests/shared.rs": {
       "tests": 0,
-      "total": 84
+      "total": 85
     },
     "crates/miyu-hosts/src/web/tests/turn.rs": {
       "tests": 0,
-      "total": 336
+      "total": 338
     },
     "crates/miyu-hosts/src/web/tty.rs": {
       "tests": 0,
-      "total": 97
+      "total": 99
     },
     "crates/miyu-hosts/src/web/turns/mod.rs": {
       "tests": 0,
-      "total": 743
+      "total": 751
     },
     "crates/miyu-hosts/src/web/turns/task.rs": {
       "tests": 0,
-      "total": 952
+      "total": 1013
     },
     "crates/miyu-hosts/src/web/ui_prefs.rs": {
       "tests": 0,
@@ -2870,7 +2938,7 @@
     },
     "src/cli/args.rs": {
       "tests": 0,
-      "total": 498
+      "total": 500
     },
     "src/cli/daemon_cmds.rs": {
       "tests": 0,
@@ -2898,11 +2966,11 @@
     },
     "src/cli/footer.rs": {
       "tests": 0,
-      "total": 417
+      "total": 480
     },
     "src/cli/history_replay.rs": {
       "tests": 0,
-      "total": 324
+      "total": 347
     },
     "src/cli/host_cmds.rs": {
       "tests": 0,
@@ -2925,8 +2993,8 @@
       "total": 835
     },
     "src/cli/mcp_schema.rs": {
-      "tests": 41,
-      "total": 177
+      "tests": 111,
+      "total": 322
     },
     "src/cli/mcp_serve.rs": {
       "tests": 0,
@@ -2938,11 +3006,11 @@
     },
     "src/cli/mod.rs": {
       "tests": 25,
-      "total": 818
+      "total": 868
     },
     "src/cli/model_cmds.rs": {
       "tests": 0,
-      "total": 1023
+      "total": 753
     },
     "src/cli/output/event.rs": {
       "tests": 72,
@@ -2966,11 +3034,11 @@
     },
     "src/cli/question_panel.rs": {
       "tests": 0,
-      "total": 24
+      "total": 25
     },
     "src/cli/repl/banner/mod.rs": {
-      "tests": 134,
-      "total": 598
+      "tests": 151,
+      "total": 675
     },
     "src/cli/repl/banner/preview.rs": {
       "tests": 0,
@@ -2978,7 +3046,7 @@
     },
     "src/cli/repl/commands.rs": {
       "tests": 0,
-      "total": 136
+      "total": 165
     },
     "src/cli/repl/dictation.rs": {
       "tests": 0,
@@ -2986,15 +3054,19 @@
     },
     "src/cli/repl/direct.rs": {
       "tests": 0,
-      "total": 953
+      "total": 1014
     },
     "src/cli/repl/editor.rs": {
       "tests": 0,
-      "total": 566
+      "total": 571
+    },
+    "src/cli/repl/herdr.rs": {
+      "tests": 67,
+      "total": 393
     },
     "src/cli/repl/input.rs": {
       "tests": 0,
-      "total": 992
+      "total": 1056
     },
     "src/cli/repl/input_layout.rs": {
       "tests": 28,
@@ -3002,27 +3074,43 @@
     },
     "src/cli/repl/jobs.rs": {
       "tests": 0,
-      "total": 337
+      "total": 601
     },
     "src/cli/repl/layout.rs": {
       "tests": 0,
-      "total": 460
+      "total": 458
     },
     "src/cli/repl/live_turn.rs": {
       "tests": 0,
-      "total": 278
+      "total": 302
+    },
+    "src/cli/repl/midturn_panel.rs": {
+      "tests": 0,
+      "total": 104
     },
     "src/cli/repl/mod.rs": {
       "tests": 0,
-      "total": 22
+      "total": 28
+    },
+    "src/cli/repl/panel.rs": {
+      "tests": 23,
+      "total": 273
+    },
+    "src/cli/repl/pickers.rs": {
+      "tests": 84,
+      "total": 336
     },
     "src/cli/repl/placeholder.rs": {
       "tests": 0,
       "total": 432
     },
+    "src/cli/repl/question_flow.rs": {
+      "tests": 0,
+      "total": 159
+    },
     "src/cli/repl/remote/interactive.rs": {
       "tests": 0,
-      "total": 355
+      "total": 520
     },
     "src/cli/repl/remote/mod.rs": {
       "tests": 0,
@@ -3030,43 +3118,43 @@
     },
     "src/cli/repl/remote/one_shot.rs": {
       "tests": 0,
-      "total": 883
+      "total": 1042
     },
     "src/cli/repl/remote/slash_config.rs": {
       "tests": 0,
-      "total": 299
+      "total": 369
     },
     "src/cli/repl/remote/slash_context.rs": {
       "tests": 0,
-      "total": 350
+      "total": 435
     },
     "src/cli/repl/remote/slash_session.rs": {
       "tests": 0,
-      "total": 391
+      "total": 561
     },
     "src/cli/repl/remote/submit.rs": {
       "tests": 0,
-      "total": 119
+      "total": 157
     },
     "src/cli/repl/session.rs": {
       "tests": 0,
-      "total": 961
+      "total": 1219
     },
     "src/cli/repl/session_picker.rs": {
-      "tests": 15,
-      "total": 250
+      "tests": 0,
+      "total": 142
     },
     "src/cli/repl/tail/frame.rs": {
       "tests": 0,
-      "total": 698
+      "total": 751
     },
     "src/cli/repl/tail/mod.rs": {
       "tests": 75,
-      "total": 1065
+      "total": 1137
     },
     "src/cli/repl/tail/queue.rs": {
       "tests": 0,
-      "total": 229
+      "total": 231
     },
     "src/cli/repl/tail/screen/ansi.rs": {
       "tests": 4,
@@ -3078,31 +3166,31 @@
     },
     "src/cli/repl/tail/screen/draw.rs": {
       "tests": 0,
-      "total": 305
+      "total": 338
     },
     "src/cli/repl/tail/screen/expand.rs": {
-      "tests": 0,
-      "total": 390
+      "tests": 108,
+      "total": 811
     },
     "src/cli/repl/tail/screen/mod.rs": {
       "tests": 4,
-      "total": 652
+      "total": 734
     },
     "src/cli/repl/tail/screen/overlay/log.rs": {
-      "tests": 0,
-      "total": 502
+      "tests": 220,
+      "total": 793
     },
     "src/cli/repl/tail/screen/overlay/mod.rs": {
-      "tests": 4,
-      "total": 509
+      "tests": 15,
+      "total": 703
     },
     "src/cli/repl/tail/screen/overlay/screen.rs": {
       "tests": 0,
-      "total": 391
+      "total": 625
     },
     "src/cli/repl/tail/screen/overlay/test_support.rs": {
       "tests": 0,
-      "total": 48
+      "total": 116
     },
     "src/cli/repl/tail/screen/preference.rs": {
       "tests": 11,
@@ -3114,19 +3202,19 @@
     },
     "src/cli/repl/tail/screen/select.rs": {
       "tests": 0,
-      "total": 405
+      "total": 426
     },
     "src/cli/repl/tail/screen/tail_impl.rs": {
       "tests": 0,
-      "total": 354
+      "total": 405
     },
     "src/cli/repl/tail/screen/term.rs": {
-      "tests": 0,
-      "total": 605
+      "tests": 4,
+      "total": 1094
     },
     "src/cli/repl/tail/screen/test_support.rs": {
       "tests": 0,
-      "total": 44
+      "total": 76
     },
     "src/cli/repl/tail/screen/toast.rs": {
       "tests": 0,
@@ -3134,11 +3222,11 @@
     },
     "src/cli/repl/tail/update.rs": {
       "tests": 72,
-      "total": 173
+      "total": 196
     },
     "src/cli/repl/wake.rs": {
       "tests": 0,
-      "total": 463
+      "total": 694
     },
     "src/cli/repl/width.rs": {
       "tests": 0,
@@ -3146,7 +3234,7 @@
     },
     "src/cli/select.rs": {
       "tests": 0,
-      "total": 362
+      "total": 367
     },
     "src/cli/session_cmds.rs": {
       "tests": 0,
@@ -3154,7 +3242,7 @@
     },
     "src/cli/setup.rs": {
       "tests": 0,
-      "total": 277
+      "total": 341
     },
     "src/cli/shell_bridge.rs": {
       "tests": 55,
@@ -3178,7 +3266,7 @@
     },
     "src/cli/tests/cli_args.rs": {
       "tests": 0,
-      "total": 468
+      "total": 469
     },
     "src/cli/tests/daemon_log.rs": {
       "tests": 0,
@@ -3186,11 +3274,15 @@
     },
     "src/cli/tests/footer_tail.rs": {
       "tests": 0,
-      "total": 825
+      "total": 837
     },
     "src/cli/tests/footer_width.rs": {
       "tests": 0,
-      "total": 89
+      "total": 90
+    },
+    "src/cli/tests/golden_panel.rs": {
+      "tests": 0,
+      "total": 260
     },
     "src/cli/tests/hangup.rs": {
       "tests": 0,
@@ -3198,7 +3290,11 @@
     },
     "src/cli/tests/input_editing.rs": {
       "tests": 0,
-      "total": 1050
+      "total": 1089
+    },
+    "src/cli/tests/lobby_anim.rs": {
+      "tests": 0,
+      "total": 60
     },
     "src/cli/tests/lobby_layout.rs": {
       "tests": 0,
@@ -3206,7 +3302,7 @@
     },
     "src/cli/tests/mod.rs": {
       "tests": 0,
-      "total": 20
+      "total": 26
     },
     "src/cli/tests/pop_menu.rs": {
       "tests": 0,
@@ -3218,11 +3314,11 @@
     },
     "src/cli/tests/slash_commands.rs": {
       "tests": 0,
-      "total": 263
+      "total": 444
     },
     "src/cli/tests/static_timeline.rs": {
       "tests": 0,
-      "total": 592
+      "total": 831
     },
     "src/cli/tests/tui_ansi.rs": {
       "tests": 0,
@@ -3230,11 +3326,27 @@
     },
     "src/cli/tests/tui_blocks.rs": {
       "tests": 0,
-      "total": 1041
+      "total": 1426
+    },
+    "src/cli/tests/tui_perf.rs": {
+      "tests": 0,
+      "total": 123
+    },
+    "src/cli/tests/tui_reflow.rs": {
+      "tests": 0,
+      "total": 229
+    },
+    "src/cli/tests/tui_scroll.rs": {
+      "tests": 0,
+      "total": 63
+    },
+    "src/cli/tests/tui_undo.rs": {
+      "tests": 0,
+      "total": 121
     },
     "src/cli/tests/variant_menu.rs": {
       "tests": 0,
-      "total": 127
+      "total": 336
     },
     "src/cli/tests/wait_spinner_cursor.rs": {
       "tests": 0,
@@ -3245,40 +3357,56 @@
       "total": 381
     },
     "src/cli/turn_request.rs": {
-      "tests": 44,
-      "total": 265
+      "tests": 45,
+      "total": 303
     },
     "src/cli/usage_view.rs": {
       "tests": 0,
       "total": 252
     },
+    "src/cli/variant_menu.rs": {
+      "tests": 0,
+      "total": 425
+    },
     "src/config_tui/antigravity_form.rs": {
       "tests": 0,
-      "total": 114
+      "total": 131
     },
     "src/config_tui/claude_code_form.rs": {
       "tests": 0,
       "total": 100
     },
+    "src/config_tui/codebuddy_form.rs": {
+      "tests": 0,
+      "total": 95
+    },
     "src/config_tui/codex_form.rs": {
       "tests": 0,
       "total": 104
     },
+    "src/config_tui/features.rs": {
+      "tests": 0,
+      "total": 207
+    },
     "src/config_tui/mod.rs": {
       "tests": 23,
-      "total": 1023
+      "total": 1014
+    },
+    "src/config_tui/pending.rs": {
+      "tests": 0,
+      "total": 87
     },
     "src/config_tui/personas.rs": {
       "tests": 0,
-      "total": 1021
+      "total": 1077
     },
     "src/config_tui/platforms/id_lists.rs": {
       "tests": 0,
-      "total": 391
+      "total": 388
     },
     "src/config_tui/platforms/mod.rs": {
       "tests": 0,
-      "total": 761
+      "total": 748
     },
     "src/config_tui/platforms/model_assignment.rs": {
       "tests": 0,
@@ -3286,7 +3414,7 @@
     },
     "src/config_tui/platforms/routes.rs": {
       "tests": 0,
-      "total": 513
+      "total": 511
     },
     "src/config_tui/plugin_settings.rs": {
       "tests": 0,
@@ -3294,15 +3422,15 @@
     },
     "src/config_tui/plugins.rs": {
       "tests": 0,
-      "total": 760
+      "total": 563
     },
     "src/config_tui/providers.rs": {
       "tests": 0,
-      "total": 1058
+      "total": 1060
     },
     "src/config_tui/quota.rs": {
       "tests": 0,
-      "total": 250
+      "total": 244
     },
     "src/config_tui/real_context/affection.rs": {
       "tests": 0,
@@ -3310,11 +3438,11 @@
     },
     "src/config_tui/real_context/emotion.rs": {
       "tests": 0,
-      "total": 170
+      "total": 167
     },
     "src/config_tui/real_context/identity.rs": {
       "tests": 0,
-      "total": 246
+      "total": 242
     },
     "src/config_tui/real_context/mod.rs": {
       "tests": 0,
@@ -3322,7 +3450,7 @@
     },
     "src/config_tui/real_context/reply.rs": {
       "tests": 0,
-      "total": 796
+      "total": 789
     },
     "src/config_tui/scheduled_messages.rs": {
       "tests": 76,
@@ -3330,7 +3458,7 @@
     },
     "src/config_tui/settings.rs": {
       "tests": 0,
-      "total": 194
+      "total": 225
     },
     "src/config_tui/tests/custom_models.rs": {
       "tests": 0,
@@ -3338,7 +3466,7 @@
     },
     "src/config_tui/tests/fields.rs": {
       "tests": 0,
-      "total": 134
+      "total": 125
     },
     "src/config_tui/tests/mod.rs": {
       "tests": 0,
@@ -3362,7 +3490,7 @@
     },
     "src/config_tui/tiers.rs": {
       "tests": 0,
-      "total": 243
+      "total": 240
     },
     "src/config_tui/undo.rs": {
       "tests": 91,
@@ -3370,31 +3498,39 @@
     },
     "src/config_tui/voice.rs": {
       "tests": 0,
-      "total": 1155
+      "total": 1143
     },
     "src/config_tui/widgets/draw.rs": {
-      "tests": 0,
-      "total": 401
+      "tests": 72,
+      "total": 512
     },
     "src/config_tui/widgets/form.rs": {
       "tests": 0,
-      "total": 883
+      "total": 836
     },
     "src/config_tui/widgets/input.rs": {
-      "tests": 50,
-      "total": 125
+      "tests": 66,
+      "total": 149
     },
     "src/config_tui/widgets/mod.rs": {
       "tests": 0,
-      "total": 91
+      "total": 110
     },
     "src/config_tui/widgets/select.rs": {
       "tests": 0,
-      "total": 195
+      "total": 191
+    },
+    "src/config_tui/widgets/ui.rs": {
+      "tests": 0,
+      "total": 263
+    },
+    "src/feature_sources.rs": {
+      "tests": 0,
+      "total": 69
     },
     "src/lib.rs": {
       "tests": 0,
-      "total": 47
+      "total": 49
     },
     "src/main.rs": {
       "tests": 0,
@@ -3402,7 +3538,7 @@
     },
     "src/oobe/apply.rs": {
       "tests": 15,
-      "total": 190
+      "total": 200
     },
     "src/oobe/mod.rs": {
       "tests": 0,
@@ -3414,15 +3550,15 @@
     },
     "src/oobe/providers.rs": {
       "tests": 107,
-      "total": 576
+      "total": 582
     },
     "src/oobe/ui/build.rs": {
       "tests": 0,
-      "total": 641
+      "total": 644
     },
     "src/oobe/ui/draw.rs": {
       "tests": 0,
-      "total": 374
+      "total": 167
     },
     "src/oobe/ui/keys.rs": {
       "tests": 0,
@@ -3430,11 +3566,11 @@
     },
     "src/oobe/ui/mod.rs": {
       "tests": 98,
-      "total": 784
+      "total": 749
     },
     "src/oobe/ui/widgets.rs": {
-      "tests": 19,
-      "total": 312
+      "tests": 0,
+      "total": 8
     },
     "src/pm/mod.rs": {
       "tests": 4,

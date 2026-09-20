@@ -34,7 +34,7 @@ def fixture(profile='stable-full'):
 class ManifestTests(unittest.TestCase):
     def test_complete_matrix_and_stable_serialization(self):
         manifest = fixture()
-        self.assertEqual(len(validate_manifest(manifest)['targets']), 6)
+        self.assertEqual(len(validate_manifest(manifest)['targets']), 7)
         self.assertEqual(len(manifest['builds']), 3)
         self.assertEqual(len(manifest['assets']), 10)
         self.assertEqual(canonical_json(manifest), canonical_json(copy.deepcopy(manifest)))
@@ -78,9 +78,12 @@ class ManifestTests(unittest.TestCase):
         manifest['release_declaration']['reason'] = 'Explicit packaging revision test fixture'
         validate_manifest(manifest)
 
-    def test_user_linux_smoke_profile_freezes_all_five_install_targets(self):
+    def test_user_linux_smoke_profile_freezes_all_six_install_targets(self):
         selected = selected_targets('linux-smoke', None)
-        self.assertEqual(len(selected), 5)
+        self.assertEqual(len(selected), 6)
+        # Mint 22 与两个 Ubuntu、Debian 13 共用同一个 DEB:多的是安装验收目标,
+        # 不是多一个附件。
+        self.assertIn('mint22-x86_64', selected)
         self.assertNotIn('macos-arm64', selected)
         with self.assertRaises(ValueError):
             selected_targets('linux-smoke', ['debian13-x86_64'])

@@ -40,6 +40,12 @@ def package_inventory(asset, inventory):
 def nfpm_config(manifest, asset, stage, inventory):
     family = 'deb' if asset['format']=='deb' else 'fedora'
     config=load_json(Path(__file__).resolve().parents[1]/'linux'/f'nfpm-{family}.yaml')
+    # glibc 下限 = 构建基座的 glibc（`toolchain.lock.json` 的
+    # `builders.gnu-x86_64.glibc`）。在更新的发行版上构建出的二进制会引用更高
+    # 版本的符号，装到更老的系统上直接起不来，所以这两件事必须是同一个数——
+    # 2026-09-20 之前它在 nfpm 的两份 yaml 和这里各写了一遍。
+    glibc=manifest['builders']['gnu-x86_64']['glibc']
+    libc=f'libc6 (>= {glibc})' if family=='deb' else f'glibc >= {glibc}'
     voice=asset['component']=='voice'
     name='miyu-voice' if voice else 'miyu'
     release=str(manifest['package_revision'])
@@ -54,8 +60,9 @@ def nfpm_config(manifest, asset, stage, inventory):
         config['depends']=[f'miyu (= {exact})' if family=='deb' else f'miyu = {exact}',
             'libasound2t64' if family=='deb' else 'alsa-lib',
             'libstdc++6' if family=='deb' else 'libstdc++',
-            'libgcc-s1' if family=='deb' else 'libgcc',
-            'libc6 (>= 2.41)' if family=='deb' else 'glibc >= 2.41']
+            'libgcc-s1' if family=='deb' else 'libgcc', libc]
+    if not voice:
+        config['depends']=[libc,*config.get('depends',[])]
     for entry in package_inventory(asset,inventory):
         dest='/usr/'+entry['path']
         record={'dst':dest,'file_info':{'mode':int(entry['mode'],8)}}

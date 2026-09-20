@@ -363,12 +363,11 @@ pub(in crate::cli) struct ViewIndex {
 #[derive(Clone, Copy, Debug)]
 struct ViewBlock {
     id: u64,
-    /// 缓冲里的起止行。
+    /// 缓冲里从第几行开始。
     start: usize,
-    end: usize,
     /// 在视图里从第几行开始（= `start` + 前面的块撑出来的行数）。
     view_start: usize,
-    /// 视图里占几行：合着就是 `end - start`，开着是摊开后的总高。
+    /// 视图里占几行：合着就是这一块在缓冲里占的行数，开着是摊开后的总高。
     height: usize,
     /// 到这一块（含）为止，展开一共撑出来多少行。
     offset_after: usize,
@@ -400,7 +399,6 @@ impl ViewIndex {
             entries.push(ViewBlock {
                 id: block.id,
                 start: block.start,
-                end: block.end,
                 view_start,
                 height,
                 offset_after: offset,

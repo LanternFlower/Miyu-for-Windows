@@ -25,7 +25,7 @@ def local_provider(config_path):
 
 
 def install_commands(target, package_paths):
-    if target.startswith(('debian','ubuntu')):
+    if target.startswith(('debian','ubuntu','mint')):
         commands=[]
         commands += [['apt-get','update'],['apt-get','install','-y','python3','ca-certificates'],
                      ['apt-get','install','-y',*package_paths]]

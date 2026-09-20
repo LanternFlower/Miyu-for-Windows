@@ -967,7 +967,8 @@ impl PlatformTurnContext {
     }
 }
 
-/// 普通模式的平台工具面(老入口,测试与访问管理都走它)。
+/// 普通模式的平台工具面(老入口,只剩测试走它)。
+#[cfg(test)]
 pub(crate) fn register_platform_tools(
     registry: &mut miyu_engine::tools::ToolRegistry,
     context: Arc<PlatformTurnContext>,

@@ -199,16 +199,6 @@ pub(in crate::cli) fn pick_single(
     Ok(panel::pick(live, &mut list)?.and_then(|flags| flags.iter().position(|on| *on)))
 }
 
-/// 多选面板（/models）。返回每一项勾没勾；`None` = Ctrl+C 取消。
-pub(in crate::cli) fn pick_multi(
-    live: &mut LiveReplTail,
-    title: &str,
-    items: &[String],
-    active: Vec<bool>,
-) -> Result<Option<Vec<bool>>> {
-    pick_multi_with(live, title, items, active, None)
-}
-
 /// 多选面板，带一条 Tab 规矩（见 `FuzzyList::toggle`）。
 pub(in crate::cli) fn pick_multi_with(
     live: &mut LiveReplTail,

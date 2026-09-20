@@ -25,6 +25,14 @@ python3 test_scripts/fmt_no_regress.py
 step "编译"
 cargo check --workspace --all-targets
 
+step "voice 形态"
+# `--features voice` 那一面平时一行都不编:默认 feature 是空的,而 voice 的实现
+# 09-16 拆 crate 时搬进了 miyu-engine。0.6.1 发版当天才发现 src/bin/voice.rs 还在
+# 引 `miyu::voice::*`——语音二进制从拆 crate 起就编不过,只有打包那一步会碰到它。
+# sherpa 的静态库由 build.rs 现下(首次几十 MB,之后走缓存);离线机器可以给
+# SHERPA_ONNX_ARCHIVE_DIR 指一份本地归档。
+cargo check --features voice --all-targets
+
 step "测试"
 # 数「跑了多少个」而不是「过了多少个」：只数 passed 的话，一个用例失败会被
 # 误判成「用例消失」，把两类完全不同的问题混在一个数字里。失败单独判。

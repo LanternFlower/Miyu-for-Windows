@@ -1,12 +1,24 @@
-# Linux 0.6.0 CI 工作流
+# Linux CI 工作流
 
-本次范围为用户更新后的 `linux-smoke` 发布目标。四份工作流和受控封装已实现、通过本地静态检查，尚未推送或在 GitHub runner 执行。此文不把远端未执行的编译、MSRV 或安装检查记为通过，也不宣称 macOS 已支持。
+范围为 `linux-smoke` 发布目标。四份工作流和受控封装已实现、通过本地静态检查（含 actionlint），**尚未推送或在 GitHub runner 执行**。此文不把远端未执行的编译、MSRV 或安装检查记为通过，也不宣称 macOS 已支持。
+
+## 2026-09-20（0.6.1 发版时）改的五处
+
+发 0.6.1 时把本机那条链整条跑了一遍，撞出来的都记在这儿：
+
+1. **`release.yml` 的 `notes-path` 默认值会过期**。它指着 `docs/releases/0.6.0/release-notes.md`，版本升了没人改它，远端一执行就去找一个不存在的文件。现已改 0.6.1，并加 `packaging/ci/tests/test_workflows.py` 钉住：默认值必须跟 `Cargo.toml` 的版本走，且那一版的 `release-notes.md` 与 `changelog.md` 都真的存在。
+2. **`MIYU_LANG: zh` 是必需的，不是偏好**。界面文案按 locale 走，`i18n.rs` 的 `system_with` 兜底是 `En`，而一批用例断言的正是中文那份（「限流」「已思考」「运行命令」）。runner 上 `LANG` 通常是 `C.UTF-8` → 解析成 En → 这些用例整批红。本机在 systemd 的 `en_US.UTF-8` 环境下实测 12 条红、换 `LANG=zh_CN.UTF-8` 后 2621 条全绿。`MIYU_LANG` 不依赖系统装没装 zh_CN 语言包，所以钉它而不是 `LANG`。
+3. **`.dockerignore`**（新增）。两个 builder 镜像一行 `COPY` 都没有，构建上下文应当是空的；仓库一直没有这份清单，于是手册里那条 `docker build … .` 会把整个仓库塞给守护进程——开发机 `target/` 实测 136 GB。`workflow.py build` 用冻结快照当上下文所以不受影响，但自托管 runner（`vars.LINUX_X64_RUNNER`）的工作区是热的，一样会踩。同一份测试也钉住「Dockerfile 不许开始依赖上下文」。
+4. **新增 `workflows` 作业跑 actionlint**（1.7.12，下载后校验 SHA256 才执行），以及把「模型可见面无 CJK」门禁搬进 `format-and-python`——它原来只在本机 `refactor-check.sh` 里跑。
+5. **`build-package-verify.yml` 超时 210 → 240 分钟**：`gnu-x86_64` 现在要装五个发行版（多了 Linux Mint 22.3）。
+
+仍然缺的（登记在案，不谎报）：`ci.yml` 没有任何 cargo 缓存，每次都是冷编译；`refactor-check.sh` 里的行数、层序两道门禁和 `cargo test --workspace` 仍只在本机跑（远端只有 `--suite source-unit`，即根 crate 的 lib 测试）。
 
 ## 工作流职责
 
 | 工作流 | 入口 | 实际职责 |
 |---|---|---|
-| `ci.yml` | PR、main push、手动 | Rust 1.96.1 fmt、Python packaging 单测、隔离 source-unit；另用 Rust 1.89.0 执行 `cargo check --locked --all-targets` |
+| `ci.yml` | PR、main push、手动 | Rust 1.96.1 fmt、Python packaging 单测、模型面无 CJK、隔离 source-unit（`MIYU_LANG=zh`）；另用 Rust 1.89.0 执行 `cargo check --locked --all-targets`；独立作业跑 actionlint |
 | `release.yml` | 仅手动 | 默认只生成 `NOT_EXECUTED` dry-run 计划；显式执行才走准备、构建、安装、聚合、发布 |
 | `build-package-verify.yml` | 受控 reusable workflow | 仅接受 `gnu-x86_64` 或 `arch-x86_64`，运行该构建对应的全部安装目标 |
 | `packaging-update.yml` | 手动指定已完成 release run | 下载已聚合产物，在同一源码 ref 上生成 AUR PKGBUILD、.SRCINFO 和 patch；不 apply、不推送渠道仓库 |
@@ -33,7 +45,7 @@ Python 固定 3.11，发布 Rust 固定 1.96.1，MSRV 为 1.89.0。Cargo vendor 
 2. 要求输入 tag 恰为 `v<Cargo.toml version>`，这个已存在 tag、checkout HEAD 与控制工作流的 commit 必须一致；正整数 revision 经 argparse/metadata 校验。
 3. `metadata.py --mode release --profile linux-smoke` 冻结源码，再完整 `prepare.py`。
 4. GNU/Arch 原生容器构建 core/voice，stage 后打包。
-5. Arch 跑 `arch-x86_64`；GNU 跑 Debian 13、Ubuntu 25.10、Ubuntu 26.04、冻结 Fedora 版本这四个安装目标。每个目标都实际调用 `verify.py`，使用专用 opencodego/deepseek-v4.1-flash 配置。GNU tar 的验收由 manifest 固定到 Debian 目标，不能漏掉。
+5. Arch 跑 `arch-x86_64`；GNU 跑 Debian 13、Ubuntu 24.04、Ubuntu 26.04、Linux Mint 22.3、冻结 Fedora 版本这五个安装目标。每个目标都实际调用 `verify.py`，使用专用 opencodego/deepseek-v4.1-flash 配置。GNU tar 的验收由 manifest 固定到 Debian 目标，不能漏掉。
 6. `verify_release.py` 必须收到全部真实 PASS 报告，覆盖 final package hash；随后才能调用 `publish.py --dry-run` 检查公开附件名单，只列 Arch、DEB、RPM 主包与 voice 包，共六个。
 7. 单独 publish job 下载这份已校验 bundle，调用 `publish.py --execute`。唯一拥有 `contents: write` 的 job 是 publish。所有其他 job 默认只有 contents read；渠道 patch job 额外需要 actions read，以读取指定 run 的 artifact。
 

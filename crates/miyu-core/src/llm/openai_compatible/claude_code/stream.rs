@@ -7,7 +7,6 @@
 //! (桥在 claude 侧闭环),只翻成远程工具卡片事件。进程本身(拉起/看门狗/
 //! stderr/击杀)在 [`cli_relay::process`]。
 
-use crate::llm::openai_compatible::claude_code::ClaudeCodeRuntime;
 use crate::llm::openai_compatible::cli_relay::{
     hidden_remote_tool, process::RelayProcess, shape_remote_output, RelayOutcome,
 };

@@ -18,6 +18,7 @@ import subprocess
 import sys
 import termios
 import time
+import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from lib.common import BlockedError, fresh_directory, sha256_file, write_json
@@ -241,8 +242,11 @@ def capture(binary, out, evidence, *, cols, rows, symbols):
                    MIYU_OOBE_NO_IME='1', SHELL='/bin/bash')
         version = subprocess.run([str(binary), '--version'], env=env, cwd=sandbox.root/'work',
                                  check=True, capture_output=True, text=True, timeout=10).stdout.strip()
-        if not re.search(r'\bmiyu 0\.6\.0\b', version, re.IGNORECASE):
-            raise ValueError(f'Expected a real 0.6.0 binary, received: {version}')
+        # 版本从 Cargo.toml 读，不写死：0.6.1 发版时发现这儿还钉着 0.6.0，
+        # 任何后续版本的截图都会被它拦下来。
+        expected = tomllib.loads((REPO/'Cargo.toml').read_text())['package']['version']
+        if not re.search(rf"\bmiyu {re.escape(expected)}\b", version, re.IGNORECASE):
+            raise ValueError(f'Expected a real {expected} binary, received: {version}')
         provenance['version'] = version
         reaper = OwnedReaper()
         terminal = None

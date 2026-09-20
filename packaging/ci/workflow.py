@@ -22,8 +22,8 @@ REPO = Path(__file__).resolve().parents[2]
 SCRIPTS = Path(__file__).resolve().parent
 BUILD_TARGETS = {
     'arch-x86_64': ('arch-x86_64',),
-    'gnu-x86_64': ('debian13-x86_64', 'ubuntu2510-x86_64',
-                   'ubuntu2604-x86_64', 'fedora-current-x86_64'),
+    'gnu-x86_64': ('debian13-x86_64', 'ubuntu2404-x86_64', 'ubuntu2604-x86_64',
+                   'mint22-x86_64', 'fedora-current-x86_64'),
 }
 
 
