@@ -72,8 +72,12 @@ pub(in crate::config_tui) fn platform_model_route_label(route: &PlatformModelRou
         Some(true) => format!(" · {}", t("random reply:on", "概率主动回复:开")),
         None => String::new(),
     };
+    let probability_rate = match route.probability_reply_rate {
+        Some(rate) => format!(" · {}:{rate}", t("sample rate", "抽样概率")),
+        None => String::new(),
+    };
     format!(
-        "{kind} {} · {}:{persona} · {}:{text} {}:{multimodal} · {}:{prompt}{probability}",
+        "{kind} {} · {}:{persona} · {}:{text} {}:{multimodal} · {}:{prompt}{probability}{probability_rate}",
         route.conversation.id,
         t("persona", "人格"),
         t("text", "文本"),
@@ -103,6 +107,7 @@ pub(in crate::config_tui) fn edit_platform_model_route(
             extra_prompt: String::new(),
             session_limits: None,
             probability_reply: None,
+            probability_reply_rate: None,
             ignore_sleep_hours: None,
         });
     let mut selected = 0usize;
@@ -156,8 +161,13 @@ pub(in crate::config_tui) fn edit_platform_model_route(
             ),
             format!(
                 "{}: {}",
-                t("Random active replies", "概率主动回复"),
+                t("Toggle random active replies", "开关概率主动回复"),
                 probability_reply_label(route.probability_reply)
+            ),
+            format!(
+                "{}: {}",
+                t("Random active reply sample rate", "概率主动回复抽样概率"),
+                probability_rate_label(route.probability_reply_rate)
             ),
             format!(
                 "{}: {}",
@@ -259,7 +269,7 @@ pub(in crate::config_tui) fn edit_platform_model_route(
                     let current = probability_reply_label(route.probability_reply);
                     let picked = select_choice(
                         ui,
-                        t(" RANDOM ACTIVE REPLIES ", " 概率主动回复 "),
+                        t(" TOGGLE RANDOM ACTIVE REPLIES ", " 开关概率主动回复 "),
                         current,
                         &choices,
                         "",
@@ -273,7 +283,8 @@ pub(in crate::config_tui) fn edit_platform_model_route(
                         None
                     };
                 }
-                8 => {
+                8 => edit_probability_rate(ui, &mut route.probability_reply_rate)?,
+                9 => {
                     // None 与 Some(false) 是同一个意思(照常受睡眠时间管),所以
                     // 这里是二选一,不是继承/开/关三档。
                     let choices = [
@@ -303,6 +314,45 @@ fn probability_reply_label(value: Option<bool>) -> &'static str {
         None => t("inherit plugin setting", "继承插件设置"),
         Some(true) => t("on", "开"),
         Some(false) => t("off (no random sampling)", "关(不做概率抽样)"),
+    }
+}
+
+fn probability_rate_label(value: Option<f64>) -> String {
+    match value {
+        None => t("inherit plugin setting", "继承插件设置").to_string(),
+        Some(rate) => rate.to_string(),
+    }
+}
+
+/// 抽样概率的行内编辑:留空 = 撤掉覆盖回到继承,别留个死值在配置里。
+fn edit_probability_rate(ui: &mut Ui, value: &mut Option<f64>) -> Result<()> {
+    let title = t(
+        " RANDOM ACTIVE REPLY SAMPLE RATE ",
+        " 概率主动回复抽样概率 ",
+    );
+    loop {
+        let current = value.map(|rate| rate.to_string()).unwrap_or_default();
+        let Some(raw) = edit_inline_value(ui, title, &current, false)? else {
+            return Ok(());
+        };
+        let raw = raw.trim();
+        if raw.is_empty() {
+            *value = None;
+            return Ok(());
+        }
+        match raw.parse::<f64>() {
+            Ok(rate) if (0.0..=1.0).contains(&rate) => {
+                *value = Some(rate);
+                return Ok(());
+            }
+            _ => message(
+                ui,
+                t(
+                    "Enter a number between 0 and 1, or leave it empty to inherit.",
+                    "请填 0 到 1 之间的数;留空则继承插件设置。",
+                ),
+            )?,
+        }
     }
 }
 

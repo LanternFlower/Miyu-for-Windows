@@ -2211,7 +2211,7 @@
         },
         {
           key: "probability_reply",
-          label: "概率主动回复",
+          label: "开关概率主动回复",
           hint: "只管主动回复判断里的概率抽样;@、关键词、引用、接话、覆盖顶替和群管审核不受影响",
           kind: "select",
           choices: [
@@ -2221,6 +2221,17 @@
           ],
           default: "",
           nullable: true,
+        },
+        {
+          key: "probability_reply_rate",
+          label: "概率主动回复抽样概率",
+          hint: "0–1;留空 = 用插件设置里的那个概率。上面的开关关掉时这一项不起作用",
+          kind: "number",
+          min: 0,
+          max: 1,
+          step: 0.01,
+          nullable: true,
+          default: null,
         },
         {
           key: "ignore_sleep_hours",

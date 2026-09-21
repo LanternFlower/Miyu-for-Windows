@@ -2340,6 +2340,7 @@ window.MiyuSettings = (() => {
     if (route.session_limits) chips.push(chip(`并行 ${route.session_limits.running}`, "is-soft"));
     if (route.probability_reply === false) chips.push(chip("概率主动回复：关", "is-soft"));
     else if (route.probability_reply === true) chips.push(chip("概率主动回复：开", "is-soft"));
+    if (typeof route.probability_reply_rate === "number") chips.push(chip(`抽样概率 ${route.probability_reply_rate}`, "is-soft"));
     if (route.ignore_sleep_hours === true) chips.push(chip("忽略睡眠时间", "is-soft"));
     return chips;
   }
@@ -2390,6 +2391,17 @@ window.MiyuSettings = (() => {
             if (value === "on") route.probability_reply = true;
             else if (value === "off") route.probability_reply = false;
             else delete route.probability_reply;
+            dirty();
+          }
+        };
+      }
+      // 抽样概率:留空 = 撤掉覆盖回到继承,把键删干净别留 null 在配置里。
+      if (key === "probability_reply_rate") {
+        return {
+          get: () => (typeof route.probability_reply_rate === "number" ? route.probability_reply_rate : ""),
+          set: (value) => {
+            if (typeof value === "number" && Number.isFinite(value)) route.probability_reply_rate = value;
+            else delete route.probability_reply_rate;
             dirty();
           }
         };

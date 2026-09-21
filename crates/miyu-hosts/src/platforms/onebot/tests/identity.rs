@@ -359,6 +359,7 @@ async fn qq_conversation_persona_drives_context_and_session_binding() {
             extra_prompt: String::new(),
             session_limits: None,
             probability_reply: None,
+            probability_reply_rate: None,
             ignore_sleep_hours: None,
         });
     let target = Target::Group { group_id: 99 };

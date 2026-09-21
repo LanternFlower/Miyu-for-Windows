@@ -314,6 +314,7 @@ fn session_limits_resolve_from_conversation_then_kind_then_qq() {
             queued: 7,
         }),
         probability_reply: None,
+        probability_reply_rate: None,
         ignore_sleep_hours: None,
     });
     assert_eq!(
@@ -378,6 +379,7 @@ fn qq_text_model_pool_resolution_preserves_conversation_priority() {
         extra_prompt: String::new(),
         session_limits: None,
         probability_reply: None,
+        probability_reply_rate: None,
         ignore_sleep_hours: None,
     });
 
@@ -1165,6 +1167,7 @@ fn probability_reply_override_is_per_conversation_and_round_trips() {
         extra_prompt: String::new(),
         session_limits: None,
         probability_reply: Some(false),
+        probability_reply_rate: None,
         ignore_sleep_hours: None,
     };
     config.platforms.upsert_model_route(route.clone());
@@ -1184,6 +1187,79 @@ fn probability_reply_override_is_per_conversation_and_round_trips() {
     route.probability_reply = None;
     let json = serde_json::to_string(&route).unwrap();
     assert!(!json.contains("probability_reply"), "{json}");
+}
+
+/// 会话专属配置的「概率主动回复抽样概率」(用户 09-21):未覆盖 = None,让调用
+/// 方回落到插件设置;覆盖值按会话生效、缺省不落盘;normalize 把范围收拢,NaN
+/// 直接丢掉——NaN 跟谁比都是 false,留着会表现成"这个会话永远不抽样"。
+#[test]
+fn probability_reply_rate_override_is_per_conversation_and_normalizes() {
+    let mut config = AppConfig::default();
+    assert_eq!(
+        config
+            .platforms
+            .probability_reply_rate(PlatformConversationKind::Group, "42"),
+        None
+    );
+    let mut route = PlatformModelRoute {
+        conversation: PlatformConversationConfig {
+            kind: PlatformConversationKind::Group,
+            id: "42".to_string(),
+        },
+        persona: PlatformPersonaOverride::Inherit,
+        text_models_inheritance: PlatformModelPoolInheritance::Platform,
+        text_models: None,
+        multimodal_models_inheritance: PlatformModelPoolInheritance::Platform,
+        multimodal_models: None,
+        extra_prompt: String::new(),
+        session_limits: None,
+        probability_reply: None,
+        probability_reply_rate: Some(0.3),
+        ignore_sleep_hours: None,
+    };
+    config.platforms.upsert_model_route(route.clone());
+    assert_eq!(
+        config
+            .platforms
+            .probability_reply_rate(PlatformConversationKind::Group, "42"),
+        Some(0.3)
+    );
+    assert_eq!(
+        config
+            .platforms
+            .probability_reply_rate(PlatformConversationKind::Group, "43"),
+        None
+    );
+    assert_eq!(
+        config
+            .platforms
+            .probability_reply_rate(PlatformConversationKind::Private, "42"),
+        None
+    );
+
+    let json = serde_json::to_string(&route).unwrap();
+    assert!(json.contains("\"probability_reply_rate\":0.3"), "{json}");
+    let parsed: PlatformModelRoute = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.probability_reply_rate, Some(0.3));
+    route.probability_reply_rate = None;
+    let json = serde_json::to_string(&route).unwrap();
+    assert!(!json.contains("probability_reply_rate"), "{json}");
+
+    route.probability_reply_rate = Some(2.5);
+    route.normalize();
+    assert_eq!(route.probability_reply_rate, Some(1.0));
+    route.probability_reply_rate = Some(-1.0);
+    route.normalize();
+    assert_eq!(route.probability_reply_rate, Some(0.0));
+    route.probability_reply_rate = Some(f64::NAN);
+    route.normalize();
+    assert_eq!(route.probability_reply_rate, None);
+
+    // 手改 config.jsonc 塞进来的越界值不走 normalize,由校验拦下。
+    route.probability_reply_rate = Some(1.5);
+    assert!(config.validate_platform_model_route(&route).is_err());
+    route.probability_reply_rate = Some(0.5);
+    assert!(config.validate_platform_model_route(&route).is_ok());
 }
 
 /// 播报生效条件:开关 + key;`active` 缺省当 MiniMax,不再要求单独"激活"。
@@ -1283,6 +1359,7 @@ fn ignoring_sleep_hours_is_scoped_to_the_one_conversation() {
         extra_prompt: String::new(),
         session_limits: None,
         probability_reply: None,
+        probability_reply_rate: None,
         ignore_sleep_hours: Some(true),
     });
 

@@ -759,3 +759,82 @@ fn overlapping_windows_stack_their_boosts() {
     assert_eq!(mentioned.primary(), Some(TriggerKind::Direct));
     assert!(mentioned.direct && mentioned.after_speaking);
 }
+
+/// 用户 09-21：抽样概率要能按会话覆盖插件设置——不同的群该有不同的话痨程度。
+///
+/// 用 Muted 把判官整段短路掉（概率闸放行后先落 `set_active_targets`，再撞上
+/// 静音直接返回），于是「闸放没放行」就成了一个不用跑模型的确定性观测点。
+/// 概率取 0 与 1 两个端点：`rand::random::<f64>()` 落在 [0,1)，`< 1.0` 恒真、
+/// `< 0.0` 恒假，这条用例里没有随机性。
+async fn probability_gate_passed(plugin_rate: f64, route_rate: Option<f64>) -> bool {
+    let (_temp, base) = availability_context(BotSendAvailability::Muted);
+    let mut config = base.config.clone();
+    config.platforms.qq.conversations = vec![miyu_base::config::PlatformModelRoute {
+        conversation: miyu_base::config::PlatformConversationConfig {
+            kind: miyu_base::config::PlatformConversationKind::Group,
+            id: "20000".to_string(),
+        },
+        persona: miyu_base::config::PlatformPersonaOverride::Inherit,
+        text_models_inheritance: miyu_base::config::PlatformModelPoolInheritance::Platform,
+        text_models: None,
+        multimodal_models_inheritance: miyu_base::config::PlatformModelPoolInheritance::Platform,
+        multimodal_models: None,
+        extra_prompt: String::new(),
+        session_limits: None,
+        probability_reply: None,
+        probability_reply_rate: route_rate,
+        ignore_sleep_hours: None,
+    }];
+    let event = inbound_event();
+    let context = PlatformTurnContext::new(
+        base.conversation.clone(),
+        base.sender_id.clone(),
+        base.sender_display_name.clone(),
+        false,
+        config,
+        base.paths.clone(),
+        base.state_store.clone(),
+        base.adapter.clone(),
+        base.plugins.clone(),
+    )
+    .with_inbound_event(event.clone());
+    let settings = RealContextPluginSettings {
+        active_judge_probability: plugin_rate,
+        ..RealContextPluginSettings::default()
+    };
+    // should_reply: false = 上游没把它当直接触发，于是概率闸说了算。
+    let mut decision = TriggerDecision {
+        should_reply: false,
+        content: event.text.clone(),
+        response_target: None,
+    };
+    RealContextPlugin::new()
+        .decide_group_trigger(&context, &event, &mut decision, &settings)
+        .await
+        .unwrap();
+    !active_targets_from_context(&context).is_empty()
+}
+
+#[tokio::test]
+async fn a_conversation_sample_rate_overrides_the_plugin_probability() {
+    assert!(
+        probability_gate_passed(0.0, Some(1.0)).await,
+        "会话概率 1 没能盖过插件的 0"
+    );
+    assert!(
+        !probability_gate_passed(1.0, Some(0.0)).await,
+        "会话概率 0 没能盖过插件的 1"
+    );
+}
+
+#[tokio::test]
+async fn without_a_conversation_override_the_plugin_probability_still_rules() {
+    assert!(
+        probability_gate_passed(1.0, None).await,
+        "插件的 1 应当放行"
+    );
+    assert!(
+        !probability_gate_passed(0.0, None).await,
+        "插件的 0 应当拦下"
+    );
+}

@@ -233,18 +233,23 @@ impl RealContextPlugin {
         let probabilistic = !pure_image || !settings.skip_pure_image_active_judge;
         // 会话专属配置可以单独关掉概率抽样(09-05):只砍这一条触发,别的
         // 触发(直呼、接话、覆盖顶替、群管审核)不受影响。
+        let route_kind = match context.conversation.kind {
+            ConversationKind::Group => miyu_base::config::PlatformConversationKind::Group,
+            ConversationKind::Private => miyu_base::config::PlatformConversationKind::Private,
+        };
         let probabilistic = probabilistic
-            && context.config.platforms.probability_reply_allowed(
-                match context.conversation.kind {
-                    ConversationKind::Group => miyu_base::config::PlatformConversationKind::Group,
-                    ConversationKind::Private => {
-                        miyu_base::config::PlatformConversationKind::Private
-                    }
-                },
-                &context.conversation.conversation_id,
-            );
-        let probabilistic = probabilistic
-            && rand::random::<f64>() < settings.active_judge_probability.clamp(0.0, 1.0);
+            && context
+                .config
+                .platforms
+                .probability_reply_allowed(route_kind, &context.conversation.conversation_id);
+        // 抽样概率也能按会话覆盖(用户 09-21:不同会话该有不同的话痨程度)。
+        // 开关与概率正交——上面那道闸管做不做,这里只管多大概率。
+        let rate = context
+            .config
+            .platforms
+            .probability_reply_rate(route_kind, &context.conversation.conversation_id)
+            .unwrap_or(settings.active_judge_probability);
+        let probabilistic = probabilistic && rand::random::<f64>() < rate.clamp(0.0, 1.0);
         // 违规候选**不再抢占社交触发**(09-19):它只是一面旗子。有社交条件时
         // trigger 照旧,判官本来就在查违规;一个社交条件都没有时才由它把判断拉
         // 起来,走 moderation_only(不花社交那套评分,也不会把关键词命中变成一次

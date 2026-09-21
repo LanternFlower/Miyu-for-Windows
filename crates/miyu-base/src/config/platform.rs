@@ -180,6 +180,16 @@ impl PlatformsConfig {
             .unwrap_or(true)
     }
 
+    /// 本会话的抽样概率覆盖值(未覆盖 = None,调用方回落到插件设置)。
+    pub fn probability_reply_rate(
+        &self,
+        kind: PlatformConversationKind,
+        conversation_id: &str,
+    ) -> Option<f64> {
+        self.model_route(kind, conversation_id)
+            .and_then(|route| route.probability_reply_rate)
+    }
+
     /// Inserts a route or replaces the route with the same stable identity.
     /// Inherited pools are meaningful conversation configuration and are kept
     /// until the user explicitly removes the entry.
@@ -438,7 +448,9 @@ impl PlatformModelPoolInheritance {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// 带上抽样概率(f64)之后不能再 Eq:浮点没有全序。会话配置只用得上 PartialEq
+// (改没改、重不重复),所以直接去掉(09-21)。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlatformModelRoute {
     pub conversation: PlatformConversationConfig,
     #[serde(default, skip_serializing_if = "PlatformPersonaOverride::is_inherit")]
@@ -467,6 +479,13 @@ pub struct PlatformModelRoute {
     /// 不做概率抽样(@、关键词、引用、接话、覆盖顶替、群管审核照旧)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probability_reply: Option<bool>,
+    /// 本会话的抽样概率,覆盖 real_context 插件的 `active_judge_probability`
+    /// (用户 09-21:不同会话该有不同的话痨程度)。None = 用插件那个值。
+    ///
+    /// 与上面那个开关正交:开关管**做不做**抽样,这个管**多大概率**。开关关掉
+    /// 时这个值不起作用;设成 0 与关掉等效,不特判。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probability_reply_rate: Option<f64>,
     /// 无视睡眠时间:None/Some(false) = 照常受 sleep_hours 管,Some(true) = 就算
     /// 在睡眠时间,这个会话照样正常进行。管理员本来就叫得醒,这条是给普通会话的。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -496,6 +515,12 @@ impl PlatformModelRoute {
         if self.multimodal_models.is_some() {
             self.multimodal_models_inheritance = PlatformModelPoolInheritance::Platform;
         }
+        // NaN 当成"没设"扔掉,别让它一路飘到比较那一步(NaN 比什么都是 false,
+        // 表现成"永远不抽样",查起来很难看出来)。
+        self.probability_reply_rate = self
+            .probability_reply_rate
+            .filter(|rate| !rate.is_nan())
+            .map(|rate| rate.clamp(0.0, 1.0));
     }
 
     pub(crate) fn prune_model_references(&mut self, providers: &[ProviderConfig]) {
