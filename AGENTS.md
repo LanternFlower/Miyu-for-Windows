@@ -29,6 +29,8 @@ docs/中有过去所有的计划和文档，可以自行按需阅读。
 1.3 **stub 加载模式是定论**：懒工具以真名+首行摘要（≤60 字符，即描述第一行）+宽松参数壳常驻，tools 数组会话内字节恒定；完整契约走 load_tools 结果。不要为了让模型看到参数把工具设 always_loaded。
 1.4 **指令型注入必须放 system 侧**（每请求新组装、不化石）——内联在消息块里的指令会随化石重放造成跨轮错乱（qq-reply-target 的前身就是这么死的）。所有注入带 XML 标签外壳，不裸奔。
 1.5 **文风规范**：模型可见的机械文本（描述/schema/注入/报错回灌）一律英文短句——同语言同语域污染最毒，中文书面语注入是头号 OOC 源；中文只留给人格侧文本。禁分号串联、禁「总述：分述」结构。每条注入先问“删掉会怎样”再问“怎么写短”。人格 hint、goal/compact 模板是实测敏感区，不动。
+1.5.1 **同时给模型和给人看的文本必须双槽**（09-21）：模型槽恒英文、进 token 预算；人槽跟界面语言、不进模型面。已落地的三对——脚本 `# Description:`/`# 描述：`（`select_script_description` vs `select_script_ui_description`），脚本 `# Display name:`/`# 显示名称：`，技能 frontmatter `description`（模型）/`display_name`+`summary`（人）。**一个槽两拨人用**就是设置页中英混杂的根（19 个内置脚本曾零中文槽、技能曾无显示名）。技能 `description` 允许中文**触发词**（用户真会说的那几个词），但句子主体必须英文——`test_scripts/check-model-english.sh` 按「首字符 ASCII 字母 + CJK 占比不过半」判，它同时扫 `descriptions/*.json` 与 `src/skills/**/*.md`。
+
 1.6 描述/schema/hint 的改动=一次性计划内冷启动，可接受；改后必须仍是常量字节。改消息组装/工具目录后除跑测试外，手测两轮请求的 cache-usage jsonl 确认第二轮 cache_read 不异常下降。
 1.7 辅助请求（compact/judge/title/subagent/vision 等）独立 cache/session 状态；唯一例外是 fork 式摘要（刻意复用主对话前缀）。
 1.8 token 量尺：`cargo test --lib token_diet_baseline -- --ignored --nocapture`。
@@ -37,6 +39,8 @@ docs/中有过去所有的计划和文档，可以自行按需阅读。
 
 2.1 **描述/schema 真相源是 `src/tools/descriptions/*.json`**（经 `crates/miyu-engine/src/tools/tool_descriptions.rs` 的 include_str! 宏，JSON 等资源留在仓库 `src/` 不随 rs 进 crate；新增必须补宏行，忘了=JSON 静默失效）。Rust 里的描述只是占位，注册时被 JSON 整体覆盖（load_skill 例外）。权限只由 `.writes()`/`.presentation()` 决定，JSON 的 permission 字段是死字段。
 2.1.1 **工具契约是公共预算**（09-21 瘦身）：单件 ≤550 tok、仓库自带整面 ≤10500 tok，`bundled_tool_face_stays_within_its_token_budget` 当场拦。写法三条：①工具描述 ≤3 句（是什么/什么时候用/一条最容易踩的坑），教程与输出格式长文不写；②**「调用之后才用得上」的知识写进工具自己的输出，不写进 schema**（字段语义、退化标志怎么读、分页边界——模型拿到结果时才需要）；③参数说明 ≤1 句，名字加 enum 已说清的（`format: md|json`）干脆不写，默认值统一 `"Default 20."`。合并域省不了多少：单工具信封只有 27 tok，参数一个都不会少。重量级低频的脚本走 `# Expose: skill`（注册、可经工具桥调用，但不进 tools 数组，由技能正文带路）。
+
+2.1.2 **内置技能是 `include_str!` 常量表**（`miyu_core::skills::BUILTIN_SKILLS`）：往 `src/skills/` 扔一个 .md 不会自动生效，忘了补表=这份技能谁都加载不到（travel-planner 这么躺了一天）。`every_bundled_skill_file_is_registered` 当场拦。
 
 2.2 **工具名是最强的能力广告：域内聚合、域间分名**。编辑/读取类能力并入 edit（文件系统）/kb/artifact（补丁语义）与 read（`kb:`/`artifact:` 前缀），别为新存储开新读写工具。把能力藏进描述里的前缀/参数，模型想不起来（kb: 前缀实测翻车史）。
 2.3 **输出格式改造必须双兼容**：旧回合 tool_flow 逐字节回放，旧 JSON 解析器永远保留。“结构即功能”的不改：成败判定只认输出 JSON 的 success/ok 布尔（非 JSON=默认成功），错误路径保留 ok:false JSON。

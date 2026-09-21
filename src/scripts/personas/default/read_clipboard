@@ -3,6 +3,7 @@
 # Display name: Read clipboard
 # 显示名称: 读取剪贴板
 # Description: Read the current clipboard. Text, image and file-path content are detected automatically.
+# 描述：读当前剪贴板，文字、图片和文件路径都能认。
 # Timeout: 30
 # Group: systeminfo
 # Permission: read-only

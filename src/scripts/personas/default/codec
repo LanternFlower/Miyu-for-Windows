@@ -3,6 +3,7 @@
 # Display name: Encode/decode
 # 显示名称: 编解码
 # Description: Compute hashes or decode base64/hex/url/html/rot13. Hashes: md5, sha1, sha224/256/384/512, sha3_224/256/384/512, blake2b, b2sum, blake2s, blake3, crc32, adler32, or all/mainstream for every one; b2sum equals GNU coreutils BLAKE2b-512. To match a shell echo, keep the trailing newline in input_text.
+# 描述：算哈希或解码 base64/hex/url/html/rot13。
 # Timeout: 30
 # Group: utility
 # Trust: external

@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 # 显示名称：知乎搜索
 # Description: Search Zhihu, the Chinese Q&A platform, or read a question. A keyword searches; a Zhihu url or a bare numeric question id fetches that question with its top answers.
+# 描述：搜知乎，或按链接／问题 id 读一个问题和它的高赞回答。
 # Timeout: 300
 # Group: research
 # Parameters:

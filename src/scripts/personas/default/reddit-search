@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 # 显示名称：Reddit 检索
 # Description: Search Reddit posts, comments, users and subreddits. Data comes from the free Arctic Shift archive, which mirrors Reddit within minutes (Reddit's own API now needs approved credentials). Two archive limits: a keyword needs a subreddit or an author because there is no site-wide search, and there is no hotness ranking, so sort=top samples the window by score. Posts younger than 36 h report scores as unsettled, not as a number. Pass a reddit link or a bare post id as query to read that post with its comment tree. Zero dependencies, python3 only.
+# 描述：检索 Reddit 的帖子、评论、用户和版块；也能读一整条帖子的评论树。
 # Timeout: 120
 # Group: research
 # Parameters:

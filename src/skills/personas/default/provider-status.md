@@ -1,6 +1,8 @@
 ---
 name: provider-status
-description: 排查大模型供应商是不是挂了。当用户说模型报错、回不了话、很慢、502、限流、超时、"DeepSeek 挂了吗"、"是不是服务器炸了"、换个供应商试试，或者你自己刚吃到一串端点错误时使用。
+display_name: 供应商状态排查
+summary: 分清是大模型供应商挂了还是本机配置坏了
+description: Work out whether a model provider is down or this machine's config is. Use when the user says 模型报错、回不了话、很慢、502、限流、超时、DeepSeek 挂了吗、换个供应商试试, or when you just hit a run of endpoint errors yourself.
 ---
 
 # 供应商状态排查

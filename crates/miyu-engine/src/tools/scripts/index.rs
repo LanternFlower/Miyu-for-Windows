@@ -35,6 +35,12 @@ pub(crate) struct ScriptEntry {
     pub(crate) display_name: String,
     #[serde(default)]
     pub(crate) description: String,
+    /// 界面上的说明（人槽）。`description` 是**模型**读的那一份，恒英文
+    /// （`select_script_description`）；拿它当界面文案会让设置页里中文名配
+    /// 英文说明（AGENTS §1.5.1）。脚本头的 `# 描述：` 落在这儿，缺省回退到
+    /// `description`。不进模型面，不占 token。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) ui_description: String,
     #[serde(default)]
     pub(crate) path: String,
     #[serde(default)]
@@ -80,6 +86,7 @@ impl ScriptEntry {
             id,
             display_name: String::new(),
             description: String::new(),
+            ui_description: String::new(),
             path,
             parameters: Value::Null,
             timeout_seconds: None,
@@ -162,6 +169,11 @@ pub(crate) fn merge_header_defaults(entry: &mut ScriptEntry, metadata: &ScriptMe
     if entry.description.trim().is_empty() {
         if let Some(description) = select_script_description(&metadata.descriptions) {
             entry.description = description;
+        }
+    }
+    if entry.ui_description.trim().is_empty() {
+        if let Some(description) = select_script_ui_description(&metadata.descriptions) {
+            entry.ui_description = description;
         }
     }
     if entry.parameters.is_null() {

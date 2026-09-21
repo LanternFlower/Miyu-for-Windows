@@ -3,6 +3,7 @@
 # Display name: Divination
 # 显示名称: 占卜
 # Description: Divination by I Ching, tarot, fortune or dice. method=zhouyi casts a hexagram, tarot draws cards, fortune tells luck, dice rolls dice. The tool only produces the random result; the reading is yours.
+# 描述：占卜：起卦、抽塔罗、求签、掷骰。只出随机结果，解读归你。
 # Timeout: 30
 # Group: divination
 # Trust: external

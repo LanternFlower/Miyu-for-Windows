@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 # 显示名称：闲鱼搜索
 # Description: Search Goofish (闲鱼) second-hand listings, no login. Returns title, CNY price, region and link. search (default) drives a real browser, takes 10-40 s and pages 30 items at a time. monitor-init issues a watching ticket for a keyword (one browser run) and monitor-query then answers in seconds over plain HTTP; init the same keyword first. Needs playwright and a Chromium browser — when missing the error carries a fix guide and a self-check; relay it to the user.
+# 描述：免登录搜闲鱼二手：标题、价格、地区和链接；也能给关键词开长期监控。
 # Timeout: 300
 # Group: shopping
 # Parameters:

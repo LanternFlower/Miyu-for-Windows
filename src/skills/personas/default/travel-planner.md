@@ -1,6 +1,8 @@
 ---
 name: travel-planner
-description: 旅游攻略规划。当用户提到旅游、出游、度假、行程、攻略、去哪玩、机票、酒店、景点、假期安排、带家人/朋友出行、想找目的地建议时使用本 skill，即使用户没有明确说"攻略"或只是随口问"国庆去哪好"。产出一份有出处、可执行、含预算与预订链接的日程表。
+display_name: 旅游攻略规划
+summary: 出行前的行程、机票、酒店与预算规划
+description: Travel itinerary planning. Produces a sourced, actionable day-by-day plan with budget and booking links. Use when the user mentions 旅游、出游、度假、行程、攻略、去哪玩、机票、酒店、景点、假期安排、带家人出行 — even in passing, and even without the word 攻略.
 ---
 
 # 旅游攻略规划

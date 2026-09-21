@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 # 显示名称：小红书搜索
 # Description: Search Xiaohongshu (RED) notes, or read one note by url. Search returns title, author, likes, saves, comment count and url without bodies; pass a returned url back to read the body, tags, images and, with limit>0, comments. Read each comment's replies with it: on RED the answer to 'what is it' or 'how much' sits in the reply thread, not in the top-level comment. The result carries warnings, degraded and truncated fields — read them before concluding, because a silently downgraded sort means the first item is no longer the most liked. Search needs a one-off `xhs-search login` (QR code in the terminal), has a per-account daily quota and takes 10-30 s per call, so do not repeat needlessly. Errors come back with an error and a fix field; relay fix to the user.
+# 描述：搜小红书笔记，或按链接读一篇（正文、标签、图片，还能带评论与楼中楼）。
 # Timeout: 300
 # Group: research, shopping
 # Parameters:

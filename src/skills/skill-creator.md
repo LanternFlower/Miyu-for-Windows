@@ -1,6 +1,8 @@
 ---
 name: skill-creator
-description: Create or safely update Miyu skills. Use when the user asks to create, author, improve, or modify a reusable skill, SKILL.md workflow, or skill resources.
+display_name: 技能创作
+summary: 写一份新技能，或安全地改已有的那份
+description: Create or safely update Miyu skills. Use when the user asks to create, author, improve or modify a reusable skill, a SKILL.md workflow or skill resources — 写技能、改技能、做一个技能。
 compatibility: Miyu built-in skill authoring workflow
 ---
 

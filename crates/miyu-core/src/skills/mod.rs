@@ -127,9 +127,16 @@ fn allowed_by(
     allowlist.is_none() || listed
 }
 
-/// 引导里可以逐个勾的技能:目录里的 + 非平台级内置的,(名字, 描述, 是否内置)。
+/// 引导里可以逐个勾的技能:目录里的 + 非平台级内置的,(id, 界面名, 界面说明, 是否内置)。
 /// **不看白名单**——表要摆全,勾选状态由调用方按清单填。
-pub fn persona_skill_options(config: &AppConfig, paths: &MiyuPaths) -> Vec<(String, String, bool)> {
+///
+/// 界面名与界面说明走人槽(`display_name` / `summary`),没写才回退到模型槽
+/// (`name` / `description`)。模型槽是英文触发词,直接摆进设置页会中英混杂
+/// (AGENTS §1.5.1)。id 仍是 `name`——清单白名单按它存。
+pub fn persona_skill_options(
+    config: &AppConfig,
+    paths: &MiyuPaths,
+) -> Vec<(String, String, String, bool)> {
     discover_visible(config, paths)
         .unwrap_or_default()
         .into_iter()
@@ -137,7 +144,8 @@ pub fn persona_skill_options(config: &AppConfig, paths: &MiyuPaths) -> Vec<(Stri
         .map(|entry| {
             (
                 entry.metadata.name.clone(),
-                entry.metadata.description.clone(),
+                entry.metadata.ui_name().to_string(),
+                entry.metadata.ui_summary().to_string(),
                 entry.source == SkillSource::BuiltIn,
             )
         })

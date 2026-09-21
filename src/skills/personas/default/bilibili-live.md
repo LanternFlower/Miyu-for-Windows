@@ -1,6 +1,8 @@
 ---
 name: bilibili-live
-description: 控制哔哩哔哩直播间。当用户说开播、下播、关播、改直播标题、换分区、拿推流码、RTMP、OBS、看直播间状态、b站直播、bilibili 直播时使用。
+display_name: 哔哩哔哩直播控制
+summary: 改直播标题分区、开播拿推流码、下播
+description: Control a Bilibili live room. Use when the user says 开播、下播、关播、改直播标题、换分区、推流码、RTMP、OBS、看直播间状态、b站直播.
 ---
 
 # 哔哩哔哩直播间控制

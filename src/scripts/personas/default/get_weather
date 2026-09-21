@@ -3,6 +3,7 @@
 # Display name: Weather
 # 显示名称: 天气查询
 # Description: Weather lookup by place, postal code or airport. Takes a city, place name, postal code or airport code. Ask the user when the location is missing instead of guessing.
+# 描述：查天气：实时与预报，也能查空气质量、历史、海洋、气候趋势和海拔。
 # Timeout: 60
 # Group: web
 # Trust: external

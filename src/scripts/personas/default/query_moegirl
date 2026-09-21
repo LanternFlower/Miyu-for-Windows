@@ -3,6 +3,7 @@
 # Display name: Query Moegirlpedia
 # 显示名称: 查询萌娘百科
 # Description: Query Moegirlpedia. Use it for ACG questions.
+# 描述：查萌娘百科，ACG 相关问题用它。
 # Timeout: 60
 # Group: acg
 # Permission: read-only

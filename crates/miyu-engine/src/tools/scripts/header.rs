@@ -159,6 +159,17 @@ pub(crate) fn select_script_description(descriptions: &ScriptDescriptions) -> Op
         .cloned()
 }
 
+/// 界面上的说明：跟界面语言走，中文界面拿不到中文就退英文（一句英文远好过
+/// 没有）。与 [`select_script_description`] 是同一份数据的两个槽——那个恒英文
+/// 给模型，这个给人（AGENTS §1.5.1）。
+pub(crate) fn select_script_ui_description(descriptions: &ScriptDescriptions) -> Option<String> {
+    let (first, second) = match locale() {
+        Locale::Zh => (&descriptions.zh, &descriptions.en),
+        _ => (&descriptions.en, &descriptions.zh),
+    };
+    first.as_ref().or(second.as_ref()).cloned()
+}
+
 pub(crate) fn select_script_display_name(display_names: &ScriptDisplayNames) -> Option<String> {
     select_display_name_for(locale(), display_names)
 }

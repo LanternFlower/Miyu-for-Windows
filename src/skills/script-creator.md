@@ -1,6 +1,8 @@
 ---
 name: script-creator
-description: Write and register a Miyu script tool. Use when the user wants a new command-line script that Miyu can call as a tool, or when a script fails to register or run.
+display_name: 脚本创作
+summary: 写一个命令行脚本并注册成 Miyu 的工具
+description: Write and register a Miyu script tool. Use when the user wants a new command-line script Miyu can call as a tool, or when a script fails to register or run — 写脚本、加个工具、注册脚本、脚本跑不起来。
 compatibility: Miyu built-in script authoring workflow
 ---
 
