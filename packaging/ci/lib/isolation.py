@@ -40,7 +40,11 @@ class Sandbox:
     def environment(self, inherited=None):
         inherited = dict(os.environ if inherited is None else inherited)
         # Allowlist preserves build tooling without provider secrets or resource overrides.
-        names = {'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TERM', 'COLORTERM',
+        # MIYU_LANG 决定界面文案是中文还是英文，而一批用例断言的正是中文那份。
+        # 它不指向任何资源、也不是凭据，挡掉它只会让「跑测试的机器碰巧是什么
+        # locale」决定成败——2026-09-21 CI 第一次真跑就栽在这儿：作业里设了
+        # MIYU_LANG=zh，被这张白名单滤掉，runner 上退回英文，11 条 TUI 用例全红。
+        names = {'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'MIYU_LANG', 'TZ', 'TERM', 'COLORTERM',
                  'CARGO_HOME', 'RUSTUP_HOME', 'RUSTUP_TOOLCHAIN', 'CARGO_TARGET_DIR',
                  'CARGO_BUILD_JOBS', 'RUSTC_WRAPPER', 'CC', 'CXX', 'AR', 'PKG_CONFIG_PATH',
                  'CARGO_NET_OFFLINE', 'SSL_CERT_FILE', 'SSL_CERT_DIR',

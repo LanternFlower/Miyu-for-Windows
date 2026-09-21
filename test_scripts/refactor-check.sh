@@ -17,6 +17,12 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
+# 界面文案按 locale 走、兜底是英文，而一批 TUI 用例断言的正是中文那份（「限流」
+# 「已思考」这些）。不钉住的话，同一份代码在中文 shell 里 2621 条全绿、在英文
+# shell 或 systemd 的干净环境里红 11 条——2026-09-21 本机与 CI 各撞了一次。
+# 真正的修法是让那些用例自己把 locale 钉死，在那之前先由门禁统一。
+export MIYU_LANG=zh
+
 step() { printf '\n\033[1m── %s ──\033[0m\n' "$1"; }
 
 step "格式"

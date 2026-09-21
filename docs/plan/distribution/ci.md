@@ -7,7 +7,7 @@
 发 0.6.1 时把本机那条链整条跑了一遍，撞出来的都记在这儿：
 
 1. **`release.yml` 的 `notes-path` 默认值会过期**。它指着 `docs/releases/0.6.0/release-notes.md`，版本升了没人改它，远端一执行就去找一个不存在的文件。现已改 0.6.1，并加 `packaging/ci/tests/test_workflows.py` 钉住：默认值必须跟 `Cargo.toml` 的版本走，且那一版的 `release-notes.md` 与 `changelog.md` 都真的存在。
-2. **`MIYU_LANG: zh` 是必需的，不是偏好**。界面文案按 locale 走，`i18n.rs` 的 `system_with` 兜底是 `En`，而一批用例断言的正是中文那份（「限流」「已思考」「运行命令」）。runner 上 `LANG` 通常是 `C.UTF-8` → 解析成 En → 这些用例整批红。本机在 systemd 的 `en_US.UTF-8` 环境下实测 12 条红、换 `LANG=zh_CN.UTF-8` 后 2621 条全绿。`MIYU_LANG` 不依赖系统装没装 zh_CN 语言包，所以钉它而不是 `LANG`。
+2. **`MIYU_LANG: zh` 是必需的，不是偏好**。界面文案按 locale 走，`i18n.rs` 的 `system_with` 兜底是 `En`，而一批用例断言的正是中文那份（「限流」「已思考」「运行命令」）。runner 上 `LANG` 通常是 `C.UTF-8` → 解析成 En → 这些用例整批红。本机在 systemd 的 `en_US.UTF-8` 环境下实测 12 条红、换 `LANG=zh_CN.UTF-8` 后 2621 条全绿。`MIYU_LANG` 不依赖系统装没装 zh_CN 语言包，所以钉它而不是 `LANG`。⚠️ **光在作业里设还不够**：产品测试跑在 `Sandbox` 的干净环境里，环境变量过一张白名单，`MIYU_LANG` 原来不在表上，于是设了也到不了测试进程——0921 那次 CI 就是这么红的（runner 上 11 条 TUI 用例失败，本机 `env -u LANG` 完全复现）。白名单已放行，`refactor-check.sh` 也 `export MIYU_LANG=zh`，两边同源。真正的修法是让那些用例自己钉死 locale，未做。
 3. **`.dockerignore`**（新增）。两个 builder 镜像一行 `COPY` 都没有，构建上下文应当是空的；仓库一直没有这份清单，于是手册里那条 `docker build … .` 会把整个仓库塞给守护进程——开发机 `target/` 实测 136 GB。`workflow.py build` 用冻结快照当上下文所以不受影响，但自托管 runner（`vars.LINUX_X64_RUNNER`）的工作区是热的，一样会踩。同一份测试也钉住「Dockerfile 不许开始依赖上下文」。
 4. **新增 `workflows` 作业跑 actionlint**（1.7.12，下载后校验 SHA256 才执行），以及把「模型可见面无 CJK」门禁搬进 `format-and-python`——它原来只在本机 `refactor-check.sh` 里跑。
 5. **`build-package-verify.yml` 超时 210 → 240 分钟**：`gnu-x86_64` 现在要装五个发行版（多了 Linux Mint 22.3）。
