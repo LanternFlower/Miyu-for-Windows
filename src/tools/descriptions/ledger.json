@@ -38,7 +38,7 @@
       },
       "account": {
         "type": "string",
-        "description": "add/list: where the money came from, the source for a transfer. Every book starts with 现金, 电子支付, 交通卡, 信用卡 and 银行卡."
+        "description": "add/list: where the money came from, the source for a transfer. An unknown name is refused and the error lists this book's real accounts."
       },
       "to_account": {
         "type": "string",

@@ -46,6 +46,13 @@ const BUILTIN_SKILLS: &[(&str, &str, bool)] = &[
         include_str!("../../../../src/skills/personas/default/linux-game-compatibility.md"),
         false,
     ),
+    // 09-21:机票/酒店比价两件脚本改成技能资源(`# Expose: skill`),这份技能
+    // 是它们唯一的入口——漏登记的话两件能力就整个消失。
+    (
+        "travel-planner",
+        include_str!("../../../../src/skills/personas/default/travel-planner.md"),
+        false,
+    ),
 ];
 
 /// 内置资源(技能/脚本)默认只属于 Miyu 出厂人格。判据:`active_persona` 去空
@@ -330,6 +337,40 @@ fn sorted_skill_directories(root: &Path) -> Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 仓库里的每份内置技能都必须登记进 [`BUILTIN_SKILLS`]。
+    ///
+    /// 技能是 `include_str!` 编译进来的，目录里多一个文件不会自动生效——
+    /// 09-20 加的 `travel-planner.md` 就这么静默躺了一整天，谁都加载不到
+    /// (09-21 实测发现)。与 AGENTS §2.1 说 descriptions 宏行的是同一个坑。
+    #[test]
+    fn every_bundled_skill_file_is_registered() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src/skills");
+        let registered: std::collections::BTreeSet<&str> =
+            BUILTIN_SKILLS.iter().map(|(name, _, _)| *name).collect();
+        let mut missing = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().is_some_and(|ext| ext == "md") {
+                    let stem = path.file_stem().unwrap().to_string_lossy().to_string();
+                    if !registered.contains(stem.as_str()) {
+                        missing.push(stem);
+                    }
+                }
+            }
+        }
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "these bundled skills are not in BUILTIN_SKILLS and can never be loaded: {missing:?}"
+        );
+    }
 
     fn test_paths(root: &Path) -> MiyuPaths {
         MiyuPaths {
