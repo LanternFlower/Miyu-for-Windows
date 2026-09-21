@@ -72,6 +72,12 @@ def plan(args):
     print('DRY RUN PLAN ONLY: no build, acceptance report or remote publication was executed.')
 
 
+def default_download_cache():
+    """机器级下载缓存:跟发版 root 无关,换一个 root 也命中。"""
+    root = os.environ.get('XDG_CACHE_HOME') or (Path.home()/'.cache')
+    return Path(root)/'miyu-release'/'downloads'
+
+
 def freeze(args):
     version = tomllib.loads((REPO/'Cargo.toml').read_text())['package']['version']
     if args.tag != 'v'+version or args.revision <= 0:
@@ -83,7 +89,10 @@ def freeze(args):
         raise ValueError('Checkout differs from the controlling workflow commit.')
     run('metadata.py', '--mode', 'release', '--source-ref', head, '--profile', 'linux-smoke',
         '--revision', args.revision, '--tag', args.tag, '--out', args.root/'release-input.json')
-    run('prepare.py', '--manifest', args.root/'release-input.json', '--out', args.root/'inputs')
+    # 锁定归档按哈希取,同一份字节跨次复用是安全的:命中一侧照样逐字节重算。
+    # 不给缓存的话每发一版就重下一遍(光语音模型三件就约 190MB,09-21 实测)。
+    run('prepare.py', '--manifest', args.root/'release-input.json', '--out', args.root/'inputs',
+        '--cache', args.download_cache or default_download_cache())
 
 
 def build_packages(args):
@@ -224,6 +233,10 @@ def main():
         command.add_argument('--tag', default='')
         command.add_argument('--revision', type=int, default=1)
         command.add_argument('--out' if name == 'plan' else '--root', type=Path, required=True)
+        if name == 'freeze':
+            command.add_argument('--download-cache', type=Path,
+                                 help='Reusable locked-archive cache; defaults to '
+                                      '$XDG_CACHE_HOME/miyu-release/downloads.')
     commands.add_parser('check-provider')
     for name in ('build', 'verify'):
         command = commands.add_parser(name)

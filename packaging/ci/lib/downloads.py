@@ -41,6 +41,32 @@ def cache_candidate(record, cache):
     return None
 
 
+def store_in_cache(record, source, cache):
+    """Keep a verified copy so the next run does not re-fetch the same locked bytes.
+
+    09-21: 发版链每跑一次就重下同一批锁定归档（语音模型那三件合计约 190MB），
+    因为 workflow 从不传 --cache、而 --cache 又只读不写。写入走同目录临时文件
+    加原子替换，半截文件不会被下一次当成命中——命中那一侧照样逐字节重算哈希。
+    """
+    if cache is None:
+        return
+    cache = Path(cache)
+    target = cache/download_name(record)
+    if target.exists():
+        return
+    cache.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix='.cache-', dir=cache)
+    try:
+        with os.fdopen(fd, 'wb') as output, Path(source).open('rb') as stream:
+            shutil.copyfileobj(stream, output)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, target)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
 def obtain(record, destination, *, cache=None, offline=False):
     """Atomically materialize verified bytes. Corrupt cache never silently redownloads."""
     destination = Path(destination)
@@ -80,6 +106,8 @@ def obtain(record, destination, *, cache=None, offline=False):
         os.replace(temporary, destination)
     finally:
         Path(temporary).unlink(missing_ok=True)
+    if source is None:
+        store_in_cache(record, destination, cache)
     return destination
 
 

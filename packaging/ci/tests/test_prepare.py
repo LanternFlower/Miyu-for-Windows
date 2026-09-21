@@ -48,6 +48,48 @@ class DownloadTests(unittest.TestCase):
             obtain(self.record, self.root/'result', cache=self.cache, offline=True)
         self.assertEqual((self.root/'result').read_bytes(), b'locked bytes')
 
+    def _serve(self, payload):
+        """一次性的假 HTTPS 响应,数它被读了几次。"""
+        def opener(url, timeout=None):
+            self.served += 1
+            stream = io.BytesIO(payload)
+            stream.url = url
+            stream.__enter__ = lambda: stream
+            stream.__exit__ = lambda *args: None
+            return stream
+        return opener
+
+    def test_a_download_seeds_the_cache_so_the_next_run_stays_offline(self):
+        """09-21:发版链每跑一次就重下同一批锁定归档(语音三件约 190MB)。
+
+        第一次走网络并落进缓存,第二次即便断网也要成功——退回改动前,第二次
+        会因为缓存空而去 urlopen,被这里的断言当场抓住。
+        """
+        self.served = 0
+        with patch('urllib.request.urlopen', self._serve(b'locked bytes')):
+            obtain(self.record, self.root/'first', cache=self.cache, offline=False)
+        self.assertEqual(self.served, 1)
+        self.assertEqual((self.cache/'input.tgz').read_bytes(), b'locked bytes')
+        with patch('urllib.request.urlopen', side_effect=AssertionError('network used')):
+            obtain(self.record, self.root/'second', cache=self.cache, offline=True)
+        self.assertEqual((self.root/'second').read_bytes(), b'locked bytes')
+
+    def test_no_cache_directory_means_no_write_and_no_crash(self):
+        self.served = 0
+        with patch('urllib.request.urlopen', self._serve(b'locked bytes')):
+            obtain(self.record, self.root/'only', cache=None, offline=False)
+        self.assertEqual((self.root/'only').read_bytes(), b'locked bytes')
+
+    def test_a_poisoned_cache_entry_is_never_trusted_after_seeding(self):
+        """回写不削弱校验:缓存被人改过,下一次照样逐字节重算并拒绝。"""
+        self.served = 0
+        with patch('urllib.request.urlopen', self._serve(b'locked bytes')):
+            obtain(self.record, self.root/'first', cache=self.cache, offline=False)
+        (self.cache/'input.tgz').write_bytes(b'tampered')
+        with patch('urllib.request.urlopen', side_effect=AssertionError('network used')):
+            with self.assertRaisesRegex(ValueError, 'SHA256'):
+                obtain(self.record, self.root/'third', cache=self.cache, offline=True)
+
 
 class ArchiveTests(unittest.TestCase):
     def setUp(self):
