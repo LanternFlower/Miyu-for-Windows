@@ -1,8 +1,10 @@
 # Linux CI 工作流
 
-范围为 `linux-smoke` 发布目标。四份工作流和受控封装已实现、通过本地静态检查（含 actionlint），**尚未推送或在 GitHub runner 执行**。此文不把远端未执行的编译、MSRV 或安装检查记为通过，也不宣称 macOS 已支持。
+范围为 `linux-smoke` 发布目标。四份工作流和受控封装已实现。
 
-## 2026-09-20（0.6.1 发版时）改的五处
+**2026-09-21：`ci.yml` 第一次在 GitHub runner 上真跑并通过**（`b023e22a`，四个作业全绿：format-and-python 0.3 分钟、actionlint 0.1 分钟、MSRV 1.89.0 2.4 分钟、Rust 1.96.1 含 voice 面编译与 source-unit 6.7 分钟）。在此之前它从没在 runner 上跑成功过，连跑四次全断在第一步，后面的作业一次都没执行到——两处真问题见下。`release.yml` / `build-package-verify.yml` / `packaging-update.yml` 仍未在远端执行过：0.6.1 是本机跑的发布链。此文不把远端未执行的构建、安装或发布记为通过，也不宣称 macOS 已支持。
+
+## 2026-09-20/21（0.6.1 发版时）改的七处
 
 发 0.6.1 时把本机那条链整条跑了一遍，撞出来的都记在这儿：
 
