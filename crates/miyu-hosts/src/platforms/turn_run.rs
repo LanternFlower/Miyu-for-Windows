@@ -14,6 +14,10 @@ pub(crate) struct TurnOutcome {
     /// Image asset ids published during the turn (`tool.image` events);
     /// bridges load the bytes and re-send them platform-natively.
     pub(crate) image_assets: Vec<String>,
+    /// `image_assets` 里由表情包工具产出的那些(09-21 用户要求)。真人不会把
+    /// 一句话和一个表情塞进同一条消息,所以投递时表情单独成一条——这里只标
+    /// 出身,拆不拆由 `onebot::outbound` 决定。
+    pub(crate) meme_assets: std::collections::BTreeSet<String>,
     /// Byte ranges produced after confirmed direct long-image tool sends.
     /// Direct-send acknowledgements are removed from the final fallback text.
     pub(crate) suppressed_reply_ranges: Vec<(usize, usize)>,
@@ -138,6 +142,7 @@ pub(crate) async fn run_platform_turn(
     let deadline = tokio::time::Instant::now() + PLATFORM_TURN_TIMEOUT;
     let mut text = String::new();
     let mut image_assets = Vec::new();
+    let mut meme_assets = std::collections::BTreeSet::new();
     let mut reply_suppression = ReplySuppression::default();
     let mut last_id = after;
     let dispatch = loop {
@@ -234,6 +239,12 @@ pub(crate) async fn run_platform_turn(
                     .and_then(|asset| asset.get("id"))
                     .and_then(Value::as_str)
                 {
+                    // 事件里的 name 是真工具名(event_map 的 real_tool_name 已经
+                    // 把 "use_meme:show" 剥成 "use_meme")。资产表的 tool_id 存的
+                    // 是调用 id(call_00_…),认不出工具,所以认这里。
+                    if data.get("name").and_then(Value::as_str) == Some("use_meme") {
+                        meme_assets.insert(id.to_string());
+                    }
                     image_assets.push(id.to_string());
                 } else {
                     // 无 asset 的 tool.image 是资产落库失败/turn 未知的错误
@@ -289,6 +300,7 @@ pub(crate) async fn run_platform_turn(
                         .and_then(Value::as_str)
                         .map(str::to_string),
                     image_assets,
+                    meme_assets,
                     suppressed_reply_ranges,
                     final_reply_already_sent,
                 });

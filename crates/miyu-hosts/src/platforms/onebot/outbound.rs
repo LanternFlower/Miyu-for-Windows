@@ -213,6 +213,9 @@ pub(in crate::platforms::onebot) async fn deliver_dispatch(
                 return Ok(false);
             }
             let mut segments = Vec::new();
+            // 表情包单独成一条消息(09-21 用户要求):真人不会把一句话和一个表情
+            // 塞进同一条。生图/图表不拆——「给你画了这个」配图在一条里读着正常。
+            let mut meme_segments = Vec::new();
             let reply_text = final_reply_text(&outcome);
             let delivered_image_digests = context.delivered_image_digests();
             let mut image_digests = delivered_image_digests.clone();
@@ -246,11 +249,16 @@ pub(in crate::platforms::onebot) async fn deliver_dispatch(
                             );
                             continue;
                         }
-                        segments.push(OutboundSegment::ImageBytes {
+                        let segment = OutboundSegment::ImageBytes {
                             mime: asset.asset.mime,
                             data: Arc::from(asset.bytes),
                             alt: asset.asset.alt,
-                        });
+                        };
+                        if outcome.meme_assets.contains(asset_id) {
+                            meme_segments.push(segment);
+                        } else {
+                            segments.push(segment);
+                        }
                         image_count += 1;
                     }
                     Ok(None) => {
@@ -299,7 +307,7 @@ pub(in crate::platforms::onebot) async fn deliver_dispatch(
             } else {
                 segments.insert(0, OutboundSegment::Markdown(reply_text));
             }
-            if segments.is_empty() {
+            if segments.is_empty() && meme_segments.is_empty() {
                 if outcome.final_reply_already_sent {
                     tracing::info!(target: "miyu::qq", "\n{readable}");
                     return Ok(true);
@@ -311,16 +319,82 @@ pub(in crate::platforms::onebot) async fn deliver_dispatch(
                 );
                 return Ok(false);
             }
-            context
-                .send(OutboundMessage::segments(
-                    OutboundOrigin::FinalReply,
-                    segments,
-                ))
-                .await?;
+            send_reply_and_memes(context, segments, meme_segments).await?;
             tracing::info!(target: "miyu::qq", "\n{readable}");
         }
     }
     Ok(true)
+}
+
+/// 正文与表情包分两条发(09-21 用户拍板)。
+///
+/// 三条规矩，都是为了像人：
+/// - **分开发**：真人不会把一句话和一个表情塞进同一条消息。
+/// - **顺序随机**：有时先说话再补表情，有时先甩表情再解释。
+/// - **停顿随机**：连着发两条仍然像机器一次吐完。
+///
+/// 表情那条永远带 [`ResponseTarget::silent`]：它不引用、不艾特，也**不消耗**
+/// 本回合预留的那个引用目标——否则「先发表情」的那一半会把引用挂到表情上，
+/// 正文反而没有。
+async fn send_reply_and_memes(
+    context: &crate::platforms::PlatformTurnContext,
+    text_segments: Vec<OutboundSegment>,
+    meme_segments: Vec<OutboundSegment>,
+) -> Result<()> {
+    let mut text_message = (!text_segments.is_empty())
+        .then(|| OutboundMessage::segments(OutboundOrigin::FinalReply, text_segments));
+    let mut meme_message = (!meme_segments.is_empty()).then(|| {
+        let mut message = OutboundMessage::segments(OutboundOrigin::FinalReply, meme_segments);
+        message.response_target = Some(ResponseTarget::silent());
+        message
+    });
+    let meme_first = meme_message.is_some() && text_message.is_some() && rand::random::<bool>();
+    let first = if meme_first {
+        meme_message.take()
+    } else {
+        text_message.take()
+    };
+    let second = if meme_first {
+        text_message.take()
+    } else {
+        meme_message.take()
+    };
+    if let Some(message) = first {
+        context.send(message).await?;
+    }
+    if let Some(message) = second {
+        tokio::time::sleep(meme_gap()).await;
+        context.send(message).await?;
+    }
+    Ok(())
+}
+
+/// 两条之间的停顿范围：「看得出是两次动作、又不至于让人以为掉线」。
+const MEME_GAP_MIN: Duration = Duration::from_millis(400);
+const MEME_GAP_MAX: Duration = Duration::from_millis(1200);
+
+fn meme_gap() -> Duration {
+    // 测试里不真睡：被测的是「拆不拆、谁在前」，不是睡多久。睡满真停顿会让
+    // 一条随机性用例跑两分钟(实测 122s)。范围本身由单测直接钉常量。
+    if cfg!(test) {
+        return Duration::from_millis(1);
+    }
+    let span = (MEME_GAP_MAX.as_millis() - MEME_GAP_MIN.as_millis()) as u64;
+    MEME_GAP_MIN + Duration::from_millis(rand::random::<u64>() % (span + 1))
+}
+
+#[cfg(test)]
+mod meme_gap_tests {
+    use super::*;
+
+    /// 停顿范围写错(min>max 会让取模 panic、或范围小到看不出是两次动作)在
+    /// 集成用例里看不出来——那边不真睡。
+    #[test]
+    fn the_gap_range_stays_human() {
+        assert!(MEME_GAP_MIN < MEME_GAP_MAX);
+        assert!(MEME_GAP_MIN >= Duration::from_millis(300));
+        assert!(MEME_GAP_MAX <= Duration::from_secs(3));
+    }
 }
 
 pub(in crate::platforms::onebot) fn final_reply_text(

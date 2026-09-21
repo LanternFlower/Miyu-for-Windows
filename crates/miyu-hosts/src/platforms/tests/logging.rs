@@ -106,6 +106,7 @@ fn platform_final_reply_log_is_bilingual() {
         provider_id: Some("provider".to_string()),
         model: Some("model".to_string()),
         image_assets: Vec::new(),
+        meme_assets: Default::default(),
         suppressed_reply_ranges: Vec::new(),
         final_reply_already_sent: false,
     };

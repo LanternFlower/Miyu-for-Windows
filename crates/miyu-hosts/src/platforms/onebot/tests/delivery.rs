@@ -20,6 +20,7 @@ fn confirmed_direct_send_only_suppresses_later_assistant_text() {
         provider_id: None,
         model: None,
         image_assets: Vec::new(),
+        meme_assets: Default::default(),
         suppressed_reply_ranges: vec![(
             "首条消息的回答".len(),
             "首条消息的回答\n工具发送后的重复确认".len(),
@@ -51,6 +52,7 @@ fn direct_send_suppression_preserves_text_outside_the_suppressed_range() {
         provider_id: None,
         model: None,
         image_assets: Vec::new(),
+        meme_assets: Default::default(),
         suppressed_reply_ranges: vec![(prefix.len(), prefix.len() + duplicate.len())],
         final_reply_already_sent: false,
     };
@@ -164,6 +166,7 @@ async fn final_delivery_deduplicates_identical_image_content() {
         provider_id: Some("provider-test".to_string()),
         model: Some("model-test".to_string()),
         image_assets: vec![first.asset_id, duplicate.asset_id, distinct.asset_id],
+        meme_assets: Default::default(),
         suppressed_reply_ranges: Vec::new(),
         final_reply_already_sent: false,
     });
@@ -278,6 +281,7 @@ async fn final_delivery_skips_an_image_confirmed_by_a_tool_send() {
         provider_id: Some("provider-test".to_string()),
         model: Some("model-test".to_string()),
         image_assets: vec![asset.asset_id],
+        meme_assets: Default::default(),
         suppressed_reply_ranges: Vec::new(),
         final_reply_already_sent: false,
     });
@@ -391,6 +395,7 @@ async fn image_only_final_delivery_accepts_an_already_delivered_image() {
             provider_id: Some("provider-test".to_string()),
             model: Some("model-test".to_string()),
             image_assets: vec![asset.asset_id.clone()],
+            meme_assets: Default::default(),
             suppressed_reply_ranges: Vec::new(),
             final_reply_already_sent: false,
         }),
@@ -409,6 +414,7 @@ async fn image_only_final_delivery_accepts_an_already_delivered_image() {
             provider_id: Some("provider-test".to_string()),
             model: Some("model-test".to_string()),
             image_assets: vec![asset.asset_id, "missing-asset".to_string()],
+            meme_assets: Default::default(),
             suppressed_reply_ranges: Vec::new(),
             final_reply_already_sent: false,
         }),
@@ -839,4 +845,160 @@ async fn invalid_attachment_does_not_send_a_bare_response_marker() {
 
     assert!(adapter.send_message(message).await.is_err());
     assert!(frames.try_recv().is_err());
+}
+
+/// 09-21 用户要求：表情包不跟文字挤一条。
+///
+/// 真人不会把一句话和一个表情塞进同一条消息。这里钉三件事：拆成两条、
+/// 表情那条不带引用/艾特、生图不受影响（仍跟正文同条）。
+async fn meme_split_frames(
+    meme_is_meme: bool,
+) -> (Vec<Value>, tokio::task::JoinHandle<anyhow::Result<bool>>) {
+    let temp = tempfile::tempdir().unwrap();
+    let state = test_web_state(temp.path(), 8300);
+    let store = state.state_store.clone();
+    store
+        .start_turn("meme_turn", "say something", std::process::id())
+        .unwrap();
+    let meme_path = temp.path().join("meme.png");
+    image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 255, 0, 255]))
+        .save(&meme_path)
+        .unwrap();
+    let meme = store
+        .save_image_asset("meme_turn", Some("call_1"), &meme_path, "meme")
+        .unwrap();
+    store.complete_turn("meme_turn", "done", None).unwrap();
+
+    let (handle, mut frames) = test_connection(None);
+    let target = Target::Private { user_id: 7 };
+    let context = Arc::new(PlatformTurnContext::new(
+        unique_test_conversation(target),
+        "7".to_string(),
+        "seven".to_string(),
+        false,
+        miyu_base::config::AppConfig::default(),
+        test_paths(temp.path()),
+        store,
+        Arc::new(test_adapter(handle.clone(), target)),
+        Arc::new(crate::platforms::plugins::PlatformPluginRegistry::default()),
+    ));
+    let mut meme_assets = std::collections::BTreeSet::new();
+    if meme_is_meme {
+        meme_assets.insert(meme.asset_id.clone());
+    }
+    let dispatch = TurnDispatch::Completed(crate::platforms::TurnOutcome {
+        run_id: "run-test".to_string(),
+        text: "在的".to_string(),
+        provider_id: None,
+        model: None,
+        image_assets: vec![meme.asset_id],
+        meme_assets,
+        suppressed_reply_ranges: Vec::new(),
+        final_reply_already_sent: false,
+    });
+    let delivery_state = state.clone();
+    let delivery_context = context.clone();
+    let delivery = tokio::spawn(async move {
+        deliver_dispatch(&delivery_state, &delivery_context, dispatch).await
+    });
+
+    // 收满预期帧数就走：等超时会让随机性那条用例慢上两个数量级。
+    let expected = if meme_is_meme { 2 } else { 1 };
+    let mut collected = Vec::new();
+    let mut message_id = 70;
+    while collected.len() < expected {
+        let raw = tokio::time::timeout(Duration::from_secs(4), frames.recv())
+            .await
+            .expect("等帧超时")
+            .expect("帧通道已关闭");
+        let frame: Value = serde_json::from_str(&raw).unwrap();
+        route_api_response(
+            &handle,
+            json!({
+                "status": "ok",
+                "retcode": 0,
+                "data": { "message_id": message_id },
+                "echo": frame["echo"],
+            }),
+        );
+        message_id += 1;
+        collected.push(frame);
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), frames.recv())
+            .await
+            .is_err(),
+        "多发了帧"
+    );
+    (collected, delivery)
+}
+
+fn frame_kinds(frame: &Value) -> Vec<String> {
+    frame["params"]["message"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|segment| segment["type"].as_str().unwrap_or("?").to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_meme_is_delivered_as_its_own_message_without_a_quote() {
+    let (frames, delivery) = meme_split_frames(true).await;
+    assert!(delivery.await.unwrap().unwrap());
+    assert_eq!(frames.len(), 2, "表情包该独立成一条：{frames:?}");
+    let kinds: Vec<Vec<String>> = frames.iter().map(frame_kinds).collect();
+    let meme_frame = kinds
+        .iter()
+        .find(|kinds| kinds.iter().any(|kind| kind == "image"))
+        .expect("没有图片帧");
+    assert_eq!(
+        meme_frame,
+        &vec!["image".to_string()],
+        "表情包那条只该有图，不该带文字/引用/艾特：{meme_frame:?}"
+    );
+    assert!(
+        kinds
+            .iter()
+            .any(|kinds| kinds.iter().any(|kind| kind == "text")),
+        "正文那条不见了：{kinds:?}"
+    );
+    for kinds in &kinds {
+        assert!(
+            !kinds.iter().any(|kind| kind == "reply" || kind == "at"),
+            "私聊本来就不该有引用/艾特：{kinds:?}"
+        );
+    }
+}
+
+/// 生图/图表不拆——「给你画了这个」配图在一条里读着正常。
+#[tokio::test]
+async fn a_non_meme_image_still_rides_with_the_text() {
+    let (frames, delivery) = meme_split_frames(false).await;
+    assert!(delivery.await.unwrap().unwrap());
+    assert_eq!(frames.len(), 1, "非表情包不该拆：{frames:?}");
+    let kinds = frame_kinds(&frames[0]);
+    assert!(kinds.iter().any(|kind| kind == "text"), "{kinds:?}");
+    assert!(kinds.iter().any(|kind| kind == "image"), "{kinds:?}");
+}
+
+/// 顺序是随机的：跑够多次，两种先后都该出现。
+#[tokio::test]
+async fn the_meme_sometimes_leads_and_sometimes_follows() {
+    let mut meme_first = 0;
+    let mut text_first = 0;
+    for _ in 0..24 {
+        let (frames, delivery) = meme_split_frames(true).await;
+        assert!(delivery.await.unwrap().unwrap());
+        assert_eq!(frames.len(), 2);
+        if frame_kinds(&frames[0]).iter().any(|kind| kind == "image") {
+            meme_first += 1;
+        } else {
+            text_first += 1;
+        }
+    }
+    assert!(
+        meme_first > 0 && text_first > 0,
+        "顺序没有随机：表情在前 {meme_first} 次、正文在前 {text_first} 次"
+    );
 }
