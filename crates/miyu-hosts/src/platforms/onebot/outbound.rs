@@ -136,11 +136,24 @@ pub(in crate::platforms::onebot) fn record_segment(bytes: &[u8]) -> Value {
     })
 }
 
-pub(in crate::platforms::onebot) fn image_segment(bytes: &[u8]) -> Value {
-    json!({
-        "type": "image",
-        "data": { "file": format!("base64://{}", BASE64.encode(bytes)) },
-    })
+/// 出站消息上的标记：这条里的图是表情包，按表情发。
+///
+/// QQ 对渲染尺寸分两档（09-21 实测三组不同宽高比的截图）：表情长边约 150px，
+/// 普通图片约 323px，**都是 QQ 自己缩的**——库里那张 1190×1189 的原图作为图片
+/// 发出去就是 323。所以「表情包发出去太大」不是没缩，是缩到了图片那一档。
+/// OneBot 的 image 段带 `sub_type=1` 即表情，认这个字段就能落到 150 那一档，
+/// 而且零重编码、动图原样。
+pub(in crate::platforms::onebot) const STICKER_METADATA_KEY: &str = "onebot.sticker";
+
+pub(in crate::platforms::onebot) fn image_segment(bytes: &[u8], sticker: bool) -> Value {
+    let mut data = json!({ "file": format!("base64://{}", BASE64.encode(bytes)) });
+    if sticker {
+        // 两种拼写都给：不同实现认的字段名不一样（go-cqhttp 系用 subType，
+        // OneBot 11 的文档写 sub_type），多带一个字段的代价是零。
+        data["sub_type"] = json!(1);
+        data["subType"] = json!(1);
+    }
+    json!({ "type": "image", "data": data })
 }
 
 pub(in crate::platforms::onebot) async fn read_file_capped(
@@ -346,6 +359,9 @@ async fn send_reply_and_memes(
     let mut meme_message = (!meme_segments.is_empty()).then(|| {
         let mut message = OutboundMessage::segments(OutboundOrigin::FinalReply, meme_segments);
         message.response_target = Some(ResponseTarget::silent());
+        message
+            .metadata
+            .insert(STICKER_METADATA_KEY.to_string(), Value::Bool(true));
         message
     });
     let meme_first = meme_message.is_some() && text_message.is_some() && rand::random::<bool>();

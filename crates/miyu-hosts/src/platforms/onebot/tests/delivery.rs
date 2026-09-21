@@ -1002,3 +1002,35 @@ async fn the_meme_sometimes_leads_and_sometimes_follows() {
         "顺序没有随机：表情在前 {meme_first} 次、正文在前 {text_first} 次"
     );
 }
+
+/// 09-21 用户要求：表情包发出去别比表情还大。
+///
+/// QQ 按段的 `sub_type` 分渲染档位——表情长边约 150px，普通图片约 323px。
+/// 缩放是 QQ 自己做的（库里那张 1190×1189 的原图作为图片发出去就是 323），
+/// 所以这里唯一要做的就是把档位标对：零重编码、动图不掉帧。
+#[tokio::test]
+async fn a_meme_image_is_tagged_as_a_sticker() {
+    let (frames, delivery) = meme_split_frames(true).await;
+    assert!(delivery.await.unwrap().unwrap());
+    let image = frames
+        .iter()
+        .flat_map(|frame| frame["params"]["message"].as_array().unwrap())
+        .find(|segment| segment["type"] == "image")
+        .expect("没有图片段");
+    assert_eq!(image["data"]["sub_type"], json!(1), "{image:?}");
+    assert_eq!(image["data"]["subType"], json!(1), "{image:?}");
+}
+
+/// 反面：生图不是表情，标了就会被 QQ 缩到 150 看不清。
+#[tokio::test]
+async fn a_non_meme_image_carries_no_sticker_tag() {
+    let (frames, delivery) = meme_split_frames(false).await;
+    assert!(delivery.await.unwrap().unwrap());
+    let image = frames
+        .iter()
+        .flat_map(|frame| frame["params"]["message"].as_array().unwrap())
+        .find(|segment| segment["type"] == "image")
+        .expect("没有图片段");
+    assert!(image["data"]["sub_type"].is_null(), "{image:?}");
+    assert!(image["data"]["subType"].is_null(), "{image:?}");
+}
