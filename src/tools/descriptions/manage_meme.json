@@ -2,7 +2,7 @@
   "name": "manage_meme",
   "trust": "external",
   "display_name": "管理表情包",
-  "description": "Manage this persona's meme library. action=add imports a local image, action=update edits metadata in the writable overlay, action=delete removes a user meme or disables a built-in one; only hard_delete=true deletes the file permanently.",
+  "description": "Manage this persona's meme library. add imports a local image, update edits metadata in the writable overlay, delete removes a user meme or disables a built-in one.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -12,8 +12,7 @@
           "add",
           "update",
           "delete"
-        ],
-        "description": "add imports, update edits metadata, delete removes."
+        ]
       },
       "image": {
         "type": "string",
@@ -25,19 +24,17 @@
       },
       "library": {
         "type": "string",
-        "description": "Optional meme library override."
+        "description": "Meme library override."
       },
       "name_zh": {
-        "type": "string",
-        "description": "Chinese name."
+        "type": "string"
       },
       "name_en": {
-        "type": "string",
-        "description": "English name."
+        "type": "string"
       },
       "description": {
         "type": "string",
-        "description": "Description of the visible content."
+        "description": "What is visible in it."
       },
       "usage": {
         "type": "string",
@@ -56,7 +53,7 @@
       },
       "hard_delete": {
         "type": "boolean",
-        "description": "delete: permanently delete instead of moving to the recycle bin."
+        "description": "delete: delete the file permanently instead of moving it to the recycle bin."
       }
     },
     "required": [

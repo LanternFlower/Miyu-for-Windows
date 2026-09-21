@@ -513,6 +513,8 @@ pub(crate) fn list_scripts_handler(config: &AppConfig, paths: &MiyuPaths) -> Res
                 "parameters": if entry.parameters.is_null() { "generic stdin" } else { "schema" },
                 "argv": entry.argv.as_str(),
                 "always_loaded": entry.always_loaded.unwrap_or(false),
+                // `# Expose: skill`:注册着、可经工具桥调用,但不在工具面上。
+                "exposure": if entry.skill_only { "skill" } else { "tool" },
             })
         })
         .collect();

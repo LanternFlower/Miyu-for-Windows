@@ -27,18 +27,6 @@ fn model_temperature_override_beats_provider_default() {
 }
 
 #[test]
-fn api_quota_partial_provider_configs_keep_defaults() {
-    let config: ApiQuotaPluginConfig = serde_json::from_value(serde_json::json!({
-        "deepseek": { "api_key": "deepseek-key" },
-        "openrouter": { "api_key": "openrouter-key" }
-    }))
-    .unwrap();
-    assert!(config.enabled);
-    assert_eq!(config.deepseek.api_key, "deepseek-key");
-    assert_eq!(config.openrouter.api_key, "openrouter-key");
-}
-
-#[test]
 fn provider_config_can_be_saved_without_active_model() {
     let mut config = AppConfig::default();
     config.providers[0].models.clear();

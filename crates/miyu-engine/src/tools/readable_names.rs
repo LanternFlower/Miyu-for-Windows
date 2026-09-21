@@ -177,7 +177,6 @@ pub(crate) fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "list_memory" | "list_memories" => t("List memories", "列出记忆"),
         "aur" => t("AUR query", "AUR 查询"),
         "archlinux_official_package_query" => t("Query Arch package", "查询 Arch 官方包"),
-        "query_api_quota" => t("Query API quota", "查询大模型 API 额度"),
         "archwiki_query" => t("Query ArchWiki", "查询 ArchWiki"),
         "archlinux_news" => t("Arch news", "Arch 新闻"),
         "exchange_rate" | "get_exchange_rate" => t("Exchange rates", "汇率查询"),

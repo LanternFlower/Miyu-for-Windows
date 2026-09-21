@@ -1,17 +1,16 @@
 {
   "name": "install_aur_package",
   "display_name": "安装 AUR 包",
-  "description": "Install an AUR package. Requires a prior review and the user's explicit confirmation.",
+  "description": "Install an AUR package. Needs a prior review and the user's explicit confirmation.",
   "parameters": {
     "type": "object",
     "properties": {
       "package": {
-        "type": "string",
-        "description": "AUR package name."
+        "type": "string"
       },
       "user_confirmed": {
         "type": "boolean",
-        "description": "Set true only when the user explicitly confirmed installation after seeing the review."
+        "description": "true only when the user confirmed after seeing the review."
       }
     },
     "required": [

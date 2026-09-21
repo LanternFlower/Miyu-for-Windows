@@ -11,24 +11,22 @@
           "set",
           "list",
           "cancel"
-        ],
-        "description": "set to set, list to list, cancel to cancel."
+        ]
       },
       "time": {
         "type": "string",
-        "description": "Required for action=set: a duration or a clock time."
+        "description": "Required for set: a duration or a clock time."
       },
       "label": {
-        "type": "string",
-        "description": "Optional for action=set: alarm label."
+        "type": "string"
       },
       "audio_file": {
         "type": "string",
-        "description": "Optional for action=set: local .wav or .mp3 file."
+        "description": "set: a local .wav or .mp3."
       },
       "id": {
         "type": "string",
-        "description": "Required for action=cancel: alarm id."
+        "description": "Required for cancel."
       }
     },
     "required": [

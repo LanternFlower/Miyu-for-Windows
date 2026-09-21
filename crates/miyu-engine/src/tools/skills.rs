@@ -296,6 +296,26 @@ fn required_string(args: &Value, key: &str) -> Result<String> {
     Ok(value.to_string())
 }
 
+/// 清单里每条技能摘要的长度上限（字符）。
+///
+/// 这份清单常驻 tools 数组、随技能数线性增长，而摘要只需要够模型判断
+/// 「该不该加载这一件」——完整说明本来就在 SKILL.md 里，加载之后才该看到。
+/// 上限是兜底：技能作者自己就该把 frontmatter 的 description 写短（见
+/// skill-creator）。截断只在超限时发生，同一份技能目录下字节恒定。
+const SKILL_SUMMARY_LIMIT: usize = 120;
+
+fn clip_skill_summary(summary: &str) -> String {
+    let mut clipped = String::new();
+    for (index, ch) in summary.chars().enumerate() {
+        if index >= SKILL_SUMMARY_LIMIT {
+            clipped.push('…');
+            return clipped;
+        }
+        clipped.push(ch);
+    }
+    clipped
+}
+
 fn available_skills_xml(entries: &[SkillEntry]) -> String {
     let items = entries
         .iter()
@@ -306,7 +326,7 @@ fn available_skills_xml(entries: &[SkillEntry]) -> String {
                 "  <skill name=\"{}\" source=\"{}\">{}</skill>",
                 xml_escape(&entry.metadata.name),
                 entry.source.as_str(),
-                xml_escape(&entry.metadata.description),
+                xml_escape(&clip_skill_summary(&entry.metadata.description)),
             )
         })
         .collect::<Vec<_>>()

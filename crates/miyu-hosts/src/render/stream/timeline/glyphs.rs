@@ -62,7 +62,7 @@ pub(crate) fn tool_glyph(name: &str) -> &'static str {
         // 后台任务：列一列有哪些在跑（用户指名这个码位）。
         "job" => "\u{f0572}",
         // 计算器
-        "ledger" | "manage_ledger" | "get_exchange_rate" | "query_api_quota" => "\u{f00ec}",
+        "ledger" | "manage_ledger" | "get_exchange_rate" => "\u{f00ec}",
         // 查看系统信息：CoreOS 那个圆里嵌核的标（用户指名「核心的那个」）。
         // 它原来跟装包挤在一类里——查机器和装包不是一回事。
         "check_os_info" => "\u{f305}",

@@ -2,7 +2,7 @@
 # Id: codec
 # Display name: Encode/decode
 # 显示名称: 编解码
-# Description: Compute hashes or decode base64/hex/url/html/rot13. Encode/decode: op=hash computes hashes, op=decode decodes base64/hex/url/html/rot13. Hash supports md5, sha1, sha224, sha256, sha384, sha512, sha3_224, sha3_256, sha3_384, sha3_512, blake2b, b2sum, blake2s, blake3, crc32, adler32, or all/mainstream for everything; b2sum equals GNU coreutils BLAKE2b-512. To match shell echo, include the trailing newline in input_text.
+# Description: Compute hashes or decode base64/hex/url/html/rot13. Hashes: md5, sha1, sha224/256/384/512, sha3_224/256/384/512, blake2b, b2sum, blake2s, blake3, crc32, adler32, or all/mainstream for every one; b2sum equals GNU coreutils BLAKE2b-512. To match a shell echo, keep the trailing newline in input_text.
 # Timeout: 30
 # Group: utility
 # Trust: external
@@ -16,12 +16,11 @@
 #       "enum": [
 #         "hash",
 #         "decode"
-#       ],
-#       "description": "hash computes hashes, decode decodes."
+#       ]
 #     },
 #     "input_text": {
 #       "type": "string",
-#       "description": "Input text bytes. Include the trailing \\n when matching shell commands like echo."
+#       "description": "Input bytes."
 #     },
 #     "input_format": {
 #       "type": "string",
@@ -33,11 +32,11 @@
 #         "html",
 #         "rot13"
 #       ],
-#       "description": "Input encoding. For op=hash, optional: text/hex/base64 (default text); required for op=decode."
+#       "description": "op=hash: text/hex/base64, default text. op=decode: required."
 #     },
 #     "algorithms": {
 #       "type": "string",
-#       "description": "op=hash only: algorithm names, comma- or space-separated; all/mainstream means compute them all. Default sha256."
+#       "description": "op=hash: names separated by commas or spaces, or all/mainstream. Default sha256."
 #     }
 #   },
 #   "required": [

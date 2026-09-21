@@ -2,7 +2,7 @@
 # Id: divine
 # Display name: Divination
 # 显示名称: 占卜
-# Description: Divination: I Ching, tarot, fortune and dice. Random divination: method zhouyi casts an I Ching hexagram, tarot draws cards, fortune tells luck, dice rolls dice. The tool only produces the random result; the interpretation is yours.
+# Description: Divination by I Ching, tarot, fortune or dice. method=zhouyi casts a hexagram, tarot draws cards, fortune tells luck, dice rolls dice. The tool only produces the random result; the reading is yours.
 # Timeout: 30
 # Group: divination
 # Trust: external
@@ -18,20 +18,19 @@
 #         "tarot",
 #         "fortune",
 #         "dice"
-#       ],
-#       "description": "Divination method."
+#       ]
 #     },
 #     "count": {
 #       "type": "integer",
-#       "description": "dice only: number of dice, default 1, max 100."
+#       "description": "dice: number of dice, default 1, max 100."
 #     },
 #     "sides": {
 #       "type": "integer",
-#       "description": "dice only: sides per die, default 6, max 1000."
+#       "description": "dice: sides per die, default 6, max 1000."
 #     },
 #     "modifier": {
 #       "type": "integer",
-#       "description": "dice only: optional modifier added to the total."
+#       "description": "dice: added to the total."
 #     }
 #   },
 #   "required": [

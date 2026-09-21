@@ -1,25 +1,24 @@
 {
   "name": "search_web_images",
   "display_name": "搜索图片",
-  "description": "Search web images from several sources in parallel.",
+  "description": "Search web images across several sources in parallel.",
   "parameters": {
     "type": "object",
     "properties": {
       "query": {
-        "type": "string",
-        "description": "Image search keywords."
+        "type": "string"
       },
       "count": {
         "type": "integer",
-        "description": "Required. Exact number of images to return. Must match the number the user asked for; do not treat the configured cap as the default."
+        "description": "Required. Exactly how many to return: match what the user asked for, and do not fall back to the configured cap."
       },
       "preview": {
         "type": "boolean",
-        "description": "When terminal image printing is enabled, download the images and preview them with chafa."
+        "description": "Download and preview with chafa when terminal image printing is on."
       },
       "safe_search": {
         "type": "boolean",
-        "description": "Enable safe image search. Defaults to the plugin configuration."
+        "description": "Defaults to the plugin configuration."
       }
     },
     "required": [

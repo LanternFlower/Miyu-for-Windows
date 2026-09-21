@@ -1,21 +1,20 @@
 {
   "name": "glob",
   "display_name": "查找文件",
-  "description": "Find files under a directory with a case-insensitive glob pattern.",
+  "description": "Find files under a directory with a case-insensitive glob.",
   "parameters": {
     "type": "object",
     "properties": {
       "path": {
         "type": "string",
-        "description": "Directory to search, defaults to the workspace; use ~ or /home for user files, or / for a protected global search."
+        "description": "Defaults to the workspace; ~ or /home for user files, / for a protected global search."
       },
       "pattern": {
         "type": "string",
-        "description": "Case-insensitive glob pattern, e.g. *ai*测试*."
+        "description": "e.g. *ai*测试*."
       },
       "max_results": {
-        "type": "integer",
-        "description": "Maximum number of results."
+        "type": "integer"
       }
     },
     "required": [

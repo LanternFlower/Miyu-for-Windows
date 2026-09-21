@@ -1,7 +1,7 @@
 {
   "name": "aur",
   "display_name": "AUR 查询",
-  "description": "AUR official RPC. action=search searches packages, info shows details, status reports Arch/AUR outages, degradations, and downtime.",
+  "description": "AUR official RPC: search packages, info for details, status for Arch/AUR outages and degradations.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -11,24 +11,23 @@
           "search",
           "info",
           "status"
-        ],
-        "description": "search to search packages, info for details, status for service status."
+        ]
       },
       "query": {
         "type": "string",
-        "description": "Required for action=search: search term."
+        "description": "Required for search."
       },
       "package_name": {
         "type": "string",
-        "description": "Required for action=info: package name."
+        "description": "Required for info."
       },
       "limit": {
         "type": "integer",
-        "description": "search only: maximum number of results."
+        "description": "search only."
       },
       "search_by": {
         "type": "string",
-        "description": "search only: field to search by."
+        "description": "search only: which field to match."
       }
     },
     "required": [

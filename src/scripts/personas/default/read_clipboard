@@ -2,25 +2,14 @@
 # Id: read_clipboard
 # Display name: Read clipboard
 # 显示名称: 读取剪贴板
-# Description: Read the current clipboard.
+# Description: Read the current clipboard. Text, image and file-path content are detected automatically.
 # Timeout: 30
 # Group: systeminfo
 # Permission: read-only
 # Parameters:
 # {
 #   "type": "object",
-#   "properties": {
-#     "preferred_type": {
-#       "type": "string",
-#       "enum": [
-#         "auto",
-#         "text",
-#         "image"
-#       ],
-#       "default": "auto",
-#       "description": "Legacy preference hint; image and file-path content is still detected first. Defaults to auto"
-#     }
-#   }
+#   "properties": {}
 # }
 # Example: {}
 """

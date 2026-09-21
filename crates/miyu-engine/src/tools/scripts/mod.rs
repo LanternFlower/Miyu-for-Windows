@@ -1,5 +1,5 @@
 mod dashboard;
-mod header;
+pub(in crate::tools) mod header;
 mod index;
 mod manage;
 mod refresh;

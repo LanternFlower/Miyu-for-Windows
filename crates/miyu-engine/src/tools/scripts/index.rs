@@ -63,6 +63,10 @@ pub(crate) struct ScriptEntry {
     /// 头部 `Capabilities:`,见 `ScriptMetadata::capabilities`。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) capabilities: Vec<String>,
+    /// 头部 `Expose: skill`,见 `ScriptMetadata::expose`。缺省(false)=像别的
+    /// 脚本一样进 tools 数组。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) skill_only: bool,
 }
 
 fn is_owner_trust(trust: &ToolTrust) -> bool {
@@ -89,6 +93,7 @@ impl ScriptEntry {
             hints: Vec::new(),
             requires: Vec::new(),
             capabilities: Vec::new(),
+            skill_only: false,
         }
     }
 }
@@ -206,6 +211,11 @@ pub(crate) fn merge_header_defaults(entry: &mut ScriptEntry, metadata: &ScriptMe
     }
     if entry.capabilities.is_empty() {
         entry.capabilities = metadata.capabilities.clone();
+    }
+    if !entry.skill_only {
+        entry.skill_only = metadata
+            .expose
+            .is_some_and(super::header::ScriptExposure::is_skill_only);
     }
 }
 
@@ -570,6 +580,7 @@ pub(crate) fn entry_to_spec(
         .with_trust(entry.trust)
         .with_cross_hints(entry.hints.clone())
         .with_requires_prior(entry.requires.clone())
+        .with_exposed(!entry.skill_only)
         .script();
     if let Some(example) = entry
         .stub_example

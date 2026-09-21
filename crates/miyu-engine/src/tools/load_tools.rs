@@ -3,12 +3,16 @@ use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
+/// 工具底名。`registry::request_definitions` 按它把 full 档的 tools 数组
+/// 里这一件摘掉（注册仍在，历史回放要用）。
+pub const TOOL_NAME: &str = "load_tools";
+
 const BASE_DESCRIPTION: &str = "Load the full description and parameter schema of tools, scripts, or tool groups on demand. Pick <name> values from <available_load_targets> and load them with {\"names\":[\"name\"]}. type=tool/script loads a single tool; type=group loads every not-yet-loaded tool in that group.";
 
 pub fn register(registry: &mut ToolRegistry) {
     registry.register(
         ToolSpec::new(
-            "load_tools",
+            TOOL_NAME,
             BASE_DESCRIPTION,
             json!({
                 "type": "object",

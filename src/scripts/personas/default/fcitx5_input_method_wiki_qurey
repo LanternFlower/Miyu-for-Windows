@@ -12,7 +12,7 @@
 #   "properties": {
 #     "query": {
 #       "type": "string",
-#       "description": "Natural language question, e.g. XWayland XIM, Electron input method, GTK_IM_MODULE, LC_CTYPE."
+#       "description": "Natural-language question, e.g. XWayland XIM, GTK_IM_MODULE, LC_CTYPE."
 #     },
 #     "topic": {
 #       "type": "string",
@@ -29,7 +29,7 @@
 #         "electron_chromium",
 #         "locale"
 #       ],
-#       "description": "Wiki topic; auto (default) picks one from the query"
+#       "description": "Default auto, picked from the query."
 #     },
 #     "language": {
 #       "type": "string",
@@ -38,11 +38,11 @@
 #         "zh",
 #         "en"
 #       ],
-#       "description": "Output language: bilingual (default), zh or en"
+#       "description": "Default bilingual."
 #     },
 #     "include_page_excerpt": {
 #       "type": "boolean",
-#       "description": "Fetch and include a clipped excerpt from the official wiki page. Defaults to true."
+#       "description": "Default true. false skips the page fetch."
 #     }
 #   },
 #   "required": []

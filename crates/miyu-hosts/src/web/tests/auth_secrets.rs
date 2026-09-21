@@ -33,8 +33,6 @@ fn config_response_never_serializes_secret_values() {
     config.plugins.web.tavily_api_keys = vec!["tavily-secret".to_string()];
     config.plugins.exchange_rate.api_key = "exchange-secret".to_string();
     config.plugins.image_generation.api_keys = vec!["image-secret".to_string()];
-    config.plugins.api_quota.deepseek.api_key = "deepseek-secret".to_string();
-    config.plugins.api_quota.openrouter.api_key = "openrouter-secret".to_string();
     let paths = tempfile::tempdir().unwrap();
     let paths = MiyuPaths {
         root_dir: paths.path().to_path_buf(),
@@ -69,18 +67,8 @@ fn config_response_never_serializes_secret_values() {
     assert!(!serialized.contains("tavily-secret"));
     assert!(!serialized.contains("exchange-secret"));
     assert!(!serialized.contains("image-secret"));
-    assert!(!serialized.contains("deepseek-secret"));
-    assert!(!serialized.contains("openrouter-secret"));
     assert_eq!(response.secret_states["providers.0.api_key"], true);
     assert_eq!(response.secret_states["plugins.web.tavily_api_keys"], true);
-    assert_eq!(
-        response.secret_states["plugins.api_quota.deepseek.accounts.0.api_key"],
-        true
-    );
-    assert_eq!(
-        response.secret_states["plugins.api_quota.openrouter.accounts.0.api_key"],
-        true
-    );
     assert!(response.config.get("memory").is_some());
 }
 
@@ -105,84 +93,4 @@ fn explicit_secret_clear_removes_a_provider_key() {
     let mutations = HashMap::from([("providers.0.api_key".to_string(), SecretMutation::Clear)]);
     restore_config_secrets(&mut candidate, &current, &mutations).unwrap();
     assert_eq!(candidate.providers[0].api_key, None);
-}
-
-#[test]
-fn api_quota_secrets_are_preserved_set_and_cleared() {
-    let mut current = AppConfig::default();
-    current.plugins.api_quota.deepseek.api_key = "deepseek-old".to_string();
-    current.plugins.api_quota.openrouter.api_key = "openrouter-old".to_string();
-    let mut candidate = current.clone();
-    candidate.plugins.api_quota.deepseek.accounts =
-        vec![miyu_base::config::ApiQuotaAccountConfig {
-            id: "account-1".to_string(),
-            name: "默认账号".to_string(),
-            api_key: String::new(),
-        }];
-    candidate.plugins.api_quota.openrouter.accounts =
-        vec![miyu_base::config::ApiQuotaAccountConfig {
-            id: "account-1".to_string(),
-            name: "默认账号".to_string(),
-            api_key: String::new(),
-        }];
-    candidate.plugins.api_quota.deepseek.api_key.clear();
-    candidate.plugins.api_quota.openrouter.api_key.clear();
-
-    restore_config_secrets(&mut candidate, &current, &HashMap::new()).unwrap();
-    assert_eq!(
-        candidate.plugins.api_quota.deepseek.accounts[0].api_key,
-        "deepseek-old"
-    );
-    assert_eq!(
-        candidate.plugins.api_quota.openrouter.accounts[0].api_key,
-        "openrouter-old"
-    );
-
-    let mutations = HashMap::from([
-        (
-            "plugins.api_quota.deepseek.accounts.0.api_key".to_string(),
-            SecretMutation::Set("deepseek-new".to_string()),
-        ),
-        (
-            "plugins.api_quota.openrouter.accounts.0.api_key".to_string(),
-            SecretMutation::Clear,
-        ),
-    ]);
-    restore_config_secrets(&mut candidate, &current, &mutations).unwrap();
-    assert_eq!(
-        candidate.plugins.api_quota.deepseek.accounts[0].api_key,
-        "deepseek-new"
-    );
-    assert!(candidate.plugins.api_quota.openrouter.accounts[0]
-        .api_key
-        .is_empty());
-}
-
-#[test]
-fn api_quota_account_ids_prevent_deleted_key_reuse() {
-    let mut current = AppConfig::default();
-    current.plugins.api_quota.deepseek.accounts[0] = miyu_base::config::ApiQuotaAccountConfig {
-        id: "old-id".to_string(),
-        name: "账号 2".to_string(),
-        api_key: "old-secret".to_string(),
-    };
-    let mut candidate = current.clone();
-    candidate.plugins.api_quota.deepseek.accounts[0] = miyu_base::config::ApiQuotaAccountConfig {
-        id: "new-id".to_string(),
-        name: "账号 2".to_string(),
-        api_key: String::new(),
-    };
-
-    restore_config_secrets(&mut candidate, &current, &HashMap::new()).unwrap();
-    assert!(candidate.plugins.api_quota.deepseek.accounts[0]
-        .api_key
-        .is_empty());
-
-    candidate.plugins.api_quota.deepseek.accounts[0].id = "old-id".to_string();
-    candidate.plugins.api_quota.deepseek.accounts[0].name = "重命名账号".to_string();
-    restore_config_secrets(&mut candidate, &current, &HashMap::new()).unwrap();
-    assert_eq!(
-        candidate.plugins.api_quota.deepseek.accounts[0].api_key,
-        "old-secret"
-    );
 }

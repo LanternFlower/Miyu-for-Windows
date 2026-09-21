@@ -178,6 +178,12 @@ pub struct ToolSpec {
     pub cross_hints: Vec<(String, String)>,
     /// 本回合必须先调用过这些工具之一才放行(跨工具闸,由 guard 层执行)。
     pub requires_prior: Vec<String>,
+    /// 进不进发给模型的 tools 数组。`false` 的工具照样注册、照样可调用
+    /// (`miyu tool-call` 的工具桥、run_command 里的脚本编排),只是不再占
+    /// 一份常驻定义——给「重量级、低频、由技能带路」的脚本用
+    /// (脚本头 `# Expose: skill`)。这不是懒加载:没有任何机制会在会话中途
+    /// 把它加回数组,所以 tools 数组字节恒定(AGENTS §1.1)。
+    pub exposed: bool,
     pub(crate) handler: ToolHandler,
 }
 
@@ -253,6 +259,7 @@ impl ToolSpec {
             trust: ToolTrust::Owner,
             cross_hints: Vec::new(),
             requires_prior: Vec::new(),
+            exposed: true,
             handler: Arc::new(move |args, _progress| Box::pin(handler(args))),
         }
     }
@@ -282,6 +289,7 @@ impl ToolSpec {
             trust: ToolTrust::Owner,
             cross_hints: Vec::new(),
             requires_prior: Vec::new(),
+            exposed: true,
             handler: Arc::new(move |args, progress| Box::pin(handler(args, progress))),
         }
     }
@@ -298,6 +306,12 @@ impl ToolSpec {
 
     pub fn with_display_name(mut self, display_name: impl Into<String>) -> Self {
         self.display_name = Some(display_name.into());
+        self
+    }
+
+    /// 不进 tools 数组(仍可通过工具桥调用)。见 [`ToolSpec::exposed`]。
+    pub fn with_exposed(mut self, exposed: bool) -> Self {
+        self.exposed = exposed;
         self
     }
 

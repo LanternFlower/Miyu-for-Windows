@@ -2,7 +2,7 @@
   "name": "use_meme",
   "trust": "external",
   "display_name": "表情包",
-  "description": "Send a meme. action=search finds candidates by scene, mood, tags, or visual content; action=show sends one and renders it in the terminal (GIFs preview as a static frame). Search first unless the user gave an exact id.",
+  "description": "Send a meme. search finds candidates by scene, mood, tags or visual content; show sends one and renders it in the terminal (a GIF previews as a still frame). Search first unless the user gave an exact id.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -11,12 +11,11 @@
         "enum": [
           "search",
           "show"
-        ],
-        "description": "search finds candidates, show sends."
+        ]
       },
       "query": {
         "type": "string",
-        "description": "search: scenario, mood, visual content, or intent."
+        "description": "search: scenario, mood, visual content or intent."
       },
       "tags": {
         "type": "array",

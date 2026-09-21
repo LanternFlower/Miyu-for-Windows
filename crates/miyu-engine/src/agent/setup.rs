@@ -549,13 +549,11 @@ impl Agent {
 
     pub(in crate::agent) fn tool_definition_tokens(&self) -> usize {
         let tools = self.tools.lock().unwrap();
-        let definitions =
-            if tools::is_stub_loading_mode(&tools::effective_tools_loading_mode(&self.core.config))
-            {
-                tools.stub_definitions()
-            } else {
-                tools.definitions()
-            };
+        // footer 与溢出记账必须数「真发出去的那一份」：走同一个出口，
+        // 否则 full 档会把不再发送的 load_tools 也算进上下文。
+        let definitions = tools.request_definitions(tools::is_stub_loading_mode(
+            &tools::effective_tools_loading_mode(&self.core.config),
+        ));
         estimate_tool_definition_tokens(&definitions)
     }
 

@@ -36,6 +36,8 @@ docs/中有过去所有的计划和文档，可以自行按需阅读。
 ## 2. 工具系统
 
 2.1 **描述/schema 真相源是 `src/tools/descriptions/*.json`**（经 `crates/miyu-engine/src/tools/tool_descriptions.rs` 的 include_str! 宏，JSON 等资源留在仓库 `src/` 不随 rs 进 crate；新增必须补宏行，忘了=JSON 静默失效）。Rust 里的描述只是占位，注册时被 JSON 整体覆盖（load_skill 例外）。权限只由 `.writes()`/`.presentation()` 决定，JSON 的 permission 字段是死字段。
+2.1.1 **工具契约是公共预算**（09-21 瘦身）：单件 ≤550 tok、仓库自带整面 ≤10500 tok，`bundled_tool_face_stays_within_its_token_budget` 当场拦。写法三条：①工具描述 ≤3 句（是什么/什么时候用/一条最容易踩的坑），教程与输出格式长文不写；②**「调用之后才用得上」的知识写进工具自己的输出，不写进 schema**（字段语义、退化标志怎么读、分页边界——模型拿到结果时才需要）；③参数说明 ≤1 句，名字加 enum 已说清的（`format: md|json`）干脆不写，默认值统一 `"Default 20."`。合并域省不了多少：单工具信封只有 27 tok，参数一个都不会少。重量级低频的脚本走 `# Expose: skill`（注册、可经工具桥调用，但不进 tools 数组，由技能正文带路）。
+
 2.2 **工具名是最强的能力广告：域内聚合、域间分名**。编辑/读取类能力并入 edit（文件系统）/kb/artifact（补丁语义）与 read（`kb:`/`artifact:` 前缀），别为新存储开新读写工具。把能力藏进描述里的前缀/参数，模型想不起来（kb: 前缀实测翻车史）。
 2.3 **输出格式改造必须双兼容**：旧回合 tool_flow 逐字节回放，旧 JSON 解析器永远保留。“结构即功能”的不改：成败判定只认输出 JSON 的 success/ok 布尔（非 JSON=默认成功），错误路径保留 ok:false JSON。
 2.4 畸形参数在 registry 统一收口（按 schema 还原字符串化的数组/对象/数字），声明为 string 的参数一个字节不碰；报错说自己真正知道的（“期望整数，收到字符串 "1"”）。

@@ -8,5 +8,4 @@ mod paths;
 mod platform;
 mod plugins;
 mod provider;
-mod quota;
 mod shared;

@@ -60,9 +60,6 @@ fn exchange_rate_installed(config: &AppConfig) -> bool {
 fn archlinux_installed(config: &AppConfig) -> bool {
     config.plugins.archlinux.enabled
 }
-fn api_quota_installed(config: &AppConfig) -> bool {
-    config.plugins.api_quota.enabled
-}
 fn memes_installed(config: &AppConfig) -> bool {
     config.plugins.memes.enabled
 }
@@ -138,19 +135,6 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDescriptor] = &[
         switch: Some(MachineSwitch {
             get: |config| config.plugins.archlinux.enabled,
             set: |config, on| config.plugins.archlinux.enabled = on,
-        }),
-        settings: true,
-    },
-    BuiltinPluginDescriptor {
-        id: "api_quota",
-        kind: PluginKind::Builtin,
-        name_zh: "API 额度",
-        hint_zh: "查供应商余额",
-        toggleable: true,
-        installed: api_quota_installed,
-        switch: Some(MachineSwitch {
-            get: |config| config.plugins.api_quota.enabled,
-            set: |config, on| config.plugins.api_quota.enabled = on,
         }),
         settings: true,
     },
@@ -372,7 +356,6 @@ mod tests {
                 "alarm",
                 "exchange_rate",
                 "archlinux",
-                "api_quota",
                 "print_image",
                 "memes",
                 "platform_outreach",
@@ -390,7 +373,6 @@ mod tests {
                 "alarm",
                 "exchange_rate",
                 "archlinux",
-                "api_quota",
                 "memes",
                 "image_generation",
                 "ledger",

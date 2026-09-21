@@ -70,7 +70,6 @@ macro_rules! tool_description_files {
             include_str!("../../../../src/tools/descriptions/use_meme.json"),
             include_str!("../../../../src/tools/descriptions/present_artifact.json"),
             include_str!("../../../../src/tools/descriptions/print_image.json"),
-            include_str!("../../../../src/tools/descriptions/query_api_quota.json"),
             include_str!("../../../../src/tools/descriptions/read.json"),
             include_str!("../../../../src/tools/descriptions/recall_memories.json"),
             include_str!("../../../../src/tools/descriptions/remember_fact.json"),

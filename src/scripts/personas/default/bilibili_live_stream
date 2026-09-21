@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # 显示名称：哔哩哔哩直播控制
-# Description: Control a Bilibili live room: title, area, go live, stop. command=status shows room state (read-only). areas lists partitions (read-only, no login; search matches a keyword, parent lists one parent's children). update changes title and/or area atomically. start goes live and returns the RTMP address and stream key for OBS or ffmpeg. stop ends the stream. login/logout manage credentials. Areas accept Chinese names, pinyin or 'parent/child'; the script resolves the id. WARNING: start makes the room public immediately and pushes a notification to followers; it cannot be silently undone, so get the user's explicit consent first. update during a live stream is visible to viewers at once. When not logged in it returns kind=auth: guide the user to run login (two-step QR code, written as a PNG whose path is returned).
+# Description: Control a Bilibili live room. status and areas are read-only; update changes title and/or area atomically; start goes live and returns the RTMP address and stream key; stop ends it; login/logout manage credentials. Areas accept a Chinese name, pinyin or 'parent/child' and are resolved to an id; an ambiguous one fails with candidates in error.detail.candidates. WARNING: start makes the room public at once and notifies followers, and cannot be silently undone — get the user's explicit consent first; update during a stream is visible to viewers immediately. Not logged in returns kind=auth: walk the user through login (two-step QR code written as a PNG whose path is returned).
 # Timeout: 120
 # Group: streaming
 # Parameters:
@@ -17,36 +17,35 @@
 #         "stop",
 #         "login",
 #         "logout"
-#       ],
-#       "description": "Operation to run. status and areas are read-only"
+#       ]
 #     },
 #     "title": {
 #       "type": "string",
-#       "description": "New stream title. For update; with start it is applied before going live"
+#       "description": "update, or applied before going live with start."
 #     },
 #     "area": {
 #       "type": "string",
-#       "description": "New area, any form: numeric id (371), child name (虚拟日常), pinyin (xunirichang) or 'parent/child' (虚拟主播/虚拟日常). For update; with start applied before going live. Ambiguity fails with candidates in error.detail.candidates"
+#       "description": "Same timing as title. Id (371), child name (虚拟日常), pinyin or 虚拟主播/虚拟日常."
 #     },
 #     "search": {
 #       "type": "string",
-#       "description": "areas only: keyword matched against child names, pinyin and parent names"
+#       "description": "areas: keyword matched against child names, pinyin and parent names."
 #     },
 #     "parent": {
 #       "type": "string",
-#       "description": "areas only: list only the children of this parent (name or id)"
+#       "description": "areas: only this parent's children, by name or id."
 #     },
 #     "refresh": {
 #       "type": "boolean",
-#       "description": "areas only: ignore the local cache (kept one day) and refetch the area list"
+#       "description": "areas: refetch instead of using the one-day cache."
 #     },
 #     "cookie": {
 #       "type": "string",
-#       "description": "login only: log in with browser cookies instead, like \"SESSDATA=..; bili_jct=..\". Normally the QR flow is enough"
+#       "description": "login: browser cookies like \"SESSDATA=..; bili_jct=..\" instead of the QR flow."
 #     },
 #     "json": {
 #       "type": "boolean",
-#       "description": "Return full JSON. Default is a compact text summary to save tokens"
+#       "description": "Full JSON instead of the compact text summary."
 #     }
 #   },
 #   "required": [
