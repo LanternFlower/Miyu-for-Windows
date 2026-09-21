@@ -20,15 +20,21 @@ Miyu 是从我曾经很喜欢的动画中的角色身上汲取灵感制作的虚
 
 - Normal 普通模式
   
-  拥有全部功能和工具，可以完成角色扮演、游戏娱乐、系统排障、天气查询、汇率换算、二手市场行情查询等日用场景。
+  拥有全部功能和工具，可以完成角色扮演、游戏娱乐、系统排障、天气查询、汇率换算、二手市场行情查询等日用场景。上述功能都可以在初始化引导或设置中自选开关。
 
 - Dev 开发模式
 
-  和普通模式隔离，移除所有和开发无关的功能和工具，通过极简设计最大限度发挥模型自身的能力。
+  和普通模式隔离，移除所有和开发无关的功能和工具，通过极简设计最大限度发挥模型自身的能力。普通模式也允许开启开发模式子代理，以外包的形式完成开发工作。
+
+## 多种对话界面
+
+### 终端集成
 
 `miyu` 可以与 `fish`、`zsh`、`bash` 集成，终端打字直接无缝对话！
 
 ![](./pics/fish集成.png)
+
+### 终端图形界面（TUI）
 
 有 TUI 对话模式：
 
@@ -42,9 +48,12 @@ miyu config
 
 ![](./pics/configtui.png)
 
-还有 WebUI ：
+### 网页界面（WebUI）
 
 ![](./pics/webui.png)
+
+
+### 接入通讯平台
 
 还可以接入 QQ，远程操作电脑；亦或是加入群聊，陪网友吹水，帮助你管理群聊：
 
@@ -58,8 +67,9 @@ miyu config
   ```
   yay -S miyu
   ```
+  安装完成后运行`miyu`命令进行初始引导。
 
-  语音唤醒和本地语音识别是可选组件，单独打成 `miyu-voice` 包（依赖 `miyu`，大约 30MB，不装不影响其他功能）：
+  语音唤醒和本地语音识别是可选组件，单独打成 `miyu-voice` 包（不装不影响其他功能）：
 
   ```
   yay -S miyu-voice
@@ -70,7 +80,7 @@ miyu config
 - Debian / Ubuntu / Linux Mint
 
   从 [Releases](https://github.com/SHORiN-KiWATA/miyu-agent/releases/latest) 下载 `.deb`（`miyu_<版本>_amd64.deb`，
-  语音包是 `miyu-voice_<版本>_amd64.deb`），再本地安装——用 `apt` 而不是 `dpkg -i`，依赖才会自动装上：
+  语音包是 `miyu-voice_<版本>_amd64.deb`），双击打开安装，或者终端使用`apt`安装：
 
   ```
   sudo apt install ./miyu_<版本>_amd64.deb
@@ -78,8 +88,7 @@ miyu config
   sudo apt install ./miyu_<版本>_amd64.deb ./miyu-voice_<版本>_amd64.deb
   ```
 
-  支持 **Ubuntu 24.04 LTS 及更新**、**Debian 13** 与 **Linux Mint 22**（22.x 的基座就是 Ubuntu 24.04）。
-  更老的发行版装不上：包里的 `libc6` 下限跟着构建基座走（当前 glibc 2.39）。
+  >发行包支持 **Ubuntu 24.04 LTS 及更新**、**Debian 13** 与 **Linux Mint 22**（22.x 的基座就是 Ubuntu 24.04）。更老的发行版装不上：包里的 `libc6` 下限跟着构建基座走（当前 glibc 2.39）。
 
 - Fedora
 
@@ -100,9 +109,7 @@ miyu config
 
   源码构建时把 `target/release/miyu`（以及可选的 `miyu-voice`）放到同一个 `PATH` 目录里即可，daemon 在主程序同目录寻找 `miyu-voice`。
 
-安装完成后可以运行 `miyu init` 初始化配置和状态文件；也可以直接运行 `miyu daemon start`，首次启动会自动初始化。查看完整帮助信息可以运行 `miyu -h`。
-
-## 多种触发
+## 如何使用？
 
 > 与 `miyu` 运行最适配的是 `kitty`终端
 
@@ -128,12 +135,7 @@ miyu config
 
 - 语音唤醒(可选,需装 `miyu-voice`)
 
-  设置里开启「语音功能」后 daemon 会拉起独立的 `miyu-voice` 进程常开麦克风:
-  喊唤醒词(默认「未有未有 / 密友密友 / miyumiyu / みゆみゆ」)→ 提示音 + 桌面通知「在听」→ 说指令 → 执行完
-  提示音 + 通知回复摘要。识别全在本机(SenseVoice,不联网);不开语音时零占用。
-  REPL 里 `/stt`、终端 `miyu stt`、WebUI 麦克风按钮可用同一套识别做听写。
-  可选回复播报(MiniMax / 小米 MiMo 语音合成);`miyu listen` 绑快捷键一键收听(再按一次关闭)。
-  详见 `docs/voice.md`。
+  设置里开启「语音功能」后 daemon 会拉起独立的 `miyu-voice` 进程常开麦克风。对着麦克风说唤醒词：`未有未有`即可进行语音对话，唤醒词可以在`语音功能`设置菜单中修改。使用`miyu listen`命令可以手动开启或关闭监听。可选回复播报(MiniMax / 小米 MiMo 语音合成)。
 
 ## 重要配置调整
 
@@ -143,9 +145,9 @@ miyu config
 
   `miyu` 默认使用 opencode 的公共 API，推荐配置自己的 API。
 
-- 自定义提示词
+- 人格和功能
 
-  `miyu`的默认提示词是无法修改的。你可以在`自定义提示词`中新建属于自己的 AI 人格，还可以配置 `用户身份` 让对话更加沉浸。 
+  `miyu`的默认提示词是无法修改的。你可以在`人格和功能`中新建属于自己的 AI 人格，自选需要开关的功能，还可以配置 `用户身份` 让对话更加沉浸。 
 
 ## 搬到另一台机器
 
