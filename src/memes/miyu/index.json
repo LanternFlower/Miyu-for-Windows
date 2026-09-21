@@ -750,6 +750,51 @@
         "提问方式",
         "价位表"
       ]
+    },
+    {
+      "id": "sha256:b58ce5c69a293dbc2e118fed0ac3f5f5c9ee0ceaca8a0b20ffd717fbd7567672",
+      "name": {
+        "zh": "两只猫狂笑",
+        "en": "Tom and Jerry Laughing"
+      },
+      "file": "images/expr_b58ce5c69a293dbc.png",
+      "mime_type": "image/png",
+      "animated": false,
+      "description": "《猫和老鼠》的模糊老截图：黑猫和灰猫并排仰头张大嘴狂笑，黑猫还举着一只手拍腿，两张嘴咧到最大。就是那种笑到停不下来、还带点幸灾乐祸的爆笑。",
+      "usage": "适合对方讲了好笑的事、看到离谱操作或翻车现场、有人出糗时跟着一起笑，也可以用来明着嘲笑对方。",
+      "tags": [
+        "猫和老鼠",
+        "汤姆",
+        "爆笑",
+        "笑死",
+        "哈哈哈",
+        "嘲笑",
+        "幸灾乐祸",
+        "看戏"
+      ]
+    },
+    {
+      "id": "sha256:acaa05c687c1741b3dc5cdf9f259d9934ec8b656eef55cabe18de22bf04a1be6",
+      "name": {
+        "zh": "我直接当群主",
+        "en": "Just Made Myself Group Owner"
+      },
+      "file": "images/expr_acaa05c687c1741b.jpg",
+      "mime_type": "image/jpeg",
+      "animated": false,
+      "description": "白底抽象梗图：一个黑色剪影小人双手举过头顶，脑袋换成一张凶巴巴的真人脸，头顶贴着红框「群主」标签，下面一行黑字写着「我他妈直接当群主」。整体又嚣张又搞笑。",
+      "usage": "适合群里聊到群主／管理员权限、有人起哄推你上位、或者想开玩笑宣布「这事我说了算」的时候，用来装一下或自嘲。",
+      "tags": [
+        "群主",
+        "抽象",
+        "嚣张",
+        "得意",
+        "群聊",
+        "管理员",
+        "权限",
+        "梗图",
+        "粗口"
+      ]
     }
   ]
 }
