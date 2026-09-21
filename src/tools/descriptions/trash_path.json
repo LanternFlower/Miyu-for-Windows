@@ -1,7 +1,7 @@
 {
   "name": "trash_path",
   "display_name": "移入回收站",
-  "description": "Move paths to the system Trash instead of deleting permanently. Pass all paths in one call.",
+  "description": "Move paths to the system Trash instead of deleting them. Pass every path in one call.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -11,7 +11,7 @@
           "type": "string"
         },
         "minItems": 1,
-        "description": "List of paths to move to the trash. Supports absolute paths, workspace-relative paths, and ~/ paths. When deleting multiple files, pass them all at once; do not split into multiple calls."
+        "description": "Absolute, workspace-relative or ~/ paths."
       }
     },
     "required": [

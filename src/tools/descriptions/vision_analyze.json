@@ -1,24 +1,24 @@
 {
   "name": "vision_analyze",
   "display_name": "视觉分析",
-  "description": "Look at images or a video. When the current model can see them itself, the media is attached to the conversation directly; otherwise a vision model describes it. Pass images (array) to handle several in one call. Accepts local paths or http(s) URLs. Video (mp4/mkv/mov/webm/mpeg) needs a video-capable model; local videos are capped at 200 MB.",
+  "description": "Look at images or a video. A model that can see them gets the media attached directly; otherwise a vision model describes it. Accepts local paths or http(s) urls. Video (mp4/mkv/mov/webm/mpeg) needs a video-capable model and local files are capped at 200 MB.",
   "parameters": {
     "type": "object",
     "properties": {
       "image": {
         "type": "string",
-        "description": "A single local image/video path or an http(s) URL."
+        "description": "One local path or url."
       },
       "images": {
         "type": "array",
         "items": {
           "type": "string"
         },
-        "description": "Several images to analyze in one call (paths or URLs). Overrides image."
+        "description": "Several in one call; overrides image."
       },
       "prompt": {
         "type": "string",
-        "description": "Question or instruction for the image analysis. Defaults to a concise description of the image."
+        "description": "Question or instruction. Defaults to a concise description."
       }
     },
     "required": [],

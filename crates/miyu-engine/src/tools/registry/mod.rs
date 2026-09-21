@@ -9,6 +9,7 @@ pub use spec::{
     ToolTrust,
 };
 
+use crate::tools::load_tools::TOOL_NAME as LOAD_TOOLS_TOOL_NAME;
 use crate::tools::tool_descriptions::LoadPolicy;
 use anyhow::{bail, Result};
 use miyu_core::llm::{FunctionDefinition, ToolDefinition};
@@ -153,6 +154,35 @@ impl ToolRegistry {
         }
     }
 
+    /// 摘掉一个参数。给「形态相关的死参数」用：同一件工具在某类进程里
+    /// 有一个永远走不到的分支时，与其在描述里写一句「只在某某形态下有效」
+    /// 让模型每回合读一遍，不如在那一侧直接不暴露。
+    ///
+    /// 调用方必须保证判据在进程生命周期内恒定，否则 tools 数组会在会话中途
+    /// 变字节、掰掉整条前缀缓存。
+    pub fn remove_parameter(&mut self, name: &str, property: &str) {
+        let Some(tool) = self.tools.get(name) else {
+            return;
+        };
+        let mut spec = (**tool).clone();
+        let removed = spec
+            .parameters
+            .get_mut("properties")
+            .and_then(Value::as_object_mut)
+            .is_some_and(|properties| properties.remove(property).is_some());
+        if !removed {
+            return;
+        }
+        if let Some(required) = spec
+            .parameters
+            .get_mut("required")
+            .and_then(Value::as_array_mut)
+        {
+            required.retain(|item| item.as_str() != Some(property));
+        }
+        self.tools.insert(name.to_string(), Arc::new(spec));
+    }
+
     pub fn replace_script_tools(
         &mut self,
         scripts: Vec<ToolSpec>,
@@ -214,6 +244,7 @@ impl ToolRegistry {
         let mut definitions = self
             .tools
             .values()
+            .filter(|tool| tool.exposed)
             .map(|tool| tool.definition())
             .collect::<Vec<_>>();
         definitions.sort_by(|a, b| a.function.name.cmp(&b.function.name));
@@ -230,6 +261,7 @@ impl ToolRegistry {
         let mut definitions = self
             .tools
             .values()
+            .filter(|tool| tool.exposed)
             .map(|tool| {
                 if tool.always_loaded {
                     let mut definition = tool.definition();
@@ -244,6 +276,23 @@ impl ToolRegistry {
             })
             .collect::<Vec<_>>();
         definitions.sort_by(|a, b| a.function.name.cmp(&b.function.name));
+        definitions
+    }
+
+    /// 发给模型的 tools 数组的唯一出口。
+    ///
+    /// stub 档 `load_tools` 是主角(懒工具的完整契约只能从它拿)；full 档
+    /// 整份目录本来就在数组里，它只剩「把契约再回显一遍」这一个动作，于是
+    /// 不再占一份定义。注册照旧(`compose` 常驻挂着)：会话中途从需加载模型
+    /// 切到完整模型时，历史里的 `load_tools` 调用仍要能重放。
+    ///
+    /// 分叉只按档位，不看回合，所以同一会话内字节恒定(AGENTS §1.1)。
+    pub fn request_definitions(&self, stub: bool) -> Vec<ToolDefinition> {
+        if stub {
+            return self.stub_definitions();
+        }
+        let mut definitions = self.definitions();
+        definitions.retain(|definition| definition.function.name != LOAD_TOOLS_TOOL_NAME);
         definitions
     }
 
@@ -294,7 +343,7 @@ impl ToolRegistry {
         let mut definitions = self
             .tools
             .values()
-            .filter(|tool| !excluded.iter().any(|name| *name == tool.name))
+            .filter(|tool| tool.exposed && !excluded.iter().any(|name| *name == tool.name))
             .map(|tool| tool.definition())
             .collect::<Vec<_>>();
         // Deterministic order: HashMap iteration order would reshuffle the
@@ -474,7 +523,9 @@ impl ToolRegistry {
                 continue;
             }
 
-            let Some(tool) = self.tools.get(target) else {
+            // 不进 tools 数组的工具(`# Expose: skill`)也不在 load_tools 的
+            // 可取清单里:它的入口是技能带路 + 工具桥,不是懒加载。
+            let Some(tool) = self.tools.get(target).filter(|tool| tool.exposed) else {
                 skipped.push(format!("{target}: unknown tool or script"));
                 continue;
             };
@@ -507,7 +558,8 @@ impl ToolRegistry {
             .tools
             .values()
             .filter(|tool| {
-                tool.name != "load_tools"
+                tool.name != LOAD_TOOLS_TOOL_NAME
+                    && tool.exposed
                     && !tool.always_loaded
                     && !loaded.contains(&tool.name)
                     && tool.load_policy != LoadPolicy::Hidden

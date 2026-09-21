@@ -215,6 +215,14 @@ pub fn register(
             async move { run_subagent(args, context, progress).await }
         },
     ).writes());
+    // resume_id 只有进程内老循环读得到(`run_subagent`:端口在场就整个走
+    // `run_via_host`,那条路从不碰它)。daemon 里它是模型看得见、却永远不会
+    // 生效的一个参数——续接子代理在会话化之后走 session_id。端口在 daemon
+    // 启动时一次装好、此后不变,所以这条分叉按进程形态定,同一进程内 tools
+    // 数组字节恒定(AGENTS §1.1)。
+    if miyu_base::host_ports::subagent_port().is_some() {
+        registry.remove_parameter("subagent", "resume_id");
+    }
 
     // 给正在运行的后台子代理发一条 follow-up 排队指令(像给主会话排队消息),
     // 子代理下一步开始前取走、并入对话——用于运行途中调整任务目标。

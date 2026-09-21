@@ -1,6 +1,8 @@
 ---
 name: travel-planner
-description: 旅游攻略规划。当用户提到旅游、出游、度假、行程、攻略、去哪玩、机票、酒店、景点、假期安排、带家人/朋友出行、想找目的地建议时使用本 skill，即使用户没有明确说"攻略"或只是随口问"国庆去哪好"。产出一份有出处、可执行、含预算与预订链接的日程表。
+display_name: 旅游攻略规划
+summary: 出行前的行程、机票、酒店与预算规划
+description: Travel itinerary planning. Produces a sourced, actionable day-by-day plan with budget and booking links. Use when the user mentions 旅游、出游、度假、行程、攻略、去哪玩、机票、酒店、景点、假期安排、带家人出行 — even in passing, and even without the word 攻略.
 ---
 
 # 旅游攻略规划
@@ -8,7 +10,26 @@ description: 旅游攻略规划。当用户提到旅游、出游、度假、行�
 ## 基本原则
 
 - **先搜后答，所有内容标出处。** 景点开放时间、门票价格、交通班次、住宿价格都会变，凭记忆写会误导用户。每条关键信息后附来源链接和查询日期；查不到的明确说"未能核实"。
-- **灵活使用可用的信息来源。** 视会话中实际可用的工具选择：网络搜索（始终可用）、知乎搜索、小红书搜索、闲鱼二手市场（找二手门票/装备）、flight-deals、酒店搜索。如果某个专用工具不可用，用网络搜索替代，不要假设工具存在。小红书和知乎内容软广较多，涉及价格和推荐时至少用另一个来源交叉验证。
+- **灵活使用可用的信息来源。** 视会话中实际可用的工具选择：网络搜索（始终可用）、知乎搜索、小红书搜索、闲鱼二手市场（找二手门票/装备），以及下面这两件比价脚本。如果某个专用工具不可用，用网络搜索替代，不要假设工具存在。小红书和知乎内容软广较多，涉及价格和推荐时至少用另一个来源交叉验证。
+
+### 机票与酒店比价
+
+这两件是脚本工具，**不在常驻工具面上**（契约太长，常驻不划算），只能在加载本 skill 之后用 `run_command` 经工具桥调用：
+
+```bash
+miyu tool-call flight_deals --stdin <<'JSON'
+{"origin": "上海", "dest": "东京", "depart": "+30"}
+JSON
+
+miyu tool-call hotel_deals --stdin <<'JSON'
+{"location": "Tokyo", "checkin": "+30", "nights": 3}
+JSON
+```
+
+完整参数用 `miyu tool-call flight_deals --describe`（或 `hotel_deals`）现取，别凭记忆拼。要点：
+
+- **`flight_deals`** 只算单程，往返就把 origin/dest 对调再查一次；没有固定日期时用 `{"action":"sweep","window":"09-29..10-08","days":"5-7"}` 扫窗口。出发地绝不猜，用户没说就问。
+- **`hotel_deals`** 地名**优先用英文**：中文地名只做模糊匹配，实测「苏州金鸡湖」会返回 30 km 外昆山南站的酒店且不报错。报价前先看输出里的 `warnings` 和 `sources_failed`，少一个数据源时表面正常但最低价可能偏高。
 - **需要购买或预订的东西直接给链接。** 门票、酒店、车票、景点预约，能给官方或正规平台链接就给，省去用户再找一遍。
 
 ## 第一步：确定需求

@@ -505,8 +505,8 @@ pub(in crate::web) async fn account_personas(
     )
     .into_iter()
     // 成员的私有人格不给 Miyu 的内置配件技能,只列目录里的。
-    .filter(|(_, _, builtin)| !builtin)
-    .map(|(name, description, _)| json!({ "id": name, "label": name, "hint": description }))
+    .filter(|(_, _, _, builtin)| !builtin)
+    .map(|(id, label, hint, _)| json!({ "id": id, "label": label, "hint": hint }))
     .collect::<Vec<_>>();
     // 预置人格(管理员维护的那份)叫什么、谁维护:引导页那张卡用。
     let shared = {

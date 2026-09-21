@@ -35,6 +35,12 @@ pub(crate) struct ScriptEntry {
     pub(crate) display_name: String,
     #[serde(default)]
     pub(crate) description: String,
+    /// 界面上的说明（人槽）。`description` 是**模型**读的那一份，恒英文
+    /// （`select_script_description`）；拿它当界面文案会让设置页里中文名配
+    /// 英文说明（AGENTS §1.5.1）。脚本头的 `# 描述：` 落在这儿，缺省回退到
+    /// `description`。不进模型面，不占 token。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) ui_description: String,
     #[serde(default)]
     pub(crate) path: String,
     #[serde(default)]
@@ -63,6 +69,10 @@ pub(crate) struct ScriptEntry {
     /// 头部 `Capabilities:`,见 `ScriptMetadata::capabilities`。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) capabilities: Vec<String>,
+    /// 头部 `Expose: skill`,见 `ScriptMetadata::expose`。缺省(false)=像别的
+    /// 脚本一样进 tools 数组。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) skill_only: bool,
 }
 
 fn is_owner_trust(trust: &ToolTrust) -> bool {
@@ -76,6 +86,7 @@ impl ScriptEntry {
             id,
             display_name: String::new(),
             description: String::new(),
+            ui_description: String::new(),
             path,
             parameters: Value::Null,
             timeout_seconds: None,
@@ -89,6 +100,7 @@ impl ScriptEntry {
             hints: Vec::new(),
             requires: Vec::new(),
             capabilities: Vec::new(),
+            skill_only: false,
         }
     }
 }
@@ -159,6 +171,11 @@ pub(crate) fn merge_header_defaults(entry: &mut ScriptEntry, metadata: &ScriptMe
             entry.description = description;
         }
     }
+    if entry.ui_description.trim().is_empty() {
+        if let Some(description) = select_script_ui_description(&metadata.descriptions) {
+            entry.ui_description = description;
+        }
+    }
     if entry.parameters.is_null() {
         if let Some(parameters) = &metadata.parameters {
             entry.parameters = parameters.clone();
@@ -206,6 +223,11 @@ pub(crate) fn merge_header_defaults(entry: &mut ScriptEntry, metadata: &ScriptMe
     }
     if entry.capabilities.is_empty() {
         entry.capabilities = metadata.capabilities.clone();
+    }
+    if !entry.skill_only {
+        entry.skill_only = metadata
+            .expose
+            .is_some_and(super::header::ScriptExposure::is_skill_only);
     }
 }
 
@@ -570,6 +592,7 @@ pub(crate) fn entry_to_spec(
         .with_trust(entry.trust)
         .with_cross_hints(entry.hints.clone())
         .with_requires_prior(entry.requires.clone())
+        .with_exposed(!entry.skill_only)
         .script();
     if let Some(example) = entry
         .stub_example

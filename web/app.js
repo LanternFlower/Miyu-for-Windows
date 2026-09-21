@@ -1541,7 +1541,6 @@
       const parsed = JSON.parse(elements.advancedConfigEditor.value);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("配置必须是 JSON 对象");
       const oldSecretStates = new Map((state.configDraft?.providers || []).map((provider, index) => [String(provider?.id || ""), Boolean(state.providerSecretStates[index])]));
-      window.MiyuSettings?.remapApiQuotaSecrets(state.configDraft, parsed);
       state.configDraft = parsed;
       ensurePlatformDefaults(state.configDraft);
       state.providerSecretStates = (Array.isArray(parsed.providers) ? parsed.providers : []).map((provider) => oldSecretStates.get(String(provider?.id || "")) || false);

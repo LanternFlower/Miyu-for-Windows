@@ -1147,7 +1147,7 @@
         {
           path: "accounts.member_plugins",
           label: "成员人格可启用的插件",
-          hint: "留空 = 全部。可选 id:files, usage_query, alarm, exchange_rate, archlinux, api_quota, print_image, memes, platform_outreach, web_images, image_generation, knowledge_base, ledger, scripts, mcp",
+          hint: "留空 = 全部。可选 id:files, usage_query, alarm, exchange_rate, archlinux, print_image, memes, platform_outreach, web_images, image_generation, knowledge_base, ledger, scripts, mcp",
           kind: "string-list",
           nullable: true,
           default: null,
@@ -1688,13 +1688,6 @@
           default: true,
         },
       ],
-    },
-    api_quota: {
-      title: "大模型额度查询",
-      group: "联网",
-      description: "查询 DeepSeek 与 OpenRouter API 额度",
-      custom: "api_quota_accounts",
-      fields: [enabledField(true)],
     },
     claude_code: {
       title: "Claude Code 中转",

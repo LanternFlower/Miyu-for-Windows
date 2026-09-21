@@ -123,20 +123,17 @@ fn bundled_descriptions_follow_the_header_style_rules() {
             "codec",
             "crack_search",
             "divine",
-            "fcitx5_input_method_wiki_qurey",
             "flight_deals",
             "game_compat",
             "get_weather",
             "goofish_search",
             "hotel_deals",
             "online_man",
-            "procusage",
             "query_deepseek_status",
             "query_moegirl",
             "read_clipboard",
             "reddit_search",
             "scientific_calculator",
-            "showenv",
             "xhs_search",
             "zhihu_search",
         ]
@@ -162,10 +159,12 @@ fn bundled_descriptions_follow_the_header_style_rules() {
             .and_then(Value::as_object)
         {
             for (name, property) in properties {
-                let description = property
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
+                // 没有说明是允许的,而且往往是对的:参数名加 enum 已经说清的
+                // (`format: md|json`)再写一句是每回合常驻的纯开销(09-21 瘦身)。
+                // 这条规则管的是文风——写了就必须是英文(AGENTS §1.5)。
+                let Some(description) = property.get("description").and_then(Value::as_str) else {
+                    continue;
+                };
                 assert!(
                     description.starts_with(|character: char| character.is_ascii_alphabetic()),
                     "{}.{name}: parameter description must be English: {description}",

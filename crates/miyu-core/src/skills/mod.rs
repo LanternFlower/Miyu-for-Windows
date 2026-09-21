@@ -46,6 +46,27 @@ const BUILTIN_SKILLS: &[(&str, &str, bool)] = &[
         include_str!("../../../../src/skills/personas/default/linux-game-compatibility.md"),
         false,
     ),
+    // 09-21:机票/酒店比价两件脚本改成技能资源(`# Expose: skill`),这份技能
+    // 是它们唯一的入口——漏登记的话两件能力就整个消失。
+    (
+        "travel-planner",
+        include_str!("../../../../src/skills/personas/default/travel-planner.md"),
+        false,
+    ),
+    // 同上:query_deepseek_status 的入口。顺带承接 09-21 退役的 api_quota——
+    // 「供应商是不是挂了」本来就该是一段排查流程,不是一件常驻工具。
+    (
+        "provider-status",
+        include_str!("../../../../src/skills/personas/default/provider-status.md"),
+        false,
+    ),
+    // 同上:开播是不可悄悄撤销的公开动作(立刻公开 + 推送粉丝),一年用不了
+    // 几次,藏一层既省常驻也更安全。
+    (
+        "bilibili-live",
+        include_str!("../../../../src/skills/personas/default/bilibili-live.md"),
+        false,
+    ),
 ];
 
 /// 内置资源(技能/脚本)默认只属于 Miyu 出厂人格。判据:`active_persona` 去空
@@ -106,9 +127,16 @@ fn allowed_by(
     allowlist.is_none() || listed
 }
 
-/// 引导里可以逐个勾的技能:目录里的 + 非平台级内置的,(名字, 描述, 是否内置)。
+/// 引导里可以逐个勾的技能:目录里的 + 非平台级内置的,(id, 界面名, 界面说明, 是否内置)。
 /// **不看白名单**——表要摆全,勾选状态由调用方按清单填。
-pub fn persona_skill_options(config: &AppConfig, paths: &MiyuPaths) -> Vec<(String, String, bool)> {
+///
+/// 界面名与界面说明走人槽(`display_name` / `summary`),没写才回退到模型槽
+/// (`name` / `description`)。模型槽是英文触发词,直接摆进设置页会中英混杂
+/// (AGENTS §1.5.1)。id 仍是 `name`——清单白名单按它存。
+pub fn persona_skill_options(
+    config: &AppConfig,
+    paths: &MiyuPaths,
+) -> Vec<(String, String, String, bool)> {
     discover_visible(config, paths)
         .unwrap_or_default()
         .into_iter()
@@ -116,7 +144,8 @@ pub fn persona_skill_options(config: &AppConfig, paths: &MiyuPaths) -> Vec<(Stri
         .map(|entry| {
             (
                 entry.metadata.name.clone(),
-                entry.metadata.description.clone(),
+                entry.metadata.ui_name().to_string(),
+                entry.metadata.ui_summary().to_string(),
                 entry.source == SkillSource::BuiltIn,
             )
         })
@@ -330,6 +359,40 @@ fn sorted_skill_directories(root: &Path) -> Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 仓库里的每份内置技能都必须登记进 [`BUILTIN_SKILLS`]。
+    ///
+    /// 技能是 `include_str!` 编译进来的，目录里多一个文件不会自动生效——
+    /// 09-20 加的 `travel-planner.md` 就这么静默躺了一整天，谁都加载不到
+    /// (09-21 实测发现)。与 AGENTS §2.1 说 descriptions 宏行的是同一个坑。
+    #[test]
+    fn every_bundled_skill_file_is_registered() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src/skills");
+        let registered: std::collections::BTreeSet<&str> =
+            BUILTIN_SKILLS.iter().map(|(name, _, _)| *name).collect();
+        let mut missing = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().is_some_and(|ext| ext == "md") {
+                    let stem = path.file_stem().unwrap().to_string_lossy().to_string();
+                    if !registered.contains(stem.as_str()) {
+                        missing.push(stem);
+                    }
+                }
+            }
+        }
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "these bundled skills are not in BUILTIN_SKILLS and can never be loaded: {missing:?}"
+        );
+    }
 
     fn test_paths(root: &Path) -> MiyuPaths {
         MiyuPaths {

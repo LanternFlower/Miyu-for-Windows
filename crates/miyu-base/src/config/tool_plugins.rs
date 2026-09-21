@@ -27,8 +27,6 @@ pub struct PluginsConfig {
     #[serde(default)]
     pub archlinux: PluginEnabledConfig,
     #[serde(default)]
-    pub api_quota: ApiQuotaPluginConfig,
-    #[serde(default)]
     pub memory: MemoryConfig,
     #[serde(default)]
     pub file_sharing: FileSharingPluginConfig,
@@ -454,106 +452,6 @@ pub struct KnowledgeBasePluginConfig {
     pub embedding_timeout_seconds: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApiQuotaPluginConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub deepseek: ApiQuotaProviderConfig,
-    #[serde(default)]
-    pub openrouter: ApiQuotaProviderConfig,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApiQuotaProviderConfig {
-    #[serde(default)]
-    pub api_key: String,
-    #[serde(default)]
-    pub accounts: Vec<ApiQuotaAccountConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApiQuotaAccountConfig {
-    #[serde(default)]
-    pub id: String,
-    #[serde(default = "default_api_quota_account_name")]
-    pub name: String,
-    #[serde(default)]
-    pub api_key: String,
-}
-
-pub(crate) fn default_api_quota_account_name() -> String {
-    "默认账号".to_string()
-}
-
-pub(crate) fn normalize_api_quota_provider(config: &mut ApiQuotaProviderConfig) {
-    let legacy_key = config.api_key.trim().to_string();
-    if config.accounts.is_empty() {
-        config.accounts.push(ApiQuotaAccountConfig {
-            id: "account-1".to_string(),
-            name: default_api_quota_account_name(),
-            api_key: legacy_key.clone(),
-        });
-    } else if !legacy_key.is_empty()
-        && config
-            .accounts
-            .iter()
-            .all(|account| account.api_key.trim() != legacy_key)
-    {
-        if config.accounts[0].api_key.trim().is_empty() {
-            config.accounts[0].api_key = legacy_key.clone();
-        } else if config.accounts.len() < 32 {
-            let mut number = 2usize;
-            let name = loop {
-                let candidate = format!("账号 {number}");
-                if config
-                    .accounts
-                    .iter()
-                    .all(|account| account.name != candidate)
-                {
-                    break candidate;
-                }
-                number += 1;
-            };
-            config.accounts.push(ApiQuotaAccountConfig {
-                id: String::new(),
-                name,
-                api_key: legacy_key.clone(),
-            });
-        }
-    }
-    if legacy_key.is_empty()
-        || config
-            .accounts
-            .iter()
-            .any(|account| account.api_key.trim() == legacy_key)
-    {
-        config.api_key.clear();
-    }
-    let mut used_ids = HashSet::with_capacity(config.accounts.len());
-    for (index, account) in config.accounts.iter_mut().enumerate() {
-        account.name = account.name.trim().to_string();
-        if account.name.is_empty() {
-            account.name = if index == 0 {
-                default_api_quota_account_name()
-            } else {
-                format!("账号 {}", index + 1)
-            };
-        }
-        if account.id.trim().is_empty() || !used_ids.insert(account.id.clone()) {
-            let mut number = index + 1;
-            loop {
-                let id = format!("account-{number}");
-                if used_ids.insert(id.clone()) {
-                    account.id = id;
-                    break;
-                }
-                number += 1;
-            }
-        }
-    }
-}
-
 impl Default for PluginsConfig {
     fn default() -> Self {
         Self {
@@ -567,35 +465,11 @@ impl Default for PluginsConfig {
             memes: MemesPluginConfig::default(),
             knowledge_base: KnowledgeBasePluginConfig::default(),
             archlinux: PluginEnabledConfig::default(),
-            api_quota: ApiQuotaPluginConfig::default(),
             memory: MemoryConfig::default(),
             claude_code: ClaudeCodePluginConfig::default(),
             antigravity: AntigravityPluginConfig::default(),
             codex: CodexPluginConfig::default(),
             codebuddy: CodeBuddyPluginConfig::default(),
-        }
-    }
-}
-
-impl Default for ApiQuotaPluginConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_true(),
-            deepseek: ApiQuotaProviderConfig::default(),
-            openrouter: ApiQuotaProviderConfig::default(),
-        }
-    }
-}
-
-impl Default for ApiQuotaProviderConfig {
-    fn default() -> Self {
-        Self {
-            api_key: String::new(),
-            accounts: vec![ApiQuotaAccountConfig {
-                id: "account-1".to_string(),
-                name: default_api_quota_account_name(),
-                api_key: String::new(),
-            }],
         }
     }
 }
@@ -750,37 +624,6 @@ impl Default for KnowledgeBasePluginConfig {
             embedding_timeout_seconds: default_kb_embedding_timeout_seconds(),
         }
     }
-}
-
-pub(crate) fn validate_api_quota_accounts(
-    provider: &str,
-    config: &ApiQuotaProviderConfig,
-) -> Result<()> {
-    if !config.api_key.trim().is_empty() && !config.accounts.is_empty() {
-        bail!("plugins.api_quota.{provider} legacy api_key could not be migrated");
-    }
-    if config.accounts.len() > 32 {
-        bail!("plugins.api_quota.{provider} supports at most 32 accounts");
-    }
-    let mut names = HashSet::with_capacity(config.accounts.len());
-    let mut ids = HashSet::with_capacity(config.accounts.len());
-    for account in &config.accounts {
-        let name = account.name.trim();
-        if name.is_empty() {
-            bail!("plugins.api_quota.{provider} account name cannot be empty");
-        }
-        if name.chars().count() > 64 {
-            bail!("plugins.api_quota.{provider} account name exceeds 64 characters");
-        }
-        if !names.insert(name) {
-            bail!("duplicate plugins.api_quota.{provider} account name: {name}");
-        }
-        let id = account.id.trim();
-        if !id.is_empty() && !ids.insert(id) {
-            bail!("duplicate plugins.api_quota.{provider} account id: {id}");
-        }
-    }
-    Ok(())
 }
 
 /// Returns the old absolute directory when the value was rewritten, so the

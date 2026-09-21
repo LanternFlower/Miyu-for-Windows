@@ -21,10 +21,6 @@ pub(in crate::config_tui) fn edit_plugin_detail(
     id: &str,
     display_name: &str,
 ) -> Result<()> {
-    // API 额度有专门的账号管理界面,不走通用表单。
-    if id == "api_quota" {
-        return edit_api_quota(ui, config);
-    }
     let mut fields = plugin_fields(config, id);
     if fields.is_empty() {
         return Ok(());
@@ -396,10 +392,6 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, id: &str) -> Vec<
                 ),
             ]
         }
-        "api_quota" => vec![Field::boolean(
-            t("Enabled", "启用"),
-            config.plugins.api_quota.enabled,
-        )],
         // 没有专属设置页的（闹钟、汇率、记账、脚本、MCP…）。功能表上它们那行
         // 不摆齿轮，正常走不到这里。
         _ => Vec::new(),
@@ -552,9 +544,6 @@ pub(in crate::config_tui) fn apply_plugin_fields(
             config.plugins.memory.forgetting_review_boost =
                 fields[15].value.trim().parse::<f64>()?;
             config.plugins.memory.association_dedup = parse_bool_field(&fields[16].value)?;
-        }
-        "api_quota" => {
-            config.plugins.api_quota.enabled = parse_bool_field(&fields[0].value)?;
         }
         _ => {}
     }

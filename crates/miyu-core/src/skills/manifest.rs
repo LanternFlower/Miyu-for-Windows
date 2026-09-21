@@ -16,10 +16,37 @@ pub(crate) const MAX_YAML_TOKENS: usize = 4_096;
 pub struct SkillMetadata {
     pub name: String,
     pub description: String,
+    /// 界面上的名字。`description` 是**模型**读的触发词（进 load_skill 的
+    /// 常驻目录、按英文短句写），拿它当界面文案会让设置页中英混杂——名字与
+    /// 说明各自双槽，模型槽恒英文、人槽跟界面语言（AGENTS §1.5.1）。
+    /// 缺省回退到 `name`。这两个字段不进模型面，不占 token。
+    pub display_name: Option<String>,
+    /// 界面上的一句话说明；缺省回退到 `description`。
+    pub summary: Option<String>,
     pub license: Option<String>,
     pub compatibility: Option<String>,
     pub metadata: BTreeMap<String, String>,
     pub allowed_tools: Option<String>,
+}
+
+impl SkillMetadata {
+    /// 界面上的名字:人槽优先,没写就回退到技能 id。
+    pub fn ui_name(&self) -> &str {
+        self.display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&self.name)
+    }
+
+    /// 界面上的一句话说明:人槽优先,没写就回退到模型槽。
+    pub fn ui_summary(&self) -> &str {
+        self.summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&self.description)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,12 +141,24 @@ pub(crate) fn parse_skill_document(
     {
         bail!("skill compatibility must be 1-500 characters");
     }
+    let display_name = optional_yaml_string(mapping, "display_name")?;
+    let summary = optional_yaml_string(mapping, "summary")?;
+    for (field, value) in [("display_name", &display_name), ("summary", &summary)] {
+        if value
+            .as_ref()
+            .is_some_and(|value| !(1..=200).contains(&value.chars().count()))
+        {
+            bail!("skill {field} must be 1-200 characters");
+        }
+    }
     let allowed_tools = optional_yaml_string(mapping, "allowed-tools")?;
     let metadata = yaml_string_map(mapping, "metadata")?;
     Ok((
         SkillMetadata {
             name,
             description,
+            display_name,
+            summary,
             license,
             compatibility,
             metadata,

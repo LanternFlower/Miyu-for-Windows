@@ -10,7 +10,7 @@
 use crate::tools::web::*;
 use futures_util::StreamExt;
 
-/// 跳转解析的并发度。跟仓库其它抓取路径（`web_images`、`api_quota`、
+/// 跳转解析的并发度。跟仓库其它抓取路径（`web_images`、
 /// `caniplayonlinux_query`）一样取 4。
 const RESOLVE_CONCURRENCY: usize = 4;
 

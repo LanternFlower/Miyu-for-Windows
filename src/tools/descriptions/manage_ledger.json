@@ -1,7 +1,7 @@
 {
   "name": "manage_ledger",
   "display_name": "账本管理",
-  "description": "Manage ledger books, accounts, categories and budgets.\nA book holds its own accounts, categories and budgets, and every total is reported in the book's currency. New books start with a set of default categories and accounts, so create_category and create_account are only for what that set does not cover — and recording an entry under an unknown category name already creates that category. Budgets are monthly limits in the book's currency; spending in a sub-category counts towards its parent. Entries themselves are recorded with ledger. Display details such as account type, opening balance and category icons are set in the dashboard.",
+  "description": "Manage ledger books, accounts, categories and budgets. A book holds its own accounts, categories and budgets and reports every total in its own currency. New books start with default categories and accounts, so create_category and create_account are only for what that set does not cover — and recording an entry under an unknown category already creates it. Budgets are monthly limits in the book's currency; a sub-category's spending counts towards its parent. Entries themselves go through ledger; display details like account type, opening balance and icons are set in the dashboard.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -14,48 +14,59 @@
           "set_budget",
           "delete_budget",
           "list"
-        ],
-        "description": "What to create, or list to see what exists."
+        ]
       },
       "what": {
         "type": "string",
-        "enum": ["books", "accounts", "categories", "budgets"],
-        "description": "For action=list: which of them to list. Books by default."
+        "enum": [
+          "books",
+          "accounts",
+          "categories",
+          "budgets"
+        ],
+        "description": "action=list: which to list, books by default."
       },
       "name": {
         "type": "string",
-        "description": "For create_book, create_account and create_category: the name."
+        "description": "The name, for the three create actions."
       },
       "currency": {
         "type": "string",
-        "description": "For create_book: the ISO code every total in the book is reported in. For create_account: only when the account holds another currency."
+        "description": "create_book: the ISO code every total is reported in. create_account: only when it holds another currency."
       },
       "direction": {
         "type": "string",
-        "enum": ["expense", "income"],
-        "description": "For create_category: which tree it belongs to. Expense by default."
+        "enum": [
+          "expense",
+          "income"
+        ],
+        "description": "create_category: which tree, expense by default."
       },
       "amount": {
         "type": "string",
-        "description": "For set_budget: the monthly limit in the book's currency."
+        "description": "set_budget: the monthly limit in the book's currency."
       },
       "category": {
         "type": "string",
-        "description": "For set_budget: limit this one category instead of the whole book."
+        "description": "set_budget: limit this one category instead of the whole book."
       },
       "book": {
         "type": "string",
-        "description": "Which book. Only needed when more than one exists."
+        "description": "Only needed when more than one exists."
       },
       "id": {
         "type": "string",
-        "description": "For delete_budget: the budget id."
+        "description": "delete_budget: the budget id."
       }
     },
-    "required": ["action"]
+    "required": [
+      "action"
+    ]
   },
   "permission": "writes",
   "always_loaded": false,
   "load_policy": "group",
-  "groups": ["ledger"]
+  "groups": [
+    "ledger"
+  ]
 }

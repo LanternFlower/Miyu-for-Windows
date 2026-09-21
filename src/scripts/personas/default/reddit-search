@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # 显示名称：Reddit 检索
-# Description: Search Reddit posts, comments, users and subreddits. Data comes from the free Arctic Shift archive, which mirrors Reddit within minutes; Reddit's own API is not used because it now needs approved credentials. Two limits to plan around: the archive has no site-wide keyword search, so a keyword must come with a subreddit or an author, and it cannot rank by hotness, so sort=top samples the time window and ranks by score. Scores and comment counts of posts younger than 36 hours are not filled in yet and are reported as unsettled rather than as a real number. Pass a reddit link or a bare post id as query to read that post with its comment tree. Zero dependencies, only python3.
+# Description: Search Reddit posts, comments, users and subreddits. Data comes from the free Arctic Shift archive, which mirrors Reddit within minutes (Reddit's own API now needs approved credentials). Two archive limits: a keyword needs a subreddit or an author because there is no site-wide search, and there is no hotness ranking, so sort=top samples the window by score. Posts younger than 36 h report scores as unsettled, not as a number. Pass a reddit link or a bare post id as query to read that post with its comment tree. Zero dependencies, python3 only.
+# 描述：检索 Reddit 的帖子、评论、用户和版块；也能读一整条帖子的评论树。
 # Timeout: 120
 # Group: research
 # Parameters:
@@ -17,19 +18,19 @@
 #         "subreddits",
 #         "doctor"
 #       ],
-#       "description": "Usually omitted: a reddit link or bare post id in query switches to comments by itself. search (default) is a keyword search, or a plain subreddit listing when query is empty; comments reads one post with its comment tree; user lists a redditor's posts and comments; subreddits finds subreddits by name; doctor is the self-check"
+#       "description": "Usually omitted: a link or post id in query switches to comments. search with an empty query just lists the subreddit or author."
 #     },
 #     "query": {
 #       "type": "string",
-#       "description": "Keyword to search, or a reddit URL / post id for action=comments, or the name to look up for action=subreddits. A keyword search is the slow path on the archive (a few seconds, sometimes retried): pair it with after/before when it times out, and drop it entirely to just list a subreddit or author"
+#       "description": "Keyword, or a reddit url / post id, or the name to look up for subreddits. A keyword is the slow path: pair it with after/before if it times out."
 #     },
 #     "subreddit": {
 #       "type": "string",
-#       "description": "Restrict to one subreddit, e.g. 'LocalLLaMA' (the r/ prefix is optional). A keyword search needs this or author, because the archive has no site-wide search"
+#       "description": "One subreddit, r/ optional. A keyword needs this or author."
 #     },
 #     "author": {
 #       "type": "string",
-#       "description": "Restrict to one redditor (the u/ prefix is optional). Required for action=user"
+#       "description": "One redditor, u/ optional. Required for action=user."
 #     },
 #     "sort": {
 #       "type": "string",
@@ -37,7 +38,7 @@
 #         "new",
 #         "top"
 #       ],
-#       "description": "new (default) is newest first. top samples the time window and ranks by score, which costs several requests and is a sample of the window, not a complete ranking"
+#       "description": "Default new. top costs several requests and samples the window."
 #     },
 #     "time": {
 #       "type": "string",
@@ -48,19 +49,19 @@
 #         "year",
 #         "all"
 #       ],
-#       "description": "Window for sort=top, default month. all means the past year"
+#       "description": "Window for sort=top, default month. all means the past year."
 #     },
 #     "after": {
 #       "type": "string",
-#       "description": "Only things posted after this point: '2026-01-01', epoch seconds, or an offset from now like '7d', '3month', '1year'"
+#       "description": "Takes '2026-01-01', epoch seconds, or an offset like '7d', '3month'."
 #     },
 #     "before": {
 #       "type": "string",
-#       "description": "Only things posted before this point, same forms as after"
+#       "description": "Same forms as after."
 #     },
 #     "limit": {
 #       "type": "integer",
-#       "description": "Results to return, 1-100, default 10"
+#       "description": "Results to return, 1-100, default 10."
 #     },
 #     "kind": {
 #       "type": "string",
@@ -69,27 +70,26 @@
 #         "posts",
 #         "comments"
 #       ],
-#       "description": "action=user: fetch the redditor's posts, comments or both (default both)"
-#     },
-#     "full": {
-#       "type": "boolean",
-#       "description": "Include post bodies. Defaults to true when limit<=5. Set false to force titles only"
+#       "description": "action=user, default both."
 #     },
 #     "max_chars": {
 #       "type": "integer",
-#       "description": "Max characters per body. Default 4000 for a single item, 800 for a list"
+#       "description": "Per body. Default 4000 for one item, 800 in a list."
 #     },
 #     "depth": {
 #       "type": "integer",
-#       "description": "action=comments: how many reply levels to show, default 4"
+#       "description": "action=comments: reply levels, default 4."
 #     },
 #     "format": {
 #       "type": "string",
 #       "enum": [
 #         "md",
 #         "json"
-#       ],
-#       "description": "Output format, default md (compact and readable); json for field-by-field processing"
+#       ]
+#     },
+#     "full": {
+#       "type": "boolean",
+#       "description": "Include post bodies. Default true when limit<=5; false forces titles only."
 #     }
 #   },
 #   "additionalProperties": false

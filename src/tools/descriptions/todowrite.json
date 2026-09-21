@@ -1,13 +1,12 @@
 {
   "name": "todowrite",
   "display_name": "任务列表",
-  "description": "Maintain this session's task list. Pass todos to replace the whole list, or updates for incremental changes.",
+  "description": "Maintain this session's task list. todos replaces the whole list; updates applies incremental changes in order. Prefer updates once the list exists.",
   "parameters": {
     "type": "object",
     "properties": {
       "todos": {
         "type": "array",
-        "description": "The complete task list. This operation replaces the entire list.",
         "items": {
           "type": "object",
           "properties": {
@@ -38,11 +37,11 @@
             "status",
             "priority"
           ]
-        }
+        },
+        "description": "Replaces the entire list."
       },
       "updates": {
         "type": "array",
-        "description": "Task changes applied atomically, in order.",
         "items": {
           "type": "object",
           "properties": {
@@ -57,15 +56,15 @@
             },
             "index": {
               "type": "integer",
-              "description": "Target task number, 1-based. For add, the insertion position; omit to append."
+              "description": "Task number, 1-based. For add the insertion point; omit to append."
             },
             "match_content": {
               "type": "string",
-              "description": "When index is omitted, the full content used to locate the target task."
+              "description": "Without index, the full content that locates the task."
             },
             "content": {
               "type": "string",
-              "description": "The task content to add, or the content after modification."
+              "description": "Content to add, or the content after the change."
             },
             "status": {
               "type": "string",
@@ -88,7 +87,8 @@
           "required": [
             "action"
           ]
-        }
+        },
+        "description": "Applied atomically, in order."
       }
     }
   },

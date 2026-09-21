@@ -3,6 +3,8 @@
 # Display name: Check DeepSeek status
 # 显示名称: 查询 DeepSeek 状态
 # Description: Query DeepSeek service status.
+# 描述：查 DeepSeek 官方服务状态与近期故障记录。
+# Expose: skill
 # Timeout: 60
 # Group: systeminfo
 # Trust: external

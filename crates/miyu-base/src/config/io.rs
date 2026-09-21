@@ -48,7 +48,6 @@ impl AppConfig {
             .with_context(|| format!("invalid JSONC in {}", paths.config_file.display()))?;
         config.migrate()?;
         config.normalize_builtin_providers();
-        config.normalize_api_quota_accounts();
         config.normalize_managed_output_paths(paths);
         config.normalize_platform_model_routes();
         config.validate()?;
@@ -82,7 +81,6 @@ impl AppConfig {
     pub fn save(&self, paths: &MiyuPaths) -> Result<()> {
         let mut config = self.clone();
         config.migrate()?;
-        config.normalize_api_quota_accounts();
         config.normalize_platform_model_routes();
         // Also on save, not just on load: a value healed only in memory is
         // rewritten stale on the next write, so the file never recovers.
@@ -227,11 +225,6 @@ impl AppConfig {
                 model: OPENCODE_DEFAULT_CHAT_MODEL.to_string(),
             }]);
         }
-    }
-
-    pub(crate) fn normalize_api_quota_accounts(&mut self) {
-        normalize_api_quota_provider(&mut self.plugins.api_quota.deepseek);
-        normalize_api_quota_provider(&mut self.plugins.api_quota.openrouter);
     }
 
     pub(crate) fn normalize_managed_output_paths(&mut self, paths: &MiyuPaths) {
@@ -469,8 +462,6 @@ impl AppConfig {
         if !(0.0..=1.0).contains(&self.plugins.knowledge_base.semantic_min_score) {
             bail!("plugins.knowledge_base.semantic_min_score must be between 0.0 and 1.0");
         }
-        validate_api_quota_accounts("deepseek", &self.plugins.api_quota.deepseek)?;
-        validate_api_quota_accounts("openrouter", &self.plugins.api_quota.openrouter)?;
         self.validate_model_references()?;
         self.validate_global_multimodal_config()?;
         self.validate_platforms()?;

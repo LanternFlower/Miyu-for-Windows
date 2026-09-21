@@ -1,16 +1,12 @@
 mod command;
 mod files;
-mod sysinfo;
 use command::*;
 // claude_code 复用同一套进程组击杀语义,不再抄一份。
 pub(crate) use files::*;
-use sysinfo::*;
 
 use super::{CommandOutputStream, ToolProgress, ToolRegistry, ToolSpec};
 use anyhow::{bail, Result};
-use miyu_base::host_info::{parse_macos_system_version, read_small_file};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -57,12 +53,6 @@ pub fn register_readonly(
     config: &miyu_base::config::AppConfig,
     paths: &miyu_base::paths::MiyuPaths,
 ) {
-    registry.register(ToolSpec::new(
-        "check_os_info",
-        "Check basic read-only OS, shell, desktop session, kernel, host, and package-manager context.",
-        json!({"type":"object","properties":{},"additionalProperties":false}),
-        |_| async move { check_os_info() },
-    ));
     // 08-21 Edit/Read 统一:read_file 更名 read,并认 `artifact:`/`kb:` 前缀
     // (Artifact 库与知识库的读取工具随之退场)。
     let read_config = config.clone();

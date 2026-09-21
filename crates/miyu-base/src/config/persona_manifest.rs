@@ -21,8 +21,15 @@ pub const PERSONA_MANIFEST_FILE: &str = "persona.toml";
 pub use super::builtin_plugins::PLUGIN_IDS;
 
 /// 已退役的插件 id:存量 persona.toml 里写着也当没写(09-13 删 deep_research /
-/// diagnostics,package_advisor 并入 archlinux)。
-pub const RETIRED_PLUGIN_IDS: &[&str] = &["deep_research", "diagnostics", "package_advisor"];
+/// diagnostics,package_advisor 并入 archlinux;09-21 删 api_quota——只会查
+/// DeepSeek 与 OpenRouter 两家,一件脚本工具就能替代,不值一个内置插件加
+/// 一份常驻工具契约)。
+pub const RETIRED_PLUGIN_IDS: &[&str] = &[
+    "deep_research",
+    "diagnostics",
+    "package_advisor",
+    "api_quota",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]

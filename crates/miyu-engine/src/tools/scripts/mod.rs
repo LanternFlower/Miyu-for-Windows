@@ -1,5 +1,5 @@
 mod dashboard;
-mod header;
+pub(in crate::tools) mod header;
 mod index;
 mod manage;
 mod refresh;
@@ -74,7 +74,12 @@ pub fn list_scripts_with_origin(
             .map(|entry| {
                 let display = entry_display_name(&entry);
                 let builtin = paths.is_some_and(|paths| is_builtin_script(paths, &entry));
-                (entry.id, display, entry.description, builtin)
+                let hint = if entry.ui_description.trim().is_empty() {
+                    entry.description
+                } else {
+                    entry.ui_description
+                };
+                (entry.id, display, hint, builtin)
             })
             .collect(),
         Err(error) => {
