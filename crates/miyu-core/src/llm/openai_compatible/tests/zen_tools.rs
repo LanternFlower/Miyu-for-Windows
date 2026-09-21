@@ -49,7 +49,7 @@ fn zen_renames_the_two_recognised_tools_in_place() {
     let mut tools = vec![
         tool("run_command"),
         tool("web_search"),
-        tool("read_file"),
+        tool("read"),
         tool("use_meme"),
     ];
     zen_tools::lower_tools(&provider, &mut tools);
@@ -68,7 +68,7 @@ fn zen_appends_placeholders_when_the_tool_face_lacks_them() {
     zen_tools::lower_tools(&provider, &mut none);
     assert_eq!(names(&none), ["shell", "read"]);
 
-    let mut half = vec![tool("read_file"), tool("get_current_time")];
+    let mut half = vec![tool("read"), tool("get_current_time")];
     zen_tools::lower_tools(&provider, &mut half);
     assert_eq!(names(&half), ["read", "get_current_time", "shell"]);
 }
@@ -86,9 +86,9 @@ fn console_go_is_treated_as_a_zen_endpoint() {
 #[test]
 fn non_zen_providers_are_untouched() {
     let provider = test_provider("deepseek", "https://api.deepseek.com/v1");
-    let mut tools = vec![tool("run_command"), tool("read_file")];
+    let mut tools = vec![tool("run_command"), tool("read")];
     zen_tools::lower_tools(&provider, &mut tools);
-    assert_eq!(names(&tools), ["run_command", "read_file"]);
+    assert_eq!(names(&tools), ["run_command", "read"]);
 
     let mut messages = vec![ChatMessage::assistant("", Some(vec![call("run_command")]))];
     zen_tools::lower_messages(&provider, &mut messages);
@@ -110,11 +110,7 @@ fn zen_renames_tool_calls_replayed_from_history() {
         ChatMessage::system("跑一下 ls"),
         ChatMessage::assistant(
             "",
-            Some(vec![
-                call("run_command"),
-                call("read_file"),
-                call("use_meme"),
-            ]),
+            Some(vec![call("run_command"), call("read"), call("use_meme")]),
         ),
     ];
     zen_tools::lower_messages(&provider, &mut messages);
@@ -141,7 +137,7 @@ fn zen_restores_tool_call_names_on_the_way_back() {
             .iter()
             .map(|call| call.function.name.as_str())
             .collect::<Vec<_>>(),
-        ["run_command", "read_file", "web_search"]
+        ["run_command", "read", "web_search"]
     );
 }
 
@@ -157,7 +153,7 @@ fn zen_restores_the_streamed_tool_name_chunk() {
             text: "read".to_string(),
         },
     );
-    assert_eq!(restored.text, "read_file");
+    assert_eq!(restored.text, "read");
 
     // 正文里出现 "read" 只是正文。
     let content = zen_tools::restore_chunk(
@@ -168,4 +164,43 @@ fn zen_restores_the_streamed_tool_name_chunk() {
         },
     );
     assert_eq!(content.text, "read");
+}
+
+/// 用户 09-21 在 normal 模式 + opencodego/deepseek-v4.1-flash 上撞到：连着三次
+/// `tool error: unknown tool: read_file (did you mean: read?)`。
+///
+/// Miyu 的工具**就叫 `read`**，仓库里没有任何一件叫 `read_file`（`read_file`
+/// 是 08-21 三域合并里被改掉的旧名）。别名表左列本该是「Miyu 自己的工具名」，
+/// 这一条却填了那个死名，于是回程把模型正确调用的 `read` 改写成不存在的
+/// `read_file`——模型每次都是对的，每次都被判错，死循环。
+#[test]
+fn a_read_call_from_zen_comes_back_as_read_not_a_retired_name() {
+    let provider = test_provider("opencodego", OPENCODE_ZEN_GO_BASE_URL);
+    let restored = zen_tools::restore_calls(&provider, vec![call("read")]);
+    assert_eq!(
+        restored[0].function.name, "read",
+        "模型调的 read 被改成了别的名字，回合层会当成 unknown tool"
+    );
+
+    let chunk = zen_tools::restore_chunk(
+        &provider,
+        ChatStreamChunk {
+            kind: ChatStreamKind::ToolCall,
+            text: "read".to_string(),
+        },
+    );
+    assert_eq!(chunk.text, "read");
+}
+
+/// 去程:真实工具面里那件 `read` 原样留下,不该被改名,也不该再补一个占位。
+#[test]
+fn the_real_read_tool_survives_the_outbound_rename() {
+    let provider = test_provider("opencodego", OPENCODE_ZEN_GO_BASE_URL);
+    let mut tools = vec![tool("run_command"), tool("read"), tool("web_search")];
+    zen_tools::lower_tools(&provider, &mut tools);
+    assert_eq!(names(&tools), ["shell", "read", "web_search"]);
+    assert_eq!(
+        tools[1].function.description, "read 的描述",
+        "真工具的描述被占位声明盖掉了"
+    );
 }

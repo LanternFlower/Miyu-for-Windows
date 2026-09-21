@@ -21,9 +21,9 @@
 //! description 与 parameters(全清空照样 200)、tools 里额外挂多少件自造工具。
 //! 另有一条独立通道是 opencode 自己那段系统提示词原文,对 Miyu 没用。
 //!
-//! 所以这里做的事就两件:发出去之前把 `run_command` 报成 `shell`、`read_file`
-//! 报成 `read`;收回来把名字换回去。判定和 `zen_headers` 一样按**端点**走,
-//! 不按供应商 id——用户可以把那份配置改名。
+//! 所以这里做的事就两件:发出去之前把 `run_command` 报成 `shell`(Miyu 的 `read`
+//! 本来就叫 `read`,不用改);收回来把名字换回去。判定和 `zen_headers` 一样按
+//! **端点**走,不按供应商 id——用户可以把那份配置改名。
 //!
 //! 工具面里没有这两件工具时(受限场所的底座、工具还没加载的空壳档、judge /
 //! 好感度这类不带工具的辅助轮)补一条同名占位声明,否则整条请求进不去。占位声明
@@ -43,7 +43,18 @@ use miyu_base::i18n::text as t;
 /// `shell` 与 `read` 是实测出来的最小通过集:两个都在才放行,只留一个就挡
 /// (`shell` 单独 403、`read` 单独 403)。`bash` 与 `shell` 等价,选 `shell`
 /// 是因为官方客户端报的就是它。
-const WIRE_ALIASES: &[(&str, &str)] = &[("run_command", "shell"), ("read_file", "read")];
+///
+/// **左列必须是真的已注册工具名。** 09-20 这里把读文件那件写成了 `read_file`
+/// ——那是 08-21 三域合并里改掉的旧名,仓库里早就没有了。于是回程把模型正确
+/// 调用的 `read` 改写成不存在的 `read_file`,用户 09-21 在 opencodego 上连撞
+/// 三次「unknown tool: read_file (did you mean: read?)」:模型每次都对,每次
+/// 都被判错。`every_wire_alias_names_a_real_tool` 拿注册表守着这一列。
+///
+/// 读文件那件两边同名,留在表里是为了那条「缺了就补占位」的保证。
+/// 表本身导出给 `miyu-engine` 侧的守卫核对(工具层不该被 llm 层反向依赖,
+/// 所以断言住在工具层,名单从这里取——导出表本身而不是另抄一份名单,免得
+/// 两份各自漂移)。
+pub const WIRE_ALIASES: &[(&str, &str)] = &[("run_command", "shell"), ("read", "read")];
 
 /// 这次请求要不要做别名替换。非 Zen 端点一个字节都不动。
 pub(in crate::llm::openai_compatible) fn aliases_apply(provider: &ProviderConfig) -> bool {

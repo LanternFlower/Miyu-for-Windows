@@ -11,7 +11,7 @@ pub use openai_compatible::{
 pub use openai_compatible::{OpenAiCompatibleClient, ThinkingVariantOptions};
 pub use openai_compatible::{
     ANTIGRAVITY_BRIDGE_DUPLICATE_TOOLS, CLAUDE_CODE_BRIDGE_DUPLICATE_TOOLS,
-    CODEX_BRIDGE_DUPLICATE_TOOLS,
+    CODEX_BRIDGE_DUPLICATE_TOOLS, ZEN_WIRE_ALIASES,
 };
 
 use serde::{Deserialize, Serialize};

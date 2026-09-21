@@ -41,6 +41,7 @@ use protocol::*;
 pub use protocol::{thinking_variant_options_for_model, ThinkingVariantPreferences};
 use sse::*;
 use wire::*;
+pub use zen_tools::WIRE_ALIASES as ZEN_WIRE_ALIASES;
 
 use super::{
     ChatMessage, ChatResult, ChatStreamChunk, ChatStreamKind, ResponsesContinuation, ToolCall,
