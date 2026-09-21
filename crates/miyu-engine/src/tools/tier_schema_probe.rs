@@ -99,8 +99,12 @@ fn definition_tokens(name: &str, description: &str, parameters: &serde_json::Val
 /// `# Expose: skill` 的脚本不进 tools 数组，自然不占预算。
 #[test]
 fn bundled_tool_face_stays_within_its_token_budget() {
+    // 注册着、但不进 tools 数组的内置工具(`ToolSpec::with_exposed(false)`):
+    // 技能带路的配置类动作。它们不占常驻预算,所以不进这本账。
+    const SKILL_ONLY_BUILTINS: &[&str] = &["manage_script", "manage_skill"];
     let mut rows: Vec<(String, usize)> = crate::tools::tool_descriptions::all()
         .values()
+        .filter(|description| !SKILL_ONLY_BUILTINS.contains(&description.name.as_str()))
         .map(|description| {
             (
                 description.name.clone(),

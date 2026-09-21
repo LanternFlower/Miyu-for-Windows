@@ -120,6 +120,10 @@ pub fn register_authoring(registry: &mut ToolRegistry, config: AppConfig, paths:
                 }
             },
         )
+        // 不进 tools 数组(09-21):写技能是一周用不了一次的动作,而 skill-creator
+        // 技能本来就在目录里讲「怎么写技能」——工具是那份技能的执行手段,该跟
+        // 它走。注册照旧,`miyu tool-call` 与工具桥不受影响。
+        .with_exposed(false)
         .writes(),
     );
 }

@@ -8,6 +8,21 @@ compatibility: Miyu built-in script authoring workflow
 
 A script tool is one executable file. Miyu reads the tool contract from comment lines at the top of the file, runs the file with JSON arguments, and hands stdout back to the model.
 
+## Calling manage_script
+
+`manage_script` is not on the always-loaded tool list: registering a script is a
+once-in-a-while action, so it lives behind this skill. Call it through the tool
+bridge with `run_command`:
+
+```bash
+miyu tool-call manage_script --stdin <<'JSON'
+{"action": "register", "path": "/abs/path/to/my-script"}
+JSON
+```
+
+`miyu tool-call manage_script --describe` prints the full parameter contract.
+Everything below that says "call `manage_script`" means this.
+
 ## Workflow
 
 1. Write the script anywhere, the session workspace is fine. Start from a skeleton below.

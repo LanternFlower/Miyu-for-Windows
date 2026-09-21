@@ -95,6 +95,10 @@ pub(crate) fn register_script_tools(
                 }
             },
         )
+        // 不进 tools 数组(09-21):这是一周用不了一次的配置动作,而讲「怎么写
+        // 脚本」的技能本来就在目录里——工具是那份技能的执行手段,该跟它走。
+        // 注册照旧,`miyu tool-call` 与工具桥不受影响。
+        .with_exposed(false)
         .writes(),
     );
 }

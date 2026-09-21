@@ -8,6 +8,21 @@ compatibility: Miyu built-in skill authoring workflow
 
 Create focused, reusable Agent Skills that follow the Agent Skills specification.
 
+## Calling manage_skill
+
+`manage_skill` is not on the always-loaded tool list: authoring a skill is a
+once-in-a-while action, so it lives behind this skill. Call it through the tool
+bridge with `run_command`:
+
+```bash
+miyu tool-call manage_skill --stdin <<'JSON'
+{"action": "create", "name": "my-skill", "description": "what it does and when to use it"}
+JSON
+```
+
+`miyu tool-call manage_skill --describe` prints the full parameter contract.
+Everything below that says "call `manage_skill`" means this.
+
 ## Workflow
 
 1. Ask what the skill should do, when it should trigger, and what it must not do when any of those points are unclear.
