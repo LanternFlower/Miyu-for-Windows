@@ -1,0 +1,23 @@
+# 行尾契约：库里与工作区一律 LF。
+#
+# `src/prompts/*.md`、web/ 静态资源、assets 词表都经 include_str! 按字节进二进制，
+# 行尾漂移会改变请求前缀（缓存契约见 AGENTS.md §1.1）。Windows 上 core.autocrlf=true
+# 会把检出改成 CRLF，于是同一份提交在本机编出的提示词字节与上游不同、两条基线都
+# 复现不了。这里钉死 LF，个体的 core.autocrlf 设置从此不再影响结果。
+* text=auto eol=lf
+
+# 二进制资产：不参与行尾转换与文本 diff。
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.bin binary
+*.gz binary
+*.zip binary
+*.tar binary
