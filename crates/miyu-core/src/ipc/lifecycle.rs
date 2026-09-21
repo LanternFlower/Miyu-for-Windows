@@ -41,6 +41,29 @@ pub(crate) struct StarterLease {
     pub(crate) lock_file: File,
 }
 
+/// 家目录单例租约。活到 daemon 进程结束为止，进程没了内核自动放锁——
+/// 崩溃、被 kill、断电都不会留下一把谁也拿不到的死锁。
+///
+/// `None` 是降级放行的那一种：文件系统不支持 flock（NFS、某些容器 FS）或
+/// 家目录只读时，我们照样让 daemon 起来，只是没有这道闸。
+pub struct HomeSingletonLease {
+    lock_file: Option<File>,
+}
+
+/// 锁文件里记的那点东西：够让后来者说清楚「谁占着」并找到它的门。
+/// 端口不记——那是 IPC `Ready` 帧的事，记两份早晚对不上。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HomeDaemonRecord {
+    pub pid: u32,
+    pub runtime_dir: PathBuf,
+}
+
+/// 抢不到锁时的结局。`record` 可能是 `None`：锁被持有但内容还没写完
+/// （对方正卡在抢到锁到写完之间的那一瞬），此时只知道「有人占着」。
+pub struct HomeDaemonBusy {
+    pub record: Option<HomeDaemonRecord>,
+}
+
 impl Drop for DirectCoreLease {
     fn drop(&mut self) {
         unlock(&self.lock_file);
@@ -58,6 +81,90 @@ impl Drop for StarterLease {
     fn drop(&mut self) {
         unlock(&self.lock_file);
     }
+}
+
+impl Drop for HomeSingletonLease {
+    fn drop(&mut self) {
+        if let Some(lock_file) = &self.lock_file {
+            unlock(lock_file);
+        }
+    }
+}
+
+fn write_home_record(file: &File, record: &HomeDaemonRecord) {
+    use std::io::{Seek, SeekFrom, Write};
+    let Ok(payload) = serde_json::to_vec(record) else {
+        return;
+    };
+    let mut handle = file;
+    let _ = handle.set_len(0);
+    let _ = handle.seek(SeekFrom::Start(0));
+    let _ = handle.write_all(&payload);
+    let _ = handle.flush();
+}
+
+fn read_home_record(path: &Path) -> Option<HomeDaemonRecord> {
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+/// 抢「这个家目录的 daemon」这把锁。
+///
+/// 抢不到就说明同一个家目录已经有 daemon 在跑了——哪怕它算出来的
+/// `runtime_dir` 跟我们的不是同一个。这正是要挡的那一种：`MIYU_HOME` 设没
+/// 设会让同一个家目录算出两个运行时目录（未设是字面量 `miyu`，设了是路径
+/// 哈希），两把锁互相看不见，于是 09-21 本机同时跑着两个 daemon。
+///
+/// 锁机制本身不可用（家目录在 NFS 上、只读挂载、flock 被内核拒绝）一律
+/// **放行**：单例是省资源，不是开机前提，不能因为拿不到锁就把用户锁在门外。
+pub fn acquire_home_singleton(paths: &MiyuPaths) -> Result<HomeSingletonLease, HomeDaemonBusy> {
+    let path = paths.daemon_singleton_lock();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let Ok(file) = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+    else {
+        return Ok(HomeSingletonLease { lock_file: None });
+    };
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        write_home_record(
+            &file,
+            &HomeDaemonRecord {
+                pid: std::process::id(),
+                runtime_dir: paths.runtime_dir(),
+            },
+        );
+        return Ok(HomeSingletonLease {
+            lock_file: Some(file),
+        });
+    }
+    // EWOULDBLOCK 才是「有人占着」。其它错误是这个文件系统压根不支持
+    // flock，那就当没有这道闸。
+    if std::io::Error::last_os_error().raw_os_error() != Some(libc::EWOULDBLOCK) {
+        return Ok(HomeSingletonLease { lock_file: None });
+    }
+    Err(HomeDaemonBusy {
+        record: read_home_record(&path),
+    })
+}
+
+/// 别的进程正占着这个家目录的 daemon 锁吗？占着就把它登记的东西给出来。
+///
+/// 顺序要紧：**先试锁，再读内容**。锁没被持有时文件里躺着的多半是上一任
+/// daemon 的陈迹（进程没了内核放锁，文件内容原样留着），照着它去连会连到
+/// 一个早就不在的 pid。
+pub fn home_daemon_in_charge(paths: &MiyuPaths) -> Option<HomeDaemonRecord> {
+    let path = paths.daemon_singleton_lock();
+    let file = OpenOptions::new().read(true).write(true).open(&path).ok()?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        unlock(&file);
+        return None;
+    }
+    read_home_record(&path)
 }
 
 pub fn acquire_direct_core(paths: &MiyuPaths) -> Result<DirectCoreLease> {
@@ -277,6 +384,36 @@ pub async fn ensure_daemon(
             remap_managed_password(launch, &previous_paths, &active_paths);
         }
     };
+    // 探不到 daemon,但这个家目录的单例锁有人占着:那是一个跑在**别的**
+    // runtime_dir 底下的 daemon。`runtime_dir()` 的名字取决于 `MIYU_HOME`
+    // 设没设(未设是字面量 `miyu`,设了是路径哈希),所以从设了环境变量的
+    // shell 起的 daemon,跟从没设的 shell 起的 CLI,彼此看不见对方的
+    // socket——09-21 本机就这么同时跑着两个 daemon。
+    //
+    // 这时候起新的没有任何意义:它抢不到家目录锁,会立刻让位退出,用户只
+    // 会等到一个「启动超时」。不如在这里就把话说清楚。
+    if let Some(record) = home_daemon_in_charge(&active_paths) {
+        if record.runtime_dir != active_paths.runtime_dir() {
+            // 跟其它「不启动」的出口一样,把这次没用上的托管密码文件收掉,
+            // 否则 `--port` 起的那一次会在 web-passwords 下留个孤儿。
+            if let Some(launch) = &pending_launch {
+                abandon_daemon_launch_candidate(&active_paths, launch);
+            }
+            bail!(
+                "{}\n  pid={} runtime={}\n  {}",
+                miyu_base::i18n::text(
+                    "a Miyu daemon already serves this home directory, but it listens under a different runtime directory, so this environment cannot reach it",
+                    "这个家目录已经有 Miyu daemon 在跑了,但它的运行时目录跟当前环境算出来的不是同一个,所以连不上它"
+                ),
+                record.pid,
+                record.runtime_dir.display(),
+                miyu_base::i18n::text(
+                    "MIYU_HOME being set in one shell and unset in another is what splits them; run `miyu daemon restart` to hand the home over to this environment, or line MIYU_HOME up across both",
+                    "根源是 MIYU_HOME 在一边设了、另一边没设;执行 `miyu daemon restart` 把这个家目录交给当前环境,或者把两边的 MIYU_HOME 对齐"
+                )
+            );
+        }
+    }
     let launch = pending_launch
         .map(Ok)
         .unwrap_or_else(|| load_daemon_launch_config(&active_paths))?;

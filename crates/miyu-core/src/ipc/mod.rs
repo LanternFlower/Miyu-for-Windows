@@ -56,6 +56,90 @@ mod tests {
         paths
     }
 
+    /// 同一个家目录只能有一个 daemon。09-21 的现场：一个进程设了
+    /// `MIYU_HOME=~/.miyu`、另一个没设（默认就是 `~/.miyu`），`runtime_dir()`
+    /// 一个算出 `miyu-<hash>` 一个算出 `miyu`，两把锁互相看不见，于是同一份
+    /// 数据上跑着两个 daemon，连带两个 miyu-voice 抢同一个麦克风。
+    #[test]
+    fn a_second_daemon_on_the_same_home_is_turned_away() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths_with_logs(temp.path());
+
+        let first = crate::ipc::acquire_home_singleton(&paths)
+            .ok()
+            .expect("第一个 daemon 该拿到锁");
+        let busy = crate::ipc::acquire_home_singleton(&paths)
+            .err()
+            .expect("同一个家目录的第二个 daemon 必须被挡下");
+        let record = busy.record.expect("挡下的时候要说得出是谁占着");
+        assert_eq!(record.pid, std::process::id());
+
+        drop(first);
+    }
+
+    /// 隔离测试环境各有各的 `MIYU_HOME`，必须互不干扰——否则跑一次测试就
+    /// 把开发机上那个 daemon 顶掉了。
+    #[test]
+    fn separate_homes_do_not_block_each_other() {
+        let one = tempfile::tempdir().unwrap();
+        let two = tempfile::tempdir().unwrap();
+
+        let first = crate::ipc::acquire_home_singleton(&paths_with_logs(one.path())).ok();
+        let second = crate::ipc::acquire_home_singleton(&paths_with_logs(two.path())).ok();
+
+        assert!(first.is_some(), "第一个家目录该拿到自己的锁");
+        assert!(second.is_some(), "另一个家目录不该被别人的锁挡住");
+    }
+
+    /// daemon 没了锁就没了（内核放的），但文件里那行记录还躺着。判「有没有
+    /// 人占着」只能靠试锁：照着陈迹去连，会连到一个早就不在的 pid。
+    #[test]
+    fn a_stale_record_is_not_mistaken_for_a_live_daemon() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths_with_logs(temp.path());
+
+        {
+            let _lease = crate::ipc::acquire_home_singleton(&paths)
+                .ok()
+                .expect("该拿到锁");
+            assert!(
+                crate::ipc::home_daemon_in_charge(&paths).is_some(),
+                "有人占着的时候要认得出来"
+            );
+        }
+
+        let written = std::fs::read_to_string(paths.daemon_singleton_lock()).unwrap();
+        assert!(written.contains("pid"), "陈迹应该还留在文件里：{written}");
+        assert!(
+            crate::ipc::home_daemon_in_charge(&paths).is_none(),
+            "锁没人持有就不能报「有 daemon 在跑」"
+        );
+        assert!(
+            crate::ipc::acquire_home_singleton(&paths).is_ok(),
+            "让位过的锁要能被下一个 daemon 拿到"
+        );
+    }
+
+    /// 家目录是符号链接时也得落到同一把锁上。这正是把锁放在家目录、用
+    /// flock（认 inode）而不是比路径字符串换来的那份稳——`MIYU_HOME` 写成
+    /// 符号链接、带尾斜杠还是相对路径，指的都是同一份数据。
+    #[test]
+    fn a_symlinked_home_lands_on_the_same_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = temp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let _first = crate::ipc::acquire_home_singleton(&paths_with_logs(&real))
+            .ok()
+            .expect("该拿到锁");
+        assert!(
+            crate::ipc::acquire_home_singleton(&paths_with_logs(&link)).is_err(),
+            "符号链接指向同一个家目录，不该让第二个 daemon 起来"
+        );
+    }
+
     /// 启动失败时要给出**这次**写进 daemon.log 的内容。日志是所有启动共用
     /// 的追加文件:tail 固定行数会把上一次成功启动的 "Miyu WebUI: …" 当成这
     /// 次的输出,用户会以为起来了——比不给还糟(08-29 用户反馈现场)。

@@ -502,6 +502,17 @@ impl MiyuPaths {
         self.state_dir.join("daemon-launch.json")
     }
 
+    /// 「一个家目录只能有一个 daemon」那把锁。刻意**不**放 `runtime_dir()`：
+    /// 那个目录名取决于 `MIYU_HOME` 设没设（未设是字面量 `miyu`，设了是路径
+    /// 哈希），于是同一个家目录被两种启动方式各配一把锁，谁也看不见谁——
+    /// 09-21 本机实测就这样跑着两个 daemon（一个 8300、一个回退到临时端口），
+    /// 连带两个 miyu-voice 抢同一个麦克风。锁跟着**数据**走才是对的语义，
+    /// 而且 flock 认 inode 不认路径字符串，`MIYU_HOME` 写成带尾斜杠、相对
+    /// 路径还是符号链接都会落到同一把锁上。
+    pub fn daemon_singleton_lock(&self) -> PathBuf {
+        self.root_dir.join("daemon.lock")
+    }
+
     pub fn managed_web_password_dir(&self) -> PathBuf {
         self.state_dir.join("web-passwords")
     }
