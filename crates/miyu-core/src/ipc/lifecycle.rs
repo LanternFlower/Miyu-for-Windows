@@ -30,6 +30,10 @@ pub struct DaemonProcessIdentity {
 
 pub struct DirectCoreLease {
     pub(crate) lock_file: File,
+    /// 家目录那把单例锁，跟 daemon 抢的是同一把。只有走 `acquire_direct_core`
+    /// 的真实启动会带上它；`acquire_direct_core_at` 那条只验 `core.lock` 本身
+    /// 的路径不带（测试用）。
+    home: Option<HomeSingletonLease>,
 }
 
 pub struct WebCoreLease {
@@ -169,7 +173,34 @@ pub fn home_daemon_in_charge(paths: &MiyuPaths) -> Option<HomeDaemonRecord> {
 
 pub fn acquire_direct_core(paths: &MiyuPaths) -> Result<DirectCoreLease> {
     prepare_runtime_dir(paths)?;
-    acquire_direct_core_at(paths.ipc_lock())
+    // 先抢家目录那把,再抢 `core.lock`。
+    //
+    // 两把都要的原因:`core.lock` 住在 `runtime_dir()` 底下,而那个目录名取决
+    // 于 `MIYU_HOME` 设没设(09-21 双 daemon 的同一个根)。只认 `core.lock` 的
+    // 话,从没设环境变量的 shell 起的直连 REPL,跟一个设了环境变量起来的
+    // daemon 会各锁各的,两边同时开着同一份数据——而「直连与 daemon 互斥」
+    // 正是这把锁要保证的事。
+    let home = match acquire_home_singleton(paths) {
+        Ok(lease) => lease,
+        Err(busy) => {
+            let detail = match &busy.record {
+                Some(record) => {
+                    format!("（pid {} · {}）", record.pid, record.runtime_dir.display())
+                }
+                None => String::new(),
+            };
+            bail!(
+                "{}{detail}",
+                miyu_base::i18n::text(
+                    "another Miyu core already owns this home directory; direct mode is exclusive with it — stop it (miyu daemon stop) or drop MIYU_DIRECT to attach to the daemon",
+                    "这个家目录已经被另一个 Miyu 核心占着；直连模式与它互斥——先 miyu daemon stop，或去掉 MIYU_DIRECT 改为连接 daemon"
+                )
+            );
+        }
+    };
+    let mut lease = acquire_direct_core_at(paths.ipc_lock())?;
+    lease.home = Some(home);
+    Ok(lease)
 }
 
 pub fn acquire_web_core(paths: &MiyuPaths) -> Result<WebCoreLease> {
@@ -195,6 +226,7 @@ pub(crate) fn prepare_runtime_dir(paths: &MiyuPaths) -> Result<()> {
 pub(crate) fn acquire_direct_core_at(lock_path: PathBuf) -> Result<DirectCoreLease> {
     Ok(DirectCoreLease {
         lock_file: acquire_lock(lock_path)?,
+        home: None,
     })
 }
 
