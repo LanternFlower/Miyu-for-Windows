@@ -24,7 +24,7 @@ pub struct PluginsConfig {
     pub memes: MemesPluginConfig,
     #[serde(default)]
     pub knowledge_base: KnowledgeBasePluginConfig,
-    #[serde(default)]
+    #[serde(default = "default_archlinux_plugin")]
     pub archlinux: PluginEnabledConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
@@ -239,6 +239,44 @@ impl Default for FileSharingPluginConfig {
             enabled: true,
             max_shared_file_bytes: 0,
         }
+    }
+}
+
+/// 这台机器是不是 Arch 系。
+///
+/// `/etc/arch-release` 是 Arch 自己放的；EndeavourOS 一类衍生版也有。Manjaro
+/// 没有那个文件但有 `pacman`，所以两条判据取并集。非 Linux 直接 false——macOS
+/// 上再怎么找也不会有 pacman。
+///
+/// 只算一次:配置每次加载都要问它,而这事在进程生命周期内不会变。
+fn arch_host() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        if !cfg!(target_os = "linux") {
+            return false;
+        }
+        if std::path::Path::new("/etc/arch-release").exists() {
+            return true;
+        }
+        std::env::var_os("PATH")
+            .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join("pacman").is_file()))
+            .unwrap_or(false)
+    })
+}
+
+/// Arch 那套工具的默认开关**跟着宿主走**。
+///
+/// 09-22 真机实测:macOS 上 `archlinux_news` / `archlinux_official_package_query`
+/// / `archwiki_query` / `aur` / `crack_search` 五件全在工具清单里,而 `aur` 那件
+/// 要 pacman / makepkg,在那台机器上必然失败。原来的判据是纯配置开关
+/// (`PluginEnabledConfig` 默认 true),完全不看发行版——而 `installed` 这个字段
+/// 的注释写的就是「机器级开关:本机装了 / 开了没有」。
+///
+/// 用户在「人格和功能」里主动勾上时写的是显式 `true`,读回来照样注册——默认关
+/// 不等于不让开(用户 09-22 拍板)。
+fn default_archlinux_plugin() -> PluginEnabledConfig {
+    PluginEnabledConfig {
+        enabled: arch_host(),
     }
 }
 
@@ -460,7 +498,7 @@ impl Default for PluginsConfig {
             print_image: PrintImagePluginConfig::default(),
             memes: MemesPluginConfig::default(),
             knowledge_base: KnowledgeBasePluginConfig::default(),
-            archlinux: PluginEnabledConfig::default(),
+            archlinux: default_archlinux_plugin(),
             memory: MemoryConfig::default(),
             claude_code: ClaudeCodePluginConfig::default(),
             antigravity: AntigravityPluginConfig::default(),
@@ -680,5 +718,42 @@ pub(crate) fn relocate_managed_output(from: &Path, to: &Path) {
                 "已把过时输出目录里的文件搬到新位置",
             )
         );
+    }
+}
+
+#[cfg(test)]
+mod arch_plugin_tests {
+    use super::*;
+
+    /// 没写过这一项时跟着宿主走：Arch 上开，别处关。
+    #[test]
+    fn an_absent_key_follows_the_host() {
+        let plugins: PluginsConfig = serde_json::from_str("{}").expect("empty object parses");
+        assert_eq!(plugins.archlinux.enabled, arch_host());
+    }
+
+    /// **用户主动勾上就得算数**，哪怕这台机器不是 Arch（用户 09-22 拍板：
+    /// 「除非用户自己在『人格和功能』菜单里主动开了」）。
+    #[test]
+    fn an_explicit_opt_in_wins_over_the_host_default() {
+        let plugins: PluginsConfig =
+            serde_json::from_str(r#"{"archlinux":{"enabled":true}}"#).expect("parses");
+        assert!(plugins.archlinux.enabled);
+    }
+
+    /// 反过来也要算数：Arch 上主动关掉的不能被默认值顶回来。
+    #[test]
+    fn an_explicit_opt_out_is_kept() {
+        let plugins: PluginsConfig =
+            serde_json::from_str(r#"{"archlinux":{"enabled":false}}"#).expect("parses");
+        assert!(!plugins.archlinux.enabled);
+    }
+
+    /// 非 Linux 上不去翻 PATH 找 pacman——那儿根本不会有。
+    #[test]
+    fn a_non_linux_host_is_never_arch() {
+        if !cfg!(target_os = "linux") {
+            assert!(!arch_host());
+        }
     }
 }
