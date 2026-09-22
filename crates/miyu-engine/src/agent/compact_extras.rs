@@ -189,7 +189,9 @@ fn escape_attribute(value: &str) -> String {
 fn resolve_path(raw: &str, workdir: &Path) -> PathBuf {
     let raw = raw.trim();
     if let Some(rest) = raw.strip_prefix("~/") {
-        if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+        if let Some(home) =
+            crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
+        {
             return home.join(rest);
         }
     }

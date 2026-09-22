@@ -570,9 +570,11 @@ pub fn installed_hook_stamp(text: &str) -> Option<(&str, &str)> {
 ///   脚本改过」和「手改过」一起盖住了。
 pub fn sync_installed_hooks(paths: &MiyuPaths) -> Vec<&'static str> {
     let mut updated = Vec::new();
-    // hook 文本按需生成：没装过的那几个连字符串都不用拼（三份加起来十几 KB，
-    // 而这段代码在**每次** miyu 启动时都会走一遍）。
-    let wanted: [(&'static str, &Path, fn() -> String); 3] = [
+    // hook 文本按需生成：没装过的那几个连字符串都不用拼（四份加起来十几 KB，
+    // 而这段代码在**每次** miyu 启动时都会走一遍）。powershell 的路径是方法、
+    // 不是字段，先取出来再借。
+    let powershell_hook = paths.powershell_hook_file();
+    let wanted: [(&'static str, &Path, fn() -> String); 4] = [
         (
             "fish",
             paths.fish_hook_file.as_path(),
@@ -587,6 +589,11 @@ pub fn sync_installed_hooks(paths: &MiyuPaths) -> Vec<&'static str> {
             "zsh",
             paths.zsh_hook_file.as_path(),
             zsh::hook as fn() -> String,
+        ),
+        (
+            "powershell",
+            powershell_hook.as_path(),
+            powershell::hook as fn() -> String,
         ),
     ];
     for (name, path, render) in wanted {

@@ -372,7 +372,7 @@ impl PackageSource {
         let as_path = Path::new(spec);
         if spec.starts_with('.') || spec.starts_with('/') || spec.starts_with('~') {
             let path = if let Some(rest) = spec.strip_prefix("~/") {
-                directories::BaseDirs::new()
+                crate::platform_dirs::PlatformDirs::new()
                     .map(|dirs| dirs.home_dir().join(rest))
                     .unwrap_or_else(|| as_path.to_path_buf())
             } else {

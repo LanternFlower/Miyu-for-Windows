@@ -36,6 +36,13 @@ pub(crate) fn next_job_id() -> String {
 }
 
 pub(crate) fn signal_process_group(pid: u32, force: bool) {
+    // 上游 v0.6.1 的不变量：pid 0 是「我自己那一组」，一个假任务就能让
+    // killpg(0, …) 打到自己身上（随测试顺序时好时坏）。这层守卫在换平台垫片
+    // 时被漏掉过，这里补回来。
+    if pid == 0 {
+        debug_assert!(false, "pid 0 = 自己那一组，不该走到这儿");
+        return;
+    }
     miyu_base::process::terminate_process_tree(pid, force);
 }
 
