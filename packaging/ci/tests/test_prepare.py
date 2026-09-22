@@ -204,7 +204,10 @@ class FrozenSourceTests(unittest.TestCase):
 
     def test_frozen_source_accepts_exact_inventory(self):
         _, source = verify_source(self.manifest)
-        self.assertEqual(source, self.source)
+        # `verify_source` 先 resolve 清单路径再取它旁边的 source，返回的是真实路径。
+        # macOS 上 /var 是指向 /private/var 的符号链接，临时目录两种写法都成立，
+        # 所以期望值也得 resolve——Linux 上两者恰好相同，这个假设才一直没被戳破。
+        self.assertEqual(source, self.source.resolve())
 
     def test_modified_source_or_added_file_is_rejected(self):
         path = self.source/'Cargo.toml'

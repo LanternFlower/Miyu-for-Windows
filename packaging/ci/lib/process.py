@@ -83,6 +83,26 @@ class ProcessSupervisor:
             os.killpg(child.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        except PermissionError as error:
+            # Darwin：进程组里只剩僵尸（已退出、还没回收）时 killpg 返回 EPERM，
+            # Linux 返回 0 或 ESRCH。2026-09-22 macOS CI 实测：
+            #     killpg(pid=15855) failed: Operation not permitted;
+            #     returncode=None, alive=True
+            # alive=True 说明 PID 没被复用、进程还是我们的，它只是已经退出了。
+            #
+            # 放过它是安全的，理由在 POSIX 那条规则上：给进程组发信号时，只有
+            # 「一个都发不出去」才返回 EPERM。组里但凡还有一个我们自己的活进程，
+            # 那一个就发得出去，也就不会是 EPERM。所以 EPERM 等价于「组里没有
+            # 我们能杀的活进程」——没有漏网的后代。
+            #
+            # 但只在**确实已经退出**时才放过。超时那条路上子进程还活着，那时候
+            # 被拒绝就是真出事了,必须炸出来。
+            if not exited_without_reaping(child.pid):
+                raise OSError(
+                    error.errno,
+                    f'killpg(pid={child.pid}, SIGKILL) failed while the child was '
+                    f'still running: {error.strerror}; returncode={child.returncode}',
+                ) from error
         except OSError as error:
             raise OSError(
                 error.errno,
