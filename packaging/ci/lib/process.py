@@ -9,6 +9,18 @@ import time
 from .reaper import OwnedReaper, exited_without_reaping
 
 
+def _alive(pid):
+    """只做诊断：这个 PID 还在不在（僵尸也算在）。"""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # 存在，但不是我们能发信号的——PID 被复用成别人的进程时就是这个样子。
+        return 'exists-but-not-ours'
+
+
 class ProcessSupervisor:
     def __init__(self):
         self.children = []
@@ -64,11 +76,26 @@ class ProcessSupervisor:
 
     @staticmethod
     def _stop(child):
+        # 出错时要说清是哪一步：2026-09-22 macOS CI 只报了「[Errno 1] Operation
+        # not permitted」，光这一句分不出是 killpg 还是 wait，也看不出当时这个
+        # 子进程是死是活。诊断信息比省几行代码值钱。
         try:
             os.killpg(child.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        child.wait(timeout=5)
+        except OSError as error:
+            raise OSError(
+                error.errno,
+                f'killpg(pid={child.pid}, SIGKILL) failed: {error.strerror}; '
+                f'returncode={child.returncode}, alive={_alive(child.pid)}',
+            ) from error
+        try:
+            child.wait(timeout=5)
+        except OSError as error:
+            raise OSError(
+                error.errno,
+                f'wait(pid={child.pid}) failed: {error.strerror}',
+            ) from error
 
     def __enter__(self):
         return self

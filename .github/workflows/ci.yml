@@ -137,6 +137,11 @@ jobs:
         # 构建链要的；TLS 走 rustls，所以不需要 OpenSSL。CoreAudio 随系统，
         # 不像 Linux 那样要单独装 ALSA 头。
         run: brew install ripgrep cmake pkg-config
+      - name: Test packaging contracts
+        # 这一套在 Linux 侧由 format-and-python 跑。macOS 上也要跑：里面那两条
+        # 「已退出但未被回收」的守卫测试压的正是平台差异最大的那段（Darwin 的
+        # waitid 语义），在 Linux 上全绿说明不了 macOS。放在编译前面，它只要 1 秒。
+        run: python3 -m unittest discover -s packaging/ci/tests -v
       - name: Compile the whole workspace including test targets
         run: cargo check --workspace --all-targets
       - name: Compile the voice feature surface that default builds never touch
