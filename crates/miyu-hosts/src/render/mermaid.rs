@@ -1,4 +1,4 @@
-//! ```mermaid 围栏的渲染:终端出图,WebUI 出 SVG。
+//! mermaid 围栏的渲染:终端出图,WebUI 出 SVG。
 //!
 //! 两端共用一个纯 Rust 渲染器(`mermaid-rs-renderer`,MIT)出 SVG。选它而不是在
 //! WebUI 里 vendor 一份 mermaid.js,理由有三:

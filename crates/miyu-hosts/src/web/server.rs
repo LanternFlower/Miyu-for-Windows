@@ -734,7 +734,7 @@ pub(in crate::web) async fn theme_css(State(state): State<DaemonState>) -> Respo
     }
 }
 
-/// ```mermaid 围栏 → SVG。WebUI 的卡片把源码 POST 过来,拿渲染好的图回去。
+/// mermaid 围栏 → SVG。WebUI 的卡片把源码 POST 过来,拿渲染好的图回去。
 ///
 /// 图在服务端渲染(与终端同一个 `render::mermaid`),而不是在前端 vendor 一份
 /// mermaid.js:终端那边本来就需要 Rust 渲染器,两边共用才不会出图不一致,
