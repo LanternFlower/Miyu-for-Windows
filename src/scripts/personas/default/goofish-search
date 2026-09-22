@@ -98,12 +98,26 @@ SEARCH_API = "mtop.taobao.idlemtopsearch.pc.search"
 
 # ---------------------------------------------------------------- 环境
 
+# macOS 上浏览器装在 app 包里,不在 PATH 上。只查 PATH 的话,那台机器明明装着
+# Chrome 也会被判成「没有可用浏览器」(09-22 真机实测)。路径是 app 包的固定布局。
+MACOS_BROWSERS = (
+    ("google-chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+    ("chromium", "/Applications/Chromium.app/Contents/MacOS/Chromium"),
+    ("microsoft-edge", "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+    ("brave", "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+)
+
+
 def find_system_chromium():
     for name in ("google-chrome", "google-chrome-stable", "chromium",
                  "chromium-browser", "microsoft-edge", "microsoft-edge-stable"):
         p = shutil.which(name)
         if p:
             return name, p
+    if sys.platform == "darwin":
+        for name, path in MACOS_BROWSERS:
+            if os.path.exists(path):
+                return name, path
     return None, None
 
 
@@ -471,9 +485,9 @@ def preflight():
     """依赖/环境预检, 返回 (ok, 问题列表)"""
     problems = []
     if not playwright_available():
-        problems.append("playwright 未安装 → 运行: goofish setup (或 sudo pacman -S python-playwright)")
+        problems.append("playwright 未安装 → 运行: goofish setup (Arch 上也可以 sudo pacman -S python-playwright)")
     if not chromium_bundled() and not find_system_chromium()[0]:
-        problems.append("没有可用浏览器(需 Chromium 系) → 运行: goofish setup (或 sudo pacman -S chromium)")
+        problems.append("没有可用浏览器(需 Chromium 系) → 运行: goofish setup (Arch 上也可以 sudo pacman -S chromium)")
     if problems:
         return False, problems
     return True, []

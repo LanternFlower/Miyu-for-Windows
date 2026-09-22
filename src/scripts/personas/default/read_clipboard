@@ -15,7 +15,8 @@
 # Example: {}
 """
 Port of the built-in Rust tool `read_clipboard` (src/tools/clipboard.rs +
-src/clipboard.rs). Linux only; backends in this order: wl-paste, xclip, xsel.
+src/clipboard.rs). Linux backends in this order: wl-paste, xclip, xsel;
+macOS goes through osascript (see `list_clipboard_targets`).
 
 Detection (same as the Rust `clipboard::read_clipboard`):
   1. list targets (`wl-paste -l`, else `xclip -selection clipboard -t TARGETS -o`)
