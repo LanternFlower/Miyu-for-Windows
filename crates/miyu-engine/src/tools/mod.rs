@@ -56,7 +56,9 @@ pub use tool_display::*;
 pub mod usage_query;
 pub mod vision;
 mod web;
-mod web_images;
+// 平台回合要换一份结果指令(register_platform),所以和 vision/platform_outreach
+// 一样对场所层开放。
+pub mod web_images;
 
 use miyu_base::config::{AppConfig, PersonaManifest};
 use miyu_base::paths::MiyuPaths;

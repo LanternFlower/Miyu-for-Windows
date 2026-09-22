@@ -1256,17 +1256,6 @@
           default: 5,
         },
         { key: "safe_search", label: "安全搜索", kind: "toggle", default: true },
-        { key: "auto_preview", label: "自动预览", kind: "toggle", hidden: true, default: true },
-        {
-          key: "preview_count",
-          label: "默认预览数量",
-          kind: "number",
-          integer: true,
-          min: 0,
-          max: 5,
-          hidden: true,
-          default: 1,
-        },
         {
           key: "max_download_mb",
           label: "最大下载 MB",

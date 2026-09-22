@@ -281,10 +281,6 @@ pub struct WebImagesPluginConfig {
     pub safe_search: bool,
     #[serde(default = "default_true")]
     pub vision_screening_enabled: bool,
-    #[serde(default = "default_true")]
-    pub auto_preview: bool,
-    #[serde(default = "default_web_images_preview_count")]
-    pub preview_count: usize,
     #[serde(default = "default_web_images_timeout")]
     pub timeout_seconds: u64,
 }
@@ -505,8 +501,6 @@ impl Default for WebImagesPluginConfig {
             max_download_mb: default_web_images_max_download_mb(),
             safe_search: default_true(),
             vision_screening_enabled: default_true(),
-            auto_preview: default_true(),
-            preview_count: default_web_images_preview_count(),
             timeout_seconds: default_web_images_timeout(),
         }
     }

@@ -80,8 +80,24 @@ pub(crate) fn test_turn_context(
     (temp, context, adapter)
 }
 
+/// 内置插件那套 + 管理员身份:要测「发本地附件」这类过附件门槛的路时用它。
+/// `test_turn_context` 装的是 `SuppressingToolPlugin`(恒置抑制位),在那上面测
+/// 抑制闸只会得到空断言(09-21 踩过)。
+pub(super) fn built_in_admin_context(
+    kind: ConversationKind,
+) -> (tempfile::TempDir, Arc<PlatformTurnContext>) {
+    built_in_context_inner(kind, true)
+}
+
 pub(super) fn built_in_test_context(
     kind: ConversationKind,
+) -> (tempfile::TempDir, Arc<PlatformTurnContext>) {
+    built_in_context_inner(kind, false)
+}
+
+fn built_in_context_inner(
+    kind: ConversationKind,
+    is_admin: bool,
 ) -> (tempfile::TempDir, Arc<PlatformTurnContext>) {
     let temp = tempfile::tempdir().unwrap();
     let paths = test_paths(temp.path());
@@ -100,7 +116,7 @@ pub(super) fn built_in_test_context(
         },
         "20000".to_string(),
         "tester".to_string(),
-        false,
+        is_admin,
         AppConfig::default(),
         paths.clone(),
         StateStore::new(&paths).unwrap(),

@@ -1,13 +1,16 @@
 {
   "name": "print_image",
   "display_name": "显示图片",
-  "description": "Print or render an image.",
+  "description": "Print or render local images in the terminal. Takes several at once.",
   "parameters": {
     "type": "object",
     "properties": {
       "image": {
-        "type": "string",
-        "description": "Local image path."
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Local image paths, in display order."
       },
       "size": {
         "type": "string",

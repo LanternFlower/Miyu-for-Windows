@@ -32,6 +32,17 @@ pub fn register(
         miyu_engine::tools::platform_outreach::qq_connected(),
         lane,
     );
+    // 搜图的收尾指令分宿主:平台回合里图要由模型显式发,而且发完再写正文就是
+    // 第二条消息(用户 09-21)。和 generate_image 一样,平台面换一份结果指令;
+    // 工具声明本身一个字节不变,不掰缓存前缀。
+    if registry.contains("search_web_images") {
+        miyu_engine::tools::web_images::register_platform(
+            registry,
+            context.config.clone(),
+            context.paths.clone(),
+            true,
+        );
+    }
     let host_tools_allowed = context.host_tools_allowed();
     let parameters = if host_tools_allowed {
         json!({
@@ -395,6 +406,11 @@ async fn send(arguments: Value, context: Arc<PlatformTurnContext>) -> Result<Str
         }
         bail!("text, images, or files is required");
     }
+    // 这一条里她到底说没说话。只发图/发文件时最终回复是配文,该留着;
+    // 带了文字就说明这条已经是她要说的话了。
+    let delivered_text = segments
+        .iter()
+        .any(|segment| matches!(segment, OutboundSegment::Markdown(_)));
     let receipt = context
         .send(OutboundMessage::segments(OutboundOrigin::Tool, segments))
         .await?;
@@ -402,6 +418,18 @@ async fn send(arguments: Value, context: Arc<PlatformTurnContext>) -> Result<Str
         if !deduplicated_text {
             context.record_delivered_reply_text(text);
         }
+    }
+    // 用这件工具带着文字发完之后,回合末尾的正文就是**另一条消息**——用户
+    // 09-21 实录:搜完图她发了图文,又补一条「图片发出来了，就长这样」。
+    // 与 send_voice_message 同一条闸(09-06「发了语音就没必要再发文字」):
+    // tool.finished 时截掉此后的正文,此前已经流出去的中间正文不受影响。
+    //
+    // 先试过只改工具结果里的收尾指令(不再要求她写最终回复),真模型 A/B
+    // 里两组都照样补第二条——光靠措辞按不住,所以这里用结构闸。
+    if delivered_text {
+        context
+            .pending_final_reply_suppression
+            .store(true, std::sync::atomic::Ordering::Release);
     }
     Ok(json!({
         "ok": true,

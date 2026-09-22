@@ -163,14 +163,6 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, id: &str) -> Vec<
                 t("Safe search", "安全搜索"),
                 config.plugins.web_images.safe_search,
             ),
-            Field::boolean(
-                t("Automatic preview", "自动预览"),
-                config.plugins.web_images.auto_preview,
-            ),
-            Field::new(
-                t("Default preview count", "默认预览数量"),
-                config.plugins.web_images.preview_count.to_string(),
-            ),
             Field::new(
                 t("Maximum download (MB)", "最大下载 MB"),
                 config.plugins.web_images.max_download_mb.to_string(),
@@ -459,13 +451,12 @@ pub(in crate::config_tui) fn apply_plugin_fields(
             config.plugins.web_images.max_results =
                 fields[3].value.trim().parse::<usize>()?.clamp(1, 10);
             config.plugins.web_images.safe_search = parse_bool_field(&fields[4].value)?;
-            config.plugins.web_images.auto_preview = parse_bool_field(&fields[5].value)?;
-            config.plugins.web_images.preview_count =
-                fields[6].value.trim().parse::<usize>()?.min(5);
+            // 删掉「自动预览 / 默认预览数量」两项之后下标整体前移两位
+            // (09-22:搜图不再自己显示,那两项没有作用点了)。
             config.plugins.web_images.max_download_mb =
-                fields[7].value.trim().parse::<f64>()?.clamp(0.1, 50.0);
+                fields[5].value.trim().parse::<f64>()?.clamp(0.1, 50.0);
             config.plugins.web_images.timeout_seconds =
-                fields[8].value.trim().parse::<u64>()?.clamp(5, 120);
+                fields[6].value.trim().parse::<u64>()?.clamp(5, 120);
         }
         "print_image" => {
             config.plugins.print_image.enabled = parse_bool_field(&fields[0].value)?;

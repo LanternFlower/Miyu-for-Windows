@@ -11,11 +11,11 @@ pub fn register_print(registry: &mut ToolRegistry, config: AppConfig) {
     }
     registry.register(ToolSpec::new_with_progress(
         "print_image",
-        "Print/render a local image directly in the current terminal output. Use this when the user asks to show, print, render, or preview an image, or when you need to inspect an image visually in the terminal before answering.",
+        "Print/render local images directly in the current terminal output, several at once. Use this when the user asks to show, print, render, or preview images, or when you need to look at them yourself before answering.",
         json!({
             "type": "object",
             "properties": {
-                "image": { "type": "string", "description": "Local image path." },
+                "image": { "type": "array", "items": { "type": "string" }, "description": "Local image paths, in display order." },
                 "size": { "type": "string", "description": "Optional chafa size, e.g. 80x40. Use this or width/height to avoid oversized output." },
                 "width": { "type": "integer", "description": "Optional output width in terminal cells, e.g. 80." },
                 "height": { "type": "integer", "description": "Optional output height in terminal cells, e.g. 40." }
@@ -30,47 +30,108 @@ pub fn register_print(registry: &mut ToolRegistry, config: AppConfig) {
     ));
 }
 
+/// 参数里的图片路径清单。
+///
+/// 声明是字符串数组,但也收单个字符串和「数组被写成 JSON 字符串」两种形态——
+/// 和 `send_message_to_user.images` / `generate_image.reference_images` 同款
+/// 宽松解析,真机上模型确实会写成那样。
+fn requested_paths(args: &Value) -> Result<Vec<String>> {
+    let raw = match args.get("image") {
+        Some(Value::Array(values)) => values.clone(),
+        Some(Value::String(text)) => match serde_json::from_str::<Value>(text) {
+            Ok(Value::Array(values)) => values,
+            // 就是一个裸路径。
+            _ => vec![Value::String(text.clone())],
+        },
+        None | Some(Value::Null) => bail!("{}", "image is required"),
+        Some(_) => bail!("{}", "image must be a path or a list of paths"),
+    };
+    let paths = raw
+        .iter()
+        .filter_map(|value| value.as_str())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        bail!("{}", "image is required")
+    }
+    Ok(paths)
+}
+
 pub(crate) async fn print_image(
     args: Value,
     print_config: &PrintImagePluginConfig,
     progress: crate::tools::ToolProgress,
 ) -> Result<String> {
-    let image = args
-        .get("image")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    if image.is_empty() {
-        bail!("{}", "image is required")
+    let requested = requested_paths(&args)?;
+    // 路径先全部校验一遍再动手:打了一半才发现第三张不存在,屏幕上会留下
+    // 半截结果,而模型收到的是一个 Err,它看不出前两张已经打出去了。
+    let mut paths = Vec::with_capacity(requested.len());
+    let mut errors = Vec::new();
+    for image in &requested {
+        let path = expand_path(image);
+        match miyu_base::sandbox::guard_read(&path).and_then(|()| {
+            let metadata = std::fs::metadata(&path)
+                .with_context(|| format!("{} {}", "failed to stat image", path.display()))?;
+            if metadata.is_file() {
+                Ok(())
+            } else {
+                bail!("{}: {}", "image path is not a file", path.display())
+            }
+        }) {
+            Ok(()) => paths.push(path),
+            // 一张坏路径不掀翻整批:剩下的照打,坏的那张单独报给模型。
+            Err(error) => errors.push(format!("{image}: {error}")),
+        }
     }
-    let path = expand_path(image);
-    miyu_base::sandbox::guard_read(&path)?;
-    let metadata = std::fs::metadata(&path)
-        .with_context(|| format!("{} {}", "failed to stat image", path.display()))?;
-    if !metadata.is_file() {
-        bail!("{}: {}", "image path is not a file", path.display())
+    if paths.is_empty() {
+        bail!("{}", errors.join("; "))
     }
     // 模型显式要的尺寸要随事件带走:daemon 模式下真正画图的是终端那一侧,
     // 这里 print_image_file 的参数它看不见。
-    progress.report_sized_image(
-        path.clone(),
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("image"),
-        requested_print_size(&args),
-    );
-    if progress.prepare_for_external_output().await {
-        print_image_file(&path, print_size(&args, print_config)).await?;
-        Ok(format!("printed image in terminal: {}", path.display()))
+    let size = requested_print_size(&args);
+    for path in &paths {
+        progress.report_sized_image(
+            path.clone(),
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("image"),
+            size.clone(),
+        );
+    }
+    // 活动区只冻一次,整批打完再放开——每张各冻一次会在图之间反复 resume。
+    let printed = if progress.prepare_for_external_output().await {
+        let size = print_size(&args, print_config);
+        for path in &paths {
+            if let Err(error) = print_image_file(path, size.clone()).await {
+                errors.push(format!("{}: {error}", path.display()));
+            }
+        }
+        true
+    } else {
+        false
+    };
+    let listed = paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut report = if printed {
+        format!("printed {} image(s) in terminal: {listed}", paths.len())
     } else {
         // 无终端会话(WebUI/桥/平台)里谎报 "printed in terminal" 会让模型
         // 以为用户看到了图(08-21 生图 bug 的帮凶);说真话:图已 emit,
         // 由宿主决定怎么展示。
-        Ok(format!(
-            "image emitted to the host for display: {}",
-            path.display()
-        ))
+        format!(
+            "{} image(s) emitted to the host for display: {listed}",
+            paths.len()
+        )
+    };
+    if !errors.is_empty() {
+        report.push_str(&format!("; failed: {}", errors.join("; ")));
     }
+    Ok(report)
 }
 
 /// 图片在**全屏**下怎么出：返回 `(发给终端的, 进缓冲的)`。
@@ -392,6 +453,96 @@ pub fn requested_print_size(args: &Value) -> Option<String> {
 
 pub(crate) fn print_size(args: &Value, print_config: &PrintImagePluginConfig) -> Option<String> {
     requested_print_size(args).or_else(|| configured_print_size(print_config))
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+
+    fn png(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]))
+            .save(&path)
+            .unwrap();
+        path
+    }
+
+    async fn run(args: Value) -> Result<String> {
+        print_image(
+            args,
+            &PrintImagePluginConfig::default(),
+            crate::tools::ToolProgress::default(),
+        )
+        .await
+    }
+
+    /// 用户 09-22 拍板改成批量。声明是字符串数组,但裸字符串和「数组被写成
+    /// JSON 字符串」两种形态也要收——真机上模型会那么写(与
+    /// `send_message_to_user.images` 同款宽松解析)。
+    #[tokio::test]
+    async fn a_batch_accepts_a_list_a_bare_path_and_a_stringified_list() {
+        let temp = tempfile::tempdir().unwrap();
+        let one = png(temp.path(), "one.png");
+        let two = png(temp.path(), "two.png");
+        let (one, two) = (one.display().to_string(), two.display().to_string());
+
+        let listed = run(json!({ "image": [one.clone(), two.clone()] }))
+            .await
+            .expect("数组该收");
+        assert!(listed.contains("2 image(s)"), "{listed}");
+        assert!(listed.contains(&one) && listed.contains(&two), "{listed}");
+
+        let bare = run(json!({ "image": one.clone() }))
+            .await
+            .expect("裸路径该收");
+        assert!(bare.contains("1 image(s)"), "{bare}");
+
+        let stringified = run(json!({ "image": format!("[{:?},{:?}]", one, two) }))
+            .await
+            .expect("JSON 字符串数组该收");
+        assert!(stringified.contains("2 image(s)"), "{stringified}");
+    }
+
+    /// 一张坏路径不掀翻整批:好的照打,坏的单独报。全坏才是 Err。
+    #[tokio::test]
+    async fn one_bad_path_does_not_sink_the_batch() {
+        let temp = tempfile::tempdir().unwrap();
+        let good = png(temp.path(), "good.png").display().to_string();
+        let missing = temp.path().join("nope.png").display().to_string();
+
+        let mixed = run(json!({ "image": [good.clone(), missing.clone()] }))
+            .await
+            .expect("还有能打的就不该整批失败");
+        assert!(mixed.contains("1 image(s)"), "{mixed}");
+        assert!(mixed.contains("failed:"), "坏的那张没报出来:{mixed}");
+
+        let all_bad = run(json!({ "image": [missing] })).await;
+        assert!(all_bad.is_err(), "一张能打的都没有该是 Err");
+    }
+
+    /// 不设上限(用户 09-22 拍板):一次给多少就打多少。
+    ///
+    /// 总量本来也拦不住——她可以接着再调一次,封顶只是个能绕过去的减速带。
+    #[tokio::test]
+    async fn a_long_batch_is_not_capped() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = (0..12)
+            .map(|i| png(temp.path(), &format!("p{i}.png")).display().to_string())
+            .collect::<Vec<_>>();
+        let long = run(json!({ "image": paths, "size": "4x2" }))
+            .await
+            .expect("给多少打多少,不该有封顶报错");
+        assert!(long.contains("12 image(s)"), "{long}");
+    }
+
+    /// 空与缺失都要有明确报错,别静默打 0 张。
+    #[tokio::test]
+    async fn an_empty_request_is_an_error() {
+        assert!(run(json!({})).await.is_err());
+        assert!(run(json!({ "image": [] })).await.is_err());
+        assert!(run(json!({ "image": "   " })).await.is_err());
+        assert!(run(json!({ "image": 7 })).await.is_err());
+    }
 }
 
 #[cfg(any(test, feature = "testkit"))]
