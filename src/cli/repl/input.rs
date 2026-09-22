@@ -63,7 +63,12 @@ pub(in crate::cli) fn read_live_repl_input(
         };
         // 开着面板时轮询放快一倍：面板里的转轮 80ms 一帧，轮询也是 80ms 的话
         // 差一毫秒就漏一帧，看着一顿一顿。大厅 banner 挂着时同理（星空、扫光）。
-        let wait_ms = if live.overlay_open() || live.banner.is_some() {
+        // 指针停在边缘、提亮还亮着：轮询也得跟上，否则 100ms 的判定等在 80ms
+        // 的轮询上，反应还是接近两百毫秒（用户 09-22 连着两次要更灵敏）。这一
+        // 档只在「指针正停在最外一圈且有提亮等着熄」时启用，不是常态开销。
+        let wait_ms = if live.hover_pending_leave() {
+            20
+        } else if live.overlay_open() || live.banner.is_some() {
             40
         } else {
             80
@@ -168,6 +173,7 @@ pub(in crate::cli) fn read_live_repl_input(
                 .cumulative()
                 .is_some_and(|totals| live.footer.update_cumulative_tokens(totals));
             live.expire_toast()?;
+            live.expire_hover()?;
             live.tick_overlay()?;
             if let Some(job_id) = live.pending_stop_job.take() {
                 return Ok(LiveReplOutcome::StopJob { job_id });

@@ -391,6 +391,8 @@ pub(in crate::cli) async fn follow_wake_run(
                         // 目标续轮就是在这条路上跑的：右上角那行 `/goal running
                         // · 第 N 轮 · 12s` 得跟着一起走，不然一附着就冻住了。
                         live.tick_goal_hint(jobs_feed.goal())?;
+                        // 同 `one_shot.rs`：指针出了窗口就熄掉提亮。
+                        live.expire_hover()?;
                         if live.set_jobs(jobs_feed.current()) {
                             synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
                                 live.redraw()

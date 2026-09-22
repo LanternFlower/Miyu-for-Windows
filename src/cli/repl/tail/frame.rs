@@ -662,6 +662,63 @@ impl LiveReplTail {
     }
 
     /// 通知到点了就收掉，顺手重画。空闲 tick 调它。
+    /// 指针停在边缘、而且还亮着——再静默这么久就当它出去了。
+    ///
+    /// 实测（09-22，`testkit/tui/pointer_leave_probe.py`）窗口内连续移动之间
+    /// 最长隔 0.38 秒，但那种停顿落在**边缘**才可能被误判成离开；真误判了也
+    /// 只是闪一下，手一动就亮回来。而最外一圈本来也不是内容区——正文有装订边，
+    /// 可点的块都从第 2 列起——所以「停在边缘不动」几乎只发生在指针正要出去。
+    /// 一路压到 0.1 秒（用户 09-22 连着两次要更灵敏：0.7 → 0.2 → 0.1）。
+    /// 再往下就会开始在「移动中蹭过边缘的停顿」上闪了。
+    pub(in crate::cli) const HOVER_LEAVE_GRACE: std::time::Duration =
+        std::time::Duration::from_millis(100);
+
+    /// 指针正停在边缘、而且有提亮等着熄。轮询靠它决定要不要放快一倍。
+    pub(in crate::cli) fn hover_pending_leave(&self) -> bool {
+        let Some(((column, row), _)) = self.last_mouse_move else {
+            return false;
+        };
+        let lit = self
+            .screen
+            .as_ref()
+            .is_some_and(|screen| screen.hovered().is_some() || screen.overlay_hovered())
+            || self.job_hover.is_some();
+        if !lit {
+            return false;
+        }
+        let (columns, rows) = terminal::size().unwrap_or((80, 24));
+        column == 0 || row == 0 || column + 1 >= columns || row + 1 >= rows
+    }
+
+    /// 指针出了窗口就把提亮熄掉。
+    ///
+    /// 终端不报「离开」（09-22 实测，见 `testkit/tui/pointer_leave_probe.py`），
+    /// 只能认这两条同时成立：最后一下落在**边缘**、而且此后静默够久。窗口内
+    /// 连续移动两次之间实测最多 0.4 秒，所以这点静默不会误伤正在移动的手；
+    /// 停在正文当中不动也不算离开——那是悬着看。
+    pub(in crate::cli) fn expire_hover(&mut self) -> Result<()> {
+        let Some((_, at)) = self.last_mouse_move.filter(|_| self.hover_pending_leave()) else {
+            return Ok(());
+        };
+        if at.elapsed() < Self::HOVER_LEAVE_GRACE {
+            return Ok(());
+        }
+        // 认过一次就不再重复认：手回来时下一条移动事件会重新记。
+        self.last_mouse_move = None;
+        if self
+            .screen
+            .as_mut()
+            .is_some_and(super::screen::Screen::clear_hover)
+        {
+            let cursor = self.output_cursor;
+            self.resume_at_own(cursor)?;
+        }
+        if self.job_hover.take().is_some() {
+            self.tick_job_strip()?;
+        }
+        Ok(())
+    }
+
     pub(in crate::cli) fn expire_toast(&mut self) -> Result<()> {
         let expired = self
             .screen

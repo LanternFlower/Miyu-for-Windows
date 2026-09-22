@@ -533,6 +533,8 @@ async fn run_remote_chat_inner(
                         // 转轮 tick（约 66ms）重画一次就跟得上 80ms 一帧。
                         if let Some(feed) = jobs_feed {
                             job_strip_tick = job_strip_tick.wrapping_add(1);
+                            // 指针出了窗口就熄掉提亮——回合跑着的时候也得管。
+                            live.expire_hover()?;
                             if job_strip_tick % 2 == 0 && !live.external_output_active {
                                 if live.set_jobs(feed.current()) {
                                     synchronized_terminal_update(

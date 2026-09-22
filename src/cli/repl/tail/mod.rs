@@ -183,6 +183,15 @@ pub(in crate::cli) struct LiveReplTail {
     pub(in crate::cli) job_strip_rows: u16,
     /// 鼠标正悬在任务条的哪一条上(`jobs` 的下标),那一行画成不 dim。
     pub(in crate::cli) job_hover: Option<usize>,
+    /// 最后一次鼠标移动落在哪、什么时候。
+    ///
+    /// 指针移出窗口时终端**什么都不发**——09-22 实测（`testkit/tui/
+    /// pointer_leave_probe.py`）：kitty 不发焦点事件，也没有任何「离开」信号，
+    /// 只是从此静默。可用的线索只有一条：移出去之前最后那一下必然落在**边缘**
+    /// （实测一路报到第 1 列），而窗口内正常移动两次之间最多隔 0.4 秒。所以
+    /// 「最后停在边缘 + 随后静默」就当指针出去了，把提亮熄掉。
+    /// 停在正文当中不动不算——那是悬着看，提亮该留着。
+    pub(in crate::cli) last_mouse_move: Option<((u16, u16), std::time::Instant)>,
     /// 用户在详情面板里按了 x：这个任务该停了。事件层不发 IPC（它没有
     /// 异步上下文），攒在这儿由主循环取走。
     pub(in crate::cli) pending_stop_job: Option<String>,
@@ -612,6 +621,7 @@ impl LiveReplTail {
             job_strip_start: 0,
             job_strip_rows: 0,
             job_hover: None,
+            last_mouse_move: None,
             pending_stop_job: None,
             input_cursor: (0, 0),
             rendered: false,
