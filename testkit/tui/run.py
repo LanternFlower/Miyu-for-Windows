@@ -334,20 +334,41 @@ def kill_stale_daemon():
     而客户端照样连得上——连的是**上一轮**那个，它的 MIYU_HOME 刚被这一轮
     删掉了。结果是满屏莫名其妙的红，跟代码一点关系没有（实测踩过）。
     """
-    try:
-        out = subprocess.run(
-            ["ss", "-lntpH", f"sport = :{PORT}"],
-            capture_output=True, text=True, timeout=5,
-        ).stdout
-    except Exception:
-        return
-    for pid in set(re.findall(r"pid=(\d+)", out)):
+    for pid in _listeners_on_port(PORT):
         try:
-            os.kill(int(pid), 15)
+            os.kill(pid, 15)
         except ProcessLookupError:
             pass
-    if out.strip():
-        time.sleep(1.0)
+        else:
+            time.sleep(1.0)
+
+
+def _listeners_on_port(port):
+    """占着这个端口的 pid。Linux 走 `ss`，macOS 走 `lsof`。
+
+    原来只有 `ss` 一条路，而且整个包在 `try/except: return` 里——**macOS 上没有
+    `ss`，于是它静默什么都不做**，上面那段注释描述的灾难照样发生，只是没人知道
+    为什么（2026-09-22 在真 Mac 上实测踩到）。静默失败比不做更糟：它看起来做了。
+    """
+    if sys.platform == "darwin":
+        # -t 只出 pid；没有监听者时 lsof 退出码非 0、输出为空，正是我们要的。
+        command = ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"]
+        pattern = r"(\d+)"
+    else:
+        command = ["ss", "-lntpH", f"sport = :{port}"]
+        pattern = r"pid=(\d+)"
+    try:
+        out = subprocess.run(
+            command, capture_output=True, text=True, timeout=5
+        ).stdout
+    except FileNotFoundError:
+        # 两条路都没有就只能放过——但要说出来，别再静默。
+        print(f"[run] 查不到端口 {port} 的占用者：{command[0]} 不在 PATH 上",
+              file=sys.stderr)
+        return []
+    except Exception:
+        return []
+    return sorted({int(pid) for pid in re.findall(pattern, out)})
 
 
 def reverse_cells(row):
