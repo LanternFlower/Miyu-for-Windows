@@ -6,7 +6,7 @@ import subprocess
 import shutil
 import threading
 import time
-from .reaper import OwnedReaper
+from .reaper import OwnedReaper, exited_without_reaping
 
 
 class ProcessSupervisor:
@@ -36,7 +36,7 @@ class ProcessSupervisor:
             # A live unreaped child pins its PID; it cannot be reused during cleanup.
             try:
                 deadline = time.monotonic() + timeout
-                while os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+                while not exited_without_reaping(child.pid):
                     self.reaper.reap_exited([entry.pid for entry in self.children])
                     if time.monotonic() >= deadline:
                         result['timed_out'] = True

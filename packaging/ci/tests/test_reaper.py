@@ -6,11 +6,13 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import time
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from lib.isolation import Sandbox
+from lib.reaper import exited_without_reaping
 from lib.process import ProcessSupervisor
 from lib.reaper import OwnedReaper
 import run_tests
@@ -117,3 +119,32 @@ print(child.pid, flush=True)
             reaper.reap('unused')
             child.wait(timeout=5)
             reaper.close()
+
+
+class ExitedWithoutReapingTests(unittest.TestCase):
+    """跨平台压「已退出但没回收」这个判据。
+
+    Linux 上走 `os.waitid`，macOS 上走 libc——CPython 在 macOS 不导出 os.waitid
+    （2026-09-22 macOS CI 第二次运行就挂在这儿）。两支都必须给出同一个答案，
+    而且**不能回收**子进程：回收了 PID 当场可被复用，监督进程赖以清理的那条
+    不变量就没了。
+    """
+
+    def test_a_running_child_is_not_reported_as_exited(self):
+        child = subprocess.Popen(['/bin/sh', '-c', 'sleep 5'])
+        try:
+            self.assertFalse(exited_without_reaping(child.pid))
+        finally:
+            child.kill()
+            child.wait(timeout=5)
+
+    def test_an_exited_child_is_reported_and_stays_unreaped(self):
+        child = subprocess.Popen(['/bin/sh', '-c', 'exit 7'])
+        deadline = time.monotonic() + 5
+        while not exited_without_reaping(child.pid):
+            if time.monotonic() > deadline:
+                self.fail('子进程已经退出，判据却一直说没有')
+            time.sleep(0.01)
+        # 没被回收才收得到退出码；被回收过的话这里会抛 ChildProcessError。
+        self.assertEqual(os.waitpid(child.pid, 0)[1] >> 8, 7)
+        child.returncode = 7
