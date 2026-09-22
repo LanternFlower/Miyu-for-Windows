@@ -31,7 +31,8 @@ class DownloadTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_cached_tampering_is_rejected_without_network(self):
-        (self.cache/'input.tgz').write_bytes(b'tampered')
+        # 缓存自己那份按 record id 命名；被人改过就是缓存坏了，要当场停住。
+        (self.cache/'fixture').write_bytes(b'tampered')
         with patch('urllib.request.urlopen', side_effect=AssertionError('network used')):
             with self.assertRaisesRegex(ValueError, 'SHA256'):
                 obtain(self.record, self.root/'result', cache=self.cache, offline=True)
@@ -69,10 +70,43 @@ class DownloadTests(unittest.TestCase):
         with patch('urllib.request.urlopen', self._serve(b'locked bytes')):
             obtain(self.record, self.root/'first', cache=self.cache, offline=False)
         self.assertEqual(self.served, 1)
-        self.assertEqual((self.cache/'input.tgz').read_bytes(), b'locked bytes')
+        self.assertEqual((self.cache/'fixture').read_bytes(), b'locked bytes')
         with patch('urllib.request.urlopen', side_effect=AssertionError('network used')):
             obtain(self.record, self.root/'second', cache=self.cache, offline=True)
         self.assertEqual((self.root/'second').read_bytes(), b'locked bytes')
+
+    def test_two_records_sharing_a_url_filename_do_not_poison_each_other(self):
+        """09-22 发 0.6.2 时实测：锁里 `sherpa-onnx-license` 与 `silero-vad-license`
+        的 URL 末段都是 `LICENSE`。缓存原来按末段命名，先写的那份占住位置、后一条
+        存不进去，下一次发版取到别人的字节，哈希对不上，整条链停在这里。
+
+        退回改动前这条会红：第二件取到第一件的字节，报 SHA256 mismatch。
+        """
+        other = {'id': 'other-fixture', 'url': 'https://example.invalid/input.tgz',
+                 'sha256': hashlib.sha256(b'other bytes').hexdigest()}
+        self.served = 0
+        with patch('urllib.request.urlopen', self._serve(b'locked bytes')):
+            obtain(self.record, self.root/'first', cache=self.cache, offline=False)
+        with patch('urllib.request.urlopen', self._serve(b'other bytes')):
+            obtain(other, self.root/'second', cache=self.cache, offline=False)
+        self.assertEqual((self.root/'second').read_bytes(), b'other bytes')
+        # 断网重取，两件都要各自命中自己那份。
+        with patch('urllib.request.urlopen', side_effect=AssertionError('network used')):
+            obtain(self.record, self.root/'again-first', cache=self.cache, offline=True)
+            obtain(other, self.root/'again-second', cache=self.cache, offline=True)
+        self.assertEqual((self.root/'again-first').read_bytes(), b'locked bytes')
+        self.assertEqual((self.root/'again-second').read_bytes(), b'other bytes')
+
+    def test_a_foreign_file_with_the_same_name_is_a_miss_not_a_corruption(self):
+        """按文件名认的那一路是外来输入（CI 递进来一篮子文件）。名字撞上、内容对不上
+        很正常，那是「不是这一件」，照常去锁定 URL 取；不能当成缓存被改过而停住。
+        """
+        (self.cache/'input.tgz').write_bytes(b'somebody elses bytes')
+        self.served = 0
+        with patch('urllib.request.urlopen', self._serve(b'locked bytes')):
+            obtain(self.record, self.root/'result', cache=self.cache, offline=False)
+        self.assertEqual(self.served, 1)
+        self.assertEqual((self.root/'result').read_bytes(), b'locked bytes')
 
     def test_no_cache_directory_means_no_write_and_no_crash(self):
         self.served = 0
@@ -85,7 +119,7 @@ class DownloadTests(unittest.TestCase):
         self.served = 0
         with patch('urllib.request.urlopen', self._serve(b'locked bytes')):
             obtain(self.record, self.root/'first', cache=self.cache, offline=False)
-        (self.cache/'input.tgz').write_bytes(b'tampered')
+        (self.cache/'fixture').write_bytes(b'tampered')
         with patch('urllib.request.urlopen', side_effect=AssertionError('network used')):
             with self.assertRaisesRegex(ValueError, 'SHA256'):
                 obtain(self.record, self.root/'third', cache=self.cache, offline=True)
