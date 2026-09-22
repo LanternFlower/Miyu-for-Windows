@@ -365,15 +365,68 @@ fn prune(dir: &Path) {
 /// 一张不能分页的图比整页还高的话，分页器只能把它整块丢到下一页，无限循环。
 /// 等比只缩不放：放大不会凭空长出细节。
 ///
-/// 底色铺白：渲染器给的是浅色主题，透明底贴到深色纸面上线条会被吃掉。
-pub(crate) fn render_png_in_box(source: &str, max_width: u32, max_height: u32) -> Option<Vec<u8>> {
+/// 把 SVG 那块**整幅底色矩形**改成给定的颜色。
+///
+/// mermaid 渲染器输出的第一个元素永远是
+/// `<rect x="0" y="0" width=… height=… fill="#FFFFFF"/>`。光靠 `pixmap.fill`
+/// 盖不住它——实测一张三节点的小图渲完仍有 94 万个纯白像素,全是这块。
+///
+/// **只动这一块**:节点自己的浅色填充(`#F8FAFC` 一类)是图的一部分,改了图就不是
+/// 原来那张了。判据是「紧跟在 `<svg …>` 后面、且 x/y 都是 0」——不满足就原样返回,
+/// 宁可保持白底也不要乱改别人的图元。
+fn recolour_backdrop(svg: &str, background: [u8; 4]) -> String {
+    let Some(start) = svg.find("<rect") else {
+        return svg.to_string();
+    };
+    // `<svg …>` 与它之间只允许有空白:再往后的 rect 就是图元了。
+    let Some(head_end) = svg.find('>') else {
+        return svg.to_string();
+    };
+    if !svg[head_end + 1..start].trim().is_empty() {
+        return svg.to_string();
+    }
+    let Some(len) = svg[start..].find("/>") else {
+        return svg.to_string();
+    };
+    let end = start + len + 2;
+    let rect = &svg[start..end];
+    if !rect.contains("x=\"0\"") || !rect.contains("y=\"0\"") {
+        return svg.to_string();
+    }
+    let Some(fill_at) = rect.find("fill=\"") else {
+        return svg.to_string();
+    };
+    let value_at = fill_at + "fill=\"".len();
+    let Some(value_len) = rect[value_at..].find('"') else {
+        return svg.to_string();
+    };
+    let hex = format!(
+        "#{:02X}{:02X}{:02X}",
+        background[0], background[1], background[2]
+    );
+    let mut out = String::with_capacity(svg.len() + hex.len());
+    out.push_str(&svg[..start + value_at]);
+    out.push_str(&hex);
+    out.push_str(&svg[start + value_at + value_len..]);
+    out
+}
+
+/// 底色由调用方给：成图渲染器要跟页面主题一致(用户 09-22:正文是米色纸面,
+/// 图却是纯白方块,一眼看出是贴上去的)。透明底不行——渲染器给的是浅色主题,
+/// 线条落在深色纸面上会被吃掉。
+pub(crate) fn render_png_in_box(
+    source: &str,
+    max_width: u32,
+    max_height: u32,
+    background: [u8; 4],
+) -> Option<Vec<u8>> {
     use resvg::tiny_skia;
     use resvg::usvg;
 
     if max_width == 0 || max_height == 0 {
         return None;
     }
-    let svg = render_svg(source).ok()?;
+    let svg = recolour_backdrop(&render_svg(source).ok()?, background);
     let options = usvg::Options {
         font_family: default_font_family(),
         fontdb: fonts(),
@@ -388,7 +441,12 @@ pub(crate) fn render_png_in_box(source: &str, max_width: u32, max_height: u32) -
     let width = (natural.width() * scale).round().max(1.0) as u32;
     let height = (natural.height() * scale).round().max(1.0) as u32;
     let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
-    pixmap.fill(tiny_skia::Color::WHITE);
+    pixmap.fill(tiny_skia::Color::from_rgba8(
+        background[0],
+        background[1],
+        background[2],
+        background[3],
+    ));
     resvg::render(
         &tree,
         tiny_skia::Transform::from_scale(scale, scale),
@@ -808,5 +866,41 @@ mod tests {
                 sequence.len()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod backdrop_tests {
+    use super::*;
+
+    const PAPER: [u8; 4] = [244, 239, 229, 255];
+
+    /// 只改整幅底色那一块，节点自己的填充一个都不许动。
+    #[test]
+    fn only_the_full_size_backdrop_is_recoloured() {
+        let svg = render_svg("graph TD; A-->B;").expect("该渲得出 SVG");
+        assert!(svg.contains("fill=\"#FFFFFF\""), "样本变了:{}", &svg[..200]);
+        let painted = recolour_backdrop(&svg, PAPER);
+        assert!(painted.contains("fill=\"#F4EFE5\""), "底色没换上");
+        assert_eq!(painted.matches("#F4EFE5").count(), 1, "只该换那一块");
+        // 节点的浅色填充照旧。
+        assert_eq!(
+            svg.matches("#F8FAFC").count(),
+            painted.matches("#F8FAFC").count()
+        );
+    }
+
+    /// 认不出那块底就原样返回——宁可留白底,也不要乱改别人的图元。
+    #[test]
+    fn anything_unexpected_is_left_alone() {
+        // 第一个 rect 不在原点:是图元,不是底。
+        let svg = r##"<svg width="10" height="10"><rect x="3" y="4" fill="#FFFFFF"/></svg>"##;
+        assert_eq!(recolour_backdrop(svg, PAPER), svg);
+        // `<svg>` 和 rect 之间隔着别的元素。
+        let svg = r##"<svg width="10" height="10"><g/><rect x="0" y="0" fill="#FFFFFF"/></svg>"##;
+        assert_eq!(recolour_backdrop(svg, PAPER), svg);
+        // 压根没有 rect。
+        let svg = r##"<svg width="10" height="10"><circle r="1"/></svg>"##;
+        assert_eq!(recolour_backdrop(svg, PAPER), svg);
     }
 }

@@ -44,8 +44,6 @@ pub(in crate::platforms::plugins::renderer) struct Block {
     pub(in crate::platforms::plugins::renderer) spans: Vec<RichSpan>,
     pub(in crate::platforms::plugins::renderer) table: Option<TableBlock>,
     pub(in crate::platforms::plugins::renderer) task: Option<bool>,
-    /// `BlockKind::Image` 的 PNG 字节。
-    pub(in crate::platforms::plugins::renderer) image: Option<Vec<u8>>,
 }
 
 impl Block {
@@ -55,7 +53,6 @@ impl Block {
             spans: Vec::new(),
             table: None,
             task: None,
-            image: None,
         }
     }
 
@@ -76,7 +73,6 @@ impl Block {
     pub(in crate::platforms::plugins::renderer) fn has_content(&self) -> bool {
         self.kind == BlockKind::Rule
             || self.spans.iter().any(|span| !span.text.is_empty())
-            || self.image.is_some()
             || self.table.as_ref().is_some_and(TableBlock::has_content)
             || self.task.is_some()
     }
@@ -371,7 +367,7 @@ impl MarkdownCollector {
             }
             TagEnd::CodeBlock => {
                 if std::mem::take(&mut self.mermaid_fence) {
-                    self.rasterize_current_fence();
+                    self.mark_current_fence_as_diagram();
                 }
                 self.finish_current();
                 self.code_block = false;
@@ -513,32 +509,19 @@ impl MarkdownCollector {
         }
     }
 
-    /// 把当前这个 mermaid 围栏渲成块内位图。
+    /// 把当前这个围栏标成「图」。
     ///
-    /// 画不出来就原样留着当代码块——语法错了、图型不支持的时候，她至少还能看见
-    /// 自己写了什么（与终端同一条规矩）。
-    fn rasterize_current_fence(&mut self) {
+    /// 只改 kind,源码照旧留在 spans 里——真正的光栅化在排版阶段(那儿才拿得到
+    /// 调色盘,图的底色要跟页面主题一致)。渲不出来时排版会把它当回普通代码块,
+    /// 所以这里不必提前判断行不行。
+    fn mark_current_fence_as_diagram(&mut self) {
         let Some(block) = self.current.as_mut() else {
             return;
         };
-        let source = block
-            .spans
-            .iter()
-            .map(|span| span.text.as_str())
-            .collect::<String>();
-        if source.trim().is_empty() {
+        if block.spans.iter().all(|span| span.text.trim().is_empty()) {
             return;
         }
-        let Some(png) = crate::render::mermaid::render_png_in_box(
-            &source,
-            super::layout::COLUMN_WIDTH,
-            super::MAX_DIAGRAM_HEIGHT,
-        ) else {
-            return;
-        };
         block.kind = BlockKind::Image;
-        block.spans.clear();
-        block.image = Some(png);
     }
 
     pub(in crate::platforms::plugins::renderer) fn finish_current(&mut self) {

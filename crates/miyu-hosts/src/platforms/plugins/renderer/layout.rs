@@ -82,48 +82,47 @@ pub(in crate::platforms::plugins::renderer) fn layout_block(
     palette: Palette,
     fonts: &ResolvedFonts,
 ) -> Result<LayoutBlock> {
+    let mut block = block;
     if block.kind == BlockKind::Image {
-        // 位图在解析阶段就按 COLUMN_WIDTH × MAX_DIAGRAM_HEIGHT 缩好了,这里只
-        // 量高。`boundaries` 只有末尾一个 = 整块不可切：图中间切一刀就废了。
-        let decoded = block
-            .image
-            .as_deref()
-            .and_then(|png| image::load_from_memory(png).ok())
-            .map(|decoded| decoded.to_rgba8());
-        let Some(decoded) = decoded else {
-            // 解不出来就当它不存在,别把整篇渲染带崩。
-            return Ok(LayoutBlock {
-                kind: BlockKind::Rule,
-                buffer: None,
-                table: None,
-                task: None,
-                image: None,
-                total_height: 0,
-                vertical_padding: 0,
-                inset_left: 0,
-                boundaries: vec![0],
-                margin_before: 0,
-                margin_after: 0,
-                default_color: color(palette.text),
-                inline_code_background: palette.code_background,
-            });
-        };
-        let height = decoded.height();
-        return Ok(LayoutBlock {
-            kind: block.kind,
-            buffer: None,
-            table: None,
-            task: None,
-            image: Some(decoded),
-            total_height: height,
-            vertical_padding: 0,
-            inset_left: 0,
-            boundaries: vec![height],
-            margin_before: 24,
-            margin_after: 24,
-            default_color: color(palette.text),
-            inline_code_background: palette.code_background,
-        });
+        // 光栅化放在这儿而不是解析阶段:底色要取**页面主题**的纸面色,调色盘
+        // 只有到这一步才拿得到(用户 09-22:正文米色、图纯白,一眼看出是贴上去的)。
+        let source = block
+            .spans
+            .iter()
+            .map(|span| span.text.as_str())
+            .collect::<String>();
+        let decoded = crate::render::mermaid::render_png_in_box(
+            &source,
+            COLUMN_WIDTH,
+            super::MAX_DIAGRAM_HEIGHT,
+            palette.background,
+        )
+        .and_then(|png| image::load_from_memory(&png).ok())
+        .map(|decoded| decoded.to_rgba8());
+        match decoded {
+            Some(decoded) => {
+                // `boundaries` 只有末尾一个 = 整块不可切:图中间切一刀就废了。
+                let height = decoded.height();
+                return Ok(LayoutBlock {
+                    kind: BlockKind::Image,
+                    buffer: None,
+                    table: None,
+                    task: None,
+                    image: Some(decoded),
+                    total_height: height,
+                    vertical_padding: 0,
+                    inset_left: 0,
+                    boundaries: vec![height],
+                    margin_before: 24,
+                    margin_after: 24,
+                    default_color: color(palette.text),
+                    inline_code_background: palette.code_background,
+                });
+            }
+            // 画不出来(语法错、图型不支持)就当回普通代码块:源码还在 spans 里,
+            // 她至少看得见自己写了什么。与终端「认不出就退回代码块」同一条规矩。
+            None => block.kind = BlockKind::Code,
+        }
     }
 
     if block.kind == BlockKind::Rule {

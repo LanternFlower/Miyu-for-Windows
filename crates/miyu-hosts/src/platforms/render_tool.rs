@@ -242,6 +242,43 @@ mod tests {
         );
     }
 
+    /// 图的底色要跟纸面一个色（用户 09-22：正文米色、图纯白，一眼看出是贴上去的）。
+    ///
+    /// 判据是整张成图里**一个纯白像素都不该有**：paper 主题的纸面是
+    /// `[244,239,229]`，正文里本来就没有纯白；写死 `fill(WHITE)` 的那一版会在
+    /// 图那一块留下一大片 255。
+    #[tokio::test]
+    async fn the_diagram_background_matches_the_page() {
+        let pages = renderer()
+            .expect("渲染器该起得来")
+            .render(
+                "开头\n\n```mermaid\ngraph TD; A-->B; B-->C;\n```\n\n结尾\n",
+                &RenderConfig::default(),
+            )
+            .await
+            .expect("该渲得出来");
+        assert_eq!(pages.len(), 1);
+        let decoded = image::load_from_memory(&pages[0].png)
+            .expect("该是能解码的 PNG")
+            .to_rgba8();
+        let white = decoded
+            .pixels()
+            .filter(|pixel| pixel.0[0] == 255 && pixel.0[1] == 255 && pixel.0[2] == 255)
+            .count();
+        assert_eq!(white, 0, "图里还留着 {white} 个纯白像素");
+
+        // 纸面色本身得占大头——别把「没有白」做成「整张都是别的颜色」。
+        let paper = decoded
+            .pixels()
+            .filter(|pixel| pixel.0 == [244, 239, 229, 255])
+            .count();
+        assert!(
+            paper > decoded.pixels().count() / 4,
+            "纸面色只占 {paper}/{}，底色多半没铺对",
+            decoded.pixels().count()
+        );
+    }
+
     /// 画不出来的图退回成代码块，别把整篇带崩——她至少还能看见自己写了什么。
     #[tokio::test]
     async fn a_broken_diagram_falls_back_to_a_code_block() {
