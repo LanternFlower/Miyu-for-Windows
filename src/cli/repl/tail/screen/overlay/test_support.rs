@@ -103,8 +103,13 @@ impl Screen {
         true
     }
 
-    /// 面板里鼠标停在哪一块上（测试用）。
-    pub(in crate::cli) fn overlay_hovered(&self) -> Option<u64> {
+    /// 面板里鼠标停在**哪一块**上（测试用）。
+    ///
+    /// 不叫 `overlay_hovered`:生产侧 09-22 加了个同名的 `-> bool`(「有没有提亮
+    /// 着的一行」),两边同名同接收者、只有返回类型不同——文本上不冲突所以合得
+    /// 干干净净,但 cfg(test) 一开两个都在,`cargo test` 直接编不过(E0592/E0034)。
+    /// `cargo build` 是好的,所以合的时候看不出来。
+    pub(in crate::cli) fn hovered_overlay_block(&self) -> Option<u64> {
         self.overlay.as_ref().and_then(|panel| panel.hover)
     }
 
