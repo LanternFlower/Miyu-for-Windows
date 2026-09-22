@@ -17,3 +17,60 @@ pub fn trim_process_memory() {
 /// 错一直藏到 2026-09-22 加上 macOS CI 的第一次运行才现形。
 #[cfg(not(target_os = "linux"))]
 pub fn trim_process_memory() {}
+
+/// 外部程序不在 `PATH` 上时，把 `os error 2` 换成一句能照着做的话。
+///
+/// 09-22 在 macOS 上实测：那台机器没有 ripgrep，模型调 `grep` / `glob` 收到的
+/// 整句话就是 `No such file or directory (os error 2)`——连缺的是哪个程序都没说。
+/// 模型拿到这种错只会去猜路径、换参数，白烧几轮。Linux 上看不见是因为 Arch 包
+/// 把 `ripgrep` 写进了依赖，装 Miyu 就一起装上了。
+///
+/// 只认 `NotFound`：别的 io 错误（权限、管道断）原样往上抛，不要拿安装提示去盖
+/// 一个不相干的故障。
+pub fn missing_program(program: &str, error: &std::io::Error) -> Option<String> {
+    if error.kind() != std::io::ErrorKind::NotFound {
+        return None;
+    }
+    let install = match program {
+        "rg" => Some(
+            "brew install ripgrep (macOS), apt install ripgrep (Debian/Ubuntu), \
+             dnf install ripgrep (Fedora), pacman -S ripgrep (Arch)",
+        ),
+        "chafa" => Some(
+            "brew install chafa (macOS), apt install chafa (Debian/Ubuntu), \
+             dnf install chafa (Fedora), pacman -S chafa (Arch)",
+        ),
+        _ => None,
+    };
+    Some(match install {
+        Some(install) => format!("`{program}` is not on PATH. Install it: {install}."),
+        None => format!("`{program}` is not on PATH."),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_program_is_named_with_a_way_to_install_it() {
+        let error = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let hint = missing_program("rg", &error).expect("NotFound should produce a hint");
+        assert!(hint.contains("`rg` is not on PATH"), "{hint}");
+        assert!(hint.contains("brew install ripgrep"), "{hint}");
+    }
+
+    #[test]
+    fn other_io_failures_keep_their_own_error() {
+        // 权限被拒不是「没装」,拿安装提示去盖它会把人带偏。
+        let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(missing_program("rg", &error).is_none());
+    }
+
+    #[test]
+    fn an_unknown_program_still_says_which_one_is_missing() {
+        let error = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let hint = missing_program("totally-unknown", &error).expect("still a hint");
+        assert_eq!(hint, "`totally-unknown` is not on PATH.");
+    }
+}
