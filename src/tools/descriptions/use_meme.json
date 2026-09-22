@@ -28,6 +28,10 @@
         "type": "string",
         "description": "show: full sha256 id or a unique short id."
       },
+      "alone": {
+        "type": "boolean",
+        "description": "show: the meme is the whole reply. Anything you write after this call is dropped, so use it when the meme already says it."
+      },
       "size": {
         "type": "string",
         "description": "show: chafa size, e.g. 40x15."

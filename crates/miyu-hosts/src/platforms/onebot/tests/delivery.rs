@@ -854,6 +854,21 @@ async fn invalid_attachment_does_not_send_a_bare_response_marker() {
 async fn meme_split_frames(
     meme_is_meme: bool,
 ) -> (Vec<Value>, tokio::task::JoinHandle<anyhow::Result<bool>>) {
+    meme_split_frames_with_text(meme_is_meme, "在的").await
+}
+
+async fn meme_split_frames_with_text(
+    meme_is_meme: bool,
+    reply_text: &str,
+) -> (Vec<Value>, tokio::task::JoinHandle<anyhow::Result<bool>>) {
+    meme_split_frames_suppressed(meme_is_meme, reply_text, Vec::new()).await
+}
+
+async fn meme_split_frames_suppressed(
+    meme_is_meme: bool,
+    reply_text: &str,
+    suppressed: Vec<(usize, usize)>,
+) -> (Vec<Value>, tokio::task::JoinHandle<anyhow::Result<bool>>) {
     let temp = tempfile::tempdir().unwrap();
     let state = test_web_state(temp.path(), 8300);
     let store = state.state_store.clone();
@@ -888,12 +903,12 @@ async fn meme_split_frames(
     }
     let dispatch = TurnDispatch::Completed(crate::platforms::TurnOutcome {
         run_id: "run-test".to_string(),
-        text: "在的".to_string(),
+        text: reply_text.to_string(),
         provider_id: None,
         model: None,
         image_assets: vec![meme.asset_id],
         meme_assets,
-        suppressed_reply_ranges: Vec::new(),
+        suppressed_reply_ranges: suppressed.clone(),
         final_reply_already_sent: false,
     });
     let delivery_state = state.clone();
@@ -903,7 +918,16 @@ async fn meme_split_frames(
     });
 
     // 收满预期帧数就走：等超时会让随机性那条用例慢上两个数量级。
-    let expected = if meme_is_meme { 2 } else { 1 };
+    let visible = crate::platforms::cut_suppressed_ranges(reply_text, &suppressed)
+        .trim()
+        .to_string();
+    let expected = if !meme_is_meme {
+        1
+    } else if visible.is_empty() {
+        1
+    } else {
+        2
+    };
     let mut collected = Vec::new();
     let mut message_id = 70;
     while collected.len() < expected {
@@ -1033,4 +1057,29 @@ async fn a_non_meme_image_carries_no_sticker_tag() {
         .expect("没有图片段");
     assert!(image["data"]["sub_type"].is_null(), "{image:?}");
     assert!(image["data"]["subType"].is_null(), "{image:?}");
+}
+
+/// 用户 09-22：表情包够表达意思时，真人有时只发表情、一个字都不说。
+///
+/// 宿主这一层本来就该支持：正文空 + 有表情 → 只发表情那一条，不该发空气泡，
+/// 也不该整轮被「空回复」判掉。这条先把这个地基钉住，模型那侧愿不愿意留空是
+/// 另一件事。
+#[tokio::test]
+async fn a_meme_alone_is_a_complete_reply() {
+    let (frames, delivery) = meme_split_frames_with_text(true, "").await;
+    assert!(delivery.await.unwrap().unwrap(), "只发表情也该算投递成功");
+    assert_eq!(frames.len(), 1, "只该发表情那一条：{frames:?}");
+    let kinds = frame_kinds(&frames[0]);
+    assert_eq!(kinds, vec!["image".to_string()], "{kinds:?}");
+}
+
+/// `use_meme(alone=true)` 落闸之后真正到投递层的形态：`text` 里还留着她写的
+/// 字，但抑制区间盖住了整段——只该发表情那一条，不该冒出个空气泡。
+#[tokio::test]
+async fn a_fully_suppressed_reply_still_sends_the_meme_alone() {
+    let text = "这个表情说明一切";
+    let (frames, delivery) = meme_split_frames_suppressed(true, text, vec![(0, text.len())]).await;
+    assert!(delivery.await.unwrap().unwrap(), "只发表情也该算投递成功");
+    assert_eq!(frames.len(), 1, "只该发表情那一条：{frames:?}");
+    assert_eq!(frame_kinds(&frames[0]), vec!["image".to_string()]);
 }
