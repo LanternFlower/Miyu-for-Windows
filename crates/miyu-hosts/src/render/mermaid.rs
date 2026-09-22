@@ -374,7 +374,7 @@ fn prune(dir: &Path) {
 /// **只动这一块**:节点自己的浅色填充(`#F8FAFC` 一类)是图的一部分,改了图就不是
 /// 原来那张了。判据是「紧跟在 `<svg …>` 后面、且 x/y 都是 0」——不满足就原样返回,
 /// 宁可保持白底也不要乱改别人的图元。
-fn recolour_backdrop(svg: &str, background: [u8; 4]) -> String {
+pub(crate) fn recolour_backdrop(svg: &str, replacement: &str) -> String {
     let Some(start) = svg.find("<rect") else {
         return svg.to_string();
     };
@@ -400,14 +400,33 @@ fn recolour_backdrop(svg: &str, background: [u8; 4]) -> String {
     let Some(value_len) = rect[value_at..].find('"') else {
         return svg.to_string();
     };
-    let hex = format!(
-        "#{:02X}{:02X}{:02X}",
-        background[0], background[1], background[2]
-    );
-    let mut out = String::with_capacity(svg.len() + hex.len());
+    let mut out = String::with_capacity(svg.len() + replacement.len());
     out.push_str(&svg[..start + value_at]);
-    out.push_str(&hex);
+    out.push_str(replacement);
     out.push_str(&svg[start + value_at + value_len..]);
+    out
+}
+
+/// 渲染器用的那几个色，按用途列出来。
+///
+/// 实测整张图只有 5 个色（一张五节点的流程图数出来的）：底 `#FFFFFF`、节点填充
+/// `#F8FAFC`、节点描边 `#94A3B8`、连线与标签 `#64748B`、节点内文字 `#0F172A`。
+/// 底那一个由 [`recolour_backdrop`] 单独处理（只动整幅那块），这里是其余四个。
+pub(crate) const NODE_FILL: &str = "#F8FAFC";
+pub(crate) const NODE_STROKE: &str = "#94A3B8";
+pub(crate) const CONNECTOR: &str = "#64748B";
+pub(crate) const NODE_TEXT: &str = "#0F172A";
+
+/// 按一张「源色 → 目标」的表换色。
+///
+/// 只换列在表里的那几个：渲染器以后加了新色，不会被我们改花。目标值可以是任何
+/// SVG 认的颜色写法——WebUI 那边填的是 `var(--md-sys-color-…)`，靠 CSS 变量
+/// 穿透进内联 SVG，这样切主题零成本、也不用把主题塞进前端那份缓存的键。
+pub(crate) fn repaint(svg: &str, pairs: &[(&str, &str)]) -> String {
+    let mut out = svg.to_string();
+    for (from, to) in pairs {
+        out = out.replace(&format!("\"{from}\""), &format!("\"{to}\""));
+    }
     out
 }
 
@@ -426,7 +445,11 @@ pub(crate) fn render_png_in_box(
     if max_width == 0 || max_height == 0 {
         return None;
     }
-    let svg = recolour_backdrop(&render_svg(source).ok()?, background);
+    let backdrop = format!(
+        "#{:02X}{:02X}{:02X}",
+        background[0], background[1], background[2]
+    );
+    let svg = recolour_backdrop(&render_svg(source).ok()?, &backdrop);
     let options = usvg::Options {
         font_family: default_font_family(),
         fontdb: fonts(),
@@ -455,6 +478,13 @@ pub(crate) fn render_png_in_box(
     pixmap.encode_png().ok()
 }
 
+/// 终端里图的底色。
+///
+/// 不是纯白:深色终端里一块 `#FFFFFF` 太刺眼（用户 09-22）。但也别太灰——第一版
+/// 取 `#E4E4E7`，用户实测「有点太灰了」。现在贴着白往下挪一档：眼睛不扎，又比
+/// 节点填充 `#F8FAFC` 低 6 阶，节点仍浮得出来。
+const TERMINAL_BACKDROP: [u8; 3] = [0xF0, 0xF0, 0xF2];
+
 fn rasterize(svg: &str, cell_w: usize, cell_h: usize, max_cols: usize) -> Option<Vec<u8>> {
     use resvg::tiny_skia;
     use resvg::usvg;
@@ -464,16 +494,27 @@ fn rasterize(svg: &str, cell_w: usize, cell_h: usize, max_cols: usize) -> Option
         fontdb: fonts(),
         ..usvg::Options::default()
     };
-    let tree = usvg::Tree::from_str(svg, &options).ok()?;
+    let backdrop = format!(
+        "#{:02X}{:02X}{:02X}",
+        TERMINAL_BACKDROP[0], TERMINAL_BACKDROP[1], TERMINAL_BACKDROP[2]
+    );
+    let svg = recolour_backdrop(svg, &backdrop);
+    let tree = usvg::Tree::from_str(&svg, &options).ok()?;
     let natural = tree.size();
     let (cols, rows) = fit_cells(natural.width(), natural.height(), cell_w, cell_h, max_cols);
     let width = u32::try_from(cols * cell_w).ok()?;
     let height = u32::try_from(rows * cell_h).ok()?;
     let scale = (width as f32 / natural.width()).min(height as f32 / natural.height());
     let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
-    // 底色铺白:渲染器给的是浅色主题,终端的深色背景会把浅色线条吃掉;等比缩放
-    // 留下的边也得有底,不然那几列是透明的。
-    pixmap.fill(tiny_skia::Color::WHITE);
+    // 底色不能透:渲染器给的是浅色主题,深色终端会把浅色线条吃掉。但纯白在深色
+    // 终端里是一块刺眼的板子(用户 09-22),换成中性灰——比节点填充(`#F8FAFC`)
+    // 深一点点,节点因此还能浮出来。等比缩放留下的边也得有底,不然那几列是透明的。
+    pixmap.fill(tiny_skia::Color::from_rgba8(
+        TERMINAL_BACKDROP[0],
+        TERMINAL_BACKDROP[1],
+        TERMINAL_BACKDROP[2],
+        255,
+    ));
     resvg::render(
         &tree,
         tiny_skia::Transform::from_scale(scale, scale),
@@ -873,7 +914,7 @@ mod tests {
 mod backdrop_tests {
     use super::*;
 
-    const PAPER: [u8; 4] = [244, 239, 229, 255];
+    const PAPER: &str = "#F4EFE5";
 
     /// 只改整幅底色那一块，节点自己的填充一个都不许动。
     #[test]
@@ -902,5 +943,69 @@ mod backdrop_tests {
         // 压根没有 rect。
         let svg = r##"<svg width="10" height="10"><circle r="1"/></svg>"##;
         assert_eq!(recolour_backdrop(svg, PAPER), svg);
+    }
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+
+    /// 换成 CSS 变量：WebUI 靠这个跟主题走（用户 09-22）。
+    ///
+    /// 只换列在表里的那几个色，别的一个不动——渲染器以后加新色不会被改花。
+    #[test]
+    fn only_listed_colours_are_repainted() {
+        let svg = render_svg("graph TD; A-->B;").expect("该渲得出 SVG");
+        let painted = repaint(&svg, &[(NODE_FILL, "var(--a)"), (CONNECTOR, "var(--b)")]);
+        assert_eq!(
+            painted.matches("var(--a)").count(),
+            svg.matches(NODE_FILL).count()
+        );
+        assert_eq!(
+            painted.matches("var(--b)").count(),
+            svg.matches(CONNECTOR).count()
+        );
+        assert!(!painted.contains(NODE_FILL) && !painted.contains(CONNECTOR));
+        // 没列进表的色原样保留。
+        assert_eq!(
+            painted.matches(NODE_STROKE).count(),
+            svg.matches(NODE_STROKE).count()
+        );
+        assert_eq!(
+            painted.matches(NODE_TEXT).count(),
+            svg.matches(NODE_TEXT).count()
+        );
+    }
+
+    /// 底可以换成任何 SVG 认的写法，包括 `transparent`。
+    #[test]
+    fn the_backdrop_accepts_a_keyword() {
+        let svg = render_svg("graph TD; A-->B;").expect("该渲得出 SVG");
+        let painted = recolour_backdrop(&svg, "transparent");
+        assert!(painted.contains("fill=\"transparent\""), "底没换成透明");
+        assert_eq!(painted.matches("transparent").count(), 1, "只该换那一块");
+    }
+}
+
+#[cfg(test)]
+mod terminal_backdrop_tests {
+    use super::*;
+
+    /// 终端底色得是中性的柔和灰（用户 09-22：纯白在深色终端里太刺眼），
+    /// 而且要比节点填充深一档——不然节点浮不出来，整张图糊成一块。
+    #[test]
+    fn the_terminal_backdrop_is_a_soft_neutral_grey() {
+        let [r, g, b] = TERMINAL_BACKDROP;
+        assert_ne!([r, g, b], [255, 255, 255], "又变回纯白了");
+        // 中性:三个分量彼此不差超过一点点,否则会偏色。
+        let (lo, hi) = (r.min(g).min(b), r.max(g).max(b));
+        assert!(hi - lo <= 8, "偏色了:{r:02X}{g:02X}{b:02X}");
+        // 柔和:还是浅底(深色文字要看得清),但不到纯白,也别灰到扎眼
+        // (用户 09-22 打回过一版 `#E4E4E7`:「有点太灰了」)。
+        assert!((0xE8..0xF8).contains(&hi), "太深或太亮:{hi:02X}");
+
+        // 比节点填充深:`#F8FAFC` 的最亮分量是 0xFC。
+        let fill = u8::from_str_radix(&NODE_FILL[1..3], 16).unwrap();
+        assert!(hi < fill, "底比节点还亮,节点浮不出来");
     }
 }
