@@ -365,7 +365,9 @@ fn path_arg(value: &str) -> Result<PathBuf> {
         bail!("path is required")
     }
     if let Some(rest) = value.strip_prefix("~/") {
-        if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+        if let Some(home) =
+            crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
+        {
             return Ok(home.join(rest));
         }
     }

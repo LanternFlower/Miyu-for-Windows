@@ -7,6 +7,10 @@ const BEGIN_MARKER: &str = "# >>> miyu powershell hook >>>";
 const END_MARKER: &str = "# <<< miyu powershell hook <<<";
 
 pub fn hook() -> String {
+    super::stamp_hook("powershell-init", body())
+}
+
+fn body() -> &'static str {
     // PowerShell has no `command_not_found_handle` like bash/fish, but since
     // 7.2 `PreCommandLookupAction` fires before every command lookup and can
     // substitute a script block when the command does not exist. We use it to
@@ -52,7 +56,6 @@ $ExecutionContext.InvokeCommand.PreCommandLookupAction = {
     }
 }
 "#
-    .to_string()
 }
 
 pub fn install(paths: &MiyuPaths) -> Result<()> {

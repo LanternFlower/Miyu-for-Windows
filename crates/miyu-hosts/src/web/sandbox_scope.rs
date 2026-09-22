@@ -180,7 +180,7 @@ pub(in crate::web) fn admin_scope(
     root: PathBuf,
     read_all: bool,
 ) -> TurnScope {
-    let home = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
+    let home = crate::platform_dirs::PlatformDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
     let expand = |value: &str| -> Option<PathBuf> {
         let value = value.trim();
         if let Some(rest) = value.strip_prefix("~/") {

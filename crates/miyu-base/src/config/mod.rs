@@ -263,7 +263,7 @@ impl NotificationsConfig {
 fn expand_home(value: &str) -> std::path::PathBuf {
     let value = value.trim();
     if let Some(rest) = value.strip_prefix("~/") {
-        if let Some(dirs) = directories::BaseDirs::new() {
+        if let Some(dirs) = crate::platform_dirs::PlatformDirs::new() {
             return dirs.home_dir().join(rest);
         }
     }
