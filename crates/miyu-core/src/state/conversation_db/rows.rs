@@ -140,9 +140,33 @@ pub(crate) fn attach_turn_children_locked(conn: &Connection, turns: &mut [Turn])
 /// needed — are dropped; what is left is the ordered prose/思考/tool sequence
 /// the REPL redraws when the session is reopened.
 pub(crate) fn store_replay_journal(tx: &Transaction, turn_id: &str) -> Result<()> {
+    let mut entries = replay_entries_from_journal(tx, turn_id)?;
+    if entries.is_empty() {
+        return Ok(());
+    }
+    // Whole-turn budget: drop the oldest entries, so what survives is the tail
+    // the user was actually looking at when the turn ended.
+    let mut encoded = serde_json::to_string(&entries)?;
+    while encoded.len() > REPLAY_JOURNAL_MAX_CHARS && entries.len() > 1 {
+        entries.remove(0);
+        encoded = serde_json::to_string(&entries)?;
+    }
+    tx.execute(
+        "UPDATE turns SET replay_journal = ?1 WHERE turn_id = ?2",
+        params![encoded, turn_id],
+    )?;
+    Ok(())
+}
+
+/// 流水账收成回放条目。只读——中断轮的快照当场没落下时，回放那条路拿它
+/// 现收一份（`session_replay`），老会话不必迁移就能把正文找回来。
+pub(crate) fn replay_entries_from_journal(
+    conn: &Connection,
+    turn_id: &str,
+) -> Result<Vec<ReplayEntry>> {
     // 只取当前修订的事件:被 redo 的 interrupted 回合会同时残留新旧两个
     // revision 的事件(interrupt 不删 segments),混着快照会串台。
-    let mut stmt = tx.prepare(
+    let mut stmt = conn.prepare(
         "SELECT kind, call_id, name, text_payload, ok, created_at
            FROM turn_journal_events
           WHERE turn_id = ?1
@@ -165,7 +189,7 @@ pub(crate) fn store_replay_journal(tx: &Transaction, turn_id: &str) -> Result<()
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
     // 回合开始的时刻：第一段思考是从这儿起算的。
-    let turn_started: Option<chrono::DateTime<chrono::Utc>> = tx
+    let turn_started: Option<chrono::DateTime<chrono::Utc>> = conn
         .query_row(
             "SELECT user_timestamp FROM turns WHERE turn_id = ?1",
             params![turn_id],
@@ -282,21 +306,7 @@ pub(crate) fn store_replay_journal(tx: &Transaction, turn_id: &str) -> Result<()
             *text = truncate_chars_owned(text, REPLAY_REASONING_MAX_CHARS);
         }
     }
-    if entries.is_empty() {
-        return Ok(());
-    }
-    // Whole-turn budget: drop the oldest entries, so what survives is the tail
-    // the user was actually looking at when the turn ended.
-    let mut encoded = serde_json::to_string(&entries)?;
-    while encoded.len() > REPLAY_JOURNAL_MAX_CHARS && entries.len() > 1 {
-        entries.remove(0);
-        encoded = serde_json::to_string(&entries)?;
-    }
-    tx.execute(
-        "UPDATE turns SET replay_journal = ?1 WHERE turn_id = ?2",
-        params![encoded, turn_id],
-    )?;
-    Ok(())
+    Ok(entries)
 }
 
 /// journal 里的时刻是 RFC3339。解不出来就当没有——耗时退回 0，不至于连回放

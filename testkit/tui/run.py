@@ -92,6 +92,14 @@ def write_config():
     (HOME / "config" / "config.jsonc").write_text(
         json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    # 客户端连不上 daemon 时会**自己拉一个**，端口取自这份文件；没有它就用
+    # 默认的 8300——那是本机真 daemon 的端口。撞不上端口的那个进程照样会攥着
+    # 沙箱的锁，把后面每一次走查都堵死（09-21 实测：`another Miyu core is
+    # already running`）。先写好，自拉的也落在沙箱端口上。
+    (HOME / "state").mkdir(parents=True, exist_ok=True)
+    (HOME / "state" / "daemon-launch.json").write_text(
+        json.dumps({"port": PORT}), encoding="utf-8"
+    )
 
 
 def wait_http(url, timeout=20):

@@ -853,12 +853,25 @@ async fn run_remote_chat_inner(
                         })
                         .unwrap_or_default();
                     let consumed_mode = PersonaLane::from_mode_word(Some(ipc_text(&data, "mode")));
-                    renderer.prepare_for_external_output()?;
-                    live.apply_renderer_frame(&mut renderer)?;
-                    synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
-                        live.suspend()?;
-                        live.consume_queued(&prompt_ids, consumed_mode)
-                    })?;
+                    // 后台任务的报告不是「谁说了句话」：这一轮先收成
+                    // `Worked for …`，底下报一行「命令完成 …」，再空一行接着
+                    // 说（用户 09-21 看过实际效果定的版式）。原来它被画成粉色
+                    // 用户气泡、还带着内部抬头 `[后台任务完成]`。
+                    let notices = live.take_queued_notices(&prompt_ids);
+                    let visible = live.has_queued(&prompt_ids);
+                    if !notices.is_empty() || visible {
+                        renderer.prepare_for_external_output()?;
+                        live.apply_renderer_frame(&mut renderer)?;
+                    }
+                    for notice in &notices {
+                        live.show_job_wake_notice(notice)?;
+                    }
+                    if visible {
+                        synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
+                            live.suspend()?;
+                            live.consume_queued(&prompt_ids, consumed_mode)
+                        })?;
+                    }
                 }
             }
             "queue.removed" => {

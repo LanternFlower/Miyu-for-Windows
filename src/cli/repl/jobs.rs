@@ -99,6 +99,12 @@ pub(in crate::cli) fn background_job_lines(
 /// Strips the bracketed prefix off a background-job wake headline, leaving
 /// `子代理完成 82bea3 · 标题`. The older `[后台命令完成] ` spelling still shows
 /// up in sessions recorded before the rename.
+/// 这条排队消息是 daemon 合成的后台任务报告吗。判据和剥前缀的那个函数同源，
+/// 别在别处再写一份前缀字面量。
+pub(in crate::cli) fn is_job_wake_headline(headline: &str) -> bool {
+    headline.starts_with("[后台任务完成] ") || headline.starts_with("[后台命令完成] ")
+}
+
 pub(in crate::cli) fn job_wake_headline(headline: &str) -> String {
     headline
         .strip_prefix("[后台任务完成] ")

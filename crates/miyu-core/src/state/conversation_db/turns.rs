@@ -332,6 +332,10 @@ impl ConversationDb {
             params![content, reasoning, now, turn_id, revision],
         )?;
         bump_completion_seq_locked(&tx, turn_id)?;
+        // 跑完的两条路都会在这儿存一份回放快照,中断这条从前没存——于是重开
+        // 之后这一轮只剩一句「已中断」,而流水账明明还在(用户 09-21 实测)。
+        // segments 照旧不删:in-flight 恢复与 redo 都还要读它们。
+        store_replay_journal(&tx, turn_id)?;
         tx.execute(
             "UPDATE turn_journal_segments
              SET status = 'interrupted', finished_at = ?1
@@ -356,6 +360,7 @@ impl ConversationDb {
                  WHERE turn_id = ?4 AND revision = ?5 AND status = 'running'",
                 params![content, reasoning, now, turn_id, revision],
             )?;
+            store_replay_journal(&tx, turn_id)?;
             tx.execute(
                 "UPDATE turn_journal_segments
                  SET status = 'interrupted', finished_at = ?1
@@ -594,6 +599,10 @@ impl ConversationDb {
             )?;
             if turn_affected == 1 {
                 bump_completion_seq_locked(&tx, turn_id)?;
+                // daemon 换了进程(重启、崩溃)时走的就是这儿:上一条 daemon 跑到
+                // 一半的回合在这里被判为陈旧。快照同样要存,否则重开 TUI 只看得
+                // 见一句「已中断」,而流水账在库里躺着(用户 09-21 实测)。
+                store_replay_journal(&tx, turn_id)?;
                 tx.execute(
                     "UPDATE turn_journal_segments
                      SET status = 'interrupted', finished_at = ?1

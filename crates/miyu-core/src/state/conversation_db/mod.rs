@@ -563,21 +563,40 @@ fn interrupted_projection_locked(
     turn_id: &str,
     revision: i64,
 ) -> Result<(String, Option<String>)> {
-    let segment_index: Option<i64> = tx
-        .query_row(
-            "SELECT segment_index
-             FROM turn_journal_segments
-             WHERE turn_id = ?1 AND revision = ?2 AND status != 'superseded'
-             ORDER BY segment_index DESC LIMIT 1",
-            params![turn_id, revision],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let Some(segment_index) = segment_index else {
+    // 活着的**每一段**都要:一轮里每调一次工具就切一段,只投影最后一段的话,
+    // 模型在工具之间说过的话全都丢了——长回合被中断后 `assistant_content` 只
+    // 剩一句「已中断」,重开什么都看不见(用户 09-21 实测:5158 条流水账都在,
+    // 正文却没了)。superseded 的那些是被顶掉的旧生成,不算。
+    let mut stmt = tx.prepare(
+        "SELECT segment_index
+         FROM turn_journal_segments
+         WHERE turn_id = ?1 AND revision = ?2 AND status != 'superseded'
+         ORDER BY segment_index",
+    )?;
+    let segments = stmt
+        .query_map(params![turn_id, revision], |row| row.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    if segments.is_empty() {
         return Ok((INTERRUPTED_TEXT.to_string(), None));
-    };
-    let (content, reasoning) =
-        journal_segment_projection_locked(tx, turn_id, revision, segment_index)?;
+    }
+    let mut content = String::new();
+    // 思考只留最后一段那份:`assistant_reasoning` 那一列的语义一直是「最后一
+    // 回合想了什么」,回放时时间线上的思考走流水账,这一列只是兜底。
+    let mut reasoning = None;
+    for segment_index in segments {
+        let (piece, thought) =
+            journal_segment_projection_locked(tx, turn_id, revision, segment_index)?;
+        if !piece.trim().is_empty() {
+            if !content.is_empty() && !content.ends_with('\n') {
+                content.push_str("\n\n");
+            }
+            content.push_str(&piece);
+        }
+        if thought.is_some() {
+            reasoning = thought;
+        }
+    }
     let content = if content.trim().is_empty() {
         INTERRUPTED_TEXT.to_string()
     } else {
@@ -842,7 +861,8 @@ impl ConversationDb {
                      OR user_content LIKE '<goal_round>%'),
                     assistant_reasoning,
                     status = 'interrupted',
-                    assistant_provider_id, assistant_model
+                    assistant_provider_id, assistant_model,
+                    turn_id
                FROM turns
               WHERE session_id = ?1 AND hidden = 0 AND is_summary = 0
                 AND status IN ('completed', 'interrupted')
@@ -851,21 +871,40 @@ impl ConversationDb {
         )?;
         let mut rows = stmt
             .query_map(params![session_id, limit as i64], |row| {
-                Ok(TurnReplay {
-                    display_content: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                    assistant_content: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                    entries: row
-                        .get::<_, Option<String>>(2)?
-                        .and_then(|json| serde_json::from_str(&json).ok())
-                        .unwrap_or_default(),
-                    is_synthetic: row.get::<_, i64>(3)? != 0,
-                    assistant_reasoning: row.get::<_, Option<String>>(4)?,
-                    interrupted: row.get::<_, i64>(5)? != 0,
-                    assistant_provider_id: row.get::<_, Option<String>>(6)?,
-                    assistant_model: row.get::<_, Option<String>>(7)?,
-                })
+                Ok((
+                    row.get::<_, Option<String>>(8)?,
+                    TurnReplay {
+                        display_content: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                        assistant_content: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                        entries: row
+                            .get::<_, Option<String>>(2)?
+                            .and_then(|json| serde_json::from_str(&json).ok())
+                            .unwrap_or_default(),
+                        is_synthetic: row.get::<_, i64>(3)? != 0,
+                        assistant_reasoning: row.get::<_, Option<String>>(4)?,
+                        interrupted: row.get::<_, i64>(5)? != 0,
+                        assistant_provider_id: row.get::<_, Option<String>>(6)?,
+                        assistant_model: row.get::<_, Option<String>>(7)?,
+                    },
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        // 这次改动之前被中断的轮没留下回放快照(见 `interrupt_turn`),可流水账
+        // 还在库里——当场收一份,老会话不必迁移也能把正文找回来。
+        for (turn_id, replay) in rows.iter_mut() {
+            if !replay.entries.is_empty() || !replay.interrupted {
+                continue;
+            }
+            let Some(turn_id) = turn_id.as_deref() else {
+                continue;
+            };
+            replay.entries = replay_entries_from_journal(&conn, turn_id).unwrap_or_default();
+        }
+        let mut rows = rows
+            .into_iter()
+            .map(|(_, replay)| replay)
+            .collect::<Vec<_>>();
         rows.reverse();
         Ok(rows)
     }
