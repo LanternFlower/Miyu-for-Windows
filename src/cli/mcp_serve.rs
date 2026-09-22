@@ -235,9 +235,9 @@ async fn list_tools(
     // 直连回退:与 tool-call 的回退同一构建方式(模式取 MIYU_TURN_MODE)。
     let config = AppConfig::load_or_default(paths)?;
     let mode = if std::env::var("MIYU_TURN_MODE").unwrap_or_default() == "dev" {
-        AgentMode::Dev
+        PersonaLane::Dev
     } else {
-        AgentMode::Normal
+        PersonaLane::Active
     };
     let registry = build_tool_registry(&config, paths, mode, false)?;
     let mut names = registry.tool_names();
@@ -282,33 +282,33 @@ async fn call_tool(
             .unwrap_or_default()
             .to_string());
     }
-    if depth >= crate::tools::workspace::MAX_BRIDGE_DEPTH {
+    if depth >= miyu_base::workspace::MAX_BRIDGE_DEPTH {
         bail!("tool bridge recursion limit reached (depth {depth})");
     }
     let config = AppConfig::load_or_default(paths)?;
     let mode = if std::env::var("MIYU_TURN_MODE").unwrap_or_default() == "dev" {
-        AgentMode::Dev
+        PersonaLane::Dev
     } else {
-        AgentMode::Normal
+        PersonaLane::Active
     };
     let registry = build_tool_registry(&config, paths, mode, false)?;
     if !registry.contains(name) {
         bail!("{:#}", registry.unknown_tool_error(name));
     }
-    let turn_origin: crate::tools::workspace::TurnOrigin = origin
+    let turn_origin: miyu_base::workspace::TurnOrigin = origin
         .as_deref()
         .and_then(|raw| serde_json::from_str(raw).ok())
-        .unwrap_or(crate::tools::workspace::TurnOrigin::Human);
-    let invoke = crate::tools::workspace::with_turn_origin(
+        .unwrap_or(miyu_base::workspace::TurnOrigin::Human);
+    let invoke = miyu_base::workspace::with_turn_origin(
         turn_origin,
-        crate::tools::workspace::with_bridge_depth(depth + 1, async {
+        miyu_base::workspace::with_bridge_depth(depth + 1, async {
             registry.call(name, arguments).await
         }),
     );
     match session {
         Some(session) => {
             let session: std::sync::Arc<str> = session.clone().into();
-            crate::tools::workspace::with_session(session, invoke).await
+            miyu_base::workspace::with_session(session, invoke).await
         }
         None => invoke.await,
     }

@@ -15,7 +15,7 @@ pub(in crate::cli) async fn handle_live_post_turn_overflow(
     context_tokens: u64,
     show_token_usage: bool,
     cumulative_tokens: Option<&mut TurnTokens>,
-) -> Result<Option<crate::llm::ChatResult>> {
+) -> Result<Option<miyu_core::llm::ChatResult>> {
     let compact_result = agent
         .handle_overflow_after_turn(context_tokens, |event| {
             handle_live_agent_event(live, renderer, event)
@@ -36,6 +36,7 @@ pub(in crate::cli) async fn handle_live_post_turn_overflow(
                 let frame = render::token_usage_output(
                     &turn_meter(
                         TurnTokens::from_usage(Some(usage)),
+                        GenerationSpeed::default(),
                         agent.effective_context_tokens()?,
                         agent.context_window(),
                         cumulative_display,
@@ -60,11 +61,13 @@ pub(in crate::cli) fn handle_live_agent_event(
             live.queue_stream_chunk(chunk);
             return Ok(());
         }
-        AgentEvent::RoundUsage { round, turn, .. } => {
+        AgentEvent::RoundUsage {
+            round, turn, speed, ..
+        } => {
             // 一次模型请求刚结束:立即刷新 footer 计量,不等整个回合。
             // prompt+completion 即该请求结束时的上下文实际占用。
             let context_tokens = round.prompt_tokens.saturating_add(round.completion_tokens);
-            return live.refresh_round_usage(context_tokens, turn);
+            return live.refresh_round_usage(context_tokens, turn, speed);
         }
         event => event,
     };
@@ -107,13 +110,24 @@ pub(in crate::cli) fn handle_live_agent_event(
                 handle_agent_event(renderer, event)?;
                 return live.apply_renderer_frame(renderer);
             }
-            let question = matches!(&event, AgentEvent::AskQuestion { .. });
-            if question {
+            if let AgentEvent::AskQuestion {
+                request, responder, ..
+            } = event
+            {
                 live.flush_pending_chunks(renderer)?;
                 renderer.prepare_for_external_output()?;
                 live.apply_renderer_frame(renderer)?;
                 synchronized_terminal_update(CursorAfterUpdate::Hidden, || live.suspend())?;
-                handle_agent_event(renderer, event)?;
+                let mut scroll = |delta: isize, panel_rows: u16| {
+                    if let Some(screen) = live.screen.as_mut() {
+                        let _ = screen.scroll_question_body(delta, panel_rows);
+                    }
+                };
+                // 她反问了：侧栏标红（直连模式这儿没有会话 id 在手，只报状态；
+                // herdr 那边的会话 id 是可选字段，不带就是不更新它）。
+                herdr::report(herdr::HerdrState::Blocked, None, None);
+                question_panel::answer(renderer, request, responder, Some(&mut scroll))?;
+                herdr::report(herdr::HerdrState::Working, None, None);
                 // 问题面板只关闭 raw mode 与括号粘贴，键盘增强仍由外层 LiveRawMode 持有
                 enable_live_raw_mode()?;
                 execute!(io::stdout(), EnableBracketedPaste)?;
@@ -140,7 +154,7 @@ pub(in crate::cli) async fn run_live_agent_turn(
     input: LiveAgentInput<'_>,
     control: &AgentTurnControl,
     renderer: &mut render::StreamRenderer,
-) -> Result<Option<crate::llm::ChatResult>> {
+) -> Result<Option<miyu_core::llm::ChatResult>> {
     renderer.use_external_cursor_control();
     renderer.use_buffered_output();
     let mut raw = if std::mem::take(&mut live.raw_mode_handoff) {
@@ -154,6 +168,9 @@ pub(in crate::cli) async fn run_live_agent_turn(
     }
     renderer.start_waiting()?;
     live.apply_renderer_frame(renderer)?;
+    // 直连模式（`MIYU_DIRECT=1`，不经 daemon）也上报：留半套的话，同一台机器上
+    // 换个跑法侧栏就不动了，查起来比没有还费劲。
+    let _herdr_turn = herdr::TurnGuard::begin(&state.session_id());
 
     let result = {
         let live_cell = std::cell::RefCell::new(&mut *live);
@@ -179,7 +196,21 @@ pub(in crate::cli) async fn run_live_agent_turn(
                     if !event::poll(Duration::ZERO)? {
                         continue;
                     }
-                    let event = event::read()?;
+                    // 鼠标事件一次抽干，理由同 `remote/one_shot.rs`：一 tick 一个
+                    // 的话，拖动时选区会落在光标后面。
+                    let mut pending: Option<Event> = None;
+                    while event::poll(Duration::ZERO)? {
+                        let next = event::read()?;
+                        if matches!(next, Event::Mouse(_)) {
+                            live_cell.borrow_mut().handle_screen_event(&next)?;
+                            continue;
+                        }
+                        pending = Some(next);
+                        break;
+                    }
+                    let Some(event) = pending else {
+                        continue;
+                    };
                     let mut live = live_cell.borrow_mut();
                     if matches!(
                         &event,
@@ -195,9 +226,26 @@ pub(in crate::cli) async fn run_live_agent_turn(
                         parse_repl_input(live.editor.input.trim_start()),
                         ReplInput::Slash(..)
                     ) {
-                        // 静默吞掉这次回车：流式渲染中间插系统消息会写坏终端
-                        // 帧。输入原样留着，这一轮结束后再回车即可。直连模式
-                        // 没有续轮驱动器，`/goal` 也没有运行中执行的意义。
+                        let ReplInput::Slash(command, args) =
+                            parse_repl_input(live.editor.input.trim_start())
+                        else {
+                            unreachable!("just matched")
+                        };
+                        // 直连模式（`MIYU_DIRECT=1`）没有 daemon，回合就跑在这
+                        // 个进程里，做不了远端那条路的「分离 → 执行 → 挂回来」
+                        // （09-20）。所以这里仍然吞掉这次回车——但**把原因说
+                        // 出来**：原来是全静默，屏幕上一点反应都没有，用户以为
+                        // 回车坏了。输入原样留着，这一轮结束后再回车即可。
+                        let reason = miyu_core::slash_commands::during_turn(command, args)
+                            .reason()
+                            .unwrap_or(t(
+                                "commands run after this reply finishes (direct mode)",
+                                "直连模式下命令要等这一轮说完才能执行",
+                            ));
+                        live.toast_note(reason);
+                        let _ = synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
+                            live.redraw()
+                        });
                         continue;
                     }
                     let mode_before = live.mode();
@@ -208,16 +256,17 @@ pub(in crate::cli) async fn run_live_agent_turn(
                                 live.redraw()
                             })?
                         }
-                        LiveEditorAction::ClearScreen if !live.external_output_active => {
-                            synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
-                                live.clear_screen()
-                            })?
-                        }
+                        // 回合跑着的时候不清屏。
+                        //
+                        // 全屏下清屏是"把视口顶空"，而正文还在往里写——顶完下一
+                        // 帧新内容就接着冒出来，屏幕既没干净也没保住上文，纯粹
+                        // 添乱。等它说完再清。
+                        LiveEditorAction::ClearScreen if crate::cli::in_fullscreen() => {}
                         LiveEditorAction::Redraw | LiveEditorAction::ClearScreen => {}
                         LiveEditorAction::EmptySubmit => {}
                         LiveEditorAction::Submit(submission) => {
                             let prompt = persist_queued_submission(state, &submission)?;
-                            live.editor.record_history(&submission.content);
+                            live.editor.record_history(ReplHistoryEntry::from_submission(&submission));
                             if live.external_output_active {
                                 live.append_queued(prompt);
                             } else {
@@ -227,9 +276,11 @@ pub(in crate::cli) async fn run_live_agent_turn(
                             }
                         }
                         LiveEditorAction::Interrupt | LiveEditorAction::Exit => break Ok(None),
+                        // 回合跑着的时候会话已经不空了,不会出现;出现也不理。
+                        LiveEditorAction::ToggleMode => {}
                     }
                     if live.mode() != mode_before {
-                        control.set_mode(live.mode());
+                        control.set_lane(live.mode());
                     }
                 },
                 result = &mut chat => break result.map(Some),

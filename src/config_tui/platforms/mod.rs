@@ -24,7 +24,7 @@ pub(in crate::config_tui) fn platforms_label(config: &AppConfig) -> String {
 }
 
 pub(in crate::config_tui) fn select_platforms(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
 ) -> Result<()> {
@@ -66,7 +66,7 @@ pub(in crate::config_tui) fn select_platforms(
             ),
         ];
         draw_menu(
-            stdout,
+            ui,
             t(" IM PLATFORMS ", " 接入通讯平台 "),
             &options,
             selected,
@@ -75,15 +75,15 @@ pub(in crate::config_tui) fn select_platforms(
                 "[Enter]配置 [j/k]移动 [q]返回",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter => match selected {
-                0 => edit_qq(stdout, paths, config)?,
-                1 => edit_platform_command_prefix(stdout, config)?,
-                2 => select_platform_commands(stdout, config)?,
-                3 => edit_platform_max_tool_rounds(stdout, config)?,
+                0 => edit_qq(ui, paths, config)?,
+                1 => edit_platform_command_prefix(ui, config)?,
+                2 => select_platform_commands(ui, config)?,
+                3 => edit_platform_max_tool_rounds(ui, config)?,
                 4 => config.platforms.terminal_outreach = !config.platforms.terminal_outreach,
                 _ => {}
             },
@@ -95,11 +95,11 @@ pub(in crate::config_tui) fn select_platforms(
 /// 平台回合的工具轮数上限(0=不限;默认 32)。web_search 同 query 222 连
 /// 事故后的那道闸,可按需放宽或收紧。
 pub(in crate::config_tui) fn edit_platform_max_tool_rounds(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &mut AppConfig,
 ) -> Result<()> {
     if let Some(value) = edit_u16_value(
-        stdout,
+        ui,
         t(" MAX TOOL ROUNDS PER TURN ", " 最大工具轮数(0=不限) "),
         u16::try_from(config.platforms.max_tool_rounds).unwrap_or(u16::MAX),
     )? {
@@ -109,11 +109,11 @@ pub(in crate::config_tui) fn edit_platform_max_tool_rounds(
 }
 
 pub(in crate::config_tui) fn edit_platform_command_prefix(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &mut AppConfig,
 ) -> Result<()> {
     let Some(value) = edit_inline_value(
-        stdout,
+        ui,
         t(" COMMAND TRIGGER PREFIX ", " 命令触发前缀 "),
         &config.platforms.command_prefix,
         false,
@@ -129,7 +129,7 @@ pub(in crate::config_tui) fn edit_platform_command_prefix(
             .any(|character| character.is_whitespace() || character.is_control())
     {
         message(
-            stdout,
+            ui,
             t(
                 "The prefix must be 1-32 characters and cannot contain whitespace.",
                 "前缀必须为 1 到 32 个字符，且不能包含空白字符。",
@@ -151,7 +151,7 @@ pub(in crate::config_tui) fn platform_command_permission_label(
 }
 
 pub(in crate::config_tui) fn select_platform_commands(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &mut AppConfig,
 ) -> Result<()> {
     let mut selected = 0usize;
@@ -170,7 +170,7 @@ pub(in crate::config_tui) fn select_platform_commands(
             })
             .collect::<Vec<_>>();
         draw_menu(
-            stdout,
+            ui,
             t(" PLATFORM COMMANDS ", " 命令列表 "),
             &options,
             selected,
@@ -179,13 +179,13 @@ pub(in crate::config_tui) fn select_platform_commands(
                 "[Enter]设置权限 [j/k]移动 [q]返回",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter => {
                 edit_platform_command_permission(
-                    stdout,
+                    ui,
                     config,
                     &commands::BUILTIN_COMMANDS[selected],
                 )?;
@@ -196,7 +196,7 @@ pub(in crate::config_tui) fn select_platform_commands(
 }
 
 pub(in crate::config_tui) fn edit_platform_command_permission(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &mut AppConfig,
     command: &PlatformCommandDescriptor,
 ) -> Result<()> {
@@ -217,8 +217,8 @@ pub(in crate::config_tui) fn edit_platform_command_permission(
             .map(|permission| platform_command_permission_label(*permission).to_string())
             .collect::<Vec<_>>();
         let title = format!(" {} · {} ", t("COMMAND PERMISSION", "命令权限"), command.id);
-        draw_menu(stdout, &title, &options, selected, "")?;
-        match read_key()? {
+        draw_menu(ui, &title, &options, selected, "")?;
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => {
@@ -246,7 +246,7 @@ pub(in crate::config_tui) fn enabled_label(value: bool) -> &'static str {
 }
 
 pub(in crate::config_tui) fn edit_qq(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
 ) -> Result<()> {
@@ -351,6 +351,15 @@ pub(in crate::config_tui) fn edit_qq(
             ),
             format!(
                 "{}: {}",
+                t("Sleep hours", "睡眠时间"),
+                if qq.sleep_hours.is_empty() {
+                    t("not set", "未设置")
+                } else {
+                    qq.sleep_hours.as_str()
+                }
+            ),
+            format!(
+                "{}: {}",
                 t("Group whitelist", "群聊白名单"),
                 qq.group_chats.whitelist.len()
             ),
@@ -398,30 +407,24 @@ pub(in crate::config_tui) fn edit_qq(
             t("QQ plugins", "QQ 插件配置").to_string(),
             t("Advanced settings", "高级设置").to_string(),
         ]);
-        draw_menu(
-            stdout,
-            t(" TENCENT QQ ", " 腾讯 QQ "),
-            &options,
-            selected,
-            "",
-        )?;
-        let key = read_key()?;
+        draw_menu(ui, t(" TENCENT QQ ", " 腾讯 QQ "), &options, selected, "")?;
+        let key = read_key(ui)?;
         match key {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter | KeyCode::Char(' ') => match selected {
                 0 => config.platforms.qq.enabled = !config.platforms.qq.enabled,
-                1 if matches!(key, KeyCode::Enter) => select_qq_model_assignment(stdout, config)?,
+                1 if matches!(key, KeyCode::Enter) => select_qq_model_assignment(ui, config)?,
                 2 if matches!(key, KeyCode::Enter) => {
                     if let Some(value) = edit_u16_value(
-                        stdout,
+                        ui,
                         t("Reverse WebSocket port", "反向 WebSocket 端口"),
                         config.platforms.qq.reverse_ws_port,
                     )? {
                         if value == 0 {
                             message(
-                                stdout,
+                                ui,
                                 t(
                                     "Port must be between 1 and 65535.",
                                     "端口必须在 1 到 65535 之间。",
@@ -432,7 +435,7 @@ pub(in crate::config_tui) fn edit_qq(
                         }
                     }
                 }
-                3 if matches!(key, KeyCode::Enter) => edit_qq_token(stdout, config)?,
+                3 if matches!(key, KeyCode::Enter) => edit_qq_token(ui, config)?,
                 4 => {
                     config.platforms.qq.user_identification =
                         !config.platforms.qq.user_identification
@@ -443,7 +446,7 @@ pub(in crate::config_tui) fn edit_qq(
                         !config.platforms.qq.memory.write_enabled
                 }
                 7 if matches!(key, KeyCode::Enter) => edit_qq_admin_list(
-                    stdout,
+                    ui,
                     t(
                         " TERMINAL-ENABLED ADMINISTRATORS ",
                         " 允许使用终端的管理员 QQ 号 ",
@@ -464,7 +467,7 @@ pub(in crate::config_tui) fn edit_qq(
                         !config.platforms.qq.private_intermediate_messages
                 }
                 11 if matches!(key, KeyCode::Enter) => edit_qq_id_list(
-                    stdout,
+                    ui,
                     t(" PRIVATE WHITELIST ", " 私聊白名单 "),
                     t("QQ id", "QQ 号"),
                     &mut config.platforms.qq.private_chats.whitelist,
@@ -486,53 +489,53 @@ pub(in crate::config_tui) fn edit_qq(
                 }
                 14 if matches!(key, KeyCode::Enter) => {
                     edit_platform_rate_limit(
-                        stdout,
+                        ui,
                         &mut config.platforms.qq.private_chats.non_whitelist_rate_limit,
                     )?;
                 }
-                15 if matches!(key, KeyCode::Enter) => edit_qq_id_list(
-                    stdout,
+                15 if matches!(key, KeyCode::Enter) => edit_qq_sleep_hours(ui, config)?,
+                16 if matches!(key, KeyCode::Enter) => edit_qq_id_list(
+                    ui,
                     t(" GROUP WHITELIST ", " 群聊白名单 "),
                     t("Group id", "群号"),
                     &mut config.platforms.qq.group_chats.whitelist,
                 )?,
-                16 if matches!(key, KeyCode::Enter) => edit_keyword_list(
-                    stdout,
-                    &mut config.platforms.qq.group_chats.trigger_keywords,
-                )?,
                 17 if matches!(key, KeyCode::Enter) => {
+                    edit_keyword_list(ui, &mut config.platforms.qq.group_chats.trigger_keywords)?
+                }
+                18 if matches!(key, KeyCode::Enter) => {
                     edit_platform_rate_limit(
-                        stdout,
+                        ui,
                         &mut config.platforms.qq.group_chats.whitelist_rate_limit,
                     )?;
                 }
-                18 => {
+                19 => {
                     config.platforms.qq.group_chats.allow_non_whitelist =
                         !config.platforms.qq.group_chats.allow_non_whitelist
                 }
-                19 if matches!(key, KeyCode::Enter) => {
+                20 if matches!(key, KeyCode::Enter) => {
                     edit_platform_rate_limit(
-                        stdout,
+                        ui,
                         &mut config.platforms.qq.group_chats.non_whitelist_rate_limit,
                     )?;
                 }
-                // 光标就停在开关这一行(20),"并行数量"排在它之后——关掉并行
+                // 光标就停在开关这一行(21),"并行数量"排在它之后——关掉并行
                 // 时那一项消失也不会把光标落到不存在的行上,无需再钳制。
-                20 => {
+                21 => {
                     config.platforms.qq.session_parallel = !config.platforms.qq.session_parallel;
                 }
-                21 if parallel && matches!(key, KeyCode::Enter) => {
-                    edit_platform_session_limits(stdout, &mut config.platforms.qq.session_limits)?
+                22 if parallel && matches!(key, KeyCode::Enter) => {
+                    edit_platform_session_limits(ui, &mut config.platforms.qq.session_limits)?
                 }
                 // 尾部三项随"并行数量"是否出现整体顺延一位。
-                index if index == 22 - usize::from(!parallel) && matches!(key, KeyCode::Enter) => {
-                    select_platform_model_routes(stdout, paths, config)?
-                }
                 index if index == 23 - usize::from(!parallel) && matches!(key, KeyCode::Enter) => {
-                    select_platform_plugins(stdout, paths, config)?
+                    select_platform_model_routes(ui, paths, config)?
                 }
                 index if index == 24 - usize::from(!parallel) && matches!(key, KeyCode::Enter) => {
-                    edit_qq_advanced(stdout, config)?
+                    select_platform_plugins(ui, paths, config)?
+                }
+                index if index == 25 - usize::from(!parallel) && matches!(key, KeyCode::Enter) => {
+                    edit_qq_advanced(ui, config)?
                 }
                 _ => {}
             },
@@ -552,7 +555,7 @@ pub(in crate::config_tui) fn session_limits_label(limits: PlatformSessionLimits)
 }
 
 pub(in crate::config_tui) fn edit_platform_session_limits(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     limits: &mut PlatformSessionLimits,
 ) -> Result<()> {
     let mut fields = vec![
@@ -563,7 +566,7 @@ pub(in crate::config_tui) fn edit_platform_session_limits(
         Field::new(t("Queued turns", "等待队列数量"), limits.queued.to_string()),
     ];
     if !run_form_editing(
-        stdout,
+        ui,
         t(" CONVERSATION CONCURRENCY ", " 会话并发 "),
         &mut fields,
     )? {
@@ -575,7 +578,7 @@ pub(in crate::config_tui) fn edit_platform_session_limits(
         || queued > MAX_PLATFORM_SESSION_QUEUED
     {
         message(
-            stdout,
+            ui,
             t(
                 "Concurrency values are outside the supported range.",
                 "并发数值超出支持范围。",
@@ -604,7 +607,7 @@ pub(in crate::config_tui) fn rate_limit_label(limit: PlatformRateLimit) -> Strin
 /// Enter through a two-item submenu only restated that summary before letting
 /// anyone type — two keypresses to reach a field that was never in doubt.
 pub(in crate::config_tui) fn edit_platform_rate_limit(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     limit: &mut PlatformRateLimit,
 ) -> Result<()> {
     let mut fields = vec![
@@ -620,19 +623,19 @@ pub(in crate::config_tui) fn edit_platform_rate_limit(
             limit.window_seconds.to_string(),
         ),
     ];
-    if !run_form_editing(stdout, t(" RATE LIMIT ", " 限流配置 "), &mut fields)? {
+    if !run_form_editing(ui, t(" RATE LIMIT ", " 限流配置 "), &mut fields)? {
         return Ok(());
     }
     let (Ok(max_messages), Ok(window_seconds)) = (
         fields[0].value.trim().parse::<u32>(),
         fields[1].value.trim().parse::<u32>(),
     ) else {
-        message(stdout, t("Invalid number.", "数值无效。"))?;
+        message(ui, t("Invalid number.", "数值无效。"))?;
         return Ok(());
     };
     if !(1..=86_400).contains(&window_seconds) {
         message(
-            stdout,
+            ui,
             t(
                 "Window seconds must be between 1 and 86400.",
                 "窗口秒数必须在 1 到 86400 之间。",
@@ -647,12 +650,9 @@ pub(in crate::config_tui) fn edit_platform_rate_limit(
     Ok(())
 }
 
-pub(in crate::config_tui) fn edit_qq_token(
-    stdout: &mut io::Stdout,
-    config: &mut AppConfig,
-) -> Result<()> {
+pub(in crate::config_tui) fn edit_qq_token(ui: &mut Ui, config: &mut AppConfig) -> Result<()> {
     if let Some(value) = edit_inline_value(
-        stdout,
+        ui,
         t(" REVERSE WEBSOCKET TOKEN ", " 反向 WebSocket 验证 Token "),
         &config.platforms.qq.access_token,
         true,
@@ -662,10 +662,31 @@ pub(in crate::config_tui) fn edit_qq_token(
     Ok(())
 }
 
-pub(in crate::config_tui) fn edit_qq_advanced(
-    stdout: &mut io::Stdout,
+/// 睡眠时间「HH:MM-HH:MM」,清空即关闭;格式不对就地提示,不写回。
+pub(in crate::config_tui) fn edit_qq_sleep_hours(
+    ui: &mut Ui,
     config: &mut AppConfig,
 ) -> Result<()> {
+    let Some(value) = edit_inline_value(
+        ui,
+        t(
+            " SLEEP HOURS (HH:MM-HH:MM, EMPTY = OFF) ",
+            " 睡眠时间(HH:MM-HH:MM,留空关闭) ",
+        ),
+        &config.platforms.qq.sleep_hours,
+        false,
+    )?
+    else {
+        return Ok(());
+    };
+    match miyu_base::config::parse_sleep_hours(&value) {
+        Ok(_) => config.platforms.qq.sleep_hours = value.trim().to_string(),
+        Err(error) => message(ui, &error)?,
+    }
+    Ok(())
+}
+
+pub(in crate::config_tui) fn edit_qq_advanced(ui: &mut Ui, config: &mut AppConfig) -> Result<()> {
     let qq = &config.platforms.qq;
     let mut fields = vec![
         Field::new(
@@ -697,7 +718,7 @@ pub(in crate::config_tui) fn edit_qq_advanced(
             qq.group_context.trim_batch_ratio.to_string(),
         ),
     ];
-    if run_form(stdout, t(" QQ ADVANCED ", " QQ 高级设置 "), &mut fields)? {
+    if run_form(ui, t(" QQ ADVANCED ", " QQ 高级设置 "), &mut fields)? {
         config.platforms.qq.asset_base_url =
             fields[0].value.trim().trim_end_matches('/').to_string();
         let overflow = fields[2].value.trim().to_ascii_lowercase();

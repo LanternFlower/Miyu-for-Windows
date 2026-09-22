@@ -25,10 +25,6 @@ key j; key j; key j; key j  # 跳过分隔行到 会话标题
 key Enter
 cap 03-aux-role-picker
 key q
-key j; key j
-key Enter
-cap 03b-deep-research-picker
-key q
 key q
 # 接入通讯平台 (第 8 项) → QQ → 配置模型
 key j; key j; key j; key Enter

@@ -1,0 +1,830 @@
+//! 静态时间线（面 S3）：目的地是终端、但不是全屏的那个面。宿主有 shellhook、
+//! 单次 `miyu "…"`、inline REPL、唤醒跟进、daemon 回写——**同一个面**，清单见
+//! `render::stream::surface`。
+//!
+//! 长相照着全屏的时间线来，只是没处点开：每一步跑完当场落进 scrollback，
+//! diff 和命令输出的尾巴就地印在那一步底下，没有 `Worked for …` 收缩行。
+//!
+//! 帧里有转轮的「上移 → 清行 → 重画」，直接按 `\n` 切字节流看到的是错的
+//! （被擦掉的行还在流里）。这里把帧喂给 `Term`（全屏那台终端模拟器）再读
+//! 屏幕，看到的才是用户看到的。
+
+use crate::cli::repl::tail::screen::term::Term;
+use miyu_base::i18n::text as t;
+use miyu_core::llm::{ChatStreamChunk, ChatStreamKind};
+use miyu_engine::tools::CommandOutputStream;
+use miyu_hosts::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
+
+/// 测试里 stdout 不是终端，出厂按「stdout 是不是终端」选的是管道那一面；
+/// shellhook 真跑起来时目的地是终端，得显式选才走到静态时间线这条路。
+fn static_renderer() -> StreamRenderer {
+    let mut renderer = StreamRenderer::new(
+        ReasoningDisplayMode::Summary,
+        ToolCallDisplayMode::Summary,
+        false,
+        true,
+        4,
+    );
+    renderer.use_external_cursor_control();
+    renderer.use_buffered_output();
+    renderer.use_terminal_surface();
+    assert!(renderer.timeline_static(), "该走静态时间线");
+    renderer
+}
+
+/// 把帧喂进终端模拟器，取屏幕上每一行的文字（右边的空白去掉）。
+struct Screen {
+    term: Term,
+}
+
+impl Screen {
+    fn new() -> Self {
+        let mut term = Term::default();
+        term.set_cols(100);
+        Self { term }
+    }
+
+    fn feed(&mut self, frame: &[u8]) {
+        self.term.feed(frame);
+    }
+
+    fn lines(&self) -> Vec<String> {
+        (0..self.term.line_count())
+            .map(|index| {
+                self.term
+                    .row_spans(index)
+                    .into_iter()
+                    .map(|span| span.text)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    fn text(&self) -> String {
+        self.lines().join("\n")
+    }
+}
+
+fn strip_ansi(text: &str) -> String {
+    miyu_hosts::render::strip_ansi_text(text)
+}
+
+#[test]
+fn each_step_lands_in_the_scrollback_as_soon_as_it_finishes() {
+    let mut renderer = static_renderer();
+    let mut screen = Screen::new();
+    renderer
+        .write_tool_call("web_search", r#"{"query":"第一个"}"#)
+        .unwrap();
+    let frame = renderer.take_output_frame();
+    let raw = String::from_utf8_lossy(&frame);
+    // 跑着的时候是 live 区里的转轮行，还没落地。
+    assert!(
+        !raw.contains("×1"),
+        "静态时间线不该再画 inline 那套 `工具×1` 卡片: {raw:?}"
+    );
+    screen.feed(&frame);
+    renderer
+        .write_tool_result("web_search", true, "{}")
+        .unwrap();
+    screen.feed(&renderer.take_output_frame());
+    let lines = screen.lines();
+    let step = lines
+        .iter()
+        .find(|line| line.contains("第一个"))
+        .unwrap_or_else(|| panic!("跑完的那一步没落地: {lines:?}"));
+    assert!(!step.contains("×1"), "还是 inline 那套写法: {step:?}");
+    // 落地的那一步退两格（用户：贴到左边框太靠左）。
+    assert!(
+        step.starts_with("  ") && !step.starts_with("   "),
+        "静态时间线该整体退两格: {step:?}"
+    );
+
+    // 第二步：和上一步之间要有连线。
+    renderer
+        .write_tool_call("read", r#"{"path":"/tmp/b.txt"}"#)
+        .unwrap();
+    renderer.write_tool_result("read", true, "{}").unwrap();
+    screen.feed(&renderer.take_output_frame());
+    let lines = screen.lines();
+    let first = lines
+        .iter()
+        .position(|line| line.contains("第一个"))
+        .expect("第一步没了");
+    let second = lines
+        .iter()
+        .position(|line| line.contains("/tmp/b.txt"))
+        .unwrap_or_else(|| panic!("第二步没落地: {lines:?}"));
+    assert!(first < second, "顺序乱了: {lines:?}");
+    assert!(
+        lines[first + 1..second]
+            .iter()
+            .any(|line| line.trim() == "│"),
+        "两步之间没有连线: {lines:?}"
+    );
+}
+
+#[test]
+fn an_edit_prints_its_diff_right_under_the_step() {
+    let mut renderer = static_renderer();
+    let mut screen = Screen::new();
+    renderer
+        .write_tool_call("edit", r#"{"patchText":"*** Begin Patch\n*** Update File: /tmp/a.txt\n@@\n-旧的一行\n+新的一行\n*** End Patch\n"}"#)
+        .unwrap();
+    let preview = serde_json::json!({
+        "path": "/tmp/a.txt",
+        "diff": "--- a/a.txt\n+++ b/a.txt\n@@ -1,1 +1,1 @@\n-旧的一行\n+新的一行\n",
+    })
+    .to_string();
+    renderer
+        .write_tool_progress("edit", &format!("__patch_preview__{preview}"))
+        .unwrap();
+    renderer
+        .write_tool_result("edit", true, r#"{"ok":true}"#)
+        .unwrap();
+    screen.feed(&renderer.take_output_frame());
+    let lines = screen.lines();
+    let step = lines
+        .iter()
+        .position(|line| line.contains("/tmp/a.txt"))
+        .unwrap_or_else(|| panic!("编辑那一步没落地: {lines:?}"));
+    let after = &lines[step..];
+    let plus = after
+        .iter()
+        .find(|line| line.contains("+ 新的一行"))
+        .unwrap_or_else(|| panic!("diff 没印在那一步底下: {after:?}"));
+    assert!(
+        after.iter().any(|line| line.contains("- 旧的一行")),
+        "diff 没印在那一步底下: {after:?}"
+    );
+    // diff 行从连线穿过（`  │ `），紧贴抬头不空行；行号栏按最大行号定宽（最少两格）。
+    assert!(plus.starts_with("  │  1 + "), "diff 的缩进不对: {plus:?}");
+    assert!(
+        after[1].starts_with("  │ ") && after[1].contains("旧的一行"),
+        "diff 和抬头之间不该空行: {after:?}"
+    );
+}
+
+/// 抬头底下印的是**命令本身**，不是命令输出（用户 09-17 裁定：跑了什么要紧，
+/// 输出不要紧）。命令留头不留尾，装不下时底部补 `⋮ 已省略`；输出一个字都不露。
+///
+/// 抬头那一行右边给的是模型自报的 `title`，不是命令文本——命令就在下面，
+/// 再窥视一遍是同一句话说两遍。
+#[test]
+fn a_command_prints_itself_not_its_output() {
+    let mut renderer = static_renderer();
+    let mut screen = Screen::new();
+    let command = (1..=12)
+        .map(|index| format!("echo 命令第 {index} 行"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let arguments = serde_json::json!({ "command": command, "title": "跑十二行" });
+    renderer
+        .write_tool_call("run_command", &arguments.to_string())
+        .unwrap();
+    for index in 1..=12 {
+        renderer
+            .write_command_output(
+                "run_command",
+                CommandOutputStream::Stdout,
+                format!("输出第 {index} 行\n").as_bytes(),
+            )
+            .unwrap();
+    }
+    // 跑着的时候：转轮行底下就是命令,跑完之后落地的也是它,前后不跳版。
+    let (_, live) = renderer.timeline_waiting();
+    let live = strip_ansi(&live.expect("live 区是空的"));
+    assert!(live.contains("跑十二行"), "抬头没给 title: {live:?}");
+    assert!(live.contains("echo 命令第 1 行"), "命令没露出来: {live:?}");
+    assert!(!live.contains("输出第 12 行"), "输出不该露: {live:?}");
+    screen.feed(&renderer.take_output_frame());
+
+    renderer
+        .write_tool_result("run_command", true, r#"{"success":true,"exit_code":0}"#)
+        .unwrap();
+    screen.feed(&renderer.take_output_frame());
+    let lines = screen.lines();
+    let step = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with("$ "))
+        .unwrap_or_else(|| panic!("命令那一步没落地: {lines:?}"));
+    let after = &lines[step..];
+    assert!(after[0].contains("跑十二行"), "抬头没给 title: {after:?}");
+    assert!(
+        after[1].starts_with("  │ ") && after[1].contains("echo 命令第 1 行"),
+        "抬头底下第一行该是命令的头一行、从连线穿过: {after:?}"
+    );
+    assert!(
+        after
+            .iter()
+            .any(|line| line.contains(t("omitted", "已省略"))),
+        "超出的部分没标省略: {after:?}"
+    );
+    // 留头不留尾：省略标记在**底部**，最后一行命令不该露。
+    assert!(
+        !after.iter().any(|line| line.contains("echo 命令第 12 行")),
+        "命令该留头不留尾: {after:?}"
+    );
+    assert!(
+        !after.iter().any(|line| line.contains("输出第")),
+        "输出一个字都不该露,它只在点开里: {after:?}"
+    );
+}
+
+#[test]
+fn a_failed_step_is_red_and_only_commands_show_their_output() {
+    let mut renderer = static_renderer();
+    let mut screen = Screen::new();
+    // 普通工具跑砸了：那一行红，但**不印**报错——多半是一团裸 JSON，印出来只会丑
+    //（用户拍板：除了命令，其他工具报错不需要报错信息）。
+    renderer.write_tool_call("gpustoggle", "{}").unwrap();
+    renderer
+        .write_tool_result("gpustoggle", false, r#"{"error":"tool error: 显卡不见了"}"#)
+        .unwrap();
+    let frame = renderer.take_output_frame();
+    let raw = String::from_utf8_lossy(&frame);
+    assert!(raw.contains("\x1b[31m"), "失败那一步没标红: {raw:?}");
+    screen.feed(&frame);
+    let lines = screen.lines();
+    assert!(
+        !lines.iter().any(|line| line.contains("显卡不见了")),
+        "普通工具的报错不该印出来: {lines:?}"
+    );
+
+    // 命令跑砸了：输出照印（几行尾巴），而且整段是红的。
+    renderer
+        .write_tool_call("run_command", r#"{"command":"seq 1 9 >&2; exit 3"}"#)
+        .unwrap();
+    for index in 1..=9 {
+        renderer
+            .write_command_output(
+                "run_command",
+                CommandOutputStream::Stdout,
+                format!("错误第 {index} 行\n").as_bytes(),
+            )
+            .unwrap();
+    }
+    renderer
+        .write_tool_result(
+            "run_command",
+            true,
+            r#"{"success":false,"exit_code":3,"stdout":"","stderr":""}"#,
+        )
+        .unwrap();
+    let frame = renderer.take_output_frame();
+    let raw = String::from_utf8_lossy(&frame);
+    screen.feed(&frame);
+    let lines = screen.lines();
+    // 09-17 起抬头底下印的是命令,不是输出;跑砸了的话那几行命令整段标红。
+    assert!(
+        !lines.iter().any(|line| line.contains("错误第")),
+        "输出不该露在抬头底下: {lines:?}"
+    );
+    assert!(
+        raw.contains("\x1b[31mseq 1 9 >&2; exit 3"),
+        "跑砸了的命令那几行不是红的: {raw:?}"
+    );
+    // 命令从连线穿过，不空行。
+    let step = lines
+        .iter()
+        .position(|line| {
+            let line = line.trim_start();
+            line.contains(t("Run command", "运行命令")) && !line.starts_with('│')
+        })
+        .expect("命令那一步没落地");
+    assert!(
+        lines[step + 1].starts_with("  │ ") && lines[step + 1].contains("exit 3"),
+        "命令没从连线穿过: {lines:?}"
+    );
+
+    // 跑成的普通工具只留那一行，不印输出。
+    renderer
+        .write_tool_call("read", r#"{"path":"/tmp/x"}"#)
+        .unwrap();
+    renderer
+        .write_tool_result("read", true, "{\"content\":\"一大段文件内容\"}")
+        .unwrap();
+    screen.feed(&renderer.take_output_frame());
+    let lines = screen.lines();
+    assert!(
+        lines.iter().any(|line| line.contains("/tmp/x")),
+        "跑成的那一步没落地: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains("一大段文件内容")),
+        "跑成的工具不该把输出印出来: {lines:?}"
+    );
+}
+
+#[test]
+fn a_thought_is_one_line_and_there_is_no_worked_for_handle() {
+    let mut renderer = static_renderer();
+    let mut screen = Screen::new();
+    renderer
+        .start_reasoning_phase(std::time::Instant::now())
+        .unwrap();
+    renderer
+        .write_chunk(ChatStreamChunk {
+            kind: ChatStreamKind::Reasoning,
+            text: "先看一眼再说，这段想法不该整段印出来".to_string(),
+        })
+        .unwrap();
+    renderer
+        .write_tool_call("web_search", r#"{"query":"查一下"}"#)
+        .unwrap();
+    renderer
+        .write_tool_result("web_search", true, "{}")
+        .unwrap();
+    renderer
+        .write_chunk(ChatStreamChunk {
+            kind: ChatStreamKind::Content,
+            text: "正文来了".to_string(),
+        })
+        .unwrap();
+    renderer.finish().unwrap();
+    screen.feed(&renderer.take_output_frame());
+    let lines = screen.lines();
+    let thought = lines
+        .iter()
+        .position(|line| line.contains(t("thought", "已思考")))
+        .unwrap_or_else(|| panic!("想的那一步没落地: {lines:?}"));
+    assert!(
+        !lines.iter().any(|line| line.contains("不该整段印出来")),
+        "思考全文被印出来了: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains("Worked for")),
+        "静态时间线不该有点不开的收缩行: {lines:?}"
+    );
+    let search = lines
+        .iter()
+        .position(|line| line.contains("查一下"))
+        .expect("工具那一步没落地");
+    let body = lines
+        .iter()
+        .position(|line| line.contains("正文来了"))
+        .expect("正文没了");
+    assert!(thought < search && search < body, "顺序乱了: {lines:?}");
+    // 时间线和正文之间空一行分开；跑着时那根连线和转轮行都擦干净了。
+    assert_eq!(body - search, 2, "时间线到正文该正好隔一行空: {lines:?}");
+    assert!(lines[search + 1].trim().is_empty(), "{lines:?}");
+}
+
+fn full_static_renderer() -> StreamRenderer {
+    let mut renderer = StreamRenderer::new(
+        ReasoningDisplayMode::Full,
+        ToolCallDisplayMode::Summary,
+        false,
+        true,
+        4,
+    );
+    renderer.use_external_cursor_control();
+    renderer.use_buffered_output();
+    renderer.use_terminal_surface();
+    assert!(renderer.timeline_static(), "该走静态时间线");
+    renderer
+}
+
+fn reasoning(renderer: &mut StreamRenderer, text: &str) {
+    renderer
+        .write_chunk(ChatStreamChunk {
+            kind: ChatStreamKind::Reasoning,
+            text: text.to_string(),
+        })
+        .unwrap();
+}
+
+/// 「展开思考内容」+ 点不开的面（shellhook 等）：思考正文**边想边往下流**，抬头带着
+/// 转轮留在 live 区顶上、正文在它底下长（用户 09-17：转轮要固定在思考的 logo 左侧）；
+/// 想完按原版式落地：`已思考 · N 词元 · Xs` 当抬头，正文在它底下，只印一遍。
+#[test]
+fn a_full_thought_streams_under_its_live_heading() {
+    let mut renderer = full_static_renderer();
+    let mut screen = Screen::new();
+    renderer
+        .start_reasoning_phase(std::time::Instant::now())
+        .unwrap();
+    reasoning(&mut renderer, "第一行想法\n第二行想法");
+    screen.feed(&renderer.take_output_frame());
+    // 抬头和正文都还在 live 区：抬头在上、正文跟在底下，什么都没落地。
+    let (_, live) = renderer.timeline_waiting();
+    let live = strip_ansi(&live.expect("live 区是空的"));
+    let rows: Vec<&str> = live.lines().collect();
+    let heading = rows
+        .iter()
+        .position(|row| row.contains(t("thinking", "思考中")))
+        .unwrap_or_else(|| panic!("live 区没有抬头: {live:?}"));
+    let first = rows
+        .iter()
+        .position(|row| row.contains("第一行想法"))
+        .unwrap_or_else(|| panic!("正文没跟在抬头底下: {live:?}"));
+    let second = rows
+        .iter()
+        .position(|row| row.contains("第二行想法"))
+        .unwrap_or_else(|| panic!("半行也该露着: {live:?}"));
+    assert!(heading < first && first < second, "{live:?}");
+    assert!(
+        rows[heading].starts_with(miyu_hosts::render::wait_spinner::BLOCK_MARKER),
+        "转轮该挂在抬头上: {:?}",
+        rows[heading]
+    );
+    assert!(
+        rows[first].trim_start().starts_with('│'),
+        "{:?}",
+        rows[first]
+    );
+    // 想完：抬头换成「已思考 · …」落地，正文在它底下，只印一遍，没有末尾计数行。
+    renderer
+        .write_chunk(ChatStreamChunk {
+            kind: ChatStreamKind::Content,
+            text: "正文来了".to_string(),
+        })
+        .unwrap();
+    renderer.finish().unwrap();
+    screen.feed(&renderer.take_output_frame());
+    let lines = screen.lines();
+    let heading = lines
+        .iter()
+        .position(|line| line.contains(t("thought", "已思考")))
+        .unwrap_or_else(|| panic!("想完的抬头没落地: {lines:?}"));
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.contains(t("thought", "已思考")))
+            .count(),
+        1,
+        "{lines:?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.contains(t("thinking", "思考中"))),
+        "落地后不该留着「思考中」: {lines:?}"
+    );
+    for needle in ["第一行想法", "第二行想法"] {
+        let at = lines
+            .iter()
+            .position(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} 没落地: {lines:?}"));
+        assert!(at > heading, "正文该在抬头底下: {lines:?}");
+        assert_eq!(
+            lines.iter().filter(|line| line.contains(needle)).count(),
+            1,
+            "{needle} 该正好印一遍: {lines:?}"
+        );
+    }
+}
+
+/// 整段高过一屏：抬头先滚进 scrollback，再滚最老的整行，live 区只留后面那一屏；
+/// 想完在末尾收一行计数，全文只印一遍。测试里终端高度按 24 行算。
+#[test]
+fn a_thought_taller_than_the_screen_scrolls_its_heading_away() {
+    let mut renderer = full_static_renderer();
+    let mut screen = Screen::new();
+    renderer
+        .start_reasoning_phase(std::time::Instant::now())
+        .unwrap();
+    let long = (0..40)
+        .map(|index| format!("第{index}行"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    reasoning(&mut renderer, &long);
+    screen.feed(&renderer.take_output_frame());
+    let lines = screen.lines();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains(t("thinking", "思考中"))),
+        "抬头该先滚进 scrollback: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("第0行")),
+        "最老的整行该滚进 scrollback: {lines:?}"
+    );
+    let (_, live) = renderer.timeline_waiting();
+    let live = live.expect("live 区是空的");
+    // 抬头滚出去了，正文行上不再挂转轮：只有留空的标记，没有转轮标记。
+    assert!(
+        live.contains(miyu_hosts::render::wait_spinner::BLOCK_MARKER_IDLE)
+            && !live.contains(miyu_hosts::render::wait_spinner::BLOCK_MARKER),
+        "抬头滚出去后 live 区不该再有转轮: {live:?}"
+    );
+    let live = strip_ansi(&live);
+    assert!(
+        live.contains("第39行")
+            && !live.contains("第0行")
+            && !live.contains(t("thinking", "思考中")),
+        "live 区该只剩后面那一屏: {live:?}"
+    );
+    assert!(live.lines().count() <= 24, "live 区高过一屏了: {live:?}");
+    renderer
+        .write_chunk(ChatStreamChunk {
+            kind: ChatStreamKind::Content,
+            text: "正文来了".to_string(),
+        })
+        .unwrap();
+    renderer.finish().unwrap();
+    screen.feed(&renderer.take_output_frame());
+    let lines = screen.lines();
+    for needle in ["第0行", "第20行", "第39行", "思考中"] {
+        assert_eq!(
+            lines.iter().filter(|line| line.contains(needle)).count(),
+            1,
+            "{needle} 该正好印一遍: {lines:?}"
+        );
+    }
+    let last = lines
+        .iter()
+        .position(|line| line.contains("第39行"))
+        .unwrap();
+    let closing = lines
+        .iter()
+        .position(|line| line.contains(t("thought", "已思考")))
+        .unwrap_or_else(|| panic!("末尾没收计数那一行: {lines:?}"));
+    let reply = lines
+        .iter()
+        .position(|line| line.contains("正文来了"))
+        .unwrap();
+    assert!(last < closing && closing < reply, "{lines:?}");
+    assert!(
+        lines[closing].trim_start().starts_with('│'),
+        "{:?}",
+        lines[closing]
+    );
+}
+
+/// 一整段没换行、自己就高过一屏（测试里终端按 24 行算）：按折好的物理行滚进
+/// scrollback，live 区不高过一屏，想完全文只印一遍。
+#[test]
+fn a_giant_paragraph_scrolls_by_wrapped_rows() {
+    let mut renderer = full_static_renderer();
+    let mut screen = Screen::new();
+    renderer
+        .start_reasoning_phase(std::time::Instant::now())
+        .unwrap();
+    let paragraph = (0..400)
+        .map(|index| format!("词{index:03}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    reasoning(&mut renderer, &paragraph);
+    screen.feed(&renderer.take_output_frame());
+    let lines = screen.lines();
+    assert!(
+        lines.iter().any(|line| line.contains("词000")),
+        "段首该已经滚进 scrollback: {lines:?}"
+    );
+    let (_, live) = renderer.timeline_waiting();
+    let live = strip_ansi(&live.expect("live 区是空的"));
+    assert!(live.lines().count() <= 24, "live 区高过一屏了: {live:?}");
+    assert!(
+        live.contains("词399") && !live.contains("词000"),
+        "{live:?}"
+    );
+    renderer
+        .write_chunk(ChatStreamChunk {
+            kind: ChatStreamKind::Content,
+            text: "正文来了".to_string(),
+        })
+        .unwrap();
+    renderer.finish().unwrap();
+    screen.feed(&renderer.take_output_frame());
+    let lines = screen.lines();
+    for needle in ["词000", "词200", "词399"] {
+        assert_eq!(
+            lines.iter().filter(|line| line.contains(needle)).count(),
+            1,
+            "{needle} 该正好印一遍: {lines:?}"
+        );
+    }
+    let closing = lines
+        .iter()
+        .position(|line| line.contains(t("thought", "已思考")))
+        .unwrap_or_else(|| panic!("末尾没收计数那一行: {lines:?}"));
+    let last = lines
+        .iter()
+        .position(|line| line.contains("词399"))
+        .unwrap();
+    assert!(last < closing, "{lines:?}");
+}
+
+#[test]
+fn the_live_area_continues_the_rail_after_a_committed_step() {
+    let mut renderer = static_renderer();
+    renderer
+        .start_reasoning_phase(std::time::Instant::now())
+        .unwrap();
+    renderer
+        .write_tool_call("web_search", r#"{"query":"x"}"#)
+        .unwrap();
+    renderer
+        .write_tool_result("web_search", true, "{}")
+        .unwrap();
+    // 跑完那一刻转轮就回来了，live 区从一根连线接上去。
+    assert!(renderer.wait_spinner.is_some(), "收完那一步转轮没回来");
+    let (_, live) = renderer.timeline_waiting();
+    let live = live.expect("live 区是空的");
+    let first = strip_ansi(live.lines().next().unwrap_or_default());
+    assert_eq!(first.trim(), "│", "live 区没有从连线接上去: {live:?}");
+    // 已经落地的那一步不再出现在 live 区里。
+    assert!(
+        !live.contains("web_search") && !strip_ansi(&live).contains("· x"),
+        "落地的步骤又在 live 区里画了一遍: {live:?}"
+    );
+}
+
+/// 上一个工具刚回来、下一次模型请求还在路上：转轮独自落在 logo 那一列上，
+/// 而不是整个 live 区消失。
+#[test]
+fn the_spinner_stays_on_the_rail_between_steps() {
+    let mut renderer = static_renderer();
+    renderer
+        .write_tool_call("web_search", r#"{"query":"x"}"#)
+        .unwrap();
+    renderer
+        .write_tool_result("web_search", true, "{}")
+        .unwrap();
+    let (_, live) = renderer.timeline_waiting();
+    let live = live.expect("live 区不该是空的");
+    let rows = live.lines().collect::<Vec<_>>();
+    assert_eq!(rows.len(), 2, "该是连线 + 转轮两行: {live:?}");
+    assert!(
+        rows[1].contains(miyu_hosts::render::wait_spinner::BLOCK_MARKER),
+        "第二行不是转轮: {live:?}"
+    );
+}
+
+#[test]
+fn a_command_still_running_at_the_end_is_folded_in_as_interrupted() {
+    let mut renderer = static_renderer();
+    let mut screen = Screen::new();
+    renderer
+        .write_tool_call("run_command", r#"{"command":"sleep 30"}"#)
+        .unwrap();
+    renderer
+        .write_command_output(
+            "run_command",
+            CommandOutputStream::Stdout,
+            "开始\n".as_bytes(),
+        )
+        .unwrap();
+    renderer.finish().unwrap();
+    let frame = renderer.take_output_frame();
+    let raw = String::from_utf8_lossy(&frame);
+    assert!(
+        !raw.contains("×1") && !raw.contains("↳"),
+        "inline 那套命令卡片漏出来了: {raw:?}"
+    );
+    screen.feed(&frame);
+    let lines = screen.lines();
+    // 命令现在印在抬头**底下**,抬头上只有耗时与 title;被打断的抬头挂的是
+    // 打叉图标而不是 `$`,所以按工具名认。
+    let step = lines
+        .iter()
+        .find(|line| {
+            let line = line.trim_start();
+            line.contains(t("Run command", "运行命令")) && !line.starts_with('│')
+        })
+        .unwrap_or_else(|| panic!("没跑完的命令没收进时间线: {lines:?}"));
+    assert!(
+        step.contains(t("interrupted", "已中断")),
+        "没说明它是被打断的: {step:?}"
+    );
+    assert!(raw.contains("\x1b[31m"), "被打断的那一步没标红: {raw:?}");
+    assert!(
+        lines.iter().any(|line| line.contains("sleep 30")),
+        "命令本身没落地: {lines:?}"
+    );
+    // 09-17 起输出只在点开里。静态时间线没处点开,所以它就是看不到了——
+    // 用户裁定三个面统一换,这是明知的代价。
+    assert!(
+        !lines.iter().any(|line| line.contains("开始")),
+        "输出不该露在抬头底下: {lines:?}"
+    );
+}
+
+/// 管道里（stdout 不是终端）还是老的一行摘要。
+#[test]
+fn piped_output_keeps_the_plain_summary() {
+    let mut renderer = StreamRenderer::new(
+        ReasoningDisplayMode::Summary,
+        ToolCallDisplayMode::Summary,
+        false,
+        true,
+        4,
+    );
+    renderer.use_buffered_output();
+    renderer.use_piped_surface();
+    assert!(!renderer.timeline_enabled());
+    renderer
+        .write_tool_call("web_search", r#"{"query":"x"}"#)
+        .unwrap();
+    renderer
+        .write_tool_result("web_search", true, "{}")
+        .unwrap();
+    let text = String::from_utf8_lossy(&renderer.take_output_frame()).into_owned();
+    assert!(text.contains("×1"), "管道里该还是老摘要: {text:?}");
+}
+
+/// daemon 往 shellhook 的终端回写那一轮：事件从 `decode_ipc_event` 进、
+/// `handle_agent_event` 出，中间按 80ms 走转轮——和写线程一模一样。思考收成一步
+/// 之后正文另起一行，转轮那一行不能留在正文前头（真机回写实测：
+/// `⠹ 󰝨 思考中 · 0.1s好的,收到。…` 粘成一行）。
+#[test]
+fn a_written_back_turn_keeps_the_reply_off_the_spinner_row() {
+    use miyu_hosts::runtime::{decode_ipc_event, DecodedIpc};
+    // 写线程报了宽度，转轮才认自己是在往终端画。
+    miyu_hosts::render::set_cols_override(100);
+    let mut renderer = static_renderer();
+    let mut screen = Screen::new();
+    let feed = |renderer: &mut StreamRenderer, screen: &mut Screen| {
+        let frame = renderer.take_output_frame();
+        screen.feed(&frame);
+    };
+    renderer.start_waiting().unwrap();
+    feed(&mut renderer, &mut screen);
+    let events: Vec<(&str, serde_json::Value)> = vec![
+        ("reasoning.start", serde_json::json!({})),
+        (
+            "reasoning.delta",
+            serde_json::json!({"delta": "先看一眼需求,"}),
+        ),
+        (
+            "reasoning.delta",
+            serde_json::json!({"delta": "再决定怎么下手。"}),
+        ),
+        ("reasoning.part_end", serde_json::json!({})),
+        // 第一轮的正文**没有换行收尾**（模型常这样），markdown 那层攒着半行。
+        (
+            "assistant.delta",
+            serde_json::json!({"delta": "好的,收到。"}),
+        ),
+        (
+            "assistant.delta",
+            serde_json::json!({"delta": "这是回复。"}),
+        ),
+        ("chat.round_usage", serde_json::json!({})),
+        // 排队的跟进接着跑第二轮：新一段思考开始时那半行正文得先收掉。
+        ("queue.consumed", serde_json::json!({})),
+        ("reasoning.start", serde_json::json!({})),
+        ("reasoning.part_start", serde_json::json!({})),
+        (
+            "reasoning.delta",
+            serde_json::json!({"delta": "再想一下。"}),
+        ),
+        ("reasoning.part_end", serde_json::json!({})),
+        (
+            "assistant.delta",
+            serde_json::json!({"delta": "第二段回复。"}),
+        ),
+        ("run.completed", serde_json::json!({})),
+    ];
+    for (kind, data) in events {
+        // 每条事件之间转轮走两三帧（写线程 80ms 一帧）。
+        for _ in 0..3 {
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            renderer.tick_spinner().unwrap();
+            feed(&mut renderer, &mut screen);
+        }
+        match decode_ipc_event(kind, &data) {
+            DecodedIpc::Event(event) => {
+                crate::cli::handle_agent_event(&mut renderer, event).unwrap()
+            }
+            DecodedIpc::RunCompleted => renderer.finish().unwrap(),
+            _ => {}
+        }
+        feed(&mut renderer, &mut screen);
+    }
+    miyu_hosts::render::set_cols_override(0);
+    let lines = screen.lines();
+    let text = lines.join("\n");
+    let reply = lines
+        .iter()
+        .find(|line| line.contains("好的,收到"))
+        .unwrap_or_else(|| panic!("正文没了: {text:?}"));
+    assert!(
+        !reply.contains(t("thinking", "思考中"))
+            && !reply
+                .trim_start()
+                .starts_with(|c: char| "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏".contains(c)),
+        "正文粘在转轮那一行后面: {text:?}"
+    );
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.starts_with("  ") && line.contains(t("thought", "已思考")))
+            .count(),
+        2,
+        "两段思考没各收成一步: {text:?}"
+    );
+    assert!(
+        !text.contains(t("thinking", "思考中")),
+        "转轮那一行没擦掉: {text:?}"
+    );
+    let second = lines
+        .iter()
+        .find(|line| line.contains("第二段回复"))
+        .unwrap_or_else(|| panic!("第二段正文没了: {text:?}"));
+    assert!(!second.contains("好的,收到"), "两段正文粘成一行: {text:?}");
+}

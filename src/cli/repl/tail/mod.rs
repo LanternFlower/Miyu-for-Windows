@@ -11,6 +11,10 @@
 // 活动区还用着一批留在 cli::mod 的东西（footer 结构、队列渲染、job 条）。
 mod frame;
 mod queue;
+pub(in crate::cli) mod screen;
+mod update;
+
+pub(in crate::cli) use update::synchronized_terminal_update;
 
 #[cfg(test)]
 pub(in crate::cli) use frame::queue_lifted_frame;
@@ -90,12 +94,51 @@ pub(in crate::cli) fn trace_tail_redraw(
 }
 
 pub(in crate::cli) fn cursor_position_or(fallback: (u16, u16)) -> (u16, u16) {
+    // 全屏下「终端光标在哪」这个问题没有意义——屏幕是我们自己画的，位置都
+    // 是算出来的。更要命的是 `ESC[6n` 的应答要**从 stdin 读**，那会把用户
+    // 正在打的字吞掉（09-11 走查里「打字不回显」就是这么来的）。
+    if screen::in_fullscreen() {
+        return fallback;
+    }
     // 终端已挂断时 ESC[6n 永远等不到应答,而 crossterm 的应答等待对
     // HUP fd 会无限自旋(超时失效)——直接用回退值,让退出路径走完。
     if terminal_hangup() {
         return fallback;
     }
-    cursor::position().unwrap_or(fallback)
+    let started = std::time::Instant::now();
+    let answer = cursor::position();
+    // 取证：这一问要是没答上来，活动区就会按**外部输出之前**的位置重画，
+    // 正好盖在刚打出来的图上。终端渲染大图（sixel 动辄上百 KB）期间不会
+    // 回答 ESC[6n，图越大越容易在这里超时——所以要看得见它。
+    if miyu_base::terminal::chafa::trace_enabled() {
+        miyu_base::terminal::chafa::trace(&format!(
+            "CPR {:?} {}ms fallback={:?}{}",
+            answer,
+            started.elapsed().as_millis(),
+            fallback,
+            if answer.is_err() {
+                "  ←问不到,退回旧位置"
+            } else {
+                ""
+            },
+        ));
+    }
+    answer.unwrap_or(fallback)
+}
+
+/// 从 `start` 起把 `frame` 写进终端后光标停在哪。追踪器不知道页高,顶到页底
+/// 之后终端是滚动而不是继续往下,所以行号封在最后一行。
+pub(in crate::cli) fn cursor_after_frame(
+    frame: &[u8],
+    start: (u16, u16),
+    columns: u16,
+    terminal_rows: u16,
+) -> (u16, u16) {
+    let layout = terminal_frame_layout(frame, start, columns, None);
+    (
+        layout.cursor.0,
+        layout.cursor.1.min(terminal_rows.saturating_sub(1)),
+    )
 }
 
 pub(in crate::cli) fn cursor_row_or(fallback: u16) -> u16 {
@@ -121,8 +164,29 @@ pub(in crate::cli) struct LiveReplTail {
     /// 那行永远没人清(用户 08-20 截图实锤)。
     pub(in crate::cli) footer_offset: Option<u16>,
     pub(in crate::cli) footer_spinner_last: Option<std::time::Instant>,
-    pub(in crate::cli) jobs: Vec<crate::tools::jobs::JobOverview>,
+    /// 输入框右上角那行 `/goal …` 上一次画出去的**原文**。秒数每秒自己变，
+    /// 光比 `GoalHint` 比不出来；比字符串则「没变就不重画」，空闲时一秒最多
+    /// 一帧。见 [`Self::tick_goal_hint`]。
+    pub(in crate::cli) goal_hint_drawn: String,
+    pub(in crate::cli) jobs: Vec<miyu_engine::tools::jobs::JobOverview>,
+    /// 已经下过"停"的任务 → 下达的时刻。见 `suppress_jobs`。
+    pub(in crate::cli) suppressed_jobs: std::collections::HashMap<String, std::time::Instant>,
+    /// Σ 上那份实时加数：这一轮里跑着的前台子代理此刻烧了多少。
+    /// 见 [`Self::set_live_turn_tokens`]。
+    pub(in crate::cli) live_turn_tokens: u64,
     pub(in crate::cli) job_spinner: usize,
+    /// 状态行转轮的计时起点。帧按时间算（80ms 一帧）：谁来重画都画在该在的位置，
+    /// 不再是「每次 tick_job_strip 进一帧」——AI 流式输出时那一路每 8 个转轮 tick
+    /// 才来一次，状态行的转轮就一顿一顿（用户实测）。
+    pub(in crate::cli) job_spinner_started: std::time::Instant,
+    /// 后台状态行在屏幕上的起始行与行数。全屏下点它要能对上是哪一个任务。
+    pub(in crate::cli) job_strip_start: u16,
+    pub(in crate::cli) job_strip_rows: u16,
+    /// 鼠标正悬在任务条的哪一条上(`jobs` 的下标),那一行画成不 dim。
+    pub(in crate::cli) job_hover: Option<usize>,
+    /// 用户在详情面板里按了 x：这个任务该停了。事件层不发 IPC（它没有
+    /// 异步上下文），攒在这儿由主循环取走。
+    pub(in crate::cli) pending_stop_job: Option<String>,
     pub(in crate::cli) output_cursor: (u16, u16),
     pub(in crate::cli) tail_start: u16,
     pub(in crate::cli) tail_rows: u16,
@@ -130,6 +194,24 @@ pub(in crate::cli) struct LiveReplTail {
     pub(in crate::cli) rendered: bool,
     pub(in crate::cli) external_output_active: bool,
     pub(in crate::cli) raw_mode_handoff: bool,
+    /// 全屏后端。`None` 就是原来的 inline 行为——正文进 scrollback、
+    /// 活动区靠 DECSTBM 钉在底下。`Some` 时正文改由它持有，活动区照旧
+    /// 由 `render_repl_input_with_footer` 打，只是 `tail_start` 指向视口底部。
+    pub(in crate::cli) screen: Option<screen::Screen>,
+    /// 空会话的画面(渐变 MIYU + 星空 + 模式行)。会话一有回合就撤。
+    pub(in crate::cli) banner: Option<crate::cli::repl::banner::BannerScene>,
+    /// inline 后端里 banner 占了活动区顶上的几行(全屏下为 0,画在正文区)。
+    pub(in crate::cli) banner_rows: u16,
+    /// Bottom space temporarily reserved for a lobby selector.
+    pub(in crate::cli) lobby_panel_rows: u16,
+    /// 空会话按 Tab 换车道:下一次会话切换不打「已切换到会话」——用户看到的是
+    /// 模式行变色,不是换会话。一次性,用过即清。
+    pub(in crate::cli) suppress_switch_note: bool,
+    /// 回合跑着时寄宿的 `/models` 面板改了会话模型（09-20）：这里的 footer 已
+    /// 经按新模型重算过，可 `RemoteRepl` 手里那份还是旧的，回合一结束它会拿旧
+    /// 的盖回来（主循环每圈 `set_footer`）。立这面旗让它在盖之前先重算一次。
+    /// 一次性，用过即清。
+    pub(in crate::cli) session_footer_stale: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,7 +256,7 @@ pub(in crate::cli) struct TerminalFrameTracker {
 }
 
 impl TerminalFrameTracker {
-    pub(in crate::cli) fn new(start: (u16, u16), columns: u16, bottom_margin: Option<u16>) -> Self {
+    pub fn new(start: (u16, u16), columns: u16, bottom_margin: Option<u16>) -> Self {
         let columns = usize::from(columns.max(1));
         let cursor_col = usize::from(start.0).min(columns.saturating_sub(1));
         let cursor_row = usize::from(start.1);
@@ -438,36 +520,6 @@ pub(in crate::cli) fn live_frame_output_bottom(
     }
 }
 
-pub(in crate::cli) fn synchronized_terminal_update<T>(
-    cursor_after: CursorAfterUpdate,
-    update: impl FnOnce() -> Result<T>,
-) -> Result<T> {
-    let mut stdout = io::stdout();
-    match cursor_after {
-        CursorAfterUpdate::Preserve => execute!(stdout, BeginSynchronizedUpdate)?,
-        CursorAfterUpdate::Shown | CursorAfterUpdate::Hidden => {
-            execute!(stdout, Hide, BeginSynchronizedUpdate)?
-        }
-    }
-    let result = update();
-    let end = match cursor_after {
-        CursorAfterUpdate::Shown => execute!(stdout, EndSynchronizedUpdate, Show),
-        CursorAfterUpdate::Preserve | CursorAfterUpdate::Hidden => {
-            execute!(stdout, EndSynchronizedUpdate)
-        }
-    };
-    match result {
-        Ok(value) => {
-            end?;
-            Ok(value)
-        }
-        Err(error) => {
-            let _ = end;
-            Err(error)
-        }
-    }
-}
-
 /// Places the tail below the output. `was_anchored` says the tail was already
 /// pinned to the bottom: without it a tail that *shrinks* (a background job
 /// strip or a queue bubble going away) would spring back up to the output
@@ -535,9 +587,9 @@ pub(in crate::cli) fn max_live_tail_start(terminal_rows: u16, tail_rows: u16) ->
 }
 
 impl LiveReplTail {
-    pub(in crate::cli) fn new(
-        mode: AgentMode,
-        history: Vec<String>,
+    pub fn new(
+        mode: PersonaLane,
+        history: Vec<ReplHistoryEntry>,
         queued: Vec<QueuedPrompt>,
         footer: ReplFooterStatus,
     ) -> Result<Self> {
@@ -549,19 +601,174 @@ impl LiveReplTail {
             round_base_footer: None,
             footer_offset: None,
             footer_spinner_last: None,
+            goal_hint_drawn: String::new(),
             jobs: Vec::new(),
+            suppressed_jobs: std::collections::HashMap::new(),
+            live_turn_tokens: 0,
             job_spinner: 0,
+            job_spinner_started: std::time::Instant::now(),
             output_cursor: cursor_position_or((0, 0)),
             tail_start: 0,
             tail_rows: 0,
+            job_strip_start: 0,
+            job_strip_rows: 0,
+            job_hover: None,
+            pending_stop_job: None,
             input_cursor: (0, 0),
             rendered: false,
             external_output_active: false,
             raw_mode_handoff: false,
+            screen: {
+                screen::trace_rss("tail-new");
+                let built = screen::requested()
+                    .then(screen::Screen::enter)
+                    .transpose()?;
+                if let Some(screen) = &built {
+                    screen.trace_ready();
+                }
+                built
+            },
+            banner: None,
+            banner_rows: 0,
+            lobby_panel_rows: 0,
+            suppress_switch_note: false,
+            session_footer_stale: false,
         })
     }
 
-    pub(in crate::cli) fn mode(&self) -> AgentMode {
+    /// 会话空不空。空 → 挂 banner、Tab 可换车道;非空 → 撤掉、钉死模式。
+    pub(in crate::cli) fn set_session_empty(
+        &mut self,
+        config: &AppConfig,
+        paths: &MiyuPaths,
+        empty: bool,
+    ) {
+        self.editor.mode_switchable = empty;
+        if empty {
+            if self.banner.is_none() {
+                let mut banner =
+                    crate::cli::repl::banner::BannerScene::load(config, paths, self.editor.mode);
+                // 已经在画面里了(/reset、/new 回到大厅)就不淡入;只有启动那一次淡入。
+                if self.rendered {
+                    if let Some(banner) = &mut banner {
+                        banner.settle();
+                    }
+                }
+                self.banner = banner;
+            }
+            // 回到大厅就是新会话：旧对话不再属于它，画布一起清掉，下一句话从
+            // 屏顶起。启动那次还没画过，缓冲本来就是空的。
+            if self.rendered {
+                if let Some(screen) = &mut self.screen {
+                    screen.wipe_transcript();
+                }
+            }
+        } else {
+            self.banner = None;
+            self.banner_rows = 0;
+            if let Some(screen) = &mut self.screen {
+                screen.set_banner(None);
+            }
+        }
+    }
+
+    /// 换车道:输入框竖条换色、banner 的模式行跟着走。
+    /// 把 `展开思考内容` / `展开工具内容` 交给后台任务面板。
+    ///
+    /// 那块面板是从日志/标记流攒步的，手上没有配置入口——不交进来的话同一件事
+    /// 在前台面板跟着开关走、在后台面板永远收着（用户 09-17 实测）。每轮交一次，
+    /// `/config` 改完下一轮就生效，和渲染器那侧同一个节奏。
+    pub(in crate::cli) fn set_display_expand(
+        &mut self,
+        reasoning: bool,
+        tools: bool,
+        fold: bool,
+        command_lines: usize,
+    ) {
+        if let Some(screen) = &mut self.screen {
+            screen.set_display_expand(reasoning, tools, fold, command_lines);
+        }
+    }
+
+    pub(in crate::cli) fn set_mode(&mut self, mode: PersonaLane) {
+        self.editor.mode = mode;
+        if let Some(banner) = &mut self.banner {
+            banner.set_mode(mode);
+        }
+    }
+
+    /// 空会话 banner 走一帧:星星闪、扫光过。全屏走整帧 diff,inline 只覆写那几行。
+    pub(in crate::cli) fn tick_banner(&mut self) -> Result<()> {
+        if !self.rendered || self.banner.is_none() {
+            return Ok(());
+        }
+        if self
+            .screen
+            .as_ref()
+            .is_some_and(screen::Screen::overlay_open)
+        {
+            return Ok(());
+        }
+        let advanced = self
+            .banner
+            .as_mut()
+            .is_some_and(crate::cli::repl::banner::BannerScene::tick);
+        if !advanced {
+            return Ok(());
+        }
+        if self.screen.is_some() {
+            // 先在同步块**外**把这一帧的大厅算好（整屏的行、ANSI 串），块里只剩
+            // diff 与写。kitty 处理输入法预编辑时按**活光标**定位
+            // （screen_update_overlay_text），块开着的那几毫秒活光标正在星星格子上，
+            // 预编辑事件落在这段就把光标画到星星上、下一帧再弹回输入框——用户
+            // 09-17 报的「用输入法时光标从别处瞬移回输入框」。块越短撞上的概率
+            // 越小：debug 构建实测块时长 7~12ms → 约 1ms。
+            if let Some(banner) = &self.banner {
+                let (cols, rows) = terminal::size().unwrap_or((80, 24));
+                banner.warm_lobby(
+                    usize::from(cols),
+                    usize::from(rows),
+                    usize::from(self.tail_rows),
+                    usize::from(self.lobby_panel_rows),
+                );
+            }
+            // 一帧一个同步块：这一帧会把输入框那几行先擦再写，不裹起来的话终端
+            // （和 pyte 探针）都可能撞见擦了还没写的半帧，看着像输入框闪没了。
+            let cursor = self.output_cursor;
+            return synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
+                self.resume_at_own(cursor)
+            });
+        }
+        if self.banner_rows == 0 {
+            return Ok(());
+        }
+        let (cols, _) = terminal::size().unwrap_or((80, 24));
+        let lines = self
+            .banner
+            .as_ref()
+            .map(|banner| banner.render_ansi(usize::from(cols), usize::from(self.banner_rows)))
+            .unwrap_or_default();
+        let start = self.tail_start.saturating_add(1);
+        let input_cursor = self.input_cursor;
+        synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
+            let mut stdout = io::stdout();
+            let mut row = start;
+            for line in &lines {
+                queue!(
+                    stdout,
+                    MoveTo(0, row),
+                    Clear(ClearType::CurrentLine),
+                    Print(line)
+                )?;
+                row = row.saturating_add(1);
+            }
+            queue!(stdout, MoveTo(input_cursor.0, input_cursor.1))?;
+            stdout.flush()?;
+            Ok(())
+        })
+    }
+
+    pub(in crate::cli) fn mode(&self) -> PersonaLane {
         self.editor.mode
     }
 
@@ -607,12 +814,13 @@ impl LiveReplTail {
         &mut self,
         context_tokens: u64,
         turn: TurnTokens,
+        speed: GenerationSpeed,
     ) -> Result<()> {
         let base = self
             .round_base_footer
             .get_or_insert_with(|| Box::new(self.footer.clone()));
         let mut display = (**base).clone();
-        display.apply_round_usage(context_tokens, turn);
+        display.apply_round_usage(context_tokens, turn, speed);
         // 基线快照拍于回合开始(转轮未起),别让计量刷新把转轮拍灭。
         display.running_spinner = self.footer.running_spinner;
         self.footer = display;
@@ -627,7 +835,52 @@ impl LiveReplTail {
     /// invisible until the next input event causes the editor to render.
     /// Update the background-command strip; returns true when a redraw is
     /// needed (content changed, or spinners/timers must advance).
-    pub(in crate::cli) fn set_jobs(&mut self, jobs: Vec<crate::tools::jobs::JobOverview>) -> bool {
+    /// 已经下过"停"的任务：状态行里先别再显示它。
+    ///
+    /// 停完就把状态行清空是对的（那才是事实），但守护进程那边的任务快照是
+    /// **一秒轮询一次**的——停完紧接着来的那一次轮询往往还带着它，于是状态行
+    /// 消失一瞬间又冒出来，闪一下（用户实测）。压住它几秒，等快照追上来。
+    ///
+    /// 第一版是"轮询里没有了就解除压制"，看着合理，其实当场自废：停完紧跟着的
+    /// 那一句 `set_jobs(空)` 就是一次"轮询里没有"，压制表立刻被清空，下一次真
+    /// 轮询把它原样带了回来。所以只能按**时间**放，不能按"这一份列表里有没有"。
+    pub(in crate::cli) fn suppress_jobs<'a>(&mut self, ids: impl Iterator<Item = &'a str>) {
+        let now = std::time::Instant::now();
+        for id in ids {
+            self.suppressed_jobs.insert(id.to_string(), now);
+        }
+    }
+
+    /// 这一轮里跑着的前台子代理此刻烧了多少——先记在 Σ 上。
+    ///
+    /// 它的审计会话是边跑边写的，但**回合跑着的时候客户端不会去重读 Σ**
+    /// （那是空闲循环干的活），所以这一截得自己补。回合收尾时 Σ 从库里重读、
+    /// 这份清零，不会算两遍。
+    pub(in crate::cli) fn set_live_turn_tokens(&mut self, tokens: u64) -> bool {
+        if self.live_turn_tokens == tokens {
+            return false;
+        }
+        self.live_turn_tokens = tokens;
+        self.footer.update_live_extra_tokens(tokens)
+    }
+
+    pub(in crate::cli) fn set_jobs(
+        &mut self,
+        jobs: Vec<miyu_engine::tools::jobs::JobOverview>,
+    ) -> bool {
+        let jobs: Vec<miyu_engine::tools::jobs::JobOverview> = if self.suppressed_jobs.is_empty() {
+            jobs
+        } else {
+            let now = std::time::Instant::now();
+            self.suppressed_jobs
+                .retain(|_, at| now.duration_since(*at) < SUPPRESS_JOB_FOR);
+            jobs.into_iter()
+                .filter(|job| !self.suppressed_jobs.contains_key(&job.job_id))
+                .collect()
+        };
+        // 后台子代理**不**在这儿往 Σ 上加：它的审计会话是边跑边写的，守护进程
+        // 算出来的会话累计里已经有了，再加一遍就是算两遍。前台那一路才需要补
+        // （见 `set_live_turn_tokens`）——回合跑着的时候客户端不会去重读 Σ。
         let changed = self.jobs.len() != jobs.len()
             || self
                 .jobs
@@ -635,18 +888,56 @@ impl LiveReplTail {
                 .zip(jobs.iter())
                 .any(|(a, b)| a.job_id != b.job_id || a.status != b.status);
         self.jobs = jobs;
+        self.refresh_job_overlay_title();
         changed
+    }
+
+    /// 面板开着哪个任务，就把那个任务此刻的抬头推给它。
+    fn refresh_job_overlay_title(&mut self) {
+        let Some(job_id) = self
+            .screen
+            .as_ref()
+            .and_then(screen::Screen::overlay_job_id)
+        else {
+            return;
+        };
+        let Some(job) = self.jobs.iter().find(|job| job.job_id == job_id) else {
+            return;
+        };
+        let title = screen::job_panel_title(job);
+        if let Some(screen) = &mut self.screen {
+            screen.refresh_overlay_title(&title);
+        }
     }
 
     /// Lightweight spinner/timer repaint of the job strip only — no full
     /// tail redraw, so it can run at animation frequency without flicker.
+    /// 状态行转轮此刻该画哪一帧（80ms 一帧，按时间算）。
+    pub(in crate::cli) fn job_spinner_frame(&self) -> usize {
+        (self.job_spinner_started.elapsed().as_millis() / 80) as usize
+    }
+
     pub(in crate::cli) fn tick_job_strip(&mut self) -> Result<()> {
         if !self.rendered || self.jobs.is_empty() {
             return Ok(());
         }
-        self.job_spinner = self.job_spinner.wrapping_add(1);
+        // 详情面板开着时整屏归它。这时候还往活动区那几行写，两个画笔会在同一
+        // 块地方来回抢，屏幕上就是输入框疯狂抖动。
+        if self
+            .screen
+            .as_ref()
+            .is_some_and(screen::Screen::overlay_open)
+        {
+            return Ok(());
+        }
+        self.job_spinner = self.job_spinner_frame();
         let (cols, _) = terminal::size().unwrap_or((80, 24));
-        let lines = background_job_lines(&self.jobs, self.job_spinner, usize::from(cols));
+        let lines = background_job_lines(
+            &self.jobs,
+            self.job_spinner,
+            usize::from(cols),
+            self.job_hover,
+        );
         let rows = lines.len().min(u16::MAX as usize) as u16;
         if rows > self.tail_rows {
             return Ok(());
@@ -690,10 +981,42 @@ impl LiveReplTail {
         self.tick_footer_spinner()
     }
 
+    /// 输入框右上角那行 `/goal …` 走一拍。
+    ///
+    /// 它有两个走法：状态由 daemon 推（轮次、暂停、受阻，搭任务总览那趟一秒
+    /// 一次的车回来），秒数则是自己每秒往上加。所以这里比的是**画出来的那串
+    /// 字**——一样就什么都不做，不一样才重画一帧（空闲时一秒最多一次）。
+    pub(in crate::cli) fn tick_goal_hint(
+        &mut self,
+        goal: Option<miyu_core::ipc::GoalHint>,
+    ) -> Result<()> {
+        self.footer.goal = goal;
+        if !self.rendered || self.external_output_active {
+            return Ok(());
+        }
+        let text = crate::cli::footer::goal_hint_text(self.footer.goal.as_ref());
+        if text == self.goal_hint_drawn {
+            return Ok(());
+        }
+        self.goal_hint_drawn = text;
+        synchronized_terminal_update(CursorAfterUpdate::Preserve, || self.redraw())
+    }
+
     /// footer 里的运行转轮:单行覆写(footer 行全宽 padding,直接盖不闪),
     /// 33ms 的 spinner tick 上节流到 ~80ms 一帧。
     pub(in crate::cli) fn tick_footer_spinner(&mut self) -> Result<()> {
         if !self.rendered || self.external_output_active {
+            return Ok(());
+        }
+        // 详情面板开着时整屏归它。这一行画在 `tail_start + offset` 上，而那一带
+        // 现在是面板的地盘——两个画笔一人一帧地抢同一行，屏幕底下就在"面板页脚"
+        // 和"输入框 footer"之间反复横跳（用户实测：前台子代理一点开就疯狂鬼畜）。
+        // `tick_job_strip` 早就有这道闸，这儿漏了。
+        if self
+            .screen
+            .as_ref()
+            .is_some_and(screen::Screen::overlay_open)
+        {
             return Ok(());
         }
         let now = std::time::Instant::now();
@@ -727,8 +1050,10 @@ impl LiveReplTail {
     }
 }
 
+/// 下过"停"之后压住状态行多久。守护进程的任务快照一秒轮询一次，留出几轮的余量。
+const SUPPRESS_JOB_FOR: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub(in crate::cli) struct LiveRawMode {
-    pub(in crate::cli) show_cursor_on_drop: bool,
     pub(in crate::cli) restore_terminal_on_drop: bool,
     pub(in crate::cli) keyboard_enhancement: KeyboardEnhancementState,
 }
@@ -740,7 +1065,7 @@ impl LiveRawMode {
     ///
     /// 返回:
     /// - 成功时返回会在 Drop 时恢复终端的守卫对象
-    pub(in crate::cli) fn start() -> Result<Self> {
+    pub fn start() -> Result<Self> {
         enable_live_raw_mode()?;
         let mut stdout = io::stdout();
         if let Err(error) = execute!(stdout, EnableBracketedPaste) {
@@ -751,7 +1076,6 @@ impl LiveRawMode {
         // send the events, and the editor stays on its "focused" default.
         let _ = execute!(stdout, EnableFocusChange);
         Ok(Self {
-            show_cursor_on_drop: true,
             restore_terminal_on_drop: true,
             keyboard_enhancement: KeyboardEnhancementState::enable(&mut stdout),
         })
@@ -765,14 +1089,9 @@ impl LiveRawMode {
     /// - 会在最终 Drop 时恢复终端的守卫对象
     pub(in crate::cli) fn adopt() -> Self {
         Self {
-            show_cursor_on_drop: true,
             restore_terminal_on_drop: true,
             keyboard_enhancement: KeyboardEnhancementState::assume_active(),
         }
-    }
-
-    pub(in crate::cli) fn keep_cursor_hidden(&mut self) {
-        self.show_cursor_on_drop = false;
     }
 
     pub(in crate::cli) fn handoff(&mut self) {
@@ -789,6 +1108,13 @@ pub(in crate::cli) fn enable_live_raw_mode() -> Result<()> {
         let _ = terminal::disable_raw_mode();
         return Err(error);
     }
+    // 全屏：鼠标捕获跟着 raw 模式走。raw 一关（斜杠命令等 daemon 的那几秒），
+    // 终端回到行编辑+回显，这时鼠标上报还开着的话，鼠标一动终端就把
+    // `ESC[<35;x;yM` 当输入回显到屏上——/compact 等了几秒，屏上就是一大段这个
+    //（用户实测截图）。
+    if crate::cli::in_fullscreen() {
+        let _ = execute!(io::stdout(), crossterm::event::EnableMouseCapture);
+    }
     Ok(())
 }
 
@@ -798,10 +1124,10 @@ impl Drop for LiveRawMode {
             return;
         }
         let mut stdout = io::stdout();
-        if self.show_cursor_on_drop {
-            let _ = execute!(stdout, DisableBracketedPaste, DisableFocusChange, Show);
-        } else {
-            let _ = execute!(stdout, DisableBracketedPaste, DisableFocusChange);
+        let _ = execute!(stdout, DisableBracketedPaste, DisableFocusChange, Show);
+        // 全屏：raw 关了鼠标上报也得关，见 `enable_live_raw_mode`。
+        if crate::cli::in_fullscreen() {
+            let _ = execute!(stdout, crossterm::event::DisableMouseCapture);
         }
         // 1. 先 Pop 键盘增强协议
         // 2. 再退出 raw mode

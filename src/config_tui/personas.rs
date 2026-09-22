@@ -8,20 +8,41 @@
 
 use crate::config_tui::*;
 
-pub(in crate::config_tui) fn edit_custom_prompts(
-    stdout: &mut io::Stdout,
+/// 「人格」菜单：这个人格是谁、挂哪些功能、提示词怎么写。
+///
+/// 2026-09-20 由「插件配置」+「自定义提示词」合并而来：功能本来就是跟着人格
+/// 走的（`persona.toml`），而插件的「怎么配」是机器的事——后者现在挂在功能表
+/// 每一行的回车上，不再单占一个菜单项。
+pub(in crate::config_tui) fn edit_persona_menu(
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
+    pending: &mut PendingWrites,
 ) -> Result<()> {
     let mut selected = 0usize;
+    // 数功能要扫脚本与技能目录，每帧算一遍太重：进来算一次，改过再算。
+    let mut counts = feature_counts(config, paths, pending);
     loop {
+        let persona = persona_display_name_for(config);
         let options = [
-            t("Normal mode", "普通模式").to_string(),
-            t("Dev mode", "开发模式").to_string(),
-            // 08-15 A/B 二轮:干净体制下预设对话单独已满分,提醒降为可关
-            // 开关;重噪声 QQ 长群聊体制未复测,默认保持启用。
+            format!("{} ({persona})", t("Current persona", "当前人格")),
             format!(
-                "{}: {}",
+                "{} ({}/{})",
+                t("Enabled features", "启用的功能"),
+                counts.0,
+                counts.1
+            ),
+            format!(
+                "{} ({})",
+                t("Prompt and preset dialogs", "提示词与预设对话"),
+                if config.prompt.active_persona.trim().is_empty() {
+                    t("built-in Miyu", "内置 Miyu")
+                } else {
+                    t("custom", "自定义")
+                }
+            ),
+            format!(
+                "{} ({})",
                 t("Anti-amnesia reminder", "防失忆提醒"),
                 if config.prompt.persona_reminder {
                     t("Enabled", "启用")
@@ -30,94 +51,137 @@ pub(in crate::config_tui) fn edit_custom_prompts(
                 }
             ),
             format!(
-                "{}: {}",
-                t("Send reminder every N turns", "每几轮发一次防失忆提醒"),
-                config.prompt.persona_reminder_interval.max(1)
+                "{} ({} {})",
+                t("Reminder interval", "提醒间隔"),
+                config.prompt.persona_reminder_interval.max(1),
+                t("turns", "轮")
             ),
+            String::new(),
+            t("User identity", "用户身份").to_string(),
+            t("Dev mode prompt", "开发模式提示词").to_string(),
         ];
         draw_menu(
-            stdout,
-            t(" CUSTOM PROMPTS ", " 自定义提示词 "),
+            ui,
+            t(" PERSONA & FEATURES ", " 人格和功能 "),
             &options,
             selected,
             t("[Enter]select/toggle [q]back", "[Enter]选择/切换 [q]返回"),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
-            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
-            KeyCode::Enter if selected == 0 => edit_normal_mode_prompts(stdout, paths, config)?,
-            KeyCode::Enter if selected == 1 => edit_dev_prompt(stdout, paths)?,
-            KeyCode::Enter if selected == 2 => {
-                config.prompt.persona_reminder = !config.prompt.persona_reminder;
-            }
-            KeyCode::Enter if selected == 3 => {
-                if let Some(value) = edit_inline_value(
-                    stdout,
-                    t("Send reminder every N turns", "每几轮发一次防失忆提醒"),
-                    &config.prompt.persona_reminder_interval.to_string(),
-                    false,
-                )? {
-                    if let Ok(interval) = value.trim().parse::<u32>() {
-                        config.prompt.persona_reminder_interval = interval.max(1);
-                    }
+            KeyCode::Up | KeyCode::Char('k') => {
+                selected = selected.saturating_sub(1);
+                // 第 5 行是分隔用的空行，跳过去。
+                if selected == 5 {
+                    selected = 4;
                 }
             }
+            KeyCode::Down | KeyCode::Char('j') => {
+                selected = (selected + 1).min(options.len() - 1);
+                if selected == 5 {
+                    selected = 6;
+                }
+            }
+            KeyCode::Enter => match selected {
+                0 => {
+                    edit_personas(ui, paths, config)?;
+                    counts = feature_counts(config, paths, pending);
+                }
+                1 => {
+                    edit_features(ui, paths, config, pending)?;
+                    counts = feature_counts(config, paths, pending);
+                }
+                2 => edit_active_persona_prompt(ui, paths, config)?,
+                3 => config.prompt.persona_reminder = !config.prompt.persona_reminder,
+                4 => {
+                    if let Some(value) = edit_inline_value(
+                        ui,
+                        t("Reminder interval", "提醒间隔"),
+                        &config.prompt.persona_reminder_interval.to_string(),
+                        false,
+                    )? {
+                        if let Ok(interval) = value.trim().parse::<u32>() {
+                            config.prompt.persona_reminder_interval = interval.max(1);
+                        }
+                    }
+                }
+                6 => edit_identities(ui, paths, config)?,
+                7 => edit_dev_prompt(ui, paths, pending)?,
+                _ => {}
+            },
             _ => {}
         }
     }
 }
 
-/// 普通模式的提示词面:AI 人格与用户身份(原顶层两项下沉至此)。
-pub(in crate::config_tui) fn edit_normal_mode_prompts(
-    stdout: &mut io::Stdout,
+pub(in crate::config_tui) fn active_persona_label(config: &AppConfig) -> String {
+    persona_display_name_for(config)
+}
+
+fn persona_display_name_for(config: &AppConfig) -> String {
+    if config.prompt.active_persona.trim().is_empty() {
+        "Miyu".to_string()
+    } else {
+        persona_display_name(&config.prompt.active_persona).to_string()
+    }
+}
+
+/// 当前人格挂着几件、一共几件。
+fn feature_counts(
+    config: &AppConfig,
+    paths: &MiyuPaths,
+    pending: &PendingWrites,
+) -> (usize, usize) {
+    let scope = config.active_persona_scope();
+    let manifest = pending.manifest(config, paths, &scope);
+    let sources = crate::feature_sources::collect(config, paths);
+    let items = miyu_base::config::feature_catalog::catalog(
+        &manifest,
+        &sources,
+        miyu_core::skills::is_default_persona(config),
+        miyu_base::config::feature_catalog::CatalogScope::Settings,
+        Some(config),
+    );
+    (items.iter().filter(|item| item.on).count(), items.len())
+}
+
+/// 当前人格的提示词与预设对话。内置 Miyu 只有附加件可改（本体只读）。
+fn edit_active_persona_prompt(
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
 ) -> Result<()> {
-    let mut selected = 0usize;
-    loop {
-        let persona = if config.prompt.active_persona.trim().is_empty() {
-            "Miyu".to_string()
-        } else {
-            persona_display_name(&config.prompt.active_persona).to_string()
-        };
-        let options = [
-            format!(
-                "{} ({}: {persona})",
-                t("AI persona", "AI 人格"),
-                t("Current", "当前")
-            ),
-            t("User identity", "用户身份").to_string(),
-        ];
-        draw_menu(
-            stdout,
-            t(" NORMAL MODE ", " 普通模式 "),
-            &options,
-            selected,
-            t("[Enter]select [q]back", "[Enter]选择 [q]返回"),
+    let name = config.prompt.active_persona.trim().to_string();
+    if name.is_empty() {
+        return edit_miyu_persona_extras(ui, paths, config);
+    }
+    if let Some(values) = edit_persona(ui, paths, config, &name)? {
+        apply_persona_edit(paths, config, &name, &values.name, &values.content)?;
+        write_persona_aux(
+            paths,
+            config,
+            &miyu_base::config::persona_scope_name(&values.name),
+            &values.hint,
+            &values.dialogs,
         )?;
-        match read_key()? {
-            KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
-            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
-            KeyCode::Enter if selected == 0 => edit_personas(stdout, paths, config)?,
-            KeyCode::Enter if selected == 1 => edit_identities(stdout, paths, config)?,
-            _ => {}
+        if config.prompt.active_persona == name {
+            config.prompt.active_persona = values.name;
         }
     }
+    Ok(())
 }
 
 /// 开发模式的「AI 提示词」:编辑 config/dev-prompt.md 一个文件。清空
 /// 保存=删文件,运行时回退内置默认一行;记忆按保留人格 "dev" 落库,
 /// 与这份提示词的内容完全解耦——怎么改都不会切库。
 pub(in crate::config_tui) fn edit_dev_prompt(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
+    pending: &mut PendingWrites,
 ) -> Result<()> {
-    let path = paths.config_dir.join(crate::config::DEV_PROMPT_FILE);
-    let current = std::fs::read_to_string(&path).unwrap_or_default();
+    let current = pending.dev_prompt(paths);
     let prefill = if current.trim().is_empty() {
-        crate::config::DEFAULT_DEV_SYSTEM_PROMPT.to_string()
+        miyu_base::config::DEFAULT_DEV_SYSTEM_PROMPT.to_string()
     } else {
         current.trim_end().to_string()
     };
@@ -128,29 +192,25 @@ pub(in crate::config_tui) fn edit_dev_prompt(
         ),
         prefill,
     )];
-    if !run_form(stdout, t(" DEV MODE ", " 开发模式 "), &mut fields)? {
-        return Ok(());
-    }
+    // 不摆「保存 / 返回」两个按钮：这一屏只有一个字段，编辑完退出就写
+    // （用户 2026-09-20）。它是独立文件（`dev-prompt.md`），跟不了设置界面
+    // 「退出时一起保存」那条路——那条只管 config.jsonc。
+    run_form_without_buttons(ui, t(" DEV MODE ", " 开发模式 "), &mut fields)?;
+    // 写在内存里，跟配置一起走「保存并退出」。内容和内置默认一模一样就当没改，
+    // 免得一进一出就凭空多出一个文件。
     let value = fields[0].value.trim();
-    if value.is_empty() {
-        if path.exists() {
-            std::fs::remove_file(&path)?;
-        }
-    } else {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, format!("{value}\n"))?;
+    if value != miyu_base::config::DEFAULT_DEV_SYSTEM_PROMPT.trim() || !current.trim().is_empty() {
+        pending.set_dev_prompt(value.to_string());
     }
     Ok(())
 }
 
 pub(in crate::config_tui) fn edit_personas(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
 ) -> Result<()> {
-    manage_personas(stdout, paths, config, PersonaMenuTarget::Global)?;
+    manage_personas(ui, paths, config, PersonaMenuTarget::Global)?;
     Ok(())
 }
 
@@ -231,7 +291,7 @@ impl PersonaMenuTarget {
 }
 
 pub(in crate::config_tui) fn manage_personas(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
     mut target: PersonaMenuTarget,
@@ -263,7 +323,7 @@ pub(in crate::config_tui) fn manage_personas(
         }));
         selected = selected.min(options.len().saturating_sub(1));
         draw_menu(
-            stdout,
+            ui,
             match &target {
                 PersonaMenuTarget::Global => t(" AI PERSONA ", " AI 人格 "),
                 PersonaMenuTarget::Platform(_) => {
@@ -277,7 +337,7 @@ pub(in crate::config_tui) fn manage_personas(
                 "[Tab]激活 [Enter]编辑 [a]新增 [d]删除 [j/k]移动 [q]返回",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(target.into_platform()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
@@ -291,18 +351,18 @@ pub(in crate::config_tui) fn manage_personas(
                 }
             }
             KeyCode::Char('a') => {
-                if let Some(name) = new_persona(stdout, paths, config)? {
+                if let Some(name) = new_persona(ui, paths, config)? {
                     target.activate_custom(config, name);
                 }
             }
             KeyCode::Enter if selected >= custom_offset => {
                 if let Some(name) = personas.get(selected - custom_offset) {
-                    if let Some(values) = edit_persona(stdout, paths, config, name)? {
+                    if let Some(values) = edit_persona(ui, paths, config, name)? {
                         apply_persona_edit(paths, config, name, &values.name, &values.content)?;
                         write_persona_aux(
                             paths,
                             config,
-                            &crate::config::persona_scope_name(&values.name),
+                            &miyu_base::config::persona_scope_name(&values.name),
                             &values.hint,
                             &values.dialogs,
                         )?;
@@ -313,7 +373,7 @@ pub(in crate::config_tui) fn manage_personas(
             // 默认 Miyu 人格本体只读,但防失忆提示与预设对话是独立文件
             // (hints/default.md、dialogs/default.md),回车打开精简表单。
             KeyCode::Enter if selected + 1 == custom_offset => {
-                edit_miyu_persona_extras(stdout, paths, config)?;
+                edit_miyu_persona_extras(ui, paths, config)?;
             }
             KeyCode::Char('d') if selected >= custom_offset => {
                 if let Some(name) = personas.get(selected - custom_offset) {
@@ -325,7 +385,7 @@ pub(in crate::config_tui) fn manage_personas(
                         .max(target.pending_reference_count(name));
                     if references > 0 {
                         message(
-                            stdout,
+                            ui,
                             &if is_zh() {
                                 format!(
                                     "该人格仍被 {references} 个 QQ 会话配置引用，请先解除引用。"
@@ -363,15 +423,15 @@ pub(in crate::config_tui) fn apply_persona_edit(
     let new_path = config.persona_path(paths, new_name);
     let old_content = std::fs::read(&old_path)?;
     let mut persisted = AppConfig::load_or_default(paths)?;
-    let state = crate::state::StateStore::new(paths)?;
+    let state = miyu_core::state::StateStore::new(paths)?;
     write_persona(paths, config, new_name, content)?;
     if let Err(error) = move_persona_scope(paths, config, old_name, new_name) {
         let _ = std::fs::remove_file(&new_path);
         return Err(error);
     }
 
-    let old_scope = crate::config::persona_scope_name(old_name);
-    let new_scope = crate::config::persona_scope_name(new_name);
+    let old_scope = miyu_base::config::persona_scope_name(old_name);
+    let new_scope = miyu_base::config::persona_scope_name(new_name);
     if let Err(error) = state.rename_persona_scope(&old_scope, &new_scope) {
         let _ = move_persona_scope(paths, config, new_name, old_name);
         let _ = std::fs::remove_file(&new_path);
@@ -417,8 +477,8 @@ pub(in crate::config_tui) fn apply_persona_delete(
         persisted.prompt.active_persona.clear();
         persisted.save(paths)?;
     }
-    let scope = crate::config::persona_scope_name(name);
-    crate::state::StateStore::new(paths)?.delete_persona_scope(&scope)?;
+    let scope = miyu_base::config::persona_scope_name(name);
+    miyu_core::state::StateStore::new(paths)?.delete_persona_scope(&scope)?;
     let path = config.persona_path(paths, name);
     if path.exists() {
         std::fs::remove_file(path)?;
@@ -444,10 +504,12 @@ pub(in crate::config_tui) fn persona_aux_values(
     config: &AppConfig,
     scope: &str,
 ) -> (String, String) {
-    let hint = std::fs::read_to_string(crate::persona_hint::manual_hint_path(config, paths, scope))
-        .map(|text| text.trim().to_string())
-        .unwrap_or_default();
-    let dialogs = crate::persona_hint::dialogs_raw(config, paths, scope);
+    let hint = std::fs::read_to_string(miyu_core::persona_hint::manual_hint_path(
+        config, paths, scope,
+    ))
+    .map(|text| text.trim().to_string())
+    .unwrap_or_default();
+    let dialogs = miyu_core::persona_hint::dialogs_raw(config, paths, scope);
     (hint, dialogs)
 }
 
@@ -462,11 +524,11 @@ pub(in crate::config_tui) fn write_persona_aux(
 ) -> Result<()> {
     let targets = [
         (
-            crate::persona_hint::manual_hint_path(config, paths, scope),
+            miyu_core::persona_hint::manual_hint_path(config, paths, scope),
             hint,
         ),
         (
-            crate::persona_hint::dialogs_path(config, paths, scope),
+            miyu_core::persona_hint::dialogs_path(config, paths, scope),
             dialogs,
         ),
     ];
@@ -521,7 +583,7 @@ pub(in crate::config_tui) fn persona_aux_fields(
 }
 
 pub(in crate::config_tui) fn new_persona(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &AppConfig,
 ) -> Result<Option<String>> {
@@ -530,7 +592,7 @@ pub(in crate::config_tui) fn new_persona(
         Field::textarea(t("Content", "内容"), String::new()),
     ];
     fields.extend(persona_aux_fields(String::new(), String::new(), false));
-    if !run_form(stdout, t(" NEW PERSONA ", " 新建人格 "), &mut fields)? {
+    if !run_form(ui, t(" NEW PERSONA ", " 新建人格 "), &mut fields)? {
         return Ok(None);
     }
     let name = sanitize_persona_name(&fields[0].value)?;
@@ -539,7 +601,7 @@ pub(in crate::config_tui) fn new_persona(
     write_persona_aux(
         paths,
         config,
-        &crate::config::persona_scope_name(&name),
+        &miyu_base::config::persona_scope_name(&name),
         &fields[2].value,
         &fields[3].value,
     )?;
@@ -547,7 +609,7 @@ pub(in crate::config_tui) fn new_persona(
 }
 
 pub(in crate::config_tui) fn edit_persona(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &AppConfig,
     current_name: &str,
@@ -556,7 +618,7 @@ pub(in crate::config_tui) fn edit_persona(
     let (hint, dialogs) = persona_aux_values(
         paths,
         config,
-        &crate::config::persona_scope_name(current_name),
+        &miyu_base::config::persona_scope_name(current_name),
     );
     let mut fields = vec![
         Field::new(
@@ -566,7 +628,7 @@ pub(in crate::config_tui) fn edit_persona(
         Field::textarea(t("Content", "内容"), content),
     ];
     fields.extend(persona_aux_fields(hint, dialogs, false));
-    if !run_form(stdout, t(" EDIT PERSONA ", " 编辑人格 "), &mut fields)? {
+    if !run_form(ui, t(" EDIT PERSONA ", " 编辑人格 "), &mut fields)? {
         return Ok(None);
     }
     let name = sanitize_persona_name(&fields[0].value)?;
@@ -581,13 +643,13 @@ pub(in crate::config_tui) fn edit_persona(
 /// 默认 Miyu 人格:本体只读,回车只编辑附属的防失忆提示与预设对话
 /// (scope 固定为 default)。
 pub(in crate::config_tui) fn edit_miyu_persona_extras(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &AppConfig,
 ) -> Result<()> {
-    let (hint, dialogs) = crate::persona_hint::miyu_aux_prefill(config, paths);
+    let (hint, dialogs) = miyu_core::persona_hint::miyu_aux_prefill(config, paths);
     let mut fields = persona_aux_fields(hint, dialogs, true);
-    if !run_form(stdout, t(" MIYU EXTRAS ", " Miyu 人格附加 "), &mut fields)? {
+    if !run_form(ui, t(" MIYU EXTRAS ", " Miyu 人格附加 "), &mut fields)? {
         return Ok(());
     }
     write_persona_aux(paths, config, "default", &fields[0].value, &fields[1].value)
@@ -599,7 +661,7 @@ pub(in crate::config_tui) fn ensure_persona_name_available(
     candidate: &str,
     current: Option<&str>,
 ) -> Result<()> {
-    let candidate_scope = crate::config::persona_scope_name(candidate);
+    let candidate_scope = miyu_base::config::persona_scope_name(candidate);
     for existing in list_personas(paths, config)? {
         if current == Some(existing.as_str()) {
             continue;
@@ -613,7 +675,7 @@ pub(in crate::config_tui) fn ensure_persona_name_available(
                 )
             );
         }
-        if crate::config::persona_scope_name(&existing) == candidate_scope {
+        if miyu_base::config::persona_scope_name(&existing) == candidate_scope {
             bail!(
                 "{}",
                 t(
@@ -633,8 +695,8 @@ pub(in crate::config_tui) fn move_persona_scope(
     new_name: &str,
 ) -> Result<()> {
     if old_name == new_name
-        || crate::config::persona_scope_name(old_name)
-            == crate::config::persona_scope_name(new_name)
+        || miyu_base::config::persona_scope_name(old_name)
+            == miyu_base::config::persona_scope_name(new_name)
     {
         return Ok(());
     }
@@ -673,16 +735,16 @@ pub(in crate::config_tui) fn move_persona_scope(
             completed.push((source, target));
         }
     }
-    let old_scope = crate::config::persona_scope_name(old_name);
-    let new_scope = crate::config::persona_scope_name(new_name);
+    let old_scope = miyu_base::config::persona_scope_name(old_name);
+    let new_scope = miyu_base::config::persona_scope_name(new_name);
     let file_moves = [
         (
-            crate::persona_hint::manual_hint_path(config, paths, &old_scope),
-            crate::persona_hint::manual_hint_path(config, paths, &new_scope),
+            miyu_core::persona_hint::manual_hint_path(config, paths, &old_scope),
+            miyu_core::persona_hint::manual_hint_path(config, paths, &new_scope),
         ),
         (
-            crate::persona_hint::dialogs_path(config, paths, &old_scope),
-            crate::persona_hint::dialogs_path(config, paths, &new_scope),
+            miyu_core::persona_hint::dialogs_path(config, paths, &old_scope),
+            miyu_core::persona_hint::dialogs_path(config, paths, &new_scope),
         ),
     ];
     for (source, target) in file_moves {
@@ -701,10 +763,10 @@ pub(in crate::config_tui) fn remove_persona_scope(
     remove_dir_if_exists(config.persona_memory_data_dir(paths, name))?;
     remove_dir_if_exists(config.persona_memory_state_dir(paths, name))?;
     remove_dir_if_exists(config.persona_skills_dir(paths, name))?;
-    let scope = crate::config::persona_scope_name(name);
+    let scope = miyu_base::config::persona_scope_name(name);
     for path in [
-        crate::persona_hint::manual_hint_path(config, paths, &scope),
-        crate::persona_hint::dialogs_path(config, paths, &scope),
+        miyu_core::persona_hint::manual_hint_path(config, paths, &scope),
+        miyu_core::persona_hint::dialogs_path(config, paths, &scope),
     ] {
         if path.exists() {
             std::fs::remove_file(path)?;
@@ -732,7 +794,7 @@ pub(in crate::config_tui) fn remove_dir_if_exists(path: PathBuf) -> Result<()> {
 }
 
 pub(in crate::config_tui) fn edit_identities(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
 ) -> Result<()> {
@@ -760,7 +822,7 @@ pub(in crate::config_tui) fn edit_identities(
         }));
         selected = selected.min(options.len().saturating_sub(1));
         draw_menu(
-            stdout,
+            ui,
             t(" USER IDENTITY ", " 用户身份 "),
             &options,
             selected,
@@ -769,7 +831,7 @@ pub(in crate::config_tui) fn edit_identities(
                 "[Tab]激活 [Enter]编辑 [a]新增 [d]删除 [j/k]移动 [q]返回",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
@@ -781,13 +843,13 @@ pub(in crate::config_tui) fn edit_identities(
                 };
             }
             KeyCode::Char('a') => {
-                if let Some(name) = new_identity(stdout, paths, config)? {
+                if let Some(name) = new_identity(ui, paths, config)? {
                     config.prompt.active_identity = name;
                 }
             }
             KeyCode::Enter if selected > 0 => {
                 if let Some(name) = identities.get(selected - 1) {
-                    if let Some(new_name) = edit_identity(stdout, paths, config, name)? {
+                    if let Some(new_name) = edit_identity(ui, paths, config, name)? {
                         if config.prompt.active_identity == *name {
                             config.prompt.active_identity = new_name;
                         }
@@ -812,12 +874,12 @@ pub(in crate::config_tui) fn edit_identities(
 }
 
 pub(in crate::config_tui) fn new_identity(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &AppConfig,
 ) -> Result<Option<String>> {
     edit_prompt_file_form(
-        stdout,
+        ui,
         t(" NEW IDENTITY ", " 新建用户身份 "),
         None,
         String::new(),
@@ -826,14 +888,14 @@ pub(in crate::config_tui) fn new_identity(
 }
 
 pub(in crate::config_tui) fn edit_identity(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &AppConfig,
     current_name: &str,
 ) -> Result<Option<String>> {
     let content = read_identity(paths, config, current_name)?;
     edit_prompt_file_form(
-        stdout,
+        ui,
         t(" EDIT IDENTITY ", " 编辑用户身份 "),
         Some(current_name),
         content,
@@ -884,7 +946,7 @@ pub(in crate::config_tui) fn write_identity(
 }
 
 pub(in crate::config_tui) fn edit_prompt_file_form<F>(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     title: &str,
     current_name: Option<&str>,
     content: String,
@@ -893,8 +955,7 @@ pub(in crate::config_tui) fn edit_prompt_file_form<F>(
 where
     F: FnOnce(&str, &str) -> Result<()>,
 {
-    let Some((name, content)) = edit_prompt_file_values(stdout, title, current_name, content)?
-    else {
+    let Some((name, content)) = edit_prompt_file_values(ui, title, current_name, content)? else {
         return Ok(None);
     };
     write(&name, &content)?;
@@ -902,7 +963,7 @@ where
 }
 
 pub(in crate::config_tui) fn edit_prompt_file_values(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     title: &str,
     current_name: Option<&str>,
     content: String,
@@ -917,7 +978,7 @@ pub(in crate::config_tui) fn edit_prompt_file_values(
         ),
         Field::textarea(t("Content", "内容"), content),
     ];
-    if !run_form(stdout, title, &mut fields)? {
+    if !run_form(ui, title, &mut fields)? {
         return Ok(None);
     }
     let name = sanitize_persona_name(&fields[0].value)?;
@@ -998,7 +1059,7 @@ pub(in crate::config_tui) fn sanitize_persona_name(value: &str) -> Result<String
     }
     // "dev" 是开发模式的保留人格(记忆/技能命名空间挂其名下);同名
     // 用户人格会与 dev 模式共享记忆库,必须挡在创建入口。
-    if persona_display_name(&name).eq_ignore_ascii_case(crate::state::DEV_PERSONA) {
+    if persona_display_name(&name).eq_ignore_ascii_case(miyu_core::state::DEV_PERSONA) {
         bail!(
             "{}",
             t(

@@ -74,7 +74,7 @@ pub(in crate::cli) async fn run_pop_via_daemon(paths: &MiyuPaths, args: PopArgs)
     let (_, data) = send_ipc_admin(
         paths,
         IpcCommand::Pop {
-            target: crate::ipc::SessionRef::Current,
+            target: miyu_core::ipc::SessionRef::Current,
             turn_ids,
         },
     )
@@ -257,9 +257,16 @@ pub(in crate::cli) fn inline_pop_select(turns: &[Turn]) -> Result<Option<Vec<boo
             &query,
         )?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code,
+            modifiers,
+            kind,
+            ..
         }) = event::read()?
         {
+            // Windows 上 crossterm 连松键一起报（Unix 不报）；不过滤一次按键算两下。
+            if kind == KeyEventKind::Release {
+                continue;
+            }
             match code {
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                     clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
@@ -553,34 +560,69 @@ pub(in crate::cli) async fn run_reset(paths: &MiyuPaths) -> Result<()> {
     let state = StateStore::new(paths)?;
     let memory = MemoryStore::new(&config, paths);
     state.reset_conversation()?;
-    crate::llm::forget_relay_sessions(&state.session_id());
+    miyu_core::llm::forget_relay_sessions(&state.session_id());
     memory.clear_evicted_context()?;
     memory.clear_pending_events()?;
     tools::clear_aur_review_state(paths)?;
     Ok(())
 }
 
-/// `miyu reset-memory`:清空当前人格的长期记忆。daemon 在跑走 IPC,
+/// `miyu reset-all-memory`:清空当前人格的全部长期记忆。daemon 在跑走 IPC,
 /// 否则本地直清。
 ///
-/// 不再二次确认:清的只是长期记忆(事实/日记/经历),会话历史、技能和知识库
-/// 都不动,和 `/wipe` 那种不可逆的整体抹除不是一个量级。确认弹窗还顺带把
-/// 这条命令钉死在终端上——非交互调用只能拿到"需要在终端确认"的报错。
-pub(in crate::cli) async fn run_reset_memory_command(paths: &MiyuPaths) -> Result<()> {
+/// 不二次确认:清的只是长期记忆(事实/日记/经历),会话历史、技能和知识库都
+/// 不动,和 `/wipe` 那种不可逆的整体抹除不是一个量级。确认弹窗还顺带把这条
+/// 命令钉死在终端上——非交互调用只能拿到"需要在终端确认"的报错。
+pub(in crate::cli) async fn run_reset_all_memory_command(paths: &MiyuPaths) -> Result<()> {
     if ipc::daemon_info(paths).await.is_some() {
-        send_ipc_admin(paths, IpcCommand::ResetMemory { mode: None }).await?;
+        send_ipc_admin(
+            paths,
+            IpcCommand::ResetMemory {
+                mode: None,
+                scope: miyu_core::ipc::MemoryResetScope::All,
+                session: None,
+            },
+        )
+        .await?;
     } else {
         let config = AppConfig::load_or_default(paths)?;
-        MemoryStore::new(&config, paths).reset_all(false)?;
+        MemoryStore::new(&config, paths).reset_all()?;
     }
-    println!("{}", t("long-term memory erased", "长期记忆已清空"));
+    println!("{}", t("all long-term memory erased", "全部长期记忆已清空"));
+    Ok(())
+}
+
+/// `miyu reset-memory`:只清终端会话这一次对话记下的长期记忆。
+///
+/// daemon 不在时本地直清同一个会话指针指向的会话——终端集成的"当前会话"
+/// 就存在 StateStore 里,两条路指的是同一个。
+pub(in crate::cli) async fn run_reset_memory_command(paths: &MiyuPaths) -> Result<()> {
+    let text = if ipc::daemon_info(paths).await.is_some() {
+        let (_, data) = send_ipc_admin(
+            paths,
+            IpcCommand::ResetMemory {
+                mode: None,
+                scope: miyu_core::ipc::MemoryResetScope::Session,
+                session: None,
+            },
+        )
+        .await?;
+        ipc_text(&data, "text").to_string()
+    } else {
+        let config = AppConfig::load_or_default(paths)?;
+        let state = StateStore::new(paths)?;
+        MemoryStore::new(&config, paths)
+            .reset_session(&state.session_id())?
+            .describe()
+    };
+    println!("{text}");
     Ok(())
 }
 
 pub(in crate::cli) fn wipe_summary() -> &'static str {
     t(
-        "This erases everything Miyu has accumulated: memory, every conversation's contents, group-chat contexts, and auto-generated skills. It cannot be undone.",
-        "这会抹掉 Miyu 积累的一切：记忆、所有会话的内容、群聊上下文、自动生成的技能。不可撤销。",
+        "This erases everything Miyu has accumulated: memory, every conversation's contents, and group-chat contexts. Skills and scripts stay on disk. It cannot be undone.",
+        "这会抹掉 Miyu 积累的一切：记忆、所有会话的内容、群聊上下文。技能和脚本文件保留。不可撤销。",
     )
 }
 
@@ -608,20 +650,24 @@ pub(in crate::cli) async fn run_wipe(paths: &MiyuPaths, assume_yes: bool) -> Res
         let state = StateStore::new(paths)?;
         let persona = config.active_persona_scope();
         let bindings = state.platform_session_bindings(&persona, "onebot")?;
-        let plugins = crate::platforms::plugins::PlatformPluginRegistry::built_in()?;
+        let plugins = miyu_hosts::platforms::plugins::PlatformPluginRegistry::built_in()?;
         plugins
-            .after_persona_reset(&crate::platforms::plugins::PlatformPersonaResetContext {
-                config: &config,
-                paths,
-                bindings: &bindings,
-            })
+            .after_persona_reset(
+                &miyu_hosts::platforms::plugins::PlatformPersonaResetContext {
+                    config: &config,
+                    paths,
+                    bindings: &bindings,
+                },
+            )
             .await?;
         let cleared_sessions = state.reset_persona_contexts(&persona, "onebot")?;
         for session_id in &cleared_sessions {
-            crate::llm::forget_relay_sessions(session_id);
+            miyu_core::llm::forget_relay_sessions(session_id);
         }
         state.reset_conversation_usage()?;
-        MemoryStore::new(&config, paths).reset_all(true)?;
+        // 技能与脚本是文件,不是记忆:wipe 只清她记住的东西。要连自动生成的
+        // 技能一起删,用 `miyu memory reset --include-skills` 明确要。
+        MemoryStore::new(&config, paths).reset_all()?;
         tools::clear_aur_review_state(paths)?;
     }
     println!("{}", print_wipe_message());
@@ -630,8 +676,8 @@ pub(in crate::cli) async fn run_wipe(paths: &MiyuPaths, assume_yes: bool) -> Res
 
 pub(in crate::cli) fn print_wipe_message() -> &'static str {
     t(
-        "erased all conversations, QQ contexts, memory, and generated skills for the current persona",
-        "已抹掉当前人格的全部会话内容、QQ 上下文、记忆和自动技能",
+        "erased all conversations, QQ contexts, and memory for the current persona; skills and scripts were left alone",
+        "已抹掉当前人格的全部会话内容、QQ 上下文、记忆；技能和脚本文件保留",
     )
 }
 

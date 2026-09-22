@@ -140,8 +140,6 @@ fn web_is_a_cli_subcommand_with_local_server_options() {
         Some(Command::Web(WebArgs {
             port: 4100,
             bind: None,
-            password: None,
-            password_file: None,
             port_explicit: true,
         }))
     ));
@@ -156,80 +154,18 @@ fn web_is_a_cli_subcommand_with_local_server_options() {
         Some(Command::Web(WebArgs {
             port: 8300,
             bind: None,
-            password: None,
-            password_file: None,
             port_explicit: false,
         }))
     ));
 
-    let cli = parse_args(["miyu", "web", "-p"].map(OsString::from).to_vec()).unwrap();
-    assert!(matches!(
-        cli.command,
-        Some(Command::Web(WebArgs {
-            password: Some(password),
-            ..
-        })) if password.is_empty()
-    ));
     for args in [
-        vec!["miyu", "web", "-p", "secret"],
-        vec!["miyu", "web", "--password=secret"],
-        vec!["miyu", "web", "-psecret"],
+        vec!["miyu", "web", "-p"],
+        vec!["miyu", "web", "--password-file", "/tmp/x"],
     ] {
         assert!(parse_args(args.into_iter().map(OsString::from).collect()).is_err());
     }
 
-    let cli = parse_args(
-        ["miyu", "web", "--password-file", "/tmp/miyu-password"]
-            .map(OsString::from)
-            .to_vec(),
-    )
-    .unwrap();
-    assert!(matches!(
-        cli.command,
-        Some(Command::Web(WebArgs {
-            password: None,
-            password_file: Some(path),
-            ..
-        })) if path == PathBuf::from("/tmp/miyu-password")
-    ));
-
     assert!(parse_args(["miyu", "web", "--public"].map(OsString::from).to_vec(),).is_err());
-}
-
-#[test]
-fn web_password_is_materialized_as_a_private_file() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = pop_test_paths(temp.path());
-    let args = WebArgs {
-        port: 9400,
-        bind: None,
-        password: Some("very-secret".to_string()),
-        password_file: None,
-        port_explicit: false,
-    };
-
-    let launch = web_launch_config(&paths, &args).unwrap().unwrap();
-
-    assert_eq!(launch.port, 9400);
-    let password_file = launch.password_file.unwrap();
-    let password_dir = paths.managed_web_password_dir();
-    assert_eq!(password_file.parent(), Some(password_dir.as_path()));
-    assert_eq!(
-        std::fs::read_to_string(&password_file).unwrap(),
-        "very-secret"
-    );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(
-            std::fs::metadata(password_file)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
-    }
 }
 
 #[test]
@@ -239,34 +175,10 @@ fn bare_web_does_not_override_the_persisted_launch_config() {
     let args = WebArgs {
         port: ipc::DEFAULT_WEB_PORT,
         bind: None,
-        password: None,
-        password_file: None,
         port_explicit: false,
     };
 
     assert!(web_launch_config(&paths, &args).unwrap().is_none());
-}
-
-#[test]
-fn explicit_password_file_is_copied_into_private_miyu_state() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = pop_test_paths(temp.path());
-    let external = temp.path().join("external-password");
-    std::fs::write(&external, "file-secret\n").unwrap();
-    let args = WebArgs {
-        port: ipc::DEFAULT_WEB_PORT,
-        bind: None,
-        password: None,
-        password_file: Some(external.clone()),
-        port_explicit: false,
-    };
-
-    let launch = web_launch_config(&paths, &args).unwrap().unwrap();
-    let managed = launch.password_file.unwrap();
-    assert_ne!(managed, external);
-    let password_dir = paths.managed_web_password_dir();
-    assert_eq!(managed.parent(), Some(password_dir.as_path()));
-    assert_eq!(std::fs::read_to_string(managed).unwrap(), "file-secret");
 }
 
 #[test]
@@ -445,15 +357,71 @@ fn debug_is_a_global_cli_option() {
     assert_eq!(cli.message, ["--debug"]);
 }
 
+/// `miyu session sandbox <会话> <目录> --allow-read`:开关解析得出来,且与
+/// `--clear` 互斥、离开目录就不成立(clap 的 requires/conflicts 接的是字段名,
+/// 写错在 release 档是静默失效,所以这里钉一遍)。
+#[test]
+fn session_sandbox_parses_the_allow_read_switch() {
+    let parse = |args: &[&str]| {
+        parse_args(args.iter().map(OsString::from).collect()).map(|cli| match cli.command {
+            Some(Command::Session(args)) => args.command,
+            other => panic!("expected a session subcommand, got {other:?}"),
+        })
+    };
+    let command = parse(&[
+        "miyu",
+        "session",
+        "sandbox",
+        "work",
+        "/tmp/proj",
+        "--allow-read",
+    ])
+    .expect("valid invocation");
+    match command {
+        SessionCommand::Sandbox {
+            target,
+            dir,
+            clear,
+            allow_read,
+        } => {
+            assert_eq!(target, "work");
+            assert_eq!(dir.as_deref(), Some(std::path::Path::new("/tmp/proj")));
+            assert!(!clear);
+            assert!(allow_read);
+        }
+        other => panic!("expected sandbox, got {other:?}"),
+    }
+    let plain = parse(&["miyu", "session", "sandbox", "work", "/tmp/proj"]).expect("valid");
+    assert!(matches!(
+        plain,
+        SessionCommand::Sandbox {
+            allow_read: false,
+            ..
+        }
+    ));
+    assert!(parse(&[
+        "miyu",
+        "session",
+        "sandbox",
+        "work",
+        "--clear",
+        "--allow-read"
+    ])
+    .is_err());
+    assert!(parse(&["miyu", "session", "sandbox", "work", "--allow-read"]).is_err());
+}
+
 #[test]
 fn session_selection_defaults_to_the_current_entry() {
     let entry = |id: &str, is_current: bool| SessionListEntry {
+        context_tokens: None,
         id: id.to_string(),
         name: id.to_string(),
         is_current,
         turns: 0,
         snippet: String::new(),
-        workspace: None,
+        sandbox: None,
+        sandbox_read_all: false,
         mode: "normal".to_string(),
     };
     let entries = vec![entry("default", true), entry("active", false)];
@@ -462,7 +430,39 @@ fn session_selection_defaults_to_the_current_entry() {
     assert_eq!(session_initial_selection(&entries, None), 0);
     assert!(matches!(
         session_ref_from_index(&entries, 2),
-        Some(crate::ipc::SessionRef::Id { id }) if id == "active"
+        Some(miyu_core::ipc::SessionRef::Id { id }) if id == "active"
     ));
     assert_eq!(session_initial_selection(&[entry("only", false)], None), 0);
+}
+
+/// `pm` 暂不公开:帮助与补全里看不到它,但显式 `miyu pm …` 与 `miyupm …` 一字未改。
+/// 不能靠删解析分支来隐藏——根命令吃 trailing_var_arg,删了 `miyu pm list` 会被
+/// 当成一句聊天发出去。
+#[test]
+fn pm_is_hidden_from_help_but_still_dispatches() {
+    let visible: Vec<String> = Cli::command()
+        .get_subcommands()
+        .filter(|sub| !sub.is_hide_set())
+        .map(|sub| sub.get_name().to_string())
+        .collect();
+    assert!(
+        !visible.iter().any(|name| name == "pm"),
+        "公开命令表里还有 pm: {visible:?}"
+    );
+
+    let help = localized_command().render_long_help().to_string();
+    assert!(!help.contains("\n  pm "), "根帮助里还列着 pm:\n{help}");
+
+    let cli = parse_args(["miyu", "pm", "list"].map(OsString::from).to_vec()).unwrap();
+    assert!(
+        matches!(cli.command, Some(Command::Pm(_))),
+        "显式 miyu pm 应照旧进包管理"
+    );
+
+    let shimmed = apply_pm_shim(["/usr/bin/miyupm", "list"].map(OsString::from).to_vec());
+    let cli = parse_args(shimmed).unwrap();
+    assert!(
+        matches!(cli.command, Some(Command::Pm(_))),
+        "miyupm shim 应照旧进包管理"
+    );
 }

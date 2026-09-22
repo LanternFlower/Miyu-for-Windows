@@ -1,12 +1,21 @@
 //! 交互式 REPL。
 //!
 //! 按职责分文件：宽度计算、输入编辑、活动区渲染、远端与直连两条回合驱动。
-pub(in crate::cli) mod commands;
+pub(in crate::cli) mod banner;
+pub mod commands;
 pub(in crate::cli) mod dictation;
+/// herdr 的状态上报（不在 herdr 里是 no-op）。
+pub(in crate::cli) mod herdr;
+pub(in crate::cli) mod input_layout;
 pub(in crate::cli) mod jobs;
 pub(in crate::cli) mod layout;
+pub(in crate::cli) mod midturn_panel;
+pub(in crate::cli) mod panel;
+pub(in crate::cli) mod pickers;
 pub(in crate::cli) mod placeholder;
+pub(in crate::cli) mod question_flow;
 pub(in crate::cli) mod session;
+mod session_picker;
 
 pub(super) mod direct;
 pub(super) mod editor;

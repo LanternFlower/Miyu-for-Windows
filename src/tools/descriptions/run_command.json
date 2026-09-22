@@ -7,11 +7,11 @@
     "properties": {
       "command": {
         "type": "string",
-        "description": "The shell command or script to run. May contain complex multi-line commands; prefer apply_patch for file edits."
+        "description": "The shell command or script to run. May contain complex multi-line commands; prefer edit for file edits."
       },
       "timeout_seconds": {
         "type": "integer",
-        "description": "Optional timeout in seconds. Ignored when background=true."
+        "description": "Optional timeout in seconds (1-600, default 120). Ignored when background=true."
       },
       "background": {
         "type": "boolean",
@@ -19,11 +19,12 @@
       },
       "title": {
         "type": "string",
-        "description": "Short title for the background command (at most 16 characters), shown in the UI status line, e.g. “release build”. Recommended when background=true."
+        "description": "What this command is for, at most 16 characters (e.g. \"release build\"). Required. The UI shows it in place of the command text, so a reader who cannot read shell still knows what the command does."
       }
     },
     "required": [
-      "command"
+      "command",
+      "title"
     ]
   },
   "permission": "readonly",

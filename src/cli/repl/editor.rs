@@ -19,24 +19,28 @@ use crate::cli::*;
 pub(in crate::cli) fn load_repl_input_history(
     state: &StateStore,
     paths: &MiyuPaths,
-) -> Result<Vec<String>> {
+) -> Result<Vec<ReplHistoryEntry>> {
     let session_id = state.session_id();
-    let mut merged: Vec<String> = read_repl_history_file(&legacy_repl_history_file(paths));
+    let mut merged: Vec<ReplHistoryEntry> =
+        read_repl_history_file(&legacy_repl_history_file(paths));
+    // daemon 自己合成的轮（后台任务唤醒、目标续轮）在库里也是 `role == "user"`，
+    // 不是你敲的，不进上键历史。回放那条路早就认这个标签，这条路原来没认。
     let conversation = state
         .load_conversation()?
         .into_iter()
-        .filter(|entry| entry.role == "user" && !entry.content.trim().is_empty())
+        .filter(|entry| {
+            entry.role == "user"
+                && !entry.content.trim().is_empty()
+                && !miyu_core::state::is_synthetic_user_content(&entry.content)
+        })
         .map(|entry| strip_terminal_control_sequences(&entry.content))
         .filter(|content| !content.trim().is_empty());
-    for entry in conversation {
-        if !merged.contains(&entry) {
-            merged.push(entry);
-        }
+    for content in conversation {
+        merge_history_entry(&mut merged, ReplHistoryEntry::plain(&content));
     }
+    // 历史文件的条目带占位符载荷,和对话记录里同一次提交(展开全文)合成一条。
     for entry in load_persistent_repl_history(paths, &session_id) {
-        if !merged.contains(&entry) {
-            merged.push(entry);
-        }
+        merge_history_entry(&mut merged, entry);
     }
     Ok(merged)
 }
@@ -50,31 +54,47 @@ pub(in crate::cli) fn load_repl_input_history(
 ///
 /// 只在「从空输入框开始翻」时调用：翻到一半重载会让 `history_index` 错位。
 pub(in crate::cli) fn refresh_repl_input_history(
-    history: &mut Vec<String>,
+    history: &mut Vec<ReplHistoryEntry>,
     paths: &MiyuPaths,
     session_id: &str,
 ) -> bool {
     let mut added = false;
     for entry in load_persistent_repl_history(paths, session_id) {
-        if !history.contains(&entry) {
-            push_history_capped(history, &entry);
-            added = true;
-        }
+        added |= merge_history_entry(history, entry);
     }
     added
 }
 
+/// 把一条历史放回输入框:占位符照旧是占位符,载荷跟着回来。
+pub(in crate::cli) fn restore_history_entry(
+    entry: &ReplHistoryEntry,
+    input: &mut String,
+    cursor: &mut usize,
+    pasted_images: &mut Vec<Option<miyu_base::clipboard::PastedImage>>,
+    pasted_texts: &mut Vec<Option<PastedText>>,
+    raw_pasted_lines: &mut usize,
+) {
+    *input = entry.display.clone();
+    *cursor = input.chars().count();
+    *pasted_images = entry.pasted_images();
+    *pasted_texts = entry.pasted_texts();
+    // 载荷都在占位符后面,输入框里没有生粘贴的行。
+    *raw_pasted_lines = 0;
+}
+
 pub(in crate::cli) struct LiveReplEditor {
-    pub(in crate::cli) mode: AgentMode,
+    pub(in crate::cli) mode: PersonaLane,
+    /// 会话还是空的:Tab 可以换车道(普通 ↔ 开发)。第一条消息一发就钉死。
+    pub(in crate::cli) mode_switchable: bool,
     pub(in crate::cli) input: String,
     pub(in crate::cli) cursor: usize,
-    pub(in crate::cli) history: Vec<String>,
+    pub(in crate::cli) history: Vec<ReplHistoryEntry>,
     pub(in crate::cli) history_index: usize,
     pub(in crate::cli) history_clean_index: Option<usize>,
     /// 当前缓冲区里由**生粘贴**带进来的行数(折成占位符的不算)。输入区的
     /// 整体折叠只在这种内容占满缓冲区时才发生,见 `repl_visible_input_lines`。
     pub(in crate::cli) raw_pasted_lines: usize,
-    pub(in crate::cli) pasted_images: Vec<Option<crate::clipboard::PastedImage>>,
+    pub(in crate::cli) pasted_images: Vec<Option<miyu_base::clipboard::PastedImage>>,
     pub(in crate::cli) pasted_texts: Vec<Option<PastedText>>,
     pub(in crate::cli) escape_armed_until: Option<Instant>,
     /// Whether the terminal window currently has focus, per the terminal's own
@@ -82,6 +102,10 @@ pub(in crate::cli) struct LiveReplEditor {
     /// leaves this pinned, and notifications stay quiet rather than firing on
     /// every turn.
     pub(in crate::cli) focused: bool,
+    /// 输入框的可用宽度(含提示前缀那两列)。大厅里输入框是居中的窄框,不是
+    /// 整个终端宽——上下方向键按「第几个物理行」找落点,拿终端宽去找会跳错行。
+    /// 每帧由活动区渲染写进来;`None` = 还没画过,退回问终端。
+    pub(in crate::cli) box_cols: Option<usize>,
 }
 
 pub(in crate::cli) enum LiveEditorAction {
@@ -92,13 +116,16 @@ pub(in crate::cli) enum LiveEditorAction {
     Submit(LiveSubmission),
     Interrupt,
     Exit,
+    /// 空会话里按了 Tab:换到另一条车道。
+    ToggleMode,
 }
 
 impl LiveReplEditor {
-    pub(in crate::cli) fn new(mode: AgentMode, history: Vec<String>) -> Self {
+    pub fn new(mode: PersonaLane, history: Vec<ReplHistoryEntry>) -> Self {
         let history_index = history.len();
         Self {
             mode,
+            mode_switchable: false,
             input: String::new(),
             cursor: 0,
             history,
@@ -109,7 +136,13 @@ impl LiveReplEditor {
             pasted_texts: Vec::new(),
             escape_armed_until: None,
             focused: true,
+            box_cols: None,
         }
+    }
+
+    /// 折行按哪个宽度算。活动区每帧把窄框宽度写进 `box_cols`;还没画过就问终端。
+    fn content_cols(&self) -> usize {
+        self.box_cols.unwrap_or_else(terminal_cols)
     }
 
     pub(in crate::cli) fn clear(&mut self) {
@@ -131,21 +164,35 @@ impl LiveReplEditor {
         }
         let display_content = display_content.trim().to_string();
         let images = std::mem::take(&mut self.pasted_images);
+        let pasted_texts = std::mem::take(&mut self.pasted_texts);
         self.input.clear();
         self.cursor = 0;
         self.history_clean_index = None;
         self.raw_pasted_lines = 0;
-        self.pasted_texts.clear();
         Some(LiveSubmission {
             content,
             display_content,
             images,
+            pasted_texts,
         })
     }
 
-    pub(in crate::cli) fn record_history(&mut self, content: &str) {
-        push_history_capped(&mut self.history, content);
+    pub(in crate::cli) fn record_history(&mut self, entry: ReplHistoryEntry) {
+        push_history_capped(&mut self.history, entry);
         self.history_index = self.history.len();
+    }
+
+    fn recall_history_entry(&mut self, index: usize) {
+        let entry = self.history.get(index).cloned().unwrap_or_default();
+        restore_history_entry(
+            &entry,
+            &mut self.input,
+            &mut self.cursor,
+            &mut self.pasted_images,
+            &mut self.pasted_texts,
+            &mut self.raw_pasted_lines,
+        );
+        self.history_clean_index = Some(index);
     }
 
     pub(in crate::cli) fn handle_event(
@@ -201,9 +248,10 @@ impl LiveReplEditor {
                             self.cursor = self.input.chars().count();
                             self.history_clean_index = None;
                         }
-                    } else {
-                        // 会话模式创建时定死:Tab 切换已随闲聊模式一并删除
+                    } else if self.mode_switchable && self.input.trim().is_empty() {
+                        // 只有空会话能换车道:一旦有了回合,模式就钉死
                         // (中途换模式=系统提示词换血=全量缓存作废)。
+                        return Ok(LiveEditorAction::ToggleMode);
                     }
                 }
                 KeyCode::Esc => {
@@ -258,42 +306,39 @@ impl LiveReplEditor {
                             self.history_index = self.history.len();
                         }
                         self.history_index = self.history_index.saturating_sub(1);
-                        self.input = self
-                            .history
-                            .get(self.history_index)
-                            .cloned()
-                            .unwrap_or_default();
-                        self.cursor = self.input.chars().count();
-                        self.history_clean_index = Some(self.history_index);
-                        self.raw_pasted_lines = 0;
-                        self.pasted_images.clear();
-                        self.pasted_texts.clear();
+                        self.recall_history_entry(self.history_index);
                     } else {
-                        self.cursor = repl_move_cursor_vertical("  ", &self.input, self.cursor, -1);
+                        self.cursor = repl_move_cursor_vertical_for_cols(
+                            "  ",
+                            &self.input,
+                            self.cursor,
+                            -1,
+                            self.content_cols(),
+                        );
                     }
                 }
                 KeyCode::Down => {
                     if repl_history_is_clean(&self.input, &self.history, self.history_clean_index) {
                         if self.history_index + 1 < self.history.len() {
                             self.history_index += 1;
-                            self.input = self
-                                .history
-                                .get(self.history_index)
-                                .cloned()
-                                .unwrap_or_default();
-                            self.cursor = self.input.chars().count();
-                            self.history_clean_index = Some(self.history_index);
+                            self.recall_history_entry(self.history_index);
                         } else {
                             self.history_index = self.history.len();
                             self.input.clear();
                             self.cursor = 0;
                             self.history_clean_index = None;
+                            self.raw_pasted_lines = 0;
+                            self.pasted_images.clear();
+                            self.pasted_texts.clear();
                         }
-                        self.raw_pasted_lines = 0;
-                        self.pasted_images.clear();
-                        self.pasted_texts.clear();
                     } else {
-                        self.cursor = repl_move_cursor_vertical("  ", &self.input, self.cursor, 1);
+                        self.cursor = repl_move_cursor_vertical_for_cols(
+                            "  ",
+                            &self.input,
+                            self.cursor,
+                            1,
+                            self.content_cols(),
+                        );
                     }
                 }
                 KeyCode::Enter if modifiers.contains(KeyModifiers::SHIFT) => {
@@ -383,7 +428,7 @@ impl LiveReplEditor {
                     if let Some(selected) =
                         placeholder_text_near_cursor(&self.input, self.cursor, &self.pasted_texts)
                     {
-                        let _ = crate::clipboard::write_clipboard_text(&selected)?;
+                        let _ = miyu_base::clipboard::write_clipboard_text(&selected)?;
                     }
                 }
                 KeyCode::Char('v') if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -410,18 +455,18 @@ impl LiveReplEditor {
     }
 
     pub(in crate::cli) fn paste_clipboard(&mut self, paths: &MiyuPaths) -> Result<()> {
-        match crate::clipboard::read_clipboard() {
-            Ok(crate::clipboard::ClipboardContent::Image(image)) => {
+        match miyu_base::clipboard::read_clipboard() {
+            Ok(miyu_base::clipboard::ClipboardContent::Image(image)) => {
                 let index = self.pasted_images.len() + 1;
                 // 占位符只认序号,文件名不进输入框(模型侧路径另拼)。
                 let _ = image.write_temp_file(&paths.cache_dir, index);
                 let placeholder = format!("[Image {index}]");
                 insert_str_at_cursor(&mut self.input, &mut self.cursor, &placeholder);
                 self.pasted_images
-                    .push(Some(crate::clipboard::PastedImage::Binary(image)));
+                    .push(Some(miyu_base::clipboard::PastedImage::Binary(image)));
                 self.raw_pasted_lines = 0;
             }
-            Ok(crate::clipboard::ClipboardContent::MediaPath(path)) => {
+            Ok(miyu_base::clipboard::ClipboardContent::MediaPath(path)) => {
                 let index = self.pasted_images.len() + 1;
                 let label = media_placeholder_label(&path);
                 insert_str_at_cursor(
@@ -430,15 +475,15 @@ impl LiveReplEditor {
                     &format!("[{label} {index}]"),
                 );
                 self.pasted_images
-                    .push(Some(crate::clipboard::PastedImage::Path(path)));
+                    .push(Some(miyu_base::clipboard::PastedImage::Path(path)));
                 self.raw_pasted_lines = 0;
             }
-            Ok(crate::clipboard::ClipboardContent::TextPath(path)) => {
+            Ok(miyu_base::clipboard::ClipboardContent::TextPath(path)) => {
                 insert_str_at_cursor(&mut self.input, &mut self.cursor, &path);
                 self.raw_pasted_lines = 0;
             }
             _ => {
-                if let Ok(Some(text)) = crate::clipboard::read_clipboard_text() {
+                if let Ok(Some(text)) = miyu_base::clipboard::read_clipboard_text() {
                     let raw_lines = insert_pasted_text_at_cursor(
                         &mut self.input,
                         &mut self.cursor,
@@ -507,9 +552,19 @@ pub(in crate::cli) fn parse_repl_input(input: &str) -> ReplInput<'_> {
         return ReplInput::Chat;
     }
     let (name, args) = split_repl_command(input);
-    let lowered = name.to_ascii_lowercase();
-    match REPL_COMMAND_TABLE.iter().find(|spec| spec.name == lowered) {
+    match repl_command_spec_for_name(name) {
         Some(spec) => ReplInput::Slash(spec.command, args),
         None => ReplInput::Chat,
     }
+}
+
+/// 这一句会不会送进模型——空会话据此撤大厅(banner 退场、模式钉死)。
+///
+/// 真斜杠命令(`/config`、`/session`)不算,它们不是消息。但首字符是 `/` 却命不中
+/// 命令表的算:`/home/x.md 删掉` 会回落成普通聊天照常发出去。两条 REPL 通路
+/// (daemon / 直连)共用这一个判据——此前各写一遍 `starts_with('/')`,于是以路径
+/// 开头的第一句话把大厅留在了画面上,流式正文画上去就是重影。
+pub(in crate::cli) fn submission_leaves_lobby(input: &str) -> bool {
+    let input = input.trim();
+    !input.is_empty() && matches!(parse_repl_input(input), ReplInput::Chat)
 }

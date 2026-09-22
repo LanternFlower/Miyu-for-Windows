@@ -3,7 +3,7 @@
 > **2026-09-07 更新：Phase 2「机械轻量层」已整层退役，本文该节只作历史记录。**
 > 它折的是 `turns.tool_reports`，而那一列从 07-01 起就只装
 > `extract_persistable_tool_report` 的白名单精选小结（artifact 操作 /
-> `load_tools` / 表情包 / `remember_fact` / `task`、deep_research 结论），
+> `load_tools` / 表情包 / `remember_fact` / `task` 结论），
 > 从来不装工具输出本体——实测线上库 370 轮全空、09-04 备份 410 轮共 ~1.2KB，
 > 连单批 12,500 字节的收割闸门都够不着，一次都没触发过。工具输出的真实体量
 > 在 08-18 引入的 `tool_flow` 列（实测占终端会话回放字节的 63%，加上调用参数
@@ -40,6 +40,7 @@
 
 ## 一、Miyu 现状问题清单（核对后确认，按严重度）
 
+0. **P0 压后重建缺失**（已解决，第三批）：压完只留一行 `<read-files>` 路径清单，模型手里没有任何文件正文，也没有回查折叠原文的入口。
 1. **P0 全量替换、零尾巴保留**：`perform_compact` 吞掉全部可见轮次（compact.rs:110-121）。`compact.md` 里 "newest turns may be kept verbatim" 与实现矛盾。
 2. **P0 无防连环压缩**：无闩锁、无经济性检查、无陈旧 usage 作废。
 3. **P1 无机械轻量层**：0.9 之前没有任何免费手段，一上来就是付费摘要 + 全量缓存 miss。
@@ -187,6 +188,40 @@ QQ 群聊文字历史（独立历史）：**也走 LLM 摘要**（用户已定�
 | ⑤ byte-prefix e2e + /usage 水位 | `compaction_resets_the_byte_prefix_at_most_once_each`：mock 端点逐元素断言"第 N 轮请求是 N-1 的纯前缀延伸；每次压缩恰好重置一次且重置点必须是 checkpoint"；`/usage` 显示四档水位绝对余量 |
 
 压缩期间新消息安全性由 `replace_visible_with_summary` 的乐观并发检查保证（可见集合变化即整体作废），无需新排队机制。schema v14→v16。
+
+**第三批（2026-09-09，compact v3，对标 Claude Code 2.1.263）**：施工单 `docs/plan/2026-09-09-compact-v3.md`，实测数据 `testkit/compact-quality/out/compact-quality.md`。
+
+| 项 | 实现 |
+|---|---|
+| ① 上下文计量改锚点 | v33 `turns.token_context_end`：回合结束时记下**该回合最后一次请求**的 `prompt+completion`（供应商真实计数），`effective_context_tokens()` 优先读它，拿不到（摘要行在尾／回合被打断／用量是估算）才退回本地 o200k 估算。刻意不校验供应商一致性：池按请求轮换，一份外来分词器的真值也比 o200k 硬数中文准。`src/agent/context_meter.rs` |
+| ② 压后文件回灌 | v33 `turns.compact_extras`：压完把折叠区里最近碰过的文件从盘上重读，渲染成 `"N: line"` 挂在 checkpoint 之后。默认 5 文件／单文件 4000 tok／总 24000 tok，再受 `window/8` 封顶；超限只留路径（照样占名额）。尾巴读过的、MIYU 根目录下的、不存在的、二进制的全跳过。`src/agent/compact_extras.rs` |
+| ③ 折叠原文回查 | 折叠掉的轮次（连同被取代的上一份摘要）写成 `state/compact/<会话>/fold-<ms>.md`，路径进 `<compact-transcript>` 块，链式保留最近 5 份。有 read 工具时才提示「可以读回来」。转录只写不清，与 spill 同规矩。 |
+| ④ 摘要结构升级 | `prompts/compact.md` 九节：新增「所有用户消息逐条」「错误与纠正」「当前工作」，Next Move 绑定用户最后一次明确请求。User Requests 最新 15 条逐条保留、更早的可并行——防跨压缩无限膨胀。摘要输出帽 8192→16384。 |
+| ⑤ 分析再摘要 | 输出帽 ≥6000 tok 时提示词要求先写 `<analysis>` 草稿再落摘要；草稿落库前剥掉（`strip_analysis_block`）、流式里滤掉（`AnalysisChunkFilter`，标签被切在两个 chunk 中间也认）。未闭合的草稿判为空摘要，走既有重试／机械兜底。`src/agent/compact_analysis.rs`。**已改为默认关**（`MIYU_COMPACT_ANALYSIS=1` 才开）。先是实测无收益（开/关同为 19/20），随后 09-09 实况坐实它有真实成本：148k 上下文的会话配 opus，草稿吃掉大半墙钟预算、摘要被超时砍断，且草稿被流式过滤器整段吞掉——用户看到的是几分钟空白。 |
+| ⑥ 顺手修 | `add_usage` 只累加了供应商原始缓存字段，漏了归一化后的 `cache_read_tokens`——而落库读的正是它。fork 摘要实测 96.6% 命中（26911 prompt / 25984 cached）落库仍记 0，压缩越多整体命中率被拉得越低。 |
+| 实验开关 | `MIYU_COMPACT_PROMPT_FILE`（换摘要提示词底稿）、`MIYU_COMPACT_ANALYSIS=1`（打开分析段，默认关），供 A/B 测具隔离变量用。 |
+
+**09-09 当日回归与修复**（v3 上线后当天在实况撞出来的，四条一起修）：
+
+| 症状 | 根因 | 修法 |
+|---|---|---|
+| 手动 `miyu compact` 长时间零输出 | 分析段草稿被 `AnalysisChunkFilter` 整段吞掉，草稿写多久屏幕就空白多久 | 分析段改默认关 |
+| 压缩超时、什么都没落库 | 输出帽 8192→16384 + 分析段 + `User Requests` 首次压缩**无上限**（那句限制只写在「已有摘要」分支里），三者叠加把输出推到上万 token；而 `SUMMARY_TIMEOUT` 是写死的 90s | 帽退回 8192（实测输出只有 3394–6083，提帽零收益）；`User Requests` 上限写进提示词主体（最新 20 条逐条，更早的最多 5 行合并）；超时改成 `90s + 帽/40`（满帽≈294s），且 fork 超时后不再走隔离路径重试——同一个模型要同样长的输出、还没缓存可吃，只会更慢 |
+| 压缩期间**所有**会话卡死（排队） | `ActorCommand::Compact` 在 actor 主循环里同步 await，而 `StartTurn` 是 `spawn_local` 的；压缩几分钟 = actor 几分钟收不了命令 | Compact 也 spawn 出去；代价是当前会话也走独立 agent（`&mut` 借用跨不了 spawn），多一次装配换回并发 |
+| 压缩期间**所有**会话卡死（拒绝） | `admin_busy` 是**全局布尔**，而回合入口五处闸门全查它。`reserve_admin_for_session` 的文档写着「只有目标会话要空闲，其它会话的回合照常跑」，实现却只置全局位——第二句从来没兑现 | `ManagerState` 加 `admin_session: Option<String>` 记预约的作用域：全局预约（改配置/换模型）仍挡所有人，会话级预约（压缩/pop/undo/清空）只挡自己。新增 `admin_blocks_session()`，回合入口五处闸门改用它。`release_admin` 签名不动，37 处释放点零改动 |
+| 压后回灌恒为空，摘要的 `<read-files>`/`<modified-files>` 段也为空 | 回灌候选与 footprint 的工具名单停留在旧名（`write_file`/`apply_patch`/`edit_string`），而 08-21 工具面统一后写文件工具叫 `edit`、路径藏在 `patchText` 的 `*** Add File:`/`*** Update File:`/`*** Delete File:` 头里；只读文件又全走 `run_command cat`。实况会话折叠区 6 次 `edit`、0 次 `read`，`restored=[]` | 抽 `tool_call_paths()` 共享给 `compact_extras::touched_files` 与 `tool_report::tool_call_footprint`：识别 `edit`/`apply_patch` 的补丁头（含 `*** Move to:`），跳过 `kb:`/`artifact:` 域。`src/agent/tool_report.rs`、`src/agent/compact_extras.rs` |
+| `miyu compact` 被路由到全局池里的另一家供应商，缓存命中 0 | `ActorCommand::Compact` 直接拿 actor 的全局 `config` 建 agent，没套 `sessions.model_override`：会话本身在 deepseek 上跑，摘要却打到 claude-code/opus，fork 复用不到该会话的逐字节前缀 | 抽 `apply_session_model_override_to()`，回合路与压缩路共用同一条规则；Compact 建 agent 前先套目标会话的模型池。`src/web/sessions.rs`、`src/web/actor/mod.rs`、`src/web/turns/task.rs` |
+
+回归测具：`testkit/compact-concurrency/`——桩 LLM 只对摘要请求睡 25 秒，在会话 A 上发起压缩、3 秒后去会话 B 发一句，量 B 的往返。修好了 B 是 0.1s，修之前 B 直接被拒（`code=1`，`admin_busy`）或干等 25 秒（actor 排队）。两层各自退回都会让它报红。
+
+教训：A/B 测具当时用的是 deepseek-v4-flash + 25 轮会话，输出 3394–6083 tok、耗时 21.9–36.0s，离 90s 超时线还有一大截——**快模型 + 短会话恰好绕开了这个 bug**。验收模型和会话规模必须贴近实况（慢模型 + 长上下文）。
+
+**09-10 中转线统一走 Miyu 压缩**（用户裁定：claude-code / codex / antigravity 三线不依赖 CLI 自压缩，统一、可控；施工记录 `docs/plan/2026-09-10-relay-compact.md`）：
+
+| 症状 | 根因 | 修法 |
+|---|---|---|
+| 三条中转线上 `<read-files>`/`<modified-files>` 恒空、回灌恒空（活库 42 个 remote 轮 footprint 0/42，agy 那 21 轮里真有 `view_file`×4、`write_to_file`×4） | 中转线的每次工具调用（原生工具与 `mcp__miyu__*` 桥工具都一样）走 `RemoteToolStarted/Finished` 折成 `remote: true` 轮；footprint 只在本地执行分支采集，`replay_rounds` 又按回放契约过滤 remote 轮——两个采集器都看不见。bda27508 认 `edit`/`patchText` 只救了直连线 | `record_remote_tool_chunk` 在 Finished 且 ok 时用 Started 存的名字+参数算 footprint 合进 `turns.tool_footprint`；`tool_call_paths` 认三线原生名（claude `Read`/`Edit`/`Write`/`MultiEdit`/`NotebookEdit` 的 `file_path`、agy `view_file`/`write_to_file` 的 `path`、codex `file_change` 折出的 `edit`+`paths`）；回灌候选 = 回放视图（近因序）+ 折叠区落库 footprint，跳过集加尾巴 footprint 的 read。`replay_rounds` 的 remote 过滤不动 |
+| claude-code 线两套压缩抢跑 | `--autocompact` 透传 Miyu 窗口，但 Miyu 0.8 线（168k→134,400）比 claude 的 W−33k 线（135,000）早 600 tok，Miyu 一压哈希链断、CLI 会话重开，claude 自压缩从没跑过；压缩请求 scope=compact 在中转线恒 ephemeral 不续传，fork 结构上不存在（09-09「fork 未交付」的真因） | 不再传 `--autocompact`（用户裁定「别固定上限，别设置就行」）；codex 也不加 `model_auto_compact_token_limit`。CLI 各自默认的自压缩仍在，只要 Miyu `context_window` 不大于 CLI 真实窗口，Miyu 先到 |
 
 ## 五、决策点（全部已定，2026-08-06）
 

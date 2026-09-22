@@ -26,9 +26,9 @@ use crate::cli::output::turn_client::{
 use crate::cli::repl::session::discard_ephemeral_session;
 use crate::cli::session_cmds::session_op_json;
 use crate::cli::turn_request::{build_overrides, resolve_turn_session};
-use crate::ipc;
-use crate::paths::MiyuPaths;
 use anyhow::Result;
+use miyu_base::paths::MiyuPaths;
+use miyu_core::ipc;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -155,7 +155,7 @@ fn error_kind_for(error: &anyhow::Error) -> ErrorKind {
 }
 
 /// `answer` 字段的三种写法 → 每题一组选择。
-fn parse_answers(value: &Value) -> Result<crate::question::QuestionAnswers> {
+fn parse_answers(value: &Value) -> Result<miyu_base::question::QuestionAnswers> {
     match value {
         Value::String(text) => Ok(vec![vec![text.clone()]]),
         Value::Array(items) if items.iter().all(Value::is_string) => Ok(items

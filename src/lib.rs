@@ -1,73 +1,44 @@
-//! Miyu 的库入口。
-//!
-//! 模块声明与启动流程都在这里，`main.rs` 只剩一个薄壳。这么分是为了让拆分
-//! 有个可依赖的地基：有了 lib target 之后，集成测试与架构门禁才能按模块路径
-//! 引用，而不是只能通过 bin 的私有模块树。
-#![allow(dead_code)]
+//! Miyu 的根包:入口层(cli / config_tui / oobe / pm / question_tui)与两个二进制。
+//! 下面四层住在 `crates/`(09-16 拆 crate):miyu-base → miyu-core → miyu-engine → miyu-hosts。
+// 09-16 接口治理收口:死代码在生产构建里是警告,不再全局豁免;测试构建里 cfg(test) 的辅助函数照旧豁免。
+#![cfg_attr(test, allow(dead_code))]
 
-mod agent;
-mod alarm;
-mod args;
 mod cli;
-mod clipboard;
-mod config;
 mod config_tui;
-mod daemon;
-mod default_kb;
-mod default_models;
-mod embedding;
-mod host_info;
-mod i18n;
-mod ipc;
-mod json_extract;
-mod llm;
-mod logging;
-mod memory;
-mod memory_types;
-mod models_cache;
-mod notify;
-mod paths;
-mod persona_hint;
-mod platform_dirs;
-mod platform_types;
-mod platforms;
-mod process_command;
-mod prompts;
-mod question;
+/// 功能表的数据源（引导与设置界面共用）。
+mod feature_sources;
+mod oobe;
+mod pm;
 mod question_tui;
-mod render;
-mod runtime;
-mod shell;
-mod skills;
-mod slash_commands;
-mod state;
-mod sys;
-mod terminal;
-mod token_counter;
-mod token_estimate;
-mod tools;
-mod transfer;
-#[cfg(feature = "voice")]
-pub mod voice;
-mod web;
+
+// Windows 移植仍有少量根 crate 调用点；实现已经下沉到 miyu-base，
+// 这里只保留兼容别名，不复活旧模块副本。
+pub use miyu_base::platform_dirs;
+pub use miyu_base::process as process_command;
+pub use miyu_base::sys;
 
 use anyhow::Result;
 
+/// 本次构建的唯一 id,根包 `build.rs` 算出(`MIYU_BUILD_ID` 环境变量可覆盖)。
+/// 下层 crate 不在编译期嵌它,`run()` 一进来就装进 `miyu_base::install_build_id`。
+pub const BUILD_ID: &str = env!("MIYU_BUILD_ID");
+
 pub async fn run() -> Result<()> {
+    miyu_base::install_build_id(BUILD_ID);
     // 趁二进制还在磁盘上，先把自己的路径记下来。daemon 一跑就是几小时，
     // 期间升级安装包或重新编译都会把这个文件换掉，那之后 `/proc/self/exe`
     // 读出来的是 `".../miyu (deleted)"`，再想 spawn 自己就 ENOENT 了
     // （长图渲染器、闹钟、知识库索引都靠这条路）。
-    paths::prime_miyu_executable();
-    if platforms::plugins::renderer_worker_requested() {
-        return platforms::plugins::run_renderer_worker().await;
+    miyu_base::paths::prime_miyu_executable();
+    if miyu_hosts::platforms::plugins::renderer_worker_requested() {
+        return miyu_hosts::platforms::plugins::run_renderer_worker().await;
     }
-    if embedding::embedding_worker_requested() {
-        return embedding::run_embedding_worker().await;
+    if miyu_base::embedding::embedding_worker_requested() {
+        return miyu_base::embedding::run_embedding_worker().await;
     }
-    let paths = paths::MiyuPaths::new()?;
-    let language = config::AppConfig::display_language_hint(&paths);
-    i18n::init(language.as_deref().unwrap_or("auto"));
+    let paths = miyu_base::paths::MiyuPaths::new()?;
+    let language = miyu_base::config::AppConfig::display_language_hint(&paths);
+    miyu_base::i18n::init(language.as_deref().unwrap_or("auto"));
     let cli = cli::parse();
     cli::run(cli, paths).await
 }
@@ -79,5 +50,5 @@ pub fn exit_code_for(error: &anyhow::Error) -> i32 {
 
 /// 错误前缀的本地化文案。`main.rs` 打印失败时要用，而 `i18n` 是私有模块。
 pub fn error_label() -> &'static str {
-    i18n::text("error", "错误")
+    miyu_base::i18n::text("error", "错误")
 }

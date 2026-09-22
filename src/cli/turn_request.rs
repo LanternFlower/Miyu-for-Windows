@@ -9,11 +9,11 @@ use crate::cli::exit_code::{session_not_found, usage_error};
 use crate::cli::repl::session::{
     create_ephemeral_session, session_admin, session_list_entries, SessionListEntry,
 };
-use crate::config::{ActiveProviderModelConfig, AppConfig};
-use crate::i18n::text as t;
-use crate::ipc::{Command as IpcCommand, TurnOverrides};
-use crate::paths::MiyuPaths;
 use anyhow::Result;
+use miyu_base::config::{ActiveProviderModelConfig, AppConfig};
+use miyu_base::i18n::text as t;
+use miyu_base::paths::MiyuPaths;
+use miyu_core::ipc::{Command as IpcCommand, TurnOverrides};
 
 /// 本回合落在哪个会话。`ephemeral` 为真时调用方用完要拆。
 pub struct ResolvedSession {
@@ -44,8 +44,8 @@ pub fn resolve_model_argument(
     argument: &str,
 ) -> Result<ActiveProviderModelConfig> {
     let choices = config.text_provider_model_choices();
-    let choice =
-        crate::config::resolve_provider_model_argument(&choices, argument).map_err(usage_error)?;
+    let choice = miyu_base::config::resolve_provider_model_argument(&choices, argument)
+        .map_err(usage_error)?;
     Ok(ActiveProviderModelConfig {
         provider_id: choice.provider_id.clone(),
         model: choice.model.clone(),
@@ -124,9 +124,37 @@ pub fn find_session<'a>(
 /// 管理面的目标解析:编号/名字/id → 会话 id;找不到退出码 3。
 pub async fn resolve_managed_session(paths: &MiyuPaths, target: &str) -> Result<SessionListEntry> {
     let entries = list_managed_sessions(paths).await?;
-    find_session(&entries, target)
-        .cloned()
-        .ok_or_else(|| session_not_found(target))
+    if let Some(entry) = find_session(&entries, target) {
+        return Ok(entry.clone());
+    }
+    // 子代理会话(09-18 会话化)不进列表,只能按 id 直取:daemon 的 GetSessionState
+    // 认子会话。给中断的子代理回复(`miyu ask --session <子会话 id>`)走这条。
+    let trimmed = target.trim();
+    if trimmed.starts_with("sess_") {
+        if let Ok((state, _)) = session_admin(
+            paths,
+            IpcCommand::GetSessionState {
+                target: miyu_core::ipc::SessionRef::Id {
+                    id: trimmed.to_string(),
+                },
+            },
+        )
+        .await
+        {
+            return Ok(SessionListEntry {
+                id: state.session_id,
+                name: state.session_name,
+                is_current: false,
+                turns: 0,
+                snippet: String::new(),
+                sandbox: state.sandbox,
+                sandbox_read_all: false,
+                mode: state.mode,
+                context_tokens: Some(state.context_tokens),
+            });
+        }
+    }
+    Err(session_not_found(target))
 }
 
 pub async fn create_named_session(
@@ -180,6 +208,15 @@ pub async fn resolve_turn_session(
                 ephemeral: false,
             });
         }
+        // 子代理会话(09-18 会话化)不进列表,按 id 直取(给中断的子代理回复走这条)。
+        if target.trim().starts_with("sess_") {
+            if let Ok(entry) = resolve_managed_session(paths, target).await {
+                return Ok(ResolvedSession {
+                    session_id: Some(entry.id),
+                    ephemeral: false,
+                });
+            }
+        }
         if !options.create {
             return Err(session_not_found(target));
         }
@@ -224,12 +261,14 @@ mod tests {
 
     fn entry(id: &str, name: &str) -> SessionListEntry {
         SessionListEntry {
+            context_tokens: None,
             id: id.to_string(),
             name: name.to_string(),
             is_current: false,
             turns: 0,
             snippet: String::new(),
-            workspace: None,
+            sandbox: None,
+            sandbox_read_all: false,
             mode: "normal".to_string(),
         }
     }

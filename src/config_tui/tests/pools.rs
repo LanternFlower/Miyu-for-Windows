@@ -1,12 +1,12 @@
 //! 分级模型池 / 平台模型配置 / Embedding 菜单的摘要措辞：界面只按 locale 显示一个
 //! 名字，不再把配置 id 和翻译并排；「继承」说清继承到哪一层。
 
-use crate::config::{
-    AppConfig, AuxRole, EmbeddingBackend, ModelPoolRef, ModelTier, ProviderConfig,
-};
 use crate::config_tui::{
     aux_role_label, aux_role_summary, embedding_model_label, pool_ref_summary, qq_pool_slots, t,
     tier_hint, tier_pool_summary,
+};
+use miyu_base::config::{
+    AppConfig, AuxRole, EmbeddingBackend, ModelPoolRef, ModelTier, ProviderConfig,
 };
 
 fn config_with_text_model() -> AppConfig {
@@ -36,8 +36,8 @@ fn tier_rows_show_one_localized_name_and_inheritance() {
 fn aux_roles_are_localized_and_never_repeat_the_fallback_note() {
     let config = AppConfig::default();
     assert_eq!(
-        aux_role_label(AuxRole::DeepResearch),
-        t("Deep research", "深度研究")
+        aux_role_label(AuxRole::MemoryOrganizer),
+        t("Diary organizer", "日记整理")
     );
     // 缺省档的池是空的，行内只写档名；空池回退全局池是档位行自己的事。
     assert_eq!(
@@ -45,7 +45,7 @@ fn aux_roles_are_localized_and_never_repeat_the_fallback_note() {
         t("lite", "轻量")
     );
     assert_eq!(
-        aux_role_summary(&config, AuxRole::DeepResearch),
+        aux_role_summary(&config, AuxRole::MemoryOrganizer),
         t("standard", "普通")
     );
     let mut config = config;

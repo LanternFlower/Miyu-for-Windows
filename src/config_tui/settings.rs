@@ -7,7 +7,7 @@ use crate::config_tui::*;
 
 /// true = save and exit, false = discard and exit. A choice is mandatory:
 /// `q`/`Esc` are ignored so an accidental key press cannot lose edits.
-pub(in crate::config_tui) fn confirm_save_on_exit(stdout: &mut io::Stdout) -> Result<bool> {
+pub(in crate::config_tui) fn confirm_save_on_exit(ui: &mut Ui) -> Result<bool> {
     let options = [
         t("Save", "保存").to_string(),
         t("Discard", "不保存").to_string(),
@@ -15,13 +15,13 @@ pub(in crate::config_tui) fn confirm_save_on_exit(stdout: &mut io::Stdout) -> Re
     let mut selected = 0usize;
     loop {
         draw_menu(
-            stdout,
+            ui,
             t(" SAVE EDITED CHANGES? ", " 是否保存已编辑内容 "),
             &options,
             selected,
             t("[j/k]move [Enter]confirm", "[j/k]移动 [Enter]确认"),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(1),
             KeyCode::Enter => return Ok(selected == 0),
@@ -30,10 +30,7 @@ pub(in crate::config_tui) fn confirm_save_on_exit(stdout: &mut io::Stdout) -> Re
     }
 }
 
-pub(in crate::config_tui) fn edit_settings(
-    stdout: &mut io::Stdout,
-    config: &mut AppConfig,
-) -> Result<()> {
+pub(in crate::config_tui) fn edit_settings(ui: &mut Ui, config: &mut AppConfig) -> Result<()> {
     let language = language_choice_value(&config.display.language).unwrap_or("auto");
     let mut fields = vec![
         Field::boolean(t("Enable tools", "工具启用"), config.tools.enabled),
@@ -57,18 +54,23 @@ pub(in crate::config_tui) fn edit_settings(
         ),
         Field::new(t("Interface language", "界面语言"), language.to_string())
             .choices(&["auto", "en", "zh"]),
+        // 三值档（隐藏/摘要/完整）09-17 拆成布尔、隐藏档删掉——用户原话
+        //「是否展开思考内容 / 是否展开工具内容 / 是否缩起成 Worked for，
+        // 这样更简洁」。三位互不相干：思考以后要从时间线里搬出去。
+        Field::boolean(
+            t("Expand reasoning", "展开思考内容"),
+            config.display.expand_reasoning,
+        ),
+        Field::boolean(
+            t("Expand tool details", "展开工具内容"),
+            config.display.expand_tool_calls,
+        ),
         Field::new(
-            t("Show reasoning", "显示思考过程"),
-            config.display.reasoning.clone(),
-        )
-        .choices(&["summary", "full", "hidden"]),
+            t("Thinking scroll lines", "思考滚动显示行数"),
+            config.display.thinking_scroll_lines.to_string(),
+        ),
         Field::new(
-            t("Show tool call details", "显示工具调用信息"),
-            config.display.tool_calls.clone(),
-        )
-        .choices(&["summary", "full", "hidden"]),
-        Field::new(
-            t("Command output lines", "命令输出显示行数"),
+            t("Command lines", "命令显示行数"),
             config.display.command_output_lines.to_string(),
         ),
         Field::boolean(
@@ -90,36 +92,45 @@ pub(in crate::config_tui) fn edit_settings(
             parse_mixed_endpoint_display(&config.display.mixed_model_endpoint_display),
         )
         .choices(&["off", "interactive", "all"]),
-        Field::new(
-            t("When context reaches its limit", "上下文到达上限后"),
-            config.context.on_overflow.clone(),
-        )
-        .choices(&["compact", "pop"]),
         // Appended rather than inserted: the read-back below is positional.
         Field::new(
             t(
-                "Turns replayed when reopening the REPL",
-                "重开 REPL 回放的轮数",
+                "Turns replayed when reopening the TUI",
+                "重开 TUI 回放的轮数",
             ),
             config.display.repl_replay_turns.to_string(),
         ),
-        // 验收:default_mode 只能改 config.jsonc 不像话——空=裸 miyu 出帮助。
+        Field::boolean(
+            t("Block dangerous commands", "高危命令拦截"),
+            config.tools.block_dangerous_commands,
+        ),
+        Field::boolean(
+            t(
+                "Fold finished steps into Worked for",
+                "过程收起成 Worked for",
+            ),
+            config.display.fold_timeline,
+        ),
         Field::new(
-            t("Bare `miyu` default mode", "裸 miyu 默认模式"),
-            config.default_mode.clone(),
+            t("Terminal session default mode", "终端集成会话默认模式"),
+            if config.terminal_session_is_dev() {
+                "dev"
+            } else {
+                "normal"
+            }
+            .to_string(),
         )
-        .choices(&["", "normal", "dev"])
-        .empty_choice_label(t("Help screen", "帮助信息")),
+        .choices(&["normal", "dev"]),
     ];
     // The read-back below is by index, so an insert in the middle silently
     // writes every later value into the wrong setting. This catches that in
     // debug builds; new fields go on the end.
     debug_assert_eq!(
         fields.len(),
-        16,
+        18,
         "global settings fields changed: update the positional read-back below"
     );
-    run_form_without_buttons(stdout, t(" GLOBAL SETTINGS ", " 全局设置 "), &mut fields)?;
+    run_form_without_buttons(ui, t(" GLOBAL SETTINGS ", " 全局设置 "), &mut fields)?;
     config.tools.enabled = parse_bool_field(&fields[0].value)?;
     config.tools.max_rounds = fields[1].value.trim().parse::<usize>()?;
     config.tools.loading_mode = normalize_tools_loading_mode(&fields[2].value);
@@ -129,23 +140,34 @@ pub(in crate::config_tui) fn edit_settings(
     config.display.language = language_choice_value(&fields[6].value)
         .unwrap_or("auto")
         .to_string();
-    config.display.reasoning = fields[7].value.trim().to_string();
-    config.display.tool_calls = fields[8].value.trim().to_string();
-    config.display.command_output_lines = fields[9]
+    config.display.expand_reasoning = parse_bool_field(&fields[7].value)?;
+    config.display.expand_tool_calls = parse_bool_field(&fields[8].value)?;
+    config.display.thinking_scroll_lines = fields[9]
+        .value
+        .trim()
+        .parse::<usize>()?
+        .min(MAX_THINKING_SCROLL_LINES);
+    config.display.command_output_lines = fields[10]
         .value
         .trim()
         .parse::<usize>()?
         .min(MAX_COMMAND_OUTPUT_LINES);
-    config.display.readable_tool_names = parse_bool_field(&fields[10].value)?;
-    config.display.show_token_usage = parse_bool_field(&fields[11].value)?;
-    config.display.mixed_model_endpoint_display = parse_mixed_endpoint_display(&fields[12].value);
-    config.context.on_overflow = fields[13].value.trim().to_string();
+    config.display.readable_tool_names = parse_bool_field(&fields[11].value)?;
+    config.display.show_token_usage = parse_bool_field(&fields[12].value)?;
+    config.display.mixed_model_endpoint_display = parse_mixed_endpoint_display(&fields[13].value);
     config.display.repl_replay_turns = fields[14]
         .value
         .trim()
         .parse::<usize>()?
         .min(MAX_REPL_REPLAY_TURNS);
-    config.default_mode = fields[15].value.trim().to_string();
+    config.tools.block_dangerous_commands = parse_bool_field(&fields[15].value)?;
+    config.display.fold_timeline = parse_bool_field(&fields[16].value)?;
+    config.terminal_session_mode = if fields[17].value.trim().eq_ignore_ascii_case("dev") {
+        "dev"
+    } else {
+        "normal"
+    }
+    .to_string();
     Ok(())
 }
 

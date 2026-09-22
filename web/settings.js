@@ -1774,12 +1774,13 @@ window.MiyuSettings = (() => {
   const TIER_POOL_COLUMNS = TIER_NAMES.map((tier) => ({ id: tier, label: `${TIER_HINTS[tier]}档`, hint: tier === "standard" ? "task 子代理的默认档" : "", tier, emptyHint: "未配置，继承全局池" }));
   const POOL_COLUMNS = [...GLOBAL_POOL_COLUMNS, ...TIER_POOL_COLUMNS];
 
-  /* 旁路请求 → 档位。缺省值由代码内置(标题/整理 lite,深度研究 standard);
+  /* 旁路请求 → 档位。缺省值由代码内置(标题 lite,整理 standard);
      "缺省"就是删掉这个键。 */
   const AUX_ROLES = [
     { key: "session_title", label: "会话标题", fallback: "lite" },
-    { key: "memory_organizer", label: "日记整理", fallback: "lite" },
-    { key: "deep_research", label: "深度研究", fallback: "standard" }
+    { key: "memory_organizer", label: "日记整理", fallback: "standard" },
+    // 聊天正文选中文字右键「解释 / 翻译」(web/selectionmenu.js)。
+    { key: "selection_assist", label: "划词解释 / 翻译", fallback: "lite" }
   ];
 
   function auxRolesCard() {
@@ -1872,7 +1873,7 @@ window.MiyuSettings = (() => {
     root.append(
       section("全局池", "主对话用的池。分级档没配模型时也落到这里。", "is-global", GLOBAL_POOL_COLUMNS.map((column, index) => poolCard(column, index))),
       section("分级池", "按任务难度分四档，给 task 子代理、旁路请求和 QQ 各处引用；留空即继承全局池。", "is-tiers", TIER_POOL_COLUMNS.map((column, index) => poolCard(column, index + GLOBAL_POOL_COLUMNS.length))),
-      section("旁路请求", "会话标题、日记整理、深度研究各走哪一档；QQ 侧的模型在「QQ 平台」页配置。", "is-roles", [auxRolesCard()]));
+      section("旁路请求", "会话标题、日记整理各走哪一档；QQ 侧的模型在「QQ 平台」页配置。", "is-roles", [auxRolesCard()]));
   }
 
   function poolCard(column, index) {
@@ -2408,6 +2409,7 @@ window.MiyuSettings = (() => {
     if (route.session_limits) chips.push(chip(`并行 ${route.session_limits.running}`, "is-soft"));
     if (route.probability_reply === false) chips.push(chip("概率主动回复：关", "is-soft"));
     else if (route.probability_reply === true) chips.push(chip("概率主动回复：开", "is-soft"));
+    if (route.ignore_sleep_hours === true) chips.push(chip("忽略睡眠时间", "is-soft"));
     return chips;
   }
 
@@ -2457,6 +2459,17 @@ window.MiyuSettings = (() => {
             if (value === "on") route.probability_reply = true;
             else if (value === "off") route.probability_reply = false;
             else delete route.probability_reply;
+            dirty();
+          }
+        };
+      }
+      // 忽略睡眠时间:缺省与 false 是同一个意思,关掉就把键删了别留死值。
+      if (key === "ignore_sleep_hours") {
+        return {
+          get: () => route.ignore_sleep_hours === true,
+          set: (value) => {
+            if (value) route.ignore_sleep_hours = true;
+            else delete route.ignore_sleep_hours;
             dirty();
           }
         };

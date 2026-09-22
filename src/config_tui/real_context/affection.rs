@@ -6,7 +6,7 @@
 use crate::config_tui::*;
 
 pub(in crate::config_tui) fn edit_real_context_affection(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     _config: &AppConfig,
     settings: &mut RealContextPluginSettings,
 ) -> Result<()> {
@@ -35,27 +35,27 @@ pub(in crate::config_tui) fn edit_real_context_affection(
             ),
         ];
         draw_menu(
-            stdout,
+            ui,
             t(" AFFECTION AND RELATIONSHIP ", " 好感度与关系 "),
             &options,
             selected,
             "",
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter => match selected {
                 0 => {
                     settings.affection_enable = select_bool(
-                        stdout,
+                        ui,
                         t("Affection system", "好感度系统"),
                         settings.affection_enable,
                     )?;
                 }
                 1 => {
                     settings.affection_update_enable = select_bool(
-                        stdout,
+                        ui,
                         t(
                             "Judge affection changes after replies",
                             "回复后判断好感度变化",
@@ -63,8 +63,8 @@ pub(in crate::config_tui) fn edit_real_context_affection(
                         settings.affection_update_enable,
                     )?;
                 }
-                2 => edit_real_context_affection_values(stdout, settings)?,
-                3 => edit_real_context_affection_prompts(stdout, settings)?,
+                2 => edit_real_context_affection_values(ui, settings)?,
+                3 => edit_real_context_affection_prompts(ui, settings)?,
                 4 => {
                     let mut raw = settings
                         .affection_unlimited_user_ids
@@ -72,10 +72,10 @@ pub(in crate::config_tui) fn edit_real_context_affection(
                         .map(i64::to_string)
                         .collect::<Vec<_>>()
                         .join("\n");
-                    edit_textarea(stdout, &mut raw)?;
+                    edit_textarea(ui, &mut raw)?;
                     match parse_id_list(&raw) {
                         Ok(ids) => settings.affection_unlimited_user_ids = ids,
-                        Err(error) => message(stdout, &error.to_string())?,
+                        Err(error) => message(ui, &error.to_string())?,
                     }
                 }
                 _ => {}
@@ -86,7 +86,7 @@ pub(in crate::config_tui) fn edit_real_context_affection(
 }
 
 pub(in crate::config_tui) fn edit_real_context_affection_values(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     settings: &mut RealContextPluginSettings,
 ) -> Result<()> {
     loop {
@@ -170,7 +170,7 @@ pub(in crate::config_tui) fn edit_real_context_affection_values(
             ),
         ];
         if !run_form(
-            stdout,
+            ui,
             t(" AFFECTION SCORE AND LIMITS ", " 好感度分值与限制 "),
             &mut fields,
         )? {
@@ -202,13 +202,13 @@ pub(in crate::config_tui) fn edit_real_context_affection_values(
                 *settings = candidate;
                 return Ok(());
             }
-            Err(error) => message(stdout, &error)?,
+            Err(error) => message(ui, &error)?,
         }
     }
 }
 
 pub(in crate::config_tui) fn edit_real_context_affection_prompts(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     settings: &mut RealContextPluginSettings,
 ) -> Result<()> {
     let prompts = [
@@ -239,17 +239,17 @@ pub(in crate::config_tui) fn edit_real_context_affection_prompts(
             })
             .collect::<Vec<_>>();
         draw_menu(
-            stdout,
+            ui,
             t(" AFFECTION RELATIONSHIP PROMPTS ", " 好感度关系提示词 "),
             &options,
             selected,
             "",
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
-            KeyCode::Enter => edit_textarea(stdout, prompts[selected].1)?,
+            KeyCode::Enter => edit_textarea(ui, prompts[selected].1)?,
             _ => {}
         }
     }

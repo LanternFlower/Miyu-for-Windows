@@ -84,6 +84,13 @@ pub(in crate::cli) fn queue_lifted_frame(
 
 impl LiveReplTail {
     pub(in crate::cli) fn suspend(&mut self) -> Result<()> {
+        // 全屏：清屏把光标交到顶上，选择器 / 提问面板 / 图片就当自己拿到了
+        // 一块空屏。它们打的是普通 ANSI，在备用屏上一样显示，不必退出。
+        if let Some(screen) = &mut self.screen {
+            screen.suspend()?;
+            self.rendered = false;
+            return Ok(());
+        }
         if !self.rendered {
             return Ok(());
         }
@@ -103,20 +110,56 @@ impl LiveReplTail {
     }
 
     pub(in crate::cli) fn resume(&mut self) -> Result<()> {
+        if let Some(screen) = &mut self.screen {
+            screen.resume(true);
+            let cursor = self.output_cursor;
+            return self.resume_at(cursor);
+        }
         self.resume_at(cursor_position_or(self.output_cursor))
     }
 
-    pub(in crate::cli) fn resume_at(&mut self, (output_col, output_row): (u16, u16)) -> Result<()> {
+    /// 重挂活动区。保守口径：假定中间可能有外部输出，整屏擦一次。
+    pub(in crate::cli) fn resume_at(&mut self, cursor: (u16, u16)) -> Result<()> {
+        self.resume_at_inner(cursor, false)
+    }
+
+    /// 同上，但这一帧是**自己写的**（流式输出、拖选重画）——屏幕没被别人动过，
+    /// 走逐行 diff。热路径上省掉整屏擦是「光标不闪、拖选不卡」的关键。
+    pub(in crate::cli) fn resume_at_own(&mut self, cursor: (u16, u16)) -> Result<()> {
+        self.resume_at_inner(cursor, true)
+    }
+
+    fn resume_at_inner(&mut self, cursor: (u16, u16), own: bool) -> Result<()> {
+        if self.screen.is_some() {
+            return synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
+                self.paint_tail(cursor, own)
+            });
+        }
+        self.paint_tail(cursor, own)
+    }
+
+    fn paint_tail(&mut self, (output_col, output_row): (u16, u16), own: bool) -> Result<()> {
         let (cols, terminal_rows) = terminal::size().unwrap_or((80, 24));
         let terminal_rows = terminal_rows.max(1);
+        // 输入框的横向几何**先定**：大厅里它是窄框，测行数、画字、算光标、
+        // 擦旧行全都要按这个宽度来。窄框宽度只由终端宽决定（与活动区高度
+        // 无关），所以可以先定宽再测高，不存在循环依赖。
+        let editor_area = match (&self.banner, self.screen.is_some()) {
+            (Some(banner), true) => Some(EditorBox::lobby(usize::from(cols), banner.art_cols())),
+            _ => None,
+        };
+        let editor_cols = box_cols(editor_area, usize::from(cols));
+        // 编辑器自己也要知道这个宽度：上下方向键是按「第几个物理行」找落点的，
+        // 拿整终端宽去找，窄框里就会跳错行。
+        self.editor.box_cols = Some(editor_cols);
         let editor_rows = repl_input_rendered_rows(
             &self.editor.input,
             self.editor.raw_pasted_lines,
             false,
-            usize::from(cols),
+            editor_cols,
         );
-        let mut queue_lines =
-            queued_prompt_lines(&self.queued, self.editor.mode, usize::from(cols));
+        // 排队行也画在窄框里（`box_left` 起笔），宽度得跟着窄框走。
+        let mut queue_lines = queued_prompt_lines(&self.queued, self.editor.mode, editor_cols);
         let queue_gap = u16::from(!queue_lines.is_empty());
         let max_queue_rows = terminal_rows.saturating_sub(editor_rows).saturating_sub(3) as usize;
         if queue_lines.len() > max_queue_rows {
@@ -133,9 +176,24 @@ impl LiveReplTail {
             clipped.extend(queue_lines.split_off(queue_lines.len().saturating_sub(keep)));
             queue_lines = clipped;
         }
-        let job_lines = background_job_lines(&self.jobs, self.job_spinner, usize::from(cols));
+        let job_lines = background_job_lines(
+            &self.jobs,
+            self.job_spinner_frame(),
+            usize::from(cols),
+            self.job_hover,
+        );
         let job_rows = job_lines.len().min(u16::MAX as usize) as u16;
+        // 空会话 banner:inline 下占活动区顶上几行;全屏下画进正文区(见下面)。
+        // 终端太矮就不挂:banner 要十几行,把输入框挤出屏幕就本末倒置了。
+        let banner_lines: Vec<String> = match (&self.banner, self.screen.is_some()) {
+            (Some(banner), false) if usize::from(terminal_rows) >= banner.block_rows() + 2 + 10 => {
+                banner.render_ansi(usize::from(cols), banner.block_rows() + 2)
+            }
+            _ => Vec::new(),
+        };
+        let banner_rows = banner_lines.len().min(u16::MAX as usize) as u16;
         let total_rows = 1u16
+            .saturating_add(banner_rows)
             .saturating_add(queue_lines.len().min(u16::MAX as usize) as u16)
             .saturating_add(queue_gap)
             .saturating_add(editor_rows)
@@ -147,13 +205,135 @@ impl LiveReplTail {
         // falls back to natural placement.
         let was_anchored = self.tail_rows > 0
             && self.tail_start.saturating_add(self.tail_rows) == terminal_rows.saturating_sub(1);
-        let placement = live_tail_placement(
-            output_col,
-            output_row,
-            total_rows,
-            terminal_rows,
-            was_anchored,
-        );
+        // 覆盖层开着：这一帧整个归它，正文和活动区都不画。
+        if let Some(screen) = &mut self.screen {
+            if screen.overlay_open() {
+                screen.resize(cols, terminal_rows);
+                screen.paint_overlay()?;
+                return Ok(());
+            }
+        }
+        // 候选面板得在**这一帧**就画出来。
+        //
+        // 原来是 `paint` 之后才算的，于是它永远慢一帧：打一个 `/` 什么都不出，
+        // 再补个空格（多一次按键 = 多一帧）才蹦出来——用户实测报的「我要打
+        // `/` 空格才会出现」就是这个。
+        let hint_lines = if self.screen.is_some() {
+            command_hint_lines(&self.editor.input, usize::from(cols))
+        } else {
+            Vec::new()
+        };
+        // 大厅里输入框的窄框。None = 全宽贴左。
+        let mut layout_box: Option<EditorBox> = None;
+        let placement = if let Some(screen) = &mut self.screen {
+            // 全屏：正文归 Screen，活动区固定钉在视口底部。不用「腾地方」
+            // 也不用算锚定——屏幕是自己的，底下永远有位置。
+            //
+            // resume 的语义就是「把屏幕拿回来」：suspend 过的话这里清掉标记，
+            // 否则 paint 会以为外部输出还占着屏、直接跳过不画。
+            screen.resume(!own);
+            screen.resize(cols, terminal_rows);
+            screen.set_command_hint(if screen.command_hint_dismissed() {
+                Vec::new()
+            } else {
+                hint_lines
+            });
+            // `total_rows + 1`：活动区底下留一行空，和 inline 的观感一致。
+            // 不留的话 footer 直接贴在屏幕最后一行上，挤得没有呼吸。
+            // 空会话大厅:整屏交给 banner 画(星空 + 渐变字),输入框嵌在字下面的
+            // 窄框里,不在屏底。第一句话发出去后 banner 撤掉,回到屏底、全宽。
+            let lobby = self.banner.as_ref().map(|banner| {
+                if self.lobby_panel_rows == 0 {
+                    banner.lobby(
+                        usize::from(cols),
+                        usize::from(terminal_rows),
+                        usize::from(total_rows),
+                    )
+                } else {
+                    banner.lobby_with_bottom_space(
+                        usize::from(cols),
+                        usize::from(terminal_rows),
+                        usize::from(total_rows),
+                        usize::from(self.lobby_panel_rows),
+                    )
+                }
+            });
+            screen.set_banner(lobby.as_ref().map(|lobby| lobby.rows.clone()));
+            if std::env::var_os("MIYU_LOBBY_TRACE").is_some() {
+                if let Some(lobby) = &lobby {
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("/tmp/miyu-lobby-trace.log")
+                    {
+                        let _ = writeln!(
+                            file,
+                            "cols={cols} rows={terminal_rows} total_rows={total_rows} editor_rows={editor_rows} queue={} jobs={} tail_start={} left={} width={}",
+                            queue_lines.len(),
+                            job_lines.len(),
+                            lobby.tail_start,
+                            lobby.left,
+                            lobby.width
+                        );
+                    }
+                }
+            }
+            screen.set_float_anchor(
+                lobby
+                    .as_ref()
+                    .map(|lobby| (lobby.below.saturating_add(1), lobby.left)),
+            );
+            // 上一帧活动区的矩形。缩行/整块挪位时新活动区盖不住旧的，差出来
+            // 的那几行要交给正文层强制重画，否则旧 footer 留在屏幕上（正文
+            // 那一行没变，按行 diff 会跳过它）。
+            let previous = self
+                .rendered
+                .then_some((self.tail_start, self.tail_rows))
+                .filter(|(_, rows)| *rows > 0);
+            match lobby {
+                Some(lobby) => {
+                    screen.invalidate_activity_rows(previous, Some((lobby.tail_start, total_rows)));
+                    screen.paint(0)?;
+                    // 画字用的框就是上面测行数用的那个 `editor_area`,不另取一份:
+                    // 两处分头算是这个 bug 的来源,只留一个来源才修得干净。banner
+                    // 给星空让出的那一列是按同一个函数算的,这里对一次以防漂移。
+                    debug_assert_eq!(
+                        editor_area,
+                        Some(EditorBox {
+                            left: lobby.left,
+                            width: usize::from(lobby.width),
+                        })
+                    );
+                    layout_box = editor_area;
+                    LiveTailPlacement {
+                        output_row: lobby.tail_start.saturating_sub(1),
+                        tail_start: lobby.tail_start,
+                        overflow: 0,
+                        anchored: true,
+                    }
+                }
+                None => {
+                    let tail_height = total_rows.saturating_add(1);
+                    let next_body = screen.body_for(tail_height);
+                    screen.invalidate_activity_rows(previous, Some((next_body, total_rows)));
+                    let body = screen.paint(tail_height)?;
+                    LiveTailPlacement {
+                        output_row: body.saturating_sub(1),
+                        tail_start: body,
+                        overflow: 0,
+                        anchored: true,
+                    }
+                }
+            }
+        } else {
+            live_tail_placement(
+                output_col,
+                output_row,
+                total_rows,
+                terminal_rows,
+                was_anchored,
+            )
+        };
         if placement.overflow > 0 {
             let mut stdout = io::stdout();
             queue!(stdout, MoveTo(0, terminal_rows.saturating_sub(1)))?;
@@ -166,9 +346,18 @@ impl LiveReplTail {
         let tail_start = placement.tail_start;
 
         let mut stdout = io::stdout();
-        queue!(stdout, MoveTo(0, tail_start), Clear(ClearType::CurrentLine))?;
+        let box_left = box_left(layout_box);
+        match layout_box {
+            // 窄框只擦自己那一段,两侧的星空归 banner。
+            Some(area) => queue!(
+                stdout,
+                MoveTo(area.left, tail_start),
+                Print(" ".repeat(area.width))
+            )?,
+            None => queue!(stdout, MoveTo(0, tail_start), Clear(ClearType::CurrentLine))?,
+        }
         let mut row = tail_start.saturating_add(1);
-        for line in &queue_lines {
+        for line in &banner_lines {
             queue!(
                 stdout,
                 MoveTo(0, row),
@@ -177,34 +366,73 @@ impl LiveReplTail {
             )?;
             row = row.saturating_add(1);
         }
+        self.banner_rows = banner_rows;
+        for line in &queue_lines {
+            queue!(
+                stdout,
+                MoveTo(box_left, row),
+                Clear(ClearType::CurrentLine),
+                Print(line)
+            )?;
+            row = row.saturating_add(1);
+        }
         if !queue_lines.is_empty() {
-            queue!(stdout, MoveTo(0, row), Clear(ClearType::CurrentLine))?;
+            queue!(stdout, MoveTo(box_left, row), Clear(ClearType::CurrentLine))?;
             row = row.saturating_add(1);
         }
         stdout.flush()?;
 
         let mut input_row = row;
         let mut rendered_rows = 0u16;
+        let mut drawn_input = Vec::new();
         let footer_row = render_repl_input_with_footer(
             &mut stdout,
             &mut input_row,
             &mut rendered_rows,
+            &mut drawn_input,
             self.editor.mode,
             &self.editor.input,
             self.editor.cursor,
             self.editor.raw_pasted_lines,
             &self.footer,
             false,
+            layout_box,
         )?;
         self.footer_offset = footer_row.map(|abs| abs.saturating_sub(tail_start));
+        if let Some(screen) = &mut self.screen {
+            screen.set_input_rows(drawn_input);
+            // 反显盖在输入框**之上**：输入框刚画完，这会儿盖才不会被它冲掉。
+            screen.paint_input_selection()?;
+        }
         // The editor is back on screen: the cursor must be visible no
         // matter which path hid it (e.g. a question prompt suspended the
         // editor with the cursor hidden and then exited early). This is
         // the single convergence point for every editor redraw, so an
         // unconditional Show here prevents a permanently invisible cursor.
-        self.input_cursor = cursor_position_or(self.input_cursor);
+        self.input_cursor = if self.screen.is_some() {
+            // 全屏下不问终端（那会吞掉正在打的字），按布局算——反正输入区
+            // 是我们自己摆的，算得出来。
+            let prefix = input_prompt_bar(self.editor.mode);
+            let (col, row_offset) = repl_cursor_position_for_cols(
+                &prefix,
+                &self.editor.input,
+                self.editor.cursor,
+                editor_cols,
+            );
+            // `input_row` 是输入区**顶上那根空竖条**的行，正文从它下一行才开始，
+            // 所以要 +1。少这一行的表现是输入法的预编辑框浮在文字上一行。
+            (
+                col.saturating_add(box_left),
+                input_row.saturating_add(1).saturating_add(row_offset),
+            )
+        } else {
+            cursor_position_or(self.input_cursor)
+        };
+        // 状态行在屏幕上的位置：点它要能对上是哪一个后台任务。
+        self.job_strip_start = input_row.saturating_add(rendered_rows);
+        self.job_strip_rows = job_rows;
+        let mut stdout = io::stdout();
         if !job_lines.is_empty() {
-            let mut stdout = io::stdout();
             let mut job_row = input_row.saturating_add(rendered_rows);
             for line in &job_lines {
                 queue!(
@@ -215,9 +443,13 @@ impl LiveReplTail {
                 )?;
                 job_row = job_row.saturating_add(1);
             }
-            queue!(stdout, MoveTo(self.input_cursor.0, self.input_cursor.1))?;
-            stdout.flush()?;
         }
+        // 一帧的收尾**永远**是把光标放回输入位置：在这之前画的东西（状态行、
+        // 反显）都会把光标带走。原来只有「有后台任务」那条分支才收尾，于是
+        // 没有任务时光标停在最后一次绘制落笔的地方——输入法的预编辑框就浮在
+        // 那儿。这一句不能挪进任何 if 里。
+        queue!(stdout, MoveTo(self.input_cursor.0, self.input_cursor.1))?;
+        stdout.flush()?;
         execute!(io::stdout(), crossterm::cursor::Show)?;
         self.output_cursor = (output_col, output_row);
         self.tail_start = tail_start;
@@ -229,6 +461,33 @@ impl LiveReplTail {
     pub(in crate::cli) fn apply_output_frame(&mut self, frame: &[u8]) -> Result<()> {
         if frame.is_empty() {
             return Ok(());
+        }
+        // 全屏：字节交给终端模拟器，它按光标动作落到对的行上——spinner 的
+        // 原地刷新、命令块的实时输出都靠这个，输出方一行不用改。
+        if let Some(screen) = &mut self.screen {
+            if std::env::var_os("MIYU_SCREEN_TRACE").is_some() {
+                // 排查「点开正在想的那一步之后出现两份」：这一帧里开始标记和
+                // 结束标记各有几个。只有开始没有结束 = 块留在半开状态,展开层
+                // 会把内容插进去而不是替换掉。
+                let text = String::from_utf8_lossy(frame);
+                let begins =
+                    text.matches("miyu-block=").count() + text.matches("miyu-block-open=").count();
+                let ends = text.matches("miyu-block-end").count();
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("/tmp/miyu-screen-trace.log")
+                {
+                    let _ = std::io::Write::write_all(
+                        &mut file,
+                        format!("feed bytes={} begins={begins} ends={ends}\n", frame.len())
+                            .as_bytes(),
+                    );
+                }
+            }
+            screen.feed(frame);
+            let cursor = self.output_cursor;
+            return self.resume_at_own(cursor);
         }
         if !self.rendered {
             io::stdout().write_all(frame)?;
@@ -278,7 +537,8 @@ impl LiveReplTail {
             )?;
         }
         let lifted = output_bottom.filter(|_| {
-            crate::terminal::kitty::images_emitted() && (leading_scroll > 0 || !scrolls.is_empty())
+            miyu_base::terminal::kitty::images_emitted()
+                && (leading_scroll > 0 || !scrolls.is_empty())
         });
         if let Some(bottom) = lifted {
             queue_lifted_frame(
@@ -344,17 +604,141 @@ impl LiveReplTail {
         &mut self,
         renderer: &mut render::StreamRenderer,
     ) -> Result<()> {
+        // 这一轮里跑着的子代理烧掉的量先记在 Σ 上——它们的审计会话要跑完才落盘，
+        // 而一个子代理能跑好几分钟，那几分钟里 Σ 纹丝不动。
+        self.set_live_turn_tokens(renderer.running_subagent_tokens());
         let frame = renderer.take_output_frame();
         self.apply_output_frame(&frame)
     }
 
+    /// 短提示交给通知条。接下了就返回真。
+    ///
+    pub(in crate::cli) fn toast_note(&mut self, text: &str) -> bool {
+        self.toast_note_at(text, false)
+    }
+
+    /// `near_input` = 这条提示讲的是输入框的事，得待在输入框旁边。
+    pub(in crate::cli) fn toast_note_at(&mut self, text: &str, near_input: bool) -> bool {
+        let plain = super::screen::toast::plain(text);
+        let taken = self.screen.as_mut().is_some_and(|screen| {
+            if near_input {
+                screen.toast_near_input(plain.trim())
+            } else {
+                screen.toast(plain.trim())
+            }
+        });
+        if taken {
+            let cursor = self.output_cursor;
+            let _ = self.resume_at_own(cursor);
+        }
+        taken
+    }
+
+    /// 又打字了：候选面板可以重新弹出来。
+    pub(in crate::cli) fn allow_command_hint(&mut self) {
+        if let Some(screen) = &mut self.screen {
+            screen.allow_command_hint();
+        }
+    }
+
+    /// 面板开着时跟着内容刷新。后台任务的日志自己在长，没人碰键盘也得动。
+    /// 有没有开着面板（空闲轮询要不要放快，好让面板里的转轮画得齐）。
+    pub(in crate::cli) fn overlay_open(&self) -> bool {
+        self.screen
+            .as_ref()
+            .is_some_and(super::screen::Screen::overlay_open)
+    }
+
+    pub(in crate::cli) fn tick_overlay(&mut self) -> Result<()> {
+        if self
+            .screen
+            .as_ref()
+            .is_some_and(super::screen::Screen::overlay_open)
+        {
+            let cursor = self.output_cursor;
+            self.resume_at_own(cursor)?;
+        }
+        Ok(())
+    }
+
+    /// 通知到点了就收掉，顺手重画。空闲 tick 调它。
+    pub(in crate::cli) fn expire_toast(&mut self) -> Result<()> {
+        let expired = self
+            .screen
+            .as_mut()
+            .is_some_and(super::screen::Screen::expire_toast);
+        if expired {
+            let cursor = self.output_cursor;
+            self.resume_at_own(cursor)?;
+        }
+        Ok(())
+    }
+
     pub(in crate::cli) fn redraw(&mut self) -> Result<()> {
         let output_cursor = self.output_cursor;
+        // 全屏下重画就是重画，不必先把屏幕让出去——inline 那边先 suspend
+        // 是为了擦掉钉在 scrollback 里的旧活动区，全屏没有这个包袱。
+        //
+        // 走**自己那条**：`resume_at` 是"外面刚往屏上打过东西"的路，它会置
+        // `needs_clear`、整屏擦一次。而 `redraw` 是每一次按键都要调的——AI 正在
+        // 流式输出时打字，就成了每敲一个字整屏重绘一遍，屏幕跟着抖（用户原话
+        // 「输入框会疯狂鬼畜跳动」）。重画自己的画面从来不需要先擦。
+        if self.screen.is_some() {
+            return self.resume_at_own(output_cursor);
+        }
         self.suspend()?;
         self.resume_at(output_cursor)
     }
 
+    /// 换会话：画布整个丢掉，回放从屏顶起。inline 没有画布，退化成清屏。
+    pub(in crate::cli) fn wipe_transcript(&mut self) -> Result<()> {
+        if let Some(screen) = &mut self.screen {
+            screen.dismiss_toast();
+            screen.wipe_transcript();
+            let cursor = self.output_cursor;
+            return self.resume_at(cursor);
+        }
+        self.clear_screen()
+    }
+
+    /// `/undo`：全屏把最后一轮从画布上截掉（前面的照旧能往上翻）。没有轮标记、
+    /// 或者不在全屏，返回假。
+    pub(in crate::cli) fn truncate_last_turn(&mut self) -> Result<bool> {
+        let Some(screen) = &mut self.screen else {
+            return Ok(false);
+        };
+        screen.dismiss_toast();
+        if !screen.truncate_last_turn() {
+            return Ok(false);
+        }
+        let cursor = self.output_cursor;
+        self.resume_at(cursor)?;
+        Ok(true)
+    }
+
+    /// 撤掉压缩:那块「上下文已压缩」从正文缓冲里截掉(全屏;inline 擦不掉)。
+    pub(in crate::cli) fn truncate_last_compact(&mut self) -> Result<bool> {
+        let Some(screen) = &mut self.screen else {
+            return Ok(false);
+        };
+        screen.dismiss_toast();
+        if !screen.truncate_last_compact() {
+            return Ok(false);
+        }
+        let cursor = self.output_cursor;
+        self.resume_at(cursor)?;
+        Ok(true)
+    }
+
     pub(in crate::cli) fn clear_screen(&mut self) -> Result<()> {
+        // 全屏：和终端 `clear` 一个意思——往正文里补一屏空行把视口顶空，
+        // **内容没删**，往回翻还在。
+        if let Some(screen) = &mut self.screen {
+            screen.dismiss_toast();
+            screen.push_blank_screen();
+            let cursor = self.output_cursor;
+            return self.resume_at(cursor);
+        }
         self.suspend()?;
         let mut stdout = io::stdout();
         execute!(stdout, Clear(ClearType::All), MoveTo(0, 0))?;

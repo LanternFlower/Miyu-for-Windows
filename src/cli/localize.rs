@@ -49,10 +49,11 @@ pub(in crate::cli) fn root_help_template() -> String {
   powershell-init    Integrate with PowerShell
   remove-shell-hook  Safely remove installed Miyu shell hooks
   models             Switch the terminal session's model (-g edits the global pool)
-  variant            Switch the terminal session model's thinking level
+  effort             Switch the terminal session model's thinking level (alias: variant)
   history            Show conversation history
   reset              Clear the terminal-integration session context
-  reset-memory       Erase this persona's long-term memory
+  reset-memory       Erase the long-term memory this terminal session produced
+  reset-all-memory   Erase this persona's entire long-term memory
   pop                Move conversation turns out of active context
   compact            Compact the terminal-integration session context now",
         "  fish-init          集成到 fish，集成后可在终端直接使用自然语言交流
@@ -61,10 +62,11 @@ pub(in crate::cli) fn root_help_template() -> String {
   powershell-init    集成到 PowerShell
   remove-shell-hook  安全删除已安装的 Miyu shell hook
   models             修改终端集成会话的模型（-g 改全局模型池）
-  variant            切换终端集成会话模型的思考档位
+  effort             切换终端集成会话模型的思考档位（别名 variant）
   history            显示会话历史
   reset              清除终端集成会话上下文
-  reset-memory       清空长期记忆
+  reset-memory       清空本次终端会话记下的长期记忆
+  reset-all-memory   清空当前人格的全部长期记忆
   pop                将对话轮次移出当前上下文
   compact            立即压缩终端集成会话上下文",
     );
@@ -198,8 +200,8 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
     let descriptions = [
         (
             "session",
-            "Manage sessions: list / new / show / delete / rename / clear / pop / compact / models / workspace",
-            "会话管理:list / new / show / delete / rename / clear / pop / compact / models / workspace",
+            "Manage sessions: list / new / show / delete / rename / clear / pop / compact / models / sandbox",
+            "会话管理:list / new / show / delete / rename / clear / pop / compact / models / sandbox",
         ),
         (
             "stdio",
@@ -212,14 +214,14 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
             "向助手发送一条消息，一次性对话",
         ),
         (
-            "normal",
-            "Enter the normal-mode REPL (full persona abilities)",
-            "进入普通模式 REPL（人格全能力）",
-        ),
-        (
             "dev",
             "Enter the dev-mode REPL (minimal coding form, no persona)",
             "进入开发模式 REPL（极简编码形态，无人格）",
+        ),
+        (
+            "oobe",
+            "Run the setup guide: persona, features, profile, shell hook, model",
+            "跑一遍新手引导：人格 / 功能 / 认识你 / 终端集成 / 接模型",
         ),
         (
             "tool-call",
@@ -245,9 +247,9 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
         ),
         ("list-models", "List available models", "列出可用模型"),
         (
-            "variant",
-            "Switch the terminal session model's thinking level",
-            "切换终端集成会话模型的思考档位",
+            "effort",
+            "Switch the terminal session model's thinking level (alias: variant)",
+            "切换终端集成会话模型的思考档位（别名 variant）",
         ),
         (
             "fish-init",
@@ -292,8 +294,13 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
         ),
         (
             "reset-memory",
-            "Erase this persona's long-term memory",
-            "清空长期记忆",
+            "Erase the long-term memory this terminal session produced",
+            "清空本次终端会话记下的长期记忆",
+        ),
+        (
+            "reset-all-memory",
+            "Erase this persona's entire long-term memory",
+            "清空当前人格的全部长期记忆",
         ),
         (
             "wipe",
@@ -325,10 +332,11 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
         "powershell-init",
         "remove-shell-hook",
         "models",
-        "variant",
+        "effort",
         "history",
         "reset",
         "reset-memory",
+        "reset-all-memory",
         "pop",
         "compact",
     ] {
@@ -337,8 +345,8 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
     for (index, name) in [
         "init",
         "config",
-        "normal",
         "dev",
+        "oobe",
         "daemon",
         "web",
         "tool-call",
@@ -365,7 +373,7 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
         .mut_subcommand("ask", localize_ask_command)
         .mut_subcommand("session", localize_session_command)
         .mut_subcommand("models", localize_models_command)
-        .mut_subcommand("variant", localize_variant_command)
+        .mut_subcommand("effort", localize_variant_command)
         .mut_subcommand("history", localize_history_command)
         .mut_subcommand("pop", localize_pop_command)
         .mut_subcommand("reset", |command| {
@@ -570,8 +578,8 @@ pub(in crate::cli) fn localize_session_command(command: clap::Command) -> clap::
         ("new", "Create a session", "新建会话"),
         (
             "show",
-            "Session details (mode, workspace, turns, context usage)",
-            "会话详情(模式、工作区、轮数、上下文占用)",
+            "Session details (mode, sandbox, turns, context usage)",
+            "会话详情(模式、沙盒、轮数、上下文占用)",
         ),
         ("delete", "Delete a session", "删除会话"),
         ("rename", "Rename a session", "重命名会话"),
@@ -592,16 +600,24 @@ pub(in crate::cli) fn localize_session_command(command: clap::Command) -> clap::
             "查看/设置会话模型覆盖(`default` 恢复跟随全局池)",
         ),
         (
-            "workspace",
-            "Show or bind the session workspace; --clear unbinds",
-            "查看/绑定会话工作区;--clear 解绑",
+            "sandbox",
+            "Show or bind the session sandbox root (Landlock); --clear unbinds",
+            "查看/绑定会话沙盒根(Landlock);--clear 解绑",
         ),
     ];
     let mut command = command;
     for (name, en, zh) in subs {
         command = command.mut_subcommand(name, |sub| sub.about(t(en, zh)));
     }
-    command
+    // 子命令自己的开关也要跟语言走(args.rs 里的文档注释是中文)。
+    command.mut_subcommand("sandbox", |sub| {
+        sub.mut_arg("allow_read", |arg| {
+            arg.help(t(
+                "Lock writes only: reads are unrestricted (~/.ssh and API keys included)",
+                "只锁写:读不设限(~/.ssh 与 API key 也读得到)",
+            ))
+        })
+    })
 }
 
 pub(in crate::cli) fn localize_models_command(command: clap::Command) -> clap::Command {
@@ -664,16 +680,10 @@ pub(in crate::cli) fn localize_config_command(command: clap::Command) -> clap::C
 pub(in crate::cli) fn localize_web_command(command: clap::Command) -> clap::Command {
     command
         .mut_arg("port", |arg| arg.help(t("Local TCP port", "本地 TCP 端口")))
-        .mut_arg("password", |arg| {
+        .mut_arg("bind", |arg| {
             arg.help(t(
-                "Prompt securely for a required password",
-                "安全输入所需的访问密码",
-            ))
-        })
-        .mut_arg("password_file", |arg| {
-            arg.help(t(
-                "Read the WebUI password from a file",
-                "从文件读取 WebUI 访问密码",
+                "WebUI bind address (default 0.0.0.0; 127.0.0.1 = this machine only)",
+                "WebUI 监听地址（默认 0.0.0.0；127.0.0.1 仅限本机）",
             ))
         })
 }

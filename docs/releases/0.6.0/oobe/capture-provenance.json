@@ -1,0 +1,81 @@
+{
+  "binary_name": "miyu",
+  "binary_sha256": "559ab9e0cff1bd27cb7b887824ac5571dd447e9999501df8db302fcfb5ded615",
+  "captured_at_utc": "2026-09-13T17:03:09.529865+00:00",
+  "cleanup": "Owned PTY processes and temporary HOME/MIYU_HOME/XDG roots removed.",
+  "network": "Isolated Linux user/network namespace. No external or host-loopback connection.",
+  "raw_ansi_sha256": "0e3e42066fb8ae1fb7d17e51cbaedbfcd6ceca0129bfb48f7b5b65c5e1d4712e",
+  "reaped_descendants": [],
+  "renderer": {
+    "fonts": [
+      {
+        "name": "JetBrainsMono-Regular.ttf",
+        "sha256": "e6fd0d7e91550b3ed2b735d4312474362c4716edc4fc0577a0f61ed782d5aed1"
+      },
+      {
+        "name": "NotoSansCJK-Regular.ttc",
+        "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a"
+      },
+      {
+        "name": "DejaVuSans.ttf",
+        "sha256": "6038a160b491e121c1f12c7bccb4a9c8730296e3adc1086a059404ed84b7451c"
+      }
+    ],
+    "pillow": "12.3.0",
+    "pyte": "0.8.2"
+  },
+  "schema_version": 1,
+  "screens": [
+    {
+      "height": 1440,
+      "id": "01-welcome",
+      "png": "01-welcome.png",
+      "raw_byte_offset": 348457,
+      "sha256": "9aad5b083c0c3db3be7160aa4c56979b53c06e12ada161e35b6c56bbe2d80c39",
+      "terminal_frame": 175,
+      "text_sha256": "43e4dcfec90ba344e8b9194be555ee49d0480f722ece0ee512fe09d506f60b9d",
+      "title": "欢迎",
+      "width": 1828
+    },
+    {
+      "height": 1440,
+      "id": "02-persona",
+      "png": "02-persona.png",
+      "raw_byte_offset": 423216,
+      "sha256": "226303f3092ba5535c14a07a56ed5e53f4f628104713efba2a50eb87dee1416c",
+      "terminal_frame": 204,
+      "text_sha256": "529c4034a26a17723a9083fa60ebb6e6542ccde7990fd18a69f331cab43b072b",
+      "title": "选择人格",
+      "width": 1828
+    },
+    {
+      "height": 1440,
+      "id": "03-features",
+      "png": "03-features.png",
+      "raw_byte_offset": 486798,
+      "sha256": "aa33caceca25618fe83d857ecb50dbfb27261e6df87925ef04dc86de4fcbe6ac",
+      "terminal_frame": 233,
+      "text_sha256": "517b08c2cd0e3f8107179338d7d362e8e5d9af43aae360686cc7d0189067855c",
+      "title": "自选功能",
+      "width": 1828
+    },
+    {
+      "height": 1440,
+      "id": "04-provider",
+      "png": "04-provider.png",
+      "raw_byte_offset": 666200,
+      "sha256": "3f657a884f1d8255a0c927bbd8f9340e9242c5f57829a7e273332e14510443db",
+      "terminal_frame": 334,
+      "text_sha256": "35b0090879653b9a1da2936896eb1a04ae8057fb134571a56d8e7eb189277ebe",
+      "title": "接模型",
+      "width": 1828
+    }
+  ],
+  "terminal": {
+    "color": "truecolor",
+    "columns": 108,
+    "rows": 38,
+    "term": "xterm-256color"
+  },
+  "version": "miyu 0.6.0"
+}

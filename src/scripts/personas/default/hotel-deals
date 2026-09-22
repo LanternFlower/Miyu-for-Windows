@@ -178,19 +178,23 @@ def playwright_available():
 
 
 def chromium_bundled():
-    cache = os.path.expanduser("~/.cache/ms-playwright")
-    if not os.path.isdir(cache):
-        return False
-    # 光看目录名不够：playwright 升级后旧的 chromium-<build> 目录还在，但版本
-    # 对不上，launch 会直接报 Executable doesn't exist。得确认可执行文件在。
-    for d in os.listdir(cache):
-        if not d.startswith("chromium"):
+    for base in ("~/.cache/ms-playwright", "~/Library/Caches/ms-playwright"):
+        cache = os.path.expanduser(base)
+        if not os.path.isdir(cache):
             continue
-        for rel in ("chrome-linux/chrome",
-                    "chrome-headless-shell-linux64/chrome-headless-shell",
-                    "chrome-mac/Chromium.app/Contents/MacOS/Chromium"):
-            if os.path.exists(os.path.join(cache, d, rel)):
-                return True
+        # 光看目录名不够：playwright 升级后旧的 chromium-<build> 目录还在，但版本
+        # 对不上，launch 会直接报 Executable doesn't exist。得确认可执行文件在。
+        for d in os.listdir(cache):
+            if not d.startswith("chromium"):
+                continue
+            for rel in ("chrome-linux/chrome",
+                        "chrome-headless-shell-linux64/chrome-headless-shell",
+                        "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+                        "chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium",
+                        "chrome-headless-shell-mac-arm64/chrome-headless-shell",
+                        "chrome-headless-shell-mac-x64/chrome-headless-shell"):
+                if os.path.exists(os.path.join(cache, d, rel)):
+                    return True
     return False
 
 
@@ -406,32 +410,42 @@ def booking_search(place, checkin, checkout, adults=2, rooms=1, currency="CNY",
 
     nights = max((checkout - checkin).days, 1)
     offers, seen = [], set()
-    with sync_playwright() as p:
-        browser = p.chromium.launch(**launch_kwargs(headless))
-        try:
-            page = browser.new_context(
-                locale="en-us", user_agent=UA,
-                viewport={"width": 1400, "height": 950}).new_page()
-            offset = 0
-            while len(offers) < limit:
-                cards = _booking_page(page, place, checkin, checkout, adults,
-                                      rooms, currency, offset)
-                if not cards:
-                    break
-                fresh = 0
-                for card in cards:
-                    o = _booking_card(card, checkin, checkout, nights, currency,
-                                      adults, rooms)
-                    if o is None or o.name in seen:
-                        continue
-                    seen.add(o.name)
-                    offers.append(o)
-                    fresh += 1
-                if not fresh:
-                    break
-                offset += len(cards)
-        finally:
-            browser.close()
+    try:
+        with sync_playwright() as p:
+            try:
+                browser = p.chromium.launch(**launch_kwargs(headless))
+            except Exception as exc:
+                raise Failed(f"启动浏览器失败：{exc}",
+                             "python3 -m playwright install chromium")
+            try:
+                page = browser.new_context(
+                    locale="en-us", user_agent=UA,
+                    viewport={"width": 1400, "height": 950}).new_page()
+                offset = 0
+                while len(offers) < limit:
+                    cards = _booking_page(page, place, checkin, checkout, adults,
+                                          rooms, currency, offset)
+                    if not cards:
+                        break
+                    fresh = 0
+                    for card in cards:
+                        o = _booking_card(card, checkin, checkout, nights, currency,
+                                          adults, rooms)
+                        if o is None or o.name in seen:
+                            continue
+                        seen.add(o.name)
+                        offers.append(o)
+                        fresh += 1
+                    if not fresh:
+                        break
+                    offset += len(cards)
+            finally:
+                browser.close()
+    except Failed:
+        raise
+    except Exception as exc:
+        raise Failed(f"Booking 抓取失败：{exc}",
+                     "多半是被限流了，等几分钟再试；或加 --no-headless 用有头浏览器过一次")
 
     if not offers:
         raise Failed("Booking 没返回任何房源",
@@ -864,6 +878,11 @@ def cmd_search(a):
             print(f"[{src}] {exc}", file=sys.stderr)
             if exc.hint:
                 print(f"  下一步：{exc.hint}", file=sys.stderr)
+        except Exception as exc:
+            err = Failed(str(exc))
+            errors.append(err)
+            failed.append({"source": src, "error": str(exc)})
+            print(f"[{src}] 异常：{exc}", file=sys.stderr)
 
     if not offers:
         raise Failed("所有数据源都没拿到结果",

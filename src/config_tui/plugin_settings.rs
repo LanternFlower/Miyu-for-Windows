@@ -6,8 +6,8 @@
 //! `validate_reply_processor_settings` 单独存在是因为它的字段互相约束（比如某
 //! 个模式下另一项必填），表单本身校验不了。
 
-use crate::config::{ModelPoolRef, ModelTier};
 use crate::config_tui::*;
+use miyu_base::config::{ModelPoolRef, ModelTier};
 
 pub(in crate::config_tui) const REPLY_PROCESSOR_PLUGIN_ID: &str = "reply_processor";
 
@@ -60,7 +60,7 @@ impl Default for ReplyProcessorSettingsForm {
 }
 
 pub(in crate::config_tui) fn select_platform_plugins(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
 ) -> Result<()> {
@@ -130,7 +130,7 @@ pub(in crate::config_tui) fn select_platform_plugins(
             .platforms
             .qq
             .plugins
-            .get(crate::config::QQ_SCHEDULED_MESSAGES_PLUGIN_ID)
+            .get(miyu_base::config::QQ_SCHEDULED_MESSAGES_PLUGIN_ID)
             .map(|plugin| plugin.enabled_or(false))
             .unwrap_or(false);
         let scheduled_messages_state = if scheduled_messages_enabled {
@@ -162,7 +162,7 @@ pub(in crate::config_tui) fn select_platform_plugins(
             ),
         ];
         draw_menu(
-            stdout,
+            ui,
             t(" TENCENT QQ PLUGINS ", " QQ 插件配置 "),
             &options,
             selected,
@@ -171,17 +171,17 @@ pub(in crate::config_tui) fn select_platform_plugins(
                 "[Enter]配置 [j/k]移动 [q]返回",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter => match selected {
-                0 => edit_reply_processor(stdout, config)?,
-                1 => edit_real_context(stdout, paths, config)?,
-                2 => edit_message_history(stdout, config)?,
-                3 => edit_meme_collector(stdout, config)?,
-                4 => edit_group_join_approval(stdout, config)?,
-                5 => edit_scheduled_messages(stdout, config)?,
+                0 => edit_reply_processor(ui, config)?,
+                1 => edit_real_context(ui, paths, config)?,
+                2 => edit_message_history(ui, config)?,
+                3 => edit_meme_collector(ui, config)?,
+                4 => edit_group_join_approval(ui, config)?,
+                5 => edit_scheduled_messages(ui, config)?,
                 _ => {}
             },
             _ => {}
@@ -236,7 +236,7 @@ pub(in crate::config_tui) fn group_join_approval_group_label(
 }
 
 pub(in crate::config_tui) fn edit_group_join_approval_groups(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     settings: &mut QqGroupJoinApprovalPluginSettings,
 ) -> Result<()> {
     let mut selected = 0usize;
@@ -245,7 +245,7 @@ pub(in crate::config_tui) fn edit_group_join_approval_groups(
         options.extend(settings.groups.iter().map(group_join_approval_group_label));
         selected = selected.min(options.len().saturating_sub(1));
         draw_menu(
-            stdout,
+            ui,
             t(" GROUP JOIN APPROVAL CONDITIONS ", " 分群审批条件 "),
             &options,
             selected,
@@ -254,14 +254,14 @@ pub(in crate::config_tui) fn edit_group_join_approval_groups(
                 "[Enter]配置 [Delete]删除 [j/k]移动 [q]返回",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => {
                 selected = (selected + 1).min(options.len().saturating_sub(1))
             }
             KeyCode::Enter if selected == 0 => {
-                if let Some(group) = prompt_group_join_approval_group(stdout, None)? {
+                if let Some(group) = prompt_group_join_approval_group(ui, None)? {
                     upsert_group_join_approval_group(&mut settings.groups, group);
                     settings.normalize();
                 }
@@ -269,7 +269,7 @@ pub(in crate::config_tui) fn edit_group_join_approval_groups(
             KeyCode::Enter => {
                 let index = selected - 1;
                 if let Some(group) =
-                    prompt_group_join_approval_group(stdout, settings.groups.get(index).cloned())?
+                    prompt_group_join_approval_group(ui, settings.groups.get(index).cloned())?
                 {
                     upsert_group_join_approval_group(&mut settings.groups, group);
                     settings.normalize();
@@ -285,7 +285,7 @@ pub(in crate::config_tui) fn edit_group_join_approval_groups(
 }
 
 pub(in crate::config_tui) fn prompt_group_join_approval_group(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     current: Option<QqGroupJoinApprovalGroupConfig>,
 ) -> Result<Option<QqGroupJoinApprovalGroupConfig>> {
     let current = current.unwrap_or(QqGroupJoinApprovalGroupConfig {
@@ -307,7 +307,7 @@ pub(in crate::config_tui) fn prompt_group_join_approval_group(
         ),
     ];
     if !run_form_editing(
-        stdout,
+        ui,
         t(" GROUP JOIN APPROVAL CONDITION ", " 编辑入群审批条件 "),
         &mut fields,
     )? {
@@ -316,14 +316,14 @@ pub(in crate::config_tui) fn prompt_group_join_approval_group(
     let group_id = match parse_positive_id(&fields[0].value) {
         Ok(id) => id,
         Err(error) => {
-            message(stdout, &error)?;
+            message(ui, &error)?;
             return Ok(None);
         }
     };
     let approve_condition = fields[1].value.trim().to_string();
     if approve_condition.is_empty() {
         message(
-            stdout,
+            ui,
             t(
                 "The approval condition cannot be empty.",
                 "通过条件不能为空。",
@@ -352,7 +352,7 @@ pub(in crate::config_tui) fn upsert_group_join_approval_group(
 }
 
 pub(in crate::config_tui) fn edit_group_join_approval(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &mut AppConfig,
 ) -> Result<()> {
     let (mut enabled, mut settings) = group_join_approval_values(config)?;
@@ -392,7 +392,7 @@ pub(in crate::config_tui) fn edit_group_join_approval(
             ),
         ];
         draw_menu_with_editing(
-            stdout,
+            ui,
             t(" GROUP JOIN APPROVAL ", " 入群审批 "),
             &options,
             selected,
@@ -401,7 +401,7 @@ pub(in crate::config_tui) fn edit_group_join_approval(
                 .as_ref()
                 .map(|(index, value, cursor)| (*index, labels[*index], value.as_str(), *cursor)),
         )?;
-        let key = read_key()?;
+        let key = read_key(ui)?;
         if let Some((_, value, cursor)) = editing.as_mut() {
             match key {
                 KeyCode::Esc => editing = None,
@@ -414,7 +414,7 @@ pub(in crate::config_tui) fn edit_group_join_approval(
                                 settings.timeout_seconds = parsed;
                             }
                             _ => message(
-                                stdout,
+                                ui,
                                 t(
                                     "Timeout must be between 1 and 3600 seconds.",
                                     "超时秒数必须在 1 到 3600 之间。",
@@ -424,7 +424,7 @@ pub(in crate::config_tui) fn edit_group_join_approval(
                         2 => match value.parse::<usize>() {
                             Ok(parsed) if parsed <= 3 => settings.max_retries = parsed,
                             _ => message(
-                                stdout,
+                                ui,
                                 t(
                                     "Retry count must be between 0 and 3.",
                                     "重试次数必须在 0 到 3 之间。",
@@ -456,7 +456,7 @@ pub(in crate::config_tui) fn edit_group_join_approval(
                 apply_group_join_approval_values(&mut candidate, enabled, &settings);
                 candidate.normalize_platform_model_routes();
                 if let Err(error) = candidate.validate() {
-                    message(stdout, &error.to_string())?;
+                    message(ui, &error.to_string())?;
                     continue;
                 }
                 apply_group_join_approval_values(config, enabled, &settings);
@@ -466,7 +466,7 @@ pub(in crate::config_tui) fn edit_group_join_approval(
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter => match selected {
-                0 => enabled = select_bool(stdout, t("Plugin", "插件状态"), enabled)?,
+                0 => enabled = select_bool(ui, t("Plugin", "插件状态"), enabled)?,
                 1 => {
                     let value = settings.timeout_seconds.to_string();
                     let cursor = value.chars().count();
@@ -478,14 +478,14 @@ pub(in crate::config_tui) fn edit_group_join_approval(
                     editing = Some((2, value, cursor));
                 }
                 3 => select_plugin_pool_ref(
-                    stdout,
+                    ui,
                     config,
                     t("Group join approval", "入群审批"),
                     t("inherits platform pool", "继承平台池"),
                     ModelPoolRef::tier(ModelTier::Lite),
                     &mut settings.text_models,
                 )?,
-                4 => edit_group_join_approval_groups(stdout, &mut settings)?,
+                4 => edit_group_join_approval_groups(ui, &mut settings)?,
                 _ => {}
             },
             _ => {}
@@ -494,7 +494,7 @@ pub(in crate::config_tui) fn edit_group_join_approval(
 }
 
 pub(in crate::config_tui) fn edit_message_history(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &mut AppConfig,
 ) -> Result<()> {
     let instance = config
@@ -529,7 +529,7 @@ pub(in crate::config_tui) fn edit_message_history(
         ),
     ];
     if !run_form(
-        stdout,
+        ui,
         t(" QQ TEXT MESSAGE HISTORY ", " QQ 纯文字消息历史 "),
         &mut fields,
     )? {
@@ -569,7 +569,7 @@ pub(in crate::config_tui) fn edit_message_history(
 }
 
 pub(in crate::config_tui) fn edit_meme_collector(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &mut AppConfig,
 ) -> Result<()> {
     let instance = config.platforms.qq.plugins.get(QQ_MEME_COLLECTOR_PLUGIN_ID);
@@ -596,7 +596,7 @@ pub(in crate::config_tui) fn edit_meme_collector(
             settings.allow_non_admin_save_tool,
         ),
     ];
-    if !run_form(stdout, t(" QQ MEME POCKET ", " QQ 表情口袋 "), &mut fields)? {
+    if !run_form(ui, t(" QQ MEME POCKET ", " QQ 表情口袋 "), &mut fields)? {
         return Ok(());
     }
     let enabled = fields[0].value.parse::<bool>()?;
@@ -624,7 +624,7 @@ pub(in crate::config_tui) fn edit_meme_collector(
         serde_json::json!(allow_non_admin_save_tool),
     );
     if let Err(error) = candidate.validate() {
-        message(stdout, &error.to_string())?;
+        message(ui, &error.to_string())?;
         return Ok(());
     }
     *config = candidate;
@@ -664,7 +664,7 @@ pub(in crate::config_tui) fn apply_reply_processor_values(
 }
 
 pub(in crate::config_tui) fn edit_reply_processor(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &mut AppConfig,
 ) -> Result<()> {
     let (mut plugin_enabled, mut settings) = reply_processor_values(config)?;
@@ -757,12 +757,12 @@ pub(in crate::config_tui) fn edit_reply_processor(
                 settings.emoji_font.clone(),
             ),
         ];
-        run_form_without_buttons(stdout, t(" REPLY PROCESSOR ", " 回复处理 "), &mut fields)?;
+        run_form_without_buttons(ui, t(" REPLY PROCESSOR ", " 回复处理 "), &mut fields)?;
         plugin_enabled = parse_bool_field(&fields[0].value)?;
         settings = match parse_reply_processor_fields(&fields) {
             Ok(settings) => settings,
             Err(error) => {
-                message(stdout, &error)?;
+                message(ui, &error)?;
                 continue;
             }
         };

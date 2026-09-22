@@ -13,7 +13,7 @@ use crate::cli::*;
 pub(in crate::cli) async fn run_chat_with_images(
     paths: &MiyuPaths,
     message: String,
-    pasted_images: Vec<Option<crate::clipboard::PastedImage>>,
+    pasted_images: Vec<Option<miyu_base::clipboard::PastedImage>>,
 ) -> Result<()> {
     if !direct_mode_requested() {
         match try_run_remote_chat(
@@ -22,7 +22,7 @@ pub(in crate::cli) async fn run_chat_with_images(
             &message,
             None,
             false,
-            AgentMode::Normal,
+            PersonaLane::Active,
             &pasted_images,
             None,
             None,
@@ -48,13 +48,14 @@ pub(in crate::cli) async fn run_chat_with_images(
     let registry = build_tool_registry(
         &config,
         paths,
-        AgentMode::Normal,
+        PersonaLane::Active,
         crate::question_tui::available(false),
     )?;
-    let reasoning_mode = render::ReasoningDisplayMode::from_config(&config.display.reasoning);
-    let tool_call_mode = render::ToolCallDisplayMode::from_config(&config.display.tool_calls);
+    let reasoning_mode = render::ReasoningDisplayMode::from_expand(config.display.expand_reasoning);
+    let tool_call_mode = render::ToolCallDisplayMode::from_expand(config.display.expand_tool_calls);
     let readable_tool_names = config.display.readable_tool_names;
     let command_output_lines = config.display.command_output_lines;
+    let thinking_scroll_lines = config.display.thinking_scroll_lines;
     let show_token_usage = config.display.show_token_usage;
     let show_mixed_model_endpoint = show_mixed_model_endpoint(&config, false);
     let display_config = config.clone();
@@ -64,7 +65,7 @@ pub(in crate::cli) async fn run_chat_with_images(
         state.clone(),
         client,
         registry,
-        AgentMode::Normal,
+        PersonaLane::Active,
     )?;
     agent.set_memory_organizer(memory_organizer_handle);
     agent.prepare_for_turn()?;
@@ -75,6 +76,7 @@ pub(in crate::cli) async fn run_chat_with_images(
         readable_tool_names,
         command_output_lines,
     );
+    renderer.thinking_scroll_lines = thinking_scroll_lines;
     renderer.start_waiting()?;
     let result = agent
         .chat_stream_with_images(&message, &pasted_images, |event| {
@@ -84,7 +86,7 @@ pub(in crate::cli) async fn run_chat_with_images(
     renderer.finish()?;
     let result = match result {
         Ok(result) => result,
-        Err(err) if crate::question::is_question_cancelled(&err) => return Ok(()),
+        Err(err) if miyu_base::question::is_question_cancelled(&err) => return Ok(()),
         Err(err) => return Err(err),
     };
     print_mixed_model_endpoint(show_mixed_model_endpoint, &result, None);
@@ -120,19 +122,31 @@ pub(in crate::cli) async fn run_chat_with_images(
 
 /// 程序驱动的文本模式回合:会话已由 `turn_request` 定好,带附图与覆盖,
 /// 只走 daemon(没有 daemon 就报错,不退回进程内直连)。
+/// 阅后即焚会话建在哪个人格名下：车道是开发模式就建成 dev 会话（模式钉在会话
+/// 人格上，daemon 不看客户端传的 mode），否则 None = 普通。「终端集成会话默认模式」
+/// 设成 dev 时裸 `miyu "…"` 也跟着走靠的就是这一下。
+fn ephemeral_mode(mode: PersonaLane) -> Option<&'static str> {
+    match mode {
+        PersonaLane::Dev => Some("dev"),
+        PersonaLane::Active => None,
+    }
+}
+
 pub(in crate::cli) async fn run_chat_with_images_and_options(
     paths: &MiyuPaths,
     message: String,
-    images: Vec<Option<crate::clipboard::PastedImage>>,
+    images: Vec<Option<miyu_base::clipboard::PastedImage>>,
     plain: bool,
-    mode: AgentMode,
+    mode: PersonaLane,
     session: TurnSession,
-    overrides: Option<crate::ipc::TurnOverrides>,
+    overrides: Option<miyu_core::ipc::TurnOverrides>,
 ) -> Result<()> {
     let session_override = match session {
         TurnSession::Current => None,
         TurnSession::Explicit(session_id) => Some(session_id),
-        TurnSession::Ephemeral => Some(create_ephemeral_session(paths, None).await?),
+        TurnSession::Ephemeral => {
+            Some(create_ephemeral_session(paths, ephemeral_mode(mode)).await?)
+        }
     };
     match try_run_remote_chat(
         paths,
@@ -161,9 +175,9 @@ pub(in crate::cli) async fn run_chat_with_options(
     message: String,
     show_reasoning: Option<bool>,
     plain: bool,
-    mode: AgentMode,
+    mode: PersonaLane,
     session: TurnSession,
-    overrides: Option<crate::ipc::TurnOverrides>,
+    overrides: Option<miyu_core::ipc::TurnOverrides>,
 ) -> Result<()> {
     let message = append_stdin_if_piped(message).await;
     if message.is_empty() {
@@ -173,7 +187,9 @@ pub(in crate::cli) async fn run_chat_with_options(
         let session_override = match &session {
             TurnSession::Current => None,
             TurnSession::Explicit(session_id) => Some(session_id.clone()),
-            TurnSession::Ephemeral => Some(create_ephemeral_session(paths, None).await?),
+            TurnSession::Ephemeral => {
+                Some(create_ephemeral_session(paths, ephemeral_mode(mode)).await?)
+            }
         };
         // Not `?`-through: the throwaway session has to be torn down on the
         // failure path too, otherwise a cancelled turn leaves it behind.
@@ -220,7 +236,7 @@ pub(in crate::cli) async fn run_chat_with_options(
         let record = state.create_session(
             &config.active_persona_scope(),
             &ephemeral_session_name(),
-            crate::state::ASK_SESSION_KIND,
+            miyu_core::state::ASK_SESSION_KIND,
             None,
         )?;
         let guard = EphemeralSessionGuard {
@@ -240,15 +256,16 @@ pub(in crate::cli) async fn run_chat_with_options(
     let reasoning_mode = if show_reasoning == Some(false) {
         render::ReasoningDisplayMode::Hidden
     } else {
-        render::ReasoningDisplayMode::from_config(&config.display.reasoning)
+        render::ReasoningDisplayMode::from_expand(config.display.expand_reasoning)
     };
     let tool_call_mode = if plain {
         render::ToolCallDisplayMode::Hidden
     } else {
-        render::ToolCallDisplayMode::from_config(&config.display.tool_calls)
+        render::ToolCallDisplayMode::from_expand(config.display.expand_tool_calls)
     };
     let readable_tool_names = config.display.readable_tool_names;
     let command_output_lines = config.display.command_output_lines;
+    let thinking_scroll_lines = config.display.thinking_scroll_lines;
     let show_token_usage = config.display.show_token_usage && !plain;
     let show_mixed_model_endpoint = show_mixed_model_endpoint(&config, false);
     let display_config = config.clone();
@@ -262,6 +279,7 @@ pub(in crate::cli) async fn run_chat_with_options(
         readable_tool_names,
         command_output_lines,
     );
+    renderer.thinking_scroll_lines = thinking_scroll_lines;
     renderer.start_waiting()?;
     let result = agent
         .chat_stream(&message, |event| handle_agent_event(&mut renderer, event))
@@ -269,7 +287,7 @@ pub(in crate::cli) async fn run_chat_with_options(
     renderer.finish()?;
     let result = match result {
         Ok(result) => result,
-        Err(err) if crate::question::is_question_cancelled(&err) => return Ok(()),
+        Err(err) if miyu_base::question::is_question_cancelled(&err) => return Ok(()),
         Err(err) => return Err(err),
     };
     print_mixed_model_endpoint(show_mixed_model_endpoint, &result, None);
@@ -305,7 +323,7 @@ pub(in crate::cli) async fn run_chat_with_options(
 
 pub(in crate::cli) async fn run_direct_repl(
     paths: &MiyuPaths,
-    initial_mode: AgentMode,
+    initial_mode: PersonaLane,
 ) -> Result<()> {
     let _core_lease = ipc::acquire_direct_core(paths)?;
     initialize_models_cache(paths);
@@ -317,14 +335,23 @@ pub(in crate::cli) async fn run_direct_repl(
     state.init_files()?;
     // Same lane as the remote REPL: resume where the last REPL was, not where
     // shell-hook happens to be pointing.
-    let persona = if initial_mode == AgentMode::Dev {
-        crate::state::DEV_PERSONA.to_string()
+    let persona = if initial_mode == PersonaLane::Dev {
+        miyu_core::state::DEV_PERSONA.to_string()
     } else {
         config.active_persona_scope()
     };
-    // 与远端 `GetReplSession` 同一条语义（见 `ensure_repl_session`）：指针缺失
-    // 就自举本车道的会话，绝不退到终端集成那条。
-    let repl_session_id = state.ensure_repl_session(&persona)?;
+    // 与远端 `GetReplSession { fresh: true }` 同一条语义：**启动**一律开新
+    // 会话（用户 09-20 拍板），指针那条本来就空则原地复用；绝不退到终端集成
+    // 那条车道。
+    // 上键历史是按会话存的，开新会话后得从被换掉的那条接着来（远端那条路由
+    // daemon 用 `previous_repl_session` 带回，这里自己读指针）。
+    let previous_repl_session = state
+        .repl_session(&persona)
+        .ok()
+        .flatten()
+        .filter(|previous| previous != &state.session_id().to_string());
+    let repl_session_id = state.fresh_repl_session(&persona)?;
+    let previous_repl_session = previous_repl_session.filter(|it| it != &repl_session_id);
     state.adopt_session(&repl_session_id);
     apply_session_model_override(&state, &mut config);
     let memory_organizer = MemoryOrganizer::spawn()?;
@@ -332,12 +359,17 @@ pub(in crate::cli) async fn run_direct_repl(
     memory_organizer_handle.wake(config.clone(), paths.clone(), state.clone());
     let mut client = OpenAiCompatibleClient::from_config(&config, paths)?;
     let mut mode = initial_mode;
-    let mut input_history = load_repl_input_history(&state, paths)?;
+    let mut input_history = match &previous_repl_session {
+        Some(previous) => load_repl_input_history(&state.pinned(previous), paths)?,
+        None => load_repl_input_history(&state, paths)?,
+    };
     let mut prefill = None::<String>;
     let mut live_repl = None::<LiveReplTail>;
 
-    crate::default_kb::check_update_if_due(paths).await.ok();
-    if let Ok(Some(message)) = crate::default_kb::notice_if_update_available(paths) {
+    miyu_engine::default_kb::check_update_if_due(paths)
+        .await
+        .ok();
+    if let Ok(Some(message)) = miyu_engine::default_kb::notice_if_update_available(paths) {
         println!("\x1b[2m{message}\x1b[0m");
     }
     let mut cumulative_tokens = state.session_cumulative_token_totals().unwrap_or_default();
@@ -372,23 +404,70 @@ pub(in crate::cli) async fn run_direct_repl(
                 LiveReplOutcome::Exit | LiveReplOutcome::FollowWake { .. } => None,
                 // Direct mode owns its jobs in-process, so stop them here
                 // rather than through the daemon.
+                LiveReplOutcome::StopJob { job_id } => {
+                    let _ = miyu_engine::tools::jobs::stop_job(&job_id).await;
+                    continue;
+                }
                 LiveReplOutcome::StopJobs => {
-                    for job in crate::tools::jobs::overview() {
+                    for job in miyu_engine::tools::jobs::overview() {
                         if job.running {
-                            let _ = crate::tools::jobs::stop_job(&job.job_id).await;
+                            let _ = miyu_engine::tools::jobs::stop_job(&job.job_id).await;
                         }
                     }
                     continue;
                 }
-                LiveReplOutcome::Submit(next_mode, input, images) => {
-                    Some((next_mode, input, images))
+                LiveReplOutcome::Submit(next_mode, input, images, entry) => {
+                    Some((next_mode, input, images, entry))
+                }
+                LiveReplOutcome::SwitchMode(next) => {
+                    // 直连模式换车道:与启动时同一条语义——那条车道当前会话
+                    // 非空就新开一条,再按新模式重建客户端与工具面。
+                    let persona = if next == PersonaLane::Dev {
+                        miyu_core::state::DEV_PERSONA.to_string()
+                    } else {
+                        config.active_persona_scope()
+                    };
+                    let mut repl_session_id = state.ensure_repl_session(&persona)?;
+                    if !session_is_empty(paths, &repl_session_id) {
+                        repl_session_id = state.new_repl_session(&persona)?;
+                    }
+                    state.adopt_session(&repl_session_id);
+                    mode = next;
+                    apply_session_model_override(&state, &mut config);
+                    client = OpenAiCompatibleClient::from_config(&config, paths)?;
+                    input_history = load_repl_input_history(&state, paths)?;
+                    cumulative_tokens = state.session_cumulative_token_totals().unwrap_or_default();
+                    footer = ReplFooterStatus::from_config(
+                        &config,
+                        agent.effective_context_tokens()?,
+                        cumulative_tokens,
+                    );
+                    footer.update_thinking_variant(client.thinking_variant_summary().as_deref());
+                    let registry = build_tool_registry(
+                        &config,
+                        paths,
+                        mode,
+                        crate::question_tui::available(false),
+                    )?;
+                    agent.reload_config(config.clone(), client.clone())?;
+                    agent.switch_lane(mode, registry);
+                    footer.update_context_window(
+                        agent.context_window(),
+                        agent.context_window_assumed(),
+                    );
+                    live.set_mode(mode);
+                    live.editor.history = input_history.clone();
+                    live.editor.history_index = live.editor.history.len();
+                    live.set_session_empty(&config, paths, true);
+                    live.refresh_footer(footer.clone())?;
+                    continue;
                 }
             };
             // The user moved on: finished background commands count as
             // reported in direct mode (no daemon wake exists here).
-            for job in crate::tools::jobs::overview() {
+            for job in miyu_engine::tools::jobs::overview() {
                 if !job.running {
-                    crate::tools::jobs::acknowledge(&job.job_id);
+                    miyu_engine::tools::jobs::acknowledge(&job.job_id);
                 }
             }
             input
@@ -401,11 +480,20 @@ pub(in crate::cli) async fn run_direct_repl(
                 &footer,
                 show_shortcut_hint,
             )?
+            .map(|(mode, input, images)| {
+                let entry = ReplHistoryEntry::plain(&input);
+                (mode, input, images, entry)
+            })
         };
-        let (input, pasted_images) = match next_input {
-            Some((new_mode, input, pasted_images)) => {
+        let (input, pasted_images, history_entry) = match next_input {
+            Some((new_mode, input, pasted_images, entry)) => {
                 mode = new_mode;
-                (input, pasted_images)
+                if submission_leaves_lobby(&input) {
+                    if let Some(live) = live_repl.as_mut() {
+                        live.set_session_empty(&config, paths, false);
+                    }
+                }
+                (input, pasted_images, entry)
             }
             None => break,
         };
@@ -445,8 +533,8 @@ pub(in crate::cli) async fn run_direct_repl(
                     // 人格是会话的命名空间维度:切人格后必须重绑到新人格的
                     // 会话(与启动时 ensure_repl_session 同一条语义),否则 agent
                     // 还挂在旧人格的会话上,人格提示词与历史命名空间错位。
-                    let persona = if mode == AgentMode::Dev {
-                        crate::state::DEV_PERSONA.to_string()
+                    let persona = if mode == PersonaLane::Dev {
+                        miyu_core::state::DEV_PERSONA.to_string()
                     } else {
                         config.active_persona_scope()
                     };
@@ -470,7 +558,7 @@ pub(in crate::cli) async fn run_direct_repl(
                         crate::question_tui::available(false),
                     )?;
                     agent.reload_config(config.clone(), client.clone())?;
-                    agent.switch_mode(mode, registry);
+                    agent.switch_lane(mode, registry);
                     footer.update_context_window(
                         agent.context_window(),
                         agent.context_window_assumed(),
@@ -486,7 +574,7 @@ pub(in crate::cli) async fn run_direct_repl(
         if command.eq_ignore_ascii_case("/models") {
             let argument = command_args.trim();
             let repl_session_id = state.session_id();
-            run_models_for_session(
+            let _changed = run_models_for_session(
                 paths,
                 parse_models_argument(argument),
                 Some(&repl_session_id),
@@ -503,7 +591,7 @@ pub(in crate::cli) async fn run_direct_repl(
             let registry =
                 build_tool_registry(&config, paths, mode, crate::question_tui::available(false))?;
             agent.reload_config(config.clone(), client.clone())?;
-            agent.switch_mode(mode, registry);
+            agent.switch_lane(mode, registry);
             footer.update_context_window(agent.context_window(), agent.context_window_assumed());
             if let Some(live) = live_repl.as_mut() {
                 live.set_footer(footer.clone());
@@ -514,6 +602,12 @@ pub(in crate::cli) async fn run_direct_repl(
         }
         if command.eq_ignore_ascii_case("/config") && command_args_empty {
             crate::config_tui::run(paths)?;
+            // 设置界面把画面留着、光标藏着：一个同步块里画回 REPL，光标直接落在输入框。
+            if crate::cli::in_fullscreen() {
+                if let Some(live) = live_repl.as_mut() {
+                    synchronized_terminal_update(CursorAfterUpdate::Shown, || live.resume())?;
+                }
+            }
             reload_repl_config(paths, &state, &mut config, &mut client)?;
             footer = ReplFooterStatus::from_config(
                 &config,
@@ -525,7 +619,7 @@ pub(in crate::cli) async fn run_direct_repl(
             let registry =
                 build_tool_registry(&config, paths, mode, crate::question_tui::available(false))?;
             agent.reload_config(config.clone(), client.clone())?;
-            agent.switch_mode(mode, registry);
+            agent.switch_lane(mode, registry);
             footer.update_context_window(agent.context_window(), agent.context_window_assumed());
             if let Some(live) = live_repl.as_mut() {
                 live.set_footer(footer.clone());
@@ -534,13 +628,27 @@ pub(in crate::cli) async fn run_direct_repl(
             println!();
             continue;
         }
-        if command.eq_ignore_ascii_case("/variant") {
-            if !crate::models_cache::is_loaded() {
+        if names_repl_command(command, ReplSlashCommand::Dev)
+            || names_repl_command(command, ReplSlashCommand::Normal)
+        {
+            // 直连 REPL 没有车道指针可去（会话是本地自举的）：换车道只有空会话按
+            // Tab 那一条路，或者重开 `miyu dev`。
+            println!(
+                "{}\n",
+                t(
+                    "direct REPL: press Tab in an empty session to switch lanes, or start `miyu dev`",
+                    "直连 REPL：空会话里按 Tab 换车道，或者直接运行 miyu dev"
+                )
+            );
+            continue;
+        }
+        if names_repl_command(command, ReplSlashCommand::Effort) {
+            if !miyu_base::models_cache::is_loaded() {
                 println!(
                     "{}\n",
                     t(
-                        "model metadata is still loading; try /variant again shortly",
-                        "模型元数据仍在加载，请稍后重试 /variant"
+                        "model metadata is still loading; try /effort again shortly",
+                        "模型元数据仍在加载，请稍后重试 /effort"
                     )
                 );
                 continue;
@@ -550,7 +658,11 @@ pub(in crate::cli) async fn run_direct_repl(
                 paths,
                 &mut client,
                 (!selected.is_empty()).then_some(selected),
-                "/variant",
+                "/effort",
+                |options| match live_repl.as_mut() {
+                    Some(live) if live.screen.is_some() => pick_effort(live, options),
+                    _ => inline_variant_select(options),
+                },
             )? {
                 VariantOutcome::Updated => {
                     let thinking_summary = client.thinking_variant_summary();
@@ -568,6 +680,12 @@ pub(in crate::cli) async fn run_direct_repl(
         if command.eq_ignore_ascii_case("/undo") && command_args_empty {
             let (removed, prompt) = state.undo_last_turn()?;
             footer.update_session_tokens(agent.effective_context_tokens()?);
+            if removed > 0 {
+                if let Some(live) = live_repl.as_mut() {
+                    redraw_after_undo(paths, &config, mode, &state.session_id(), live)?;
+                    live.refresh_footer(footer.clone())?;
+                }
+            }
             if removed > 0 && prompt.is_none() {
                 println!("{}", t("context compaction undone", "已撤销上下文压缩"));
             } else {
@@ -588,7 +706,7 @@ pub(in crate::cli) async fn run_direct_repl(
             let count = match parse_repl_pop_count(command_args) {
                 Ok(count) => count,
                 Err(err) => {
-                    eprintln!("\x1b[31m{}: {err}\x1b[0m", t("error", "错误"));
+                    eprint!("{}", crate::cli::repl::session::error_frame(&err));
                     continue;
                 }
             };
@@ -600,16 +718,16 @@ pub(in crate::cli) async fn run_direct_repl(
                 }
                 Ok(None) => {}
                 Err(err) => {
-                    eprintln!("\x1b[31m{}: {err}\x1b[0m", t("error", "错误"));
+                    eprint!("{}", crate::cli::repl::session::error_frame(&err));
                 }
             }
             continue;
         }
         if command.eq_ignore_ascii_case("/compact") && command_args_empty {
             let reasoning_mode =
-                render::ReasoningDisplayMode::from_config(&config.display.reasoning);
+                render::ReasoningDisplayMode::from_expand(config.display.expand_reasoning);
             let tool_call_mode =
-                render::ToolCallDisplayMode::from_config(&config.display.tool_calls);
+                render::ToolCallDisplayMode::from_expand(config.display.expand_tool_calls);
             let mut renderer = render::StreamRenderer::new(
                 reasoning_mode,
                 tool_call_mode,
@@ -617,6 +735,9 @@ pub(in crate::cli) async fn run_direct_repl(
                 config.display.readable_tool_names,
                 config.display.command_output_lines,
             );
+            renderer.fold_timeline = config.display.fold_timeline;
+            renderer.thinking_scroll_lines = config.display.thinking_scroll_lines;
+            renderer.thinking_scroll_lines = config.display.thinking_scroll_lines;
             match agent
                 .compact_now(|event| handle_agent_event(&mut renderer, event))
                 .await
@@ -652,15 +773,20 @@ pub(in crate::cli) async fn run_direct_repl(
                 }
                 Err(err) => {
                     renderer.finish()?;
-                    eprintln!("\x1b[31m{}: {err}\x1b[0m", t("error", "错误"));
+                    eprint!("{}", crate::cli::repl::session::error_frame(&err));
                 }
             }
             continue;
         }
         if command.eq_ignore_ascii_case("/reset-memory") {
-            // 不二次确认:只清长期记忆,会话历史/技能/知识库都不动。
+            // 不二次确认:只清本会话记下的那部分,会话历史/技能/知识库都不动。
+            println!("{}", agent.wipe_session_memory()?.describe());
+            continue;
+        }
+        if command.eq_ignore_ascii_case("/reset-all-memory") {
+            // 不二次确认:清的是长期记忆全量,会话历史/技能/知识库仍不动。
             agent.wipe_memory()?;
-            println!("{}", t("long-term memory erased", "长期记忆已清空"));
+            println!("{}", t("all long-term memory erased", "全部长期记忆已清空"));
             continue;
         }
         if command.eq_ignore_ascii_case("/reset") && command_args.trim().is_empty() {
@@ -710,19 +836,21 @@ pub(in crate::cli) async fn run_direct_repl(
         if input.is_empty() {
             continue;
         }
-        push_history_capped(&mut input_history, input);
-        persist_repl_history_entry(paths, &state.session_id(), input);
+        push_history_capped(&mut input_history, history_entry.clone());
+        persist_repl_history_entry(paths, &state.session_id(), &history_entry);
         if let Some(live) = live_repl.as_mut() {
-            live.editor.record_history(input);
+            live.editor.record_history(history_entry);
         }
-        if agent.mode() != mode {
+        if agent.persona_lane() != mode {
             let registry =
                 build_tool_registry(&config, paths, mode, crate::question_tui::available(false))?;
-            agent.switch_mode(mode, registry);
+            agent.switch_lane(mode, registry);
         }
         agent.prepare_for_turn()?;
-        let reasoning_mode = render::ReasoningDisplayMode::from_config(&config.display.reasoning);
-        let tool_call_mode = render::ToolCallDisplayMode::from_config(&config.display.tool_calls);
+        let reasoning_mode =
+            render::ReasoningDisplayMode::from_expand(config.display.expand_reasoning);
+        let tool_call_mode =
+            render::ToolCallDisplayMode::from_expand(config.display.expand_tool_calls);
         let mut renderer = render::StreamRenderer::new(
             reasoning_mode,
             tool_call_mode,
@@ -730,18 +858,20 @@ pub(in crate::cli) async fn run_direct_repl(
             config.display.readable_tool_names,
             config.display.command_output_lines,
         );
+        renderer.fold_timeline = config.display.fold_timeline;
+        renderer.thinking_scroll_lines = config.display.thinking_scroll_lines;
         let control = AgentTurnControl::new(
             mode,
             build_tool_registry(
                 &config,
                 paths,
-                AgentMode::Normal,
+                PersonaLane::Active,
                 crate::question_tui::available(false),
             )?,
             build_tool_registry(
                 &config,
                 paths,
-                AgentMode::Dev,
+                PersonaLane::Dev,
                 crate::question_tui::available(false),
             )?,
         );
@@ -814,6 +944,7 @@ pub(in crate::cli) async fn run_direct_repl(
                         }
                         footer.set_token_usage_with_cache(
                             turn_tokens,
+                            GenerationSpeed::from_usage(result.usage.as_ref()),
                             agent.effective_context_tokens()?,
                             agent.context_window(),
                             cumulative_tokens,
@@ -848,7 +979,7 @@ pub(in crate::cli) async fn run_direct_repl(
                 footer.update_session_tokens(agent.effective_context_tokens()?);
                 footer.update_cumulative_tokens(cumulative_tokens);
             }
-            Err(err) if crate::question::is_question_cancelled(&err) => {
+            Err(err) if miyu_base::question::is_question_cancelled(&err) => {
                 let _ = state.delete_queued_prompts();
                 if let Some(live) = live_repl.as_mut() {
                     synchronized_terminal_update(CursorAfterUpdate::Shown, || {

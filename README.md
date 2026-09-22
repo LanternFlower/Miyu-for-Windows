@@ -6,7 +6,8 @@
 
 一个活在终端里的二次元少女。开箱即用的开源 AI 助手，支持接入通讯平台。
 
-> 本仓库是 [Miyu](https://github.com/SHORiN-KiWATA/Miyu) 的 **Windows 移植版**，面向 Windows 用户。原版（Arch Linux 优先）请见上游仓库。
+> 本仓库是 [Miyu](https://github.com/SHORiN-KiWATA/Miyu) 的 Windows 移植版，
+> 以 Windows 可用性为主，同时持续同步上游功能。
 
 ## 谁是 Miyu？
 
@@ -14,164 +15,164 @@ Miyu 是从我曾经很喜欢的动画中的角色身上汲取灵感制作的虚
 
 ## 有什么功能？
 
-`miyu` 由大模型驱动，默认接入了 [opencode](https://github.com/anomalyco/opencode) 的公共模型服务，你也可以配置自己的大模型服务。
+`miyu` 由大模型驱动，默认接入了 [opencodezen](https://github.com/anomalyco/opencode) 的免费模型，你也可以配置自己的大模型 API，或者使用 Claudecode、Codex 之类的软件作为供应商后端。
 
-`miyu` 拥有两个模式：
+`miyu` 拥有两个模式
 
 - Normal 普通模式
-
-  拥有全部功能和工具，可以完成角色扮演、游戏娱乐、系统排障、天气查询、汇率换算、二手市场行情查询等日用场景。
+  
+  拥有全部功能和工具，可以完成角色扮演、游戏娱乐、系统排障、天气查询、汇率换算、二手市场行情查询等日用场景。上述功能都可以在初始化引导或设置中自选开关。
 
 - Dev 开发模式
 
-  和普通模式隔离，移除所有和开发无关的功能和工具，通过极简设计最大限度发挥模型自身的能力。
+  和普通模式隔离，移除所有和开发无关的功能和工具，通过极简设计最大限度发挥模型自身的能力。普通模式也允许开启开发模式子代理，以外包的形式完成开发工作。
 
-`miyu` 可以与 `PowerShell`（Windows）以及 `fish`、`zsh`、`bash`（Linux/macOS）集成，终端打字直接无缝对话！
+## 多种对话界面
 
-![](./pics/shell-init.png)
+### 终端集成
 
-有终端交互模式
+`miyu` 可以与 Windows PowerShell 以及 `fish`、`zsh`、`bash` 集成，终端打字直接无缝对话！
 
-![](./pics/REPL.png)
+![](./pics/fish集成.png)
 
-自带了 TUI 方便修改配置。
+### 终端图形界面（TUI）
+
+有 TUI 对话模式：
+
+![](./pics/maintui.png)
+
+自带了配置 TUI 方便修改配置：
 
 ```
 miyu config
 ```
 
-![](./pics/tui.png)
+![](./pics/configtui.png)
 
-还有 WebUI
+### 网页界面（WebUI）
 
 ![](./pics/webui.png)
 
-还可以通过 NapCat 接入 QQ，远程操作电脑；亦或是加入群聊，陪网友吹水，帮助你管理群聊。
+
+### 接入通讯平台
+
+还可以接入 QQ，远程操作电脑；亦或是加入群聊，陪网友吹水，帮助你管理群聊：
 
 ![](./pics/qq私聊.png)
 
 
 ## 如何安装？
 
-### Windows（推荐）
+- Windows（MSVC）
 
-1. 安装 [Rust](https://rustup.rs/)（rustup 在 Windows 上默认安装的就是 `x86_64-pc-windows-msvc` 工具链）。
+  安装 [Rust](https://rustup.rs/) 后克隆 Windows 移植仓库并构建：
 
-2. 克隆并构建：
+  ```powershell
+  git clone https://github.com/LanternFlower/Miyu-for-Windows.git
+  cd Miyu-for-Windows
+  cargo build --release
+  .\target\release\miyu.exe init
+  ```
 
-   ```
-   git clone https://github.com/LanternFlower/Miyu-for-Windows.git
-   cd Miyu-for-Windows
-   cargo build --release
-   ```
+  二进制位于 `target\release\miyu.exe`。将该目录加入 `PATH` 后，可运行
+  `miyu powershell-init` 安装 PowerShell 7.2+ 终端集成。配置与数据默认位于
+  `%USERPROFILE%\.miyu`，也可通过 `MIYU_HOME` 覆盖。
 
-   生成的二进制在 `target\release\miyu.exe`。建议把它所在目录加进 `PATH`，方便在任意终端里直接运行 `miyu`。
+  搜索文件所需的 `rg` 可从 [ripgrep](https://github.com/BurntSushi/ripgrep)
+  安装。语音组件目前没有 Windows 发行包。
 
-3. 初始化（可省略，`miyu daemon start` 首次启动会自动初始化）：
+- Arch Linux
 
-   ```
-   miyu init
-   miyu daemon start
-   ```
+  ```
+  yay -S miyu
+  ```
+  安装完成后运行`miyu`命令进行初始引导。
 
-4. （可选）集成 PowerShell 7.2+，之后在终端直接输入自然语言即可对话：
+  语音唤醒和本地语音识别是可选组件，单独打成 `miyu-voice` 包（不装不影响其他功能）：
 
-   ```
-   miyu powershell-init
-   ```
+  ```
+  yay -S miyu-voice
+  ```
 
-> 说明：
-> - 配置与数据目录默认在 `%USERPROFILE%\.miyu`（可用 `MIYU_HOME` 环境变量覆盖）。下文中的 `~/.miyu` 在 Windows 上即指这个目录。
-> - 搜索工具 `glob_files` 与 `grep_text` 运行时需要 [ripgrep](https://github.com/BurntSushi/ripgrep)（`rg`），未安装时这两个功能不可用，其余功能不受影响。
-> - 语音唤醒与本地语音识别依赖可选组件 `miyu-voice`（上游目前只随 Arch 包分发），Windows 暂未提供。
+  装好后运行 `miyu config`，在「全局设置」里开启「语音功能」，daemon 会自动拉起 `miyu-voice` 进程。
 
-### Linux / macOS
+- Debian / Ubuntu / Linux Mint
 
-原版面向 Arch Linux，优先使用 AUR 安装：
+  从 [Releases](https://github.com/SHORiN-KiWATA/miyu-agent/releases/latest) 下载 `.deb`（`miyu_<版本>_amd64.deb`，
+  语音包是 `miyu-voice_<版本>_amd64.deb`），双击打开安装，或者终端使用`apt`安装：
 
-```
-yay -S miyu
-```
+  ```
+  sudo apt install ./miyu_<版本>_amd64.deb
+  # 想要语音就和主包一起装，两个包的版本必须相同
+  sudo apt install ./miyu_<版本>_amd64.deb ./miyu-voice_<版本>_amd64.deb
+  ```
 
-语音唤醒和本地语音识别是可选组件，单独打成 `miyu-voice` 包（依赖 `miyu`，大约 30MB，不装不影响其他功能）：
+  >发行包支持 **Ubuntu 24.04 LTS 及更新**、**Debian 13** 与 **Linux Mint 22**（22.x 的基座就是 Ubuntu 24.04）。更老的发行版装不上：包里的 `libc6` 下限跟着构建基座走（当前 glibc 2.39）。
 
-```
-yay -S miyu-voice
-```
+- Fedora
 
-装好后运行 `miyu config`，在「全局设置」里开启「语音功能」，daemon 会自动拉起 `miyu-voice` 进程。
+  同样从 Releases 下载 `.rpm`：
 
-从源码构建：
+  ```
+  sudo dnf install ./miyu-<版本>.fc<N>.x86_64.rpm
+  ```
 
-```
-git clone https://github.com/SHORiN-KiWATA/Miyu.git
-cd Miyu
-cargo build --release                    # 只出 miyu
-cargo build --release --features voice   # 再出 miyu-voice(可选,链接 sherpa-onnx)
-```
+- 从源码构建
 
-源码构建时把 `target/release/miyu`（以及可选的 `miyu-voice`）放到同一个 `PATH` 目录里即可，daemon 在主程序同目录寻找 `miyu-voice`。
+  ```
+  git clone https://github.com/SHORiN-KiWATA/miyu-agent.git
+  cd Miyu
+  cargo build --release                    # 只出 miyu
+  cargo build --release --features voice   # 再出 miyu-voice(可选,链接 sherpa-onnx)
+  ```
 
-安装完成后可以运行 `miyu init` 初始化配置和状态文件；也可以直接运行 `miyu daemon start`，首次启动会自动初始化。查看完整帮助信息可以运行 `miyu -h`。
+  源码构建时把 `target/release/miyu`（以及可选的 `miyu-voice`）放到同一个 `PATH` 目录里即可，daemon 在主程序同目录寻找 `miyu-voice`。
 
-> `fish-init`/`bash-init`/`zsh-init` 为 Unix 专属；终端 LaTeX 渲染、kitty 图像协议等终端特性也只在 Unix 终端可用。
+## 如何使用？
 
-## 三种触发
+> Windows 推荐 Windows Terminal + PowerShell；Linux/macOS 最适配 `kitty`。
 
-> Windows 上推荐使用 [Windows Terminal](https://github.com/microsoft/terminal) 或 PowerShell；Linux 上最适配的是 `kitty` 终端。
+- TUI
 
-- REPL TUI
+  裸 `miyu` 进入普通模式的 REPL； `miyu dev` 进入开发预设的 REPL。
 
-  `miyu normal` 进入普通模式的 REPL；`miyu dev` 进入开发模式的 REPL。
-
-- WebUI 局域网网页
+- WebUI
 
   ```
   miyu web
   ```
+  第一次进入会提示登录内置账号后创建管理员账户，内置账户的用户名和密码都是 miyu，创建管理员账户后内置账户自动删除。
 
 - shell hook 终端集成
 
-  Windows 上集成到 PowerShell 7.2+，装好后在终端直接输入自然语言即可对话：
+  Windows PowerShell 7.2+：
 
-  ```
+  ```powershell
   miyu powershell-init
   ```
 
-  Linux/macOS 上可集成 `fish`、`zsh`、`bash`（最好的集成效果要求 `fish`，`zsh` 和 `bash` 只能单行对话）：
-
+  Linux/macOS 上最好的集成效果要求使用 `fish`，`zsh` 和 `bash` 只能做到单行对话，`fish` 可以完整无缝集成。
+  
   ```
   miyu fish-init
-  miyu bash-init
-  miyu zsh-init
   ```
-
   初始化后可以直接在终端打字对话。
 
 - 语音唤醒（可选，需装 `miyu-voice`，当前仅 Linux）
 
-  设置里开启「语音功能」后 daemon 会拉起独立的 `miyu-voice` 进程常开麦克风：
-  喊唤醒词（默认「未有未有 / 密友密友 / miyumiyu / みゆみゆ」）→ 提示音 + 桌面通知「在听」→ 说指令 → 执行完
-  提示音 + 通知回复摘要。识别全在本机（SenseVoice，不联网）；不开语音时零占用。
-  REPL 里 `/stt`、终端 `miyu stt`、WebUI 麦克风按钮可用同一套识别做听写。
-  可选回复播报（MiniMax / 小米 MiMo 语音合成）；`miyu listen` 绑快捷键一键收听（再按一次关闭）。
-  详见 `docs/voice.md`。
+  设置里开启「语音功能」后 daemon 会拉起独立的 `miyu-voice` 进程常开麦克风。对着麦克风说唤醒词：`未有未有`即可进行语音对话，唤醒词可以在`语音功能`设置菜单中修改。使用`miyu listen`命令可以手动开启或关闭监听。可选回复播报(MiniMax / 小米 MiMo 语音合成)。
 
 ## 重要配置调整
 
 运行 `miyu config` 命令打开配置 TUI。
 
-- 界面语言
-
-  默认自动跟随系统：Windows 读取系统 UI 语言，Linux/macOS 读取 `LC_ALL`/`LC_MESSAGES`/`LANG`。可用环境变量 `MIYU_LANG` 临时覆盖（`zh` / `en` / `auto`），或在配置 TUI 中设置。
-
 - 供应商和模型
 
   `miyu` 默认使用 opencode 的公共 API，推荐配置自己的 API。
 
-- 自定义提示词
+- 人格和功能
 
-  `miyu` 的默认提示词是无法修改的。你可以在`自定义提示词`中新建属于自己的 AI 人格，还可以配置 `用户身份` 让对话更加沉浸。
+  `miyu`的默认提示词是无法修改的。你可以在`人格和功能`中新建属于自己的 AI 人格，自选需要开关的功能，还可以配置 `用户身份` 让对话更加沉浸。 
 
 ## 搬到另一台机器
 
@@ -189,29 +190,25 @@ miyu import miyu-export-*.tar.gz
 
 默认**不含**知识库向量索引（很大，且 `miyu kb embed` 可重建）、缓存、日志和其他一次性的本机状态。密钥默认带上并在导出时警告——归档是明文的，别随手发出去。
 
-## 用户资源与 Skill
-
-Miyu 将配置与用户资源分开保存（`~/.miyu`，Windows 下为 `%USERPROFILE%\.miyu`）：`config` 存放 `config.jsonc`、主题和 shell 集成；`data` 存放 prompts、identities、persona-avatars、scripts 和 skills；运行状态与 Skill 草稿位于 `state`。
-
 ## 内置插件
-
-> 以下大部分插件跨平台可用；标注「Linux」的插件（ProtonDB、Linux 游戏兼容性、Man 手册、Arch Linux 相关、Linux 输入法诊断、Fcitx5 wiki 等）主要服务 Linux 用户，Windows 上仍可调用，只是实用价值有限。
 
 <details><summary>[展开/收起] 具体介绍</summary>
 <br>
 
-- 表情包
+>此处的演示图片是旧版的 REPL 和工具输出日志，新版已经大不同了
 
+- 表情包
+  
   表情包毫无疑问是聊天时最重要的部分，在对话时，Miyu 会根据情景自主发送符合情境的表情包。除了自主发送，设置里还可以设置概率、置信度和冷却时间。
 
   ![](./pics/nvidiafuckyou.png)
 
-  Miyu 自带了一些表情（Linux 下存放在 `/usr/share/miyu`），对应的用户空间目录位于 `~/.miyu/data`。表情库是跟随人格的，如果你在设置里新建了自己的人格，那么就无法使用 Miyu 的默认表情。你可以准备一些图片，把路径给 Ai，让其保存到表情库。届时会自动调用识图模型对图片进行分析并保存。Miyu 默认使用 opencode 公共模型服务中的多模态模型进行识图，所以即使不配置自己的多模态模型也可以看图片。
+  Miyu 自带了一些表情，存放在`/usr/share/miyu`，对应的用户空间目录位于`~/.miyu/data`。表情库是跟随人格的，如果你在设置里新建了自己的人格，那么就无法使用 Miyu 的默认表情。你可以准备一些图片，把路径给 Ai，让其保存到表情库。届时会自动调用识图模型对图片进行分析并保存。Miyu 默认使用 opencode 公共模型服务中的多模态模型进行识图，所以即使不配置自己的多模态模型也可以看图片。
 
 - 玄学算命
 
   >心理学。
-
+  
   算命就像看天气预报一般稀松平常。Miyu 自带了周易六十四卦、吉凶占、塔罗牌抽取等玄学功能。
 
   ![](./pics/玄学.png)
@@ -229,7 +226,7 @@ Miyu 将配置与用户资源分开保存（`~/.miyu`，Windows 下为 `%USERPRO
 - 闹钟
 
   >要我说，这比GNOME时钟的闹钟好用多了
-
+  
   Miyu 自带了闹钟，日常泡泡面、番茄钟学习、计时任务什么的都很实用。内置了闹钟音频，你还可以通过路径传入你想要在到点后播放的“闹钟”。
 
   ![](./pics/set_alarm.png)
@@ -242,11 +239,11 @@ Miyu 将配置与用户资源分开保存（`~/.miyu`，Windows 下为 `%USERPRO
 
   ![](./pics/kb.png)
 
-- ProtonDB 查询（Linux）
+- ProtonDB 查询
 
   可以查询 ProtonDB 上的游戏信息和相应的评论，为 Linux 玩游戏提供参考建议。
 
-- Linux 游戏兼容性调查（Linux）
+- Linux 游戏兼容性调查
 
   >这个游戏 Linux 能玩吗？
 
@@ -262,7 +259,7 @@ Miyu 将配置与用户资源分开保存（`~/.miyu`，Windows 下为 `%USERPRO
 
 - 搜图
 
-  Miyu 还能帮你找图片喔！搜图会根据网络环境并行使用多个来源，并通过视觉模型筛选相关且安全的结果。图片会默认保存至 `~/.miyu/data/pictures/web-images`。
+  Miyu 还能帮你找图片喔！搜图会根据网络环境并行使用多个来源，并通过视觉模型筛选相关且安全的结果。图片会默认保存至`~/.miyu/data/pictures/web-images`。
 
   >NSFW 禁止！
 
@@ -270,7 +267,7 @@ Miyu 将配置与用户资源分开保存（`~/.miyu`，Windows 下为 `%USERPRO
 
 - 生图
 
-  支持 OpenAI 的画图服务喔。图片会默认保存至 `~/.miyu/data/pictures/generated-images`。
+  支持 OpenAI 的画图服务喔。图片会默认保存至`~/.miyu/data/pictures/generated-images`。
 
   >这个功能默认用不了，要自己在插件设置里开启并配置 API
 
@@ -288,15 +285,15 @@ Miyu 将配置与用户资源分开保存（`~/.miyu`，Windows 下为 `%USERPRO
 
   ![](./pics/汇率.png)
 
-- Man 手册查询（Linux）
+- Man 手册查询
 
   >Man！
 
   专门的手册查询工具，虽然网络搜索也能做到，但这值得做成单独的插件。
-
+  
   ![](./pics/man.png)
 
-- Arch Linux 相关（Linux）
+- Arch Linux相关
 
   Arch Linux 是桌面 Linux 的热门之选，Miyu 有一系列插件可以帮助提高 Arch Linux 的日用体验。
 
@@ -318,9 +315,9 @@ Miyu 将配置与用户资源分开保存（`~/.miyu`，Windows 下为 `%USERPRO
 
     ![](./pics/archwiki.png)
 
-  - PKGBUILD 审查
+  - PKGBUILD 审查（Arch Linux 插件的一部分）
 
-    AUR 投毒的事件搞得人心惶惶，但现在，Miyu 可以帮忙审查 PKGBUILD 啦！
+    AUR 投毒的事件搞得人心惶惶，但现在，Miyu 可以帮忙审查 PKGBUILD 啦！审查通过且你确认后才会安装。
 
     ![](./pics/pkgbuild审核.png)
 
@@ -346,19 +343,7 @@ Miyu 将配置与用户资源分开保存（`~/.miyu`，Windows 下为 `%USERPRO
 
   ![](./pics/记忆.png)
 
-- 深度研究
-
-  >Token 燃烧警告
-
-  重量级插件。对于一个命题，Miyu 可以引经据典，有理有据地进行深度研究并写出研究报告。
-
-  ![](./pics/深度研究.png)
-
-- Linux 输入法问题诊断（Linux）
-
-  从 Linux 输入法实现原理出发，对软件输入法问题进行深度诊断。
-
-- Fcitx5 wiki 查询（Linux）
+- Fcitx5 wiki 查询
 
   阅读 Fcitx5 wiki，为输入法问题提供参考。
 
@@ -368,14 +353,13 @@ Miyu 将配置与用户资源分开保存（`~/.miyu`，Windows 下为 `%USERPRO
 
 #### 功能参考
 
-- [Opencode](https://github.com/anomalyco/opencode)
+- [Opencode](https://github.com/anomalyco/opencode) 
 - [Claude Code](https://github.com/anthropics/claude-code)
 - [Pi](https://github.com/earendil-works/pi)
 - [Deepseek-Reasonix](https://github.com/esengine/deepseek-reasonix)
-- [Deepseek-Harness](https://github.com/deepseek-ai/deepseek-harness)
-- [Astrbot](https://github.com/AstrBotDevs/AstrBot)
-- [NapCatQQ](https://github.com/NapNeko/NapCatQQ)
-
+- [Deeepseek-Harness](https://github.com/deepseek-ai/deepseek-harness)
+- [Astrbot](https://github.com/AstrBotDevs/AstrBot) 
+- [NapCatQQ](https://github.com/NapNeko/NapCatQQ) 
 
 #### 插件设计参考
 

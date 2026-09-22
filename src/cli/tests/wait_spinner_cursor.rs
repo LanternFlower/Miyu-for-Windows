@@ -9,7 +9,7 @@
 //! 清除按**上一帧记录的宽度**算行数,新帧行数不同就要靠 tick 自己配平。
 
 use crate::cli::*;
-use crate::render::wait_spinner::{SpinnerStyle, WaitSpinner};
+use miyu_hosts::render::wait_spinner::{SpinnerStyle, WaitSpinner};
 
 const COLUMNS: u16 = 120;
 
@@ -77,7 +77,7 @@ fn spinner_survives_the_sub_block_disappearing() {
 /// 块模式却要留着——两条路对"一帧有几行"的口径不同,是最可疑的地方。
 #[test]
 fn spinner_returns_the_cursor_in_block_mode() {
-    let marker = crate::render::wait_spinner::BLOCK_MARKER;
+    let marker = miyu_hosts::render::wait_spinner::BLOCK_MARKER;
     let blocks = |count: usize| {
         (0..count)
             .map(|index| format!("{marker}工具 {index}\n  明细一\n  明细二"))
@@ -106,8 +106,8 @@ fn spinner_returns_the_cursor_in_block_mode() {
 /// MoveUp 在第 0 行是空操作,漏掉的正是要查的东西。
 #[test]
 fn committed_command_block_leaves_exactly_one_trailing_blank() {
-    use crate::render::CommandLiveDisplay;
-    use crate::tools::CommandOutputStream;
+    use miyu_engine::tools::CommandOutputStream;
+    use miyu_hosts::render::CommandLiveDisplay;
 
     for output_lines in [1usize, 3, 5, 12, 40] {
         let mut frame = Vec::new();
@@ -157,8 +157,8 @@ fn committed_command_block_leaves_exactly_one_trailing_blank() {
 /// ——所以量的就是这个边界本身留下几个空行。设计上只该留一个。
 #[test]
 fn a_settled_tool_card_leaves_exactly_one_blank_before_what_follows() {
-    use crate::llm::{ChatStreamChunk, ChatStreamKind};
-    use crate::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
+    use miyu_core::llm::{ChatStreamChunk, ChatStreamKind};
+    use miyu_hosts::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
 
     let mut renderer = StreamRenderer::new(
         ReasoningDisplayMode::Summary,
@@ -168,7 +168,7 @@ fn a_settled_tool_card_leaves_exactly_one_blank_before_what_follows() {
         10,
     );
     renderer.use_buffered_output();
-    renderer.live_summary = true;
+    renderer.use_terminal_surface();
 
     // 先有一段正文(真实回合里工具前后都夹着正文),再跑一个非命令工具。
     renderer
@@ -207,9 +207,9 @@ fn a_settled_tool_card_leaves_exactly_one_blank_before_what_follows() {
 /// 路)。
 #[test]
 fn a_settled_command_card_leaves_exactly_one_blank_before_what_follows() {
-    use crate::llm::{ChatStreamChunk, ChatStreamKind};
-    use crate::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
-    use crate::tools::CommandOutputStream;
+    use miyu_core::llm::{ChatStreamChunk, ChatStreamKind};
+    use miyu_engine::tools::CommandOutputStream;
+    use miyu_hosts::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
 
     for output_lines in [1usize, 3, 8, 30] {
         let mut renderer = StreamRenderer::new(
@@ -220,9 +220,9 @@ fn a_settled_command_card_leaves_exactly_one_blank_before_what_follows() {
             10,
         );
         renderer.use_buffered_output();
-        // 测试里 stdout 不是终端,`live_summary` 默认为假 → 实时块根本不画,
-        // 量到的是静态路径。用户看到的是实时那条,必须显式打开。
-        renderer.live_summary = true;
+        // 测试里 stdout 不是终端 → 出厂选的是管道那一面,实时块根本不画,
+        // 量到的是静态路径。用户看到的是实时那条,必须显式选。
+        renderer.use_terminal_surface();
         renderer
             .write_chunk(ChatStreamChunk {
                 kind: ChatStreamKind::Content,
@@ -263,8 +263,8 @@ fn a_settled_command_card_leaves_exactly_one_blank_before_what_follows() {
 /// 命令卡片之间的空档——截图里空档两侧正好都是命令块(08-27)。
 #[test]
 fn back_to_back_command_cards_leave_exactly_one_blank() {
-    use crate::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
-    use crate::tools::CommandOutputStream;
+    use miyu_engine::tools::CommandOutputStream;
+    use miyu_hosts::render::{ReasoningDisplayMode, StreamRenderer, ToolCallDisplayMode};
 
     for output_lines in [1usize, 3, 8, 30] {
         let mut renderer = StreamRenderer::new(
@@ -275,7 +275,7 @@ fn back_to_back_command_cards_leave_exactly_one_blank() {
             10,
         );
         renderer.use_buffered_output();
-        renderer.live_summary = true;
+        renderer.use_terminal_surface();
 
         // 超宽命令与超宽输出:真实终端里这些会折行,而清除按记录的宽度换算
         // 物理行数(`rendered_physical_rows`)。短行永远试不出折行相关的错位,
@@ -302,12 +302,16 @@ fn back_to_back_command_cards_leave_exactly_one_blank() {
         // 第二张卡片开画:它与上一张之间该只隔一个空行。
         renderer.write_tool_call("run_command", "pwd").unwrap();
         let frame = renderer.take_output_frame();
-        let rows = terminal_frame_layout(&frame, (0, 0), COLUMNS, None)
-            .cursor
-            .1;
+        // 数的是**空行**,不是行数。09-17 起 live 区里多了一行命令本身(内容行,
+        // 不是空行),拿行数当空行数的代理会被它戳穿。
+        let painted = miyu_hosts::render::strip_ansi_text(&String::from_utf8_lossy(&frame));
+        let blanks = painted
+            .lines()
+            .filter(|line| line.trim().is_empty())
+            .count();
         assert!(
-            rows <= 1,
-            "上一张卡片输出 {output_lines} 行时,两张命令卡片之间空出了 {rows} 行"
+            blanks <= 1,
+            "上一张卡片输出 {output_lines} 行时,两张命令卡片之间空出了 {blanks} 行: {painted:?}"
         );
     }
 }

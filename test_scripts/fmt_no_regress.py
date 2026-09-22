@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
-"""格式门禁：只禁止变差，不要求存量达标。
+"""格式门禁。
 
-仓库整体尚未 fmt-clean（约 4400 行 diff）。全仓格式化会产生一个巨大的、与
-拆分混在一起的提交，破坏 `git blame` 与 `git bisect`，所以不做。
+**仓库已经 fmt-clean，所以默认走全仓 `cargo fmt --check`**（仓库根有
+`.rustfmt-global` 这个开关文件）。工具链钉在 `toolchain.lock.json` 的 `rust`
+上，和 CI 用的是同一个 rustfmt——2026-09-21 撞过：本机默认工具链是 nightly、
+CI 是 1.96.1，两档对 `pub use crate::…` 的排序判得不一样。
 
-但「只查改动过的文件」也不对：`web.rs` 在 HEAD 时就有 39 处违规，只要碰它
-一下，历史欠账就全算到这次改动头上。
+---
 
-所以按和规模／依赖门禁一致的语义来：对每个改动过的文件，比较它在 HEAD 与
-现在的违规块数量，**只在变多时失败**。新文件要求零违规——新写的代码没有
-历史包袱。
+下面那套「只禁止变差」是全仓 fmt-clean 之前的形态，留着以备再次出现大额
+存量欠账（当时约 4400 行 diff，全仓格式化会产生一个与拆分混在一起的巨大提交，
+破坏 `git blame` 与 `git bisect`）。它对每个改动过的文件比较 HEAD 与现在的
+违规行数，只在变多时失败；新文件要求零违规。
 
-等哪天单独做完格式化提交，`touch .rustfmt-global` 即可切到全仓 `cargo fmt
---check`。
+⚠️ 这条路有一个已知的坑，删开关之前必须先修：它把文件内容写到 `/tmp` 的
+临时文件里再跑 `rustfmt`，而 rustfmt 会去解析文件里的 `mod x;`——临时目录里
+没有兄弟文件，它会直接报错退出、stdout 为空，于是**每个声明了子模块的文件
+（所有 mod.rs / lib.rs）都被算成 0 违规**，门禁对它们恒为绿。2026-09-21 正是
+这样把一处 `use` 排序问题放到了 CI 才红。现在 `violations()` 会把这种情况
+当作「量不出来」抛错，而不是当成「干净」。
 """
+import json
 import subprocess
 import sys
 import tempfile
@@ -53,6 +60,12 @@ def violations(source: str) -> int:
             ["rustfmt", "--check", "--edition", "2021", "--color", "never", temp],
             capture_output=True, text=True,
         )
+        if out.returncode != 0 and not out.stdout.strip():
+            # rustfmt 根本没跑成（最常见的是临时文件解析不了 `mod x;`）。
+            # 这时候 stdout 是空的，按「0 违规」处理等于把门禁关掉。
+            raise RuntimeError(
+                f"rustfmt 没能量出这个文件的格式：{out.stderr.strip()[:200]}"
+            )
         return sum(
             1
             for line in out.stdout.split("\n")
@@ -96,9 +109,28 @@ def at_head(name: str):
     return out.stdout if out.returncode == 0 else None
 
 
+def pinned_toolchain():
+    """和 CI 用同一个 rustfmt。"""
+    lock = ROOT / "packaging/common/toolchain.lock.json"
+    try:
+        return json.loads(lock.read_text(encoding="utf-8"))["rust"]
+    except (OSError, ValueError, KeyError):
+        return None
+
+
 def main():
     if (ROOT / ".rustfmt-global").exists():
-        return subprocess.run(["cargo", "fmt", "--check"], cwd=ROOT).returncode
+        version = pinned_toolchain()
+        argv = ["cargo", "fmt", "--check"]
+        if version:
+            installed = subprocess.run(["rustup", "toolchain", "list"],
+                                       capture_output=True, text=True)
+            if version in installed.stdout:
+                argv.insert(1, f"+{version}")
+            else:
+                print(f"⚠️  没装 {version}，用默认工具链量格式；"
+                      f"CI 用的是 {version}，两档可能判得不一样")
+        return subprocess.run(argv, cwd=ROOT).returncode
 
     files = changed_files()
     if not files:

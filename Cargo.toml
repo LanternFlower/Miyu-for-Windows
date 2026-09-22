@@ -1,12 +1,13 @@
 [package]
 name = "miyu"
-version = "0.5.0"
+version = "0.6.1"
 edition = "2021"
 rust-version = "1.89"
 license = "MIT"
-repository = "https://github.com/SHORiN-KiWATA/Miyu"
+repository = "https://github.com/SHORiN-KiWATA/miyu-agent"
 description = "Command-line AI assistant"
 autobins = false
+build = "build.rs"
 
 [lib]
 name = "miyu"
@@ -24,15 +25,71 @@ path = "src/bin/voice.rs"
 required-features = ["voice"]
 
 [dependencies]
+miyu-base = { path = "crates/miyu-base" }
+miyu-core = { path = "crates/miyu-core" }
+miyu-engine = { path = "crates/miyu-engine" }
+miyu-hosts = { path = "crates/miyu-hosts" }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+blake3 = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+crossterm = { workspace = true }
+directories = { workspace = true }
+image = { workspace = true }
+flate2 = { workspace = true }
+fuzzy-matcher = { workspace = true }
+libc = { workspace = true }
+reqwest = { workspace = true }
+ratatui = { workspace = true }
+rand = { workspace = true }
+rodio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+tempfile = { workspace = true }
+tar = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+unicode-segmentation = { workspace = true }
+unicode-width = { workspace = true }
+vte = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
+[features]
+default = []
+voice = ["miyu-engine/voice"]
+
+[dev-dependencies]
+# 后台面板的 golden 要把块 id 打掩码（它是全局自增计数，不是表现）。
+fancy-regex = { workspace = true }
+miyu-base = { path = "crates/miyu-base", features = ["testkit"] }
+miyu-core = { path = "crates/miyu-core", features = ["testkit"] }
+miyu-engine = { path = "crates/miyu-engine", features = ["testkit"] }
+miyu-hosts = { path = "crates/miyu-hosts", features = ["testkit"] }
+
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.6.1"
+edition = "2021"
+rust-version = "1.89"
+license = "MIT"
+repository = "https://github.com/SHORiN-KiWATA/miyu-agent"
+
+[workspace.dependencies]
 anyhow = "1.0"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 blake3 = "1.5"
-blake2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
 cosmic-text = { version = "0.19.0", default-features = false, features = ["std", "swash"] }
-crc32fast = "1.4"
 crossterm = "0.28"
 directories = "5.0"
 hex = "0.4"
@@ -49,25 +106,20 @@ fst = "0.4"
 fontdb = { version = "0.23", default-features = false, features = ["std", "fs", "memmap"] }
 if-addrs = "0.13"
 libc = "0.2"
-md5 = "0.7"
 pulldown-cmark = { version = "0.13.4", default-features = false }
-# Local embedding inference. ONNX Runtime is loaded at runtime from the system
-# library (`onnxruntime-cpu` on Arch); nothing is downloaded at build time, so
-# `cargo build --locked` stays offline-clean. The tokenizer uses the pure-Rust
-# regex engine to avoid a C build dependency.
 ort = { version = "2.0.0-rc.13", default-features = false, features = ["load-dynamic", "std"] }
 tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls", "stream", "gzip", "deflate"] }
+ratatui = { version = "0.29", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
 rand = "0.8"
 rpassword = "7.4"
 rodio = { version = "0.19", default-features = false, features = ["mp3", "wav"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
-rustyline = "14.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+toml = "0.8"
 sha1 = "0.10"
 sha2 = "0.10"
-sha3 = "0.10"
 termimad = "0.34"
 tempfile = "3.15"
 tar = "0.4"
@@ -83,22 +135,6 @@ urlencoding = "2.1"
 vte = "0.15"
 rustc-hash = "2"
 yaml-rust2 = { version = "0.11", default-features = false }
-ratex-parser = "0.1.12"
-ratex-layout = "0.1.12"
-ratex-types = "0.1.12"
-ratex-render = { version = "0.1.12", features = ["embed-fonts"] }
-# 语音(voice feature,默认关):本地唤醒词 + VAD + SenseVoice 识别。
-# 只有 miyu-voice 二进制会启用;主程序永远不带。
-sherpa-onnx = { version = "1.13.7", optional = true }
-cpal = { version = "0.15", optional = true }
-pinyin = { version = "0.10", optional = true }
-bzip2 = { version = "0.4", optional = true }
-
-[features]
-default = []
-voice = ["dep:sherpa-onnx", "dep:cpal", "dep:pinyin", "dep:bzip2"]
-
-[target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Globalization",
@@ -108,14 +144,20 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Pipes",
     "Win32_System_Threading",
 ] }
-
-[build-dependencies]
-base64 = "0.22"
-fst = "0.4"
-
-[dev-dependencies]
-jieba-rs = "0.7"
-tiktoken-rs = "0.12"
+ratex-parser = "0.1.12"
+ratex-layout = "0.1.12"
+ratex-types = "0.1.12"
+ratex-render = { version = "0.1.12", features = ["embed-fonts"] }
+mermaid-rs-renderer = "0.3"
+# 自己光栅化 SVG（终端那条路）：按终端要显示的像素数直接渲染，而不是
+# 「自然尺寸 PNG → 重采样」。顺带把字体库缓存住——mermaid-rs-renderer 的
+# write_output_png 每次调用都重扫一遍系统字体。resvg 会把 usvg 与
+# tiny-skia 一起 re-export，所以只挂它一个，版本不会打架。
+resvg = { version = "0.47", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
+sherpa-onnx = { version = "1.13.7" }
+cpal = { version = "0.15" }
+pinyin = { version = "0.10" }
+bzip2 = { version = "0.4" }
 
 [profile.release]
 lto = "thin"

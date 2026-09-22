@@ -12,8 +12,8 @@
 //! 配置只在主菜单统一保存（见 [`super::run_main_menu`]），所以撤销全在内存里
 //! 完成，不碰磁盘——按 `q` 不保存退出，删除和撤销一起作废，符合直觉。
 
-use crate::config::AppConfig;
-use crate::i18n::text as t;
+use miyu_base::config::AppConfig;
+use miyu_base::i18n::text as t;
 
 /// 最多记住多少步。够一次编辑会话里反复试错，又不会让内存无限涨。
 const MAX_DEPTH: usize = 20;

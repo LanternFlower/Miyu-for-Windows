@@ -44,7 +44,7 @@ class Repl:
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 140, 0, 0))
         self.proc = subprocess.Popen(
-            [str(MIYU_BIN), "normal"],
+            [str(MIYU_BIN)],
             stdin=slave,
             stdout=slave,
             stderr=slave,

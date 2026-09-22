@@ -16,9 +16,9 @@ pub(in crate::question_tui) fn draw(
     session: &mut QuestionSession,
     request: &QuestionRequest,
     state: &mut QuestionState,
+    scroll: &mut Option<&mut dyn FnMut(isize, u16)>,
 ) -> Result<()> {
-    session.clear()?;
-    let (cols, _) = terminal::size().unwrap_or((80, 24));
+    let (cols, rows) = terminal::size().unwrap_or((80, 24));
     let content_width = (cols as usize).saturating_sub(3).max(1);
     let mut top_lines = Vec::new();
     let mut body_lines = Vec::new();
@@ -171,7 +171,7 @@ pub(in crate::question_tui) fn draw(
         state.scroll_starts[state.tab],
     );
     state.scroll_starts[state.tab] = layout.body_start;
-    let visible_lines = top_lines
+    let visible_lines: Vec<&String> = top_lines
         .iter()
         .skip(layout.top_start)
         .chain(
@@ -180,15 +180,48 @@ pub(in crate::question_tui) fn draw(
                 .skip(layout.body_start)
                 .take(layout.body_capacity),
         )
-        .chain(footer_lines.iter().skip(layout.footer_start));
-    for (row, line) in visible_lines.enumerate() {
+        .chain(footer_lines.iter().skip(layout.footer_start))
+        .collect();
+    // 顶上那几行空的不画：布局按"最多能放多少"切，切出来常常开头就是空行，
+    // 而面板是贴着底往上长的——空行于是变成框顶上多出来的一条空带。
+    let lead = visible_lines
+        .iter()
+        .take_while(|line| line.trim().is_empty())
+        .count();
+    let visible_lines: Vec<&String> = visible_lines.into_iter().skip(lead).collect();
+    // 先清旧面板，再让正文按实际高度重排，最后画新面板。
+    // 清屏范围不能用高度上限，否则短问题仍会抹掉上方正文。
+    session.clear()?;
+    let height = u16::try_from(visible_lines.len()).unwrap_or(MAX_PANEL_LINES);
+    let base = if crate::cli::in_fullscreen() {
+        let geometry = (cols, rows, height);
+        if session.geometry != Some(geometry) {
+            if let Some(scroll) = scroll.as_deref_mut() {
+                scroll(0, height.saturating_add(1));
+            }
+            session.geometry = Some(geometry);
+        }
+        rows.saturating_sub(height.saturating_add(1))
+    } else {
+        session.anchor_y
+    };
+    session.anchor_y = base;
+    session.painted_rows = height;
+    for (row, line) in visible_lines.iter().enumerate() {
         queue!(
             session.stdout,
-            MoveTo(0, session.anchor_y.saturating_add(row as u16)),
+            MoveTo(0, base.saturating_add(row as u16)),
             Clear(ClearType::CurrentLine),
             crossterm::style::Print(BAR),
             crossterm::style::Print(" "),
             crossterm::style::Print(truncate_width(line, content_width))
+        )?;
+    }
+    if crate::cli::in_fullscreen() {
+        queue!(
+            session.stdout,
+            MoveTo(0, rows.saturating_sub(1)),
+            Clear(ClearType::CurrentLine)
         )?;
     }
     if state.editing {
@@ -196,13 +229,13 @@ pub(in crate::question_tui) fn draw(
             *index >= layout.body_start
                 && *index < layout.body_start.saturating_add(layout.body_capacity)
         }) {
-            let row = layout.top_budget + index - layout.body_start;
+            let row = (layout.top_budget + index - layout.body_start).saturating_sub(lead);
             let cursor_x = edit_cursor_column.saturating_add(edit_cursor_offset);
             queue!(
                 session.stdout,
                 MoveTo(
                     cursor_x.min(cols.saturating_sub(1) as usize) as u16,
-                    session.anchor_y.saturating_add(row as u16)
+                    base.saturating_add(row as u16)
                 ),
                 Show
             )?;
@@ -375,7 +408,7 @@ pub(in crate::question_tui) fn editor_option_line(
     format!("\x1b[35m›\x1b[0m {marker}{value}")
 }
 
-pub(in crate::question_tui) fn wrap_display_text(value: &str, width: usize) -> Vec<String> {
+pub fn wrap_display_text(value: &str, width: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut current = String::new();
     let mut current_width = 0usize;
@@ -394,7 +427,23 @@ pub(in crate::question_tui) fn wrap_display_text(value: &str, width: usize) -> V
     lines
 }
 
+/// 给面板腾出底部 `lines` 行。
+///
+/// inline 下靠打换行把画面顶上去——顶出去的进 scrollback，回翻还找得到。
+/// **全屏下不能这么干**：备用屏没有 scrollback，顶出去就是没了，用户看到的是
+/// 「一提问，正文全被清空」。全屏下只把光标放到底部；实际高度算出后，
+/// 调用方从正文缓冲重排上方视口，面板退场再恢复输入区布局。
 pub(in crate::question_tui) fn reserve_space(lines: u16) -> Result<()> {
+    if crate::cli::in_fullscreen() {
+        let rows = crossterm::terminal::size()
+            .map(|(_, rows)| rows)
+            .unwrap_or(24);
+        crossterm::execute!(
+            io::stdout(),
+            crossterm::cursor::MoveTo(0, rows.saturating_sub(1))
+        )?;
+        return Ok(());
+    }
     for _ in 1..lines {
         println!();
     }

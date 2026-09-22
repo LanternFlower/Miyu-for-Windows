@@ -3,7 +3,7 @@
 use crate::config_tui::*;
 
 pub(in crate::config_tui) fn edit_real_context_emotion(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     settings: &mut RealContextPluginSettings,
 ) -> Result<()> {
     let mut selected = 0usize;
@@ -40,34 +40,31 @@ pub(in crate::config_tui) fn edit_real_context_emotion(
             t("Decay and limits", "衰减与限制").to_string(),
         ];
         draw_menu(
-            stdout,
+            ui,
             t(" EMOTION STATE ", " 情绪状态 "),
             &options,
             selected,
             "",
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter => match selected {
                 0 => {
-                    settings.emotion_enable = select_bool(
-                        stdout,
-                        t("Emotion state", "情绪状态"),
-                        settings.emotion_enable,
-                    )?
+                    settings.emotion_enable =
+                        select_bool(ui, t("Emotion state", "情绪状态"), settings.emotion_enable)?
                 }
                 1 => {
                     settings.emotion_heuristic_enable = select_bool(
-                        stdout,
+                        ui,
                         t("Heuristic deltas after replies", "回复后按回合事实加减"),
                         settings.emotion_heuristic_enable,
                     )?
                 }
                 2 => {
                     settings.emotion_llm_enrich_enable = select_bool(
-                        stdout,
+                        ui,
                         t(
                             "LLM deltas via affection update",
                             "搭好感度更新拿模型语义增量",
@@ -77,19 +74,19 @@ pub(in crate::config_tui) fn edit_real_context_emotion(
                 }
                 3 => {
                     settings.emotion_influence_threshold = select_bool(
-                        stdout,
+                        ui,
                         t("Adjust active-reply threshold", "影响主动回复阈值"),
                         settings.emotion_influence_threshold,
                     )?
                 }
                 4 => {
                     settings.emotion_influence_tone = select_bool(
-                        stdout,
+                        ui,
                         t("Hint tone at turn tail", "回合尾部注入语气提示"),
                         settings.emotion_influence_tone,
                     )?
                 }
-                5 => edit_real_context_emotion_values(stdout, settings)?,
+                5 => edit_real_context_emotion_values(ui, settings)?,
                 _ => {}
             },
             _ => {}
@@ -98,7 +95,7 @@ pub(in crate::config_tui) fn edit_real_context_emotion(
 }
 
 pub(in crate::config_tui) fn edit_real_context_emotion_values(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     settings: &mut RealContextPluginSettings,
 ) -> Result<()> {
     loop {
@@ -140,7 +137,7 @@ pub(in crate::config_tui) fn edit_real_context_emotion_values(
             ),
         ];
         if !run_form(
-            stdout,
+            ui,
             t(" EMOTION DECAY AND LIMITS ", " 情绪衰减与限制 "),
             &mut fields,
         )? {
@@ -163,7 +160,7 @@ pub(in crate::config_tui) fn edit_real_context_emotion_values(
                 *settings = candidate;
                 return Ok(());
             }
-            Err(error) => message(stdout, &error)?,
+            Err(error) => message(ui, &error)?,
         }
     }
 }

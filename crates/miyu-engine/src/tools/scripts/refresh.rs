@@ -1,0 +1,175 @@
+//! 脚本目录的变更检测:指纹没变就不重扫。
+//!
+//! 此前每个工具回合都在持 registry 锁的状态下同步全量重扫四个目录——每个
+//! 脚本 `read_to_string` 读全文(内置脚本合计 500KB)再 canonicalize。这里
+//! 照 skills 的做法:目录清单 + 每个文件的元数据(长度/mtime/inode)做 blake3
+//! 指纹,变了才扫;扫描本身放 spawn_blocking,读完再短暂持锁替换。三次稳定读
+//! 防扫描途中目录还在变。
+
+use crate::tools::scripts::*;
+
+pub struct ScriptRefreshSnapshot {
+    pub(crate) scan: ScriptScanResult,
+    pub(crate) fingerprint: [u8; 32],
+}
+
+pub(crate) fn catalog_fingerprint(roots: &[PathBuf]) -> Result<[u8; 32]> {
+    let mut hasher = blake3::Hasher::new();
+    for root in roots {
+        hasher.update(root.as_os_str().as_encoded_bytes());
+        let Ok(read_dir) = std::fs::read_dir(root) else {
+            hasher.update(&[0]);
+            continue;
+        };
+        let mut paths: Vec<PathBuf> = read_dir
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .collect();
+        paths.sort();
+        for path in paths {
+            hasher.update(path.as_os_str().as_encoded_bytes());
+            miyu_core::skills::hash_metadata(&mut hasher, &path)?;
+        }
+    }
+    Ok(*hasher.finalize().as_bytes())
+}
+
+/// 指纹与 `current` 一致 → None(什么都不用做);否则返回稳定态的扫描结果。
+pub fn prepare_script_refresh(
+    current: Option<[u8; 32]>,
+    config: &miyu_base::config::AppConfig,
+    paths: &MiyuPaths,
+) -> Result<Option<ScriptRefreshSnapshot>> {
+    let roots = script_scan_roots(config, paths);
+    for _ in 0..3 {
+        let before = catalog_fingerprint(&roots)?;
+        if Some(before) == current {
+            return Ok(None);
+        }
+        let dirs: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
+        let mut scan = scan_scripts(&dirs)?;
+        retain_persona_visible(config, paths, &mut scan.entries);
+        let after = catalog_fingerprint(&roots)?;
+        if before == after {
+            return Ok(Some(ScriptRefreshSnapshot {
+                scan,
+                fingerprint: after,
+            }));
+        }
+    }
+    bail!("script directories kept changing while they were being scanned")
+}
+
+/// 本人格看得见的脚本:自定义人格下内置脚本只有清单里点了名的才算(没写清单
+/// = 一件不挂,纯净状态);写了白名单就只留名单上的。注册与 `manage_script list`
+/// 共用这一道门——模型看到的目录和真挂上的工具面必须是同一份。
+pub(crate) fn retain_persona_visible(
+    config: &miyu_base::config::AppConfig,
+    paths: &MiyuPaths,
+    entries: &mut Vec<super::ScriptEntry>,
+) {
+    let default_persona = miyu_core::skills::is_default_persona(config);
+    let allow =
+        miyu_base::config::PersonaManifest::load(config, paths, &config.active_persona_scope())
+            .plugins
+            .scripts;
+    // 人格自己那一层(`<scripts>/personas/<人格>/`)永远算数:那是它自己写的、
+    // 或专门给它放的,白名单是给内置层和全局层用的——不然它刚 register 完的
+    // 脚本自己都调不到(用户实测)。
+    let own_layer = config.active_persona_scripts_dir(paths);
+    entries.retain(|entry| {
+        if Path::new(&entry.path).starts_with(&own_layer) {
+            return true;
+        }
+        let listed = allow
+            .as_ref()
+            .is_some_and(|list| list.iter().any(|id| id == &entry.id));
+        if super::is_builtin_script(paths, entry) && !default_persona {
+            return listed;
+        }
+        allow.is_none() || listed
+    });
+}
+
+#[cfg(test)]
+mod persona_gate_tests {
+    use super::*;
+
+    fn entry(id: &str, path: &std::path::Path) -> super::super::ScriptEntry {
+        // 走 serde 和 index.json 同一条路,省得给整个结构体凑 Default。
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "path": path.join(id).to_string_lossy(),
+        }))
+        .unwrap()
+    }
+
+    fn setup(
+        persona: &str,
+        allow: Option<&[&str]>,
+    ) -> (miyu_base::config::AppConfig, MiyuPaths, tempfile::TempDir) {
+        let temp = tempfile::tempdir().unwrap();
+        let mut paths = MiyuPaths::new().unwrap();
+        // 根目录也指到临时目录:人格清单按 root 下的布局标记找位置,不能碰真家。
+        paths.root_dir = temp.path().to_path_buf();
+        paths.system_scripts_dir = temp.path().join("system");
+        paths.scripts_dir = temp.path().join("scripts");
+        paths.data_dir = temp.path().join("data");
+        paths.state_dir = temp.path().join("state");
+        let mut config = miyu_base::config::AppConfig::default();
+        config.prompt.active_persona = persona.to_string();
+        if let Some(allow) = allow {
+            let scope = config.active_persona_scope();
+            let dir = miyu_base::config::PersonaManifest::manifest_path(&config, &paths, &scope);
+            std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+            let mut manifest = miyu_base::config::PersonaManifest::all();
+            manifest.plugins.scripts = Some(allow.iter().map(|id| id.to_string()).collect());
+            std::fs::write(&dir, manifest.to_toml()).unwrap();
+        }
+        (config, paths, temp)
+    }
+
+    #[test]
+    fn own_layer_survives_the_allowlist_and_builtins_need_naming() {
+        let (config, paths, _temp) = setup("alter.md", Some(&["bili"]));
+        let builtin = super::super::builtin_scripts_dir(&paths);
+        let own = config.active_persona_scripts_dir(&paths);
+        let mut entries = vec![
+            entry("bili", &builtin),
+            entry("xhs", &builtin),
+            entry("mine", &own),
+            entry("global_tool", &paths.scripts_dir),
+        ];
+        retain_persona_visible(&config, &paths, &mut entries);
+        let ids: Vec<&str> = entries.iter().map(|entry| entry.id.as_str()).collect();
+        assert_eq!(ids, vec!["bili", "mine"]);
+    }
+
+    #[test]
+    fn custom_persona_without_manifest_hides_builtins_but_keeps_its_own() {
+        let (config, paths, _temp) = setup("alter.md", None);
+        let builtin = super::super::builtin_scripts_dir(&paths);
+        let own = config.active_persona_scripts_dir(&paths);
+        let mut entries = vec![
+            entry("xhs", &builtin),
+            entry("mine", &own),
+            entry("global_tool", &paths.scripts_dir),
+        ];
+        retain_persona_visible(&config, &paths, &mut entries);
+        let ids: Vec<&str> = entries.iter().map(|entry| entry.id.as_str()).collect();
+        assert_eq!(ids, vec!["mine", "global_tool"]);
+    }
+}
+
+pub fn apply_script_refresh(
+    registry: &mut ToolRegistry,
+    paths: &MiyuPaths,
+    snapshot: ScriptRefreshSnapshot,
+) {
+    let specs = script_specs(&snapshot.scan.entries, &paths.scripts_dir, &paths.cache_dir);
+    if let Err(error) = registry.replace_script_tools(specs, snapshot.scan.unregistered) {
+        tracing::warn!(error = %error, "failed to replace Miyu script tools");
+    }
+    // 失败也记指纹:同一份坏目录不值得每回合重扫一次,改了文件指纹自然变。
+    registry.set_script_catalog_fingerprint(snapshot.fingerprint);
+}

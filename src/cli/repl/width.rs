@@ -34,7 +34,7 @@ pub(in crate::cli) fn wrap_visible_width(value: &str, max_width: usize) -> Vec<S
     lines
 }
 
-pub(in crate::cli) fn visible_width(value: &str) -> usize {
+pub fn visible_width(value: &str) -> usize {
     let mut width = 0usize;
     let mut escape = false;
     for ch in value.chars() {

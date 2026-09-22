@@ -1,0 +1,269 @@
+{
+  "schema_version": 1,
+  "assets": [
+    {
+      "id": "core-license",
+      "source_root": "source",
+      "source": "LICENSE",
+      "destination": "share/licenses/miyu/LICENSE",
+      "mode": "0644",
+      "component": "core",
+      "type": "file"
+    },
+    {
+      "id": "voice-license",
+      "source_root": "source",
+      "source": "LICENSE",
+      "destination": "share/licenses/miyu-voice/LICENSE",
+      "mode": "0644",
+      "component": "voice",
+      "type": "file"
+    },
+    {
+      "id": "font-noto-cjk",
+      "source_root": "source",
+      "source": "assets/fonts/NotoSansCJK-Regular.ttc",
+      "destination": "share/miyu/fonts/NotoSansCJK-Regular.ttc",
+      "mode": "0644",
+      "component": "core",
+      "type": "file"
+    },
+    {
+      "id": "license-noto-cjk",
+      "source_root": "source",
+      "source": "assets/fonts/NotoSansCJK.LICENSE",
+      "destination": "share/licenses/miyu/NotoSansCJK.LICENSE",
+      "mode": "0644",
+      "component": "core",
+      "type": "file"
+    },
+    {
+      "id": "font-noto-emoji",
+      "source_root": "source",
+      "source": "assets/fonts/NotoColorEmoji.ttf",
+      "destination": "share/miyu/fonts/NotoColorEmoji.ttf",
+      "mode": "0644",
+      "component": "core",
+      "type": "file"
+    },
+    {
+      "id": "license-noto-emoji",
+      "source_root": "source",
+      "source": "assets/fonts/NotoColorEmoji.LICENSE",
+      "destination": "share/licenses/miyu/NotoColorEmoji.LICENSE",
+      "mode": "0644",
+      "component": "core",
+      "type": "file"
+    },
+    {
+      "id": "font-jetbrains-mono",
+      "source_root": "source",
+      "source": "assets/fonts/JetBrainsMono-Regular.ttf",
+      "destination": "share/miyu/fonts/JetBrainsMono-Regular.ttf",
+      "mode": "0644",
+      "component": "core",
+      "type": "file"
+    },
+    {
+      "id": "license-jetbrains-mono",
+      "source_root": "source",
+      "source": "assets/fonts/JetBrainsMono.LICENSE",
+      "destination": "share/licenses/miyu/JetBrainsMono.LICENSE",
+      "mode": "0644",
+      "component": "core",
+      "type": "file"
+    },
+    {
+      "id": "embedding-model",
+      "source_root": "source",
+      "source": "assets/models/bge-small-zh-v1.5-int8",
+      "destination": "share/miyu/models/bge-small-zh-v1.5-int8",
+      "mode": "0644",
+      "component": "core",
+      "type": "tree",
+      "include": [
+        "*"
+      ],
+      "exclude": [],
+      "required_files": [
+        "LICENSE",
+        "config.json",
+        "manifest.json",
+        "model.onnx",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json"
+      ]
+    },
+    {
+      "id": "embedding-license",
+      "source_root": "source",
+      "source": "assets/models/bge-small-zh-v1.5-int8/LICENSE",
+      "destination": "share/licenses/miyu/bge-small-zh-v1.5.LICENSE",
+      "mode": "0644",
+      "component": "core",
+      "type": "file"
+    },
+    {
+      "id": "memes",
+      "source_root": "source",
+      "source": "src/memes",
+      "destination": "share/miyu/memes",
+      "mode": "0644",
+      "component": "core",
+      "type": "tree",
+      "include": [
+        "*.json",
+        "*.jpg",
+        "*.jpeg",
+        "*.png",
+        "*.gif",
+        "*.webp"
+      ],
+      "exclude": [],
+      "required_files": [
+        "miyu/index.json"
+      ],
+      "indexes": [
+        "miyu/index.json"
+      ]
+    },
+    {
+      "id": "scripts",
+      "source_root": "source",
+      "source": "src/scripts",
+      "destination": "share/miyu/scripts",
+      "mode": "0755",
+      "component": "core",
+      "type": "tree",
+      "include": [
+        "*"
+      ],
+      "exclude": []
+    },
+    {
+      "id": "default-kb",
+      "source_root": "source",
+      "source": "kb",
+      "destination": "share/miyu/default-kb/kb",
+      "mode": "0644",
+      "component": "core",
+      "type": "tree",
+      "include": [
+        "*.md"
+      ],
+      "exclude": [
+        ".git",
+        "pictures",
+        "legacy",
+        "Legacy",
+        "lagacy",
+        "Lagacy",
+        "Wikis"
+      ]
+    },
+    {
+      "id": "shorinwiki",
+      "source_root": "wiki",
+      "source": "wiki",
+      "destination": "share/miyu/default-kb/shorinwiki",
+      "mode": "0644",
+      "component": "core",
+      "type": "tree",
+      "include": [
+        "*.md"
+      ],
+      "exclude": [
+        ".git",
+        "pictures",
+        "legacy",
+        "Legacy",
+        "lagacy",
+        "Lagacy",
+        "Wikis"
+      ]
+    },
+    {
+      "id": "default-kb-manifest",
+      "source_root": "runtime",
+      "source": "default-kb/manifest/manifest.json",
+      "destination": "share/miyu/default-kb/manifest/manifest.json",
+      "mode": "0644",
+      "component": "core",
+      "type": "file"
+    },
+    {
+      "id": "wiki-commit",
+      "source_root": "runtime",
+      "source": "default-kb/manifest/shorinwiki.commit",
+      "destination": "share/miyu/default-kb/manifest/shorinwiki.commit",
+      "mode": "0644",
+      "component": "core",
+      "type": "file"
+    },
+    {
+      "id": "gnu-onnxruntime",
+      "source_root": "runtime",
+      "source": "onnxruntime/lib",
+      "destination": "lib/miyu",
+      "mode": "0644",
+      "component": "core",
+      "type": "tree",
+      "include": [
+        "libonnxruntime.so*",
+        "libonnxruntime_providers_shared.so"
+      ],
+      "exclude": [],
+      "build_ids": [
+        "gnu-x86_64"
+      ],
+      "required_files": [
+        "libonnxruntime.so",
+        "libonnxruntime.so.1",
+        "libonnxruntime.so.1.23.2"
+      ]
+    },
+    {
+      "id": "gnu-onnxruntime-license",
+      "source_root": "runtime",
+      "source": "onnxruntime/LICENSE",
+      "destination": "share/licenses/miyu/onnxruntime.LICENSE",
+      "mode": "0644",
+      "component": "core",
+      "type": "file",
+      "build_ids": [
+        "gnu-x86_64"
+      ]
+    },
+    {
+      "id": "gnu-onnxruntime-notices",
+      "source_root": "runtime",
+      "source": "onnxruntime/ThirdPartyNotices.txt",
+      "destination": "share/licenses/miyu/onnxruntime.ThirdPartyNotices.txt",
+      "mode": "0644",
+      "component": "core",
+      "type": "file",
+      "build_ids": [
+        "gnu-x86_64"
+      ]
+    },
+    {
+      "id": "voice-sherpa-license",
+      "source_root": "runtime",
+      "source": "licenses/sherpa-onnx-LICENSE",
+      "destination": "share/licenses/miyu-voice/sherpa-onnx.LICENSE",
+      "mode": "0644",
+      "component": "voice",
+      "type": "file"
+    },
+    {
+      "id": "shorinwiki-license",
+      "source_root": "wiki",
+      "source": "LICENSE",
+      "destination": "share/licenses/miyu/ShorinWiki.LICENSE",
+      "mode": "0644",
+      "component": "core",
+      "type": "file"
+    }
+  ]
+}

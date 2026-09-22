@@ -1,10 +1,17 @@
-//! MCP 桥对外吐的工具 schema 按上游模型方言整形。
+//! MCP 桥对外吐的工具 schema:先做一层与方言无关的净化,再按上游模型方言整形。
 //!
-//! Miyu 的工具 schema 是给 OpenAI/Anthropic 线写的,那两家对 JSON Schema 来
-//! 者不拒;Gemini 的 function declaration 校验严得多——`enum` 里有空串直接
-//! 400(`properties[site].enum[4]: cannot be empty`,09-03 antigravity 中转首跑
-//! 撞上),`type` 不能是数组,`additionalProperties`/`pattern`/`default` 这些键
-//! 不认。整形只发生在桥上、只在拉起方点名 `MIYU_MCP_SCHEMA_DIALECT=gemini`
+//! 净化(所有方言都过):`enum` 里的空串和类型不符的项剔掉,剔空了连键一起删,
+//! `default` 不在 enum 里就剔掉。Miyu 的工具 schema 是给 OpenAI/Anthropic 线写的,
+//! 那两家来者不拒,所以脏项一直埋着;Google 侧对空 enum 是硬 400,而且不是废掉
+//! 这一个工具,是当轮全部工具一起被毙(`properties[site].enum[4]: cannot be empty`,
+//! 09-03 antigravity 中转首跑撞上)。原来只在 gemini 方言里滤,claude-code 与 codex
+//! 两条线走无方言路径,空串照旧在它们的出站工具表里(issue #45 / PR #46 发现,
+//! 09-18 修)。**递归只走 schema 位置**(`properties` 的各个值、`items`、`anyOf` /
+//! `oneOf` / `allOf`):`properties` 底下可以有名字就叫 `enum` / `default` 的属性,
+//! 无差别递归会把同名属性静默删掉(PR #46 就踩了这个)。
+//!
+//! Gemini 方言整形:`type` 不能是数组,`additionalProperties`/`pattern`/`default`
+//! 这些键不认。整形只发生在桥上、只在拉起方点名 `MIYU_MCP_SCHEMA_DIALECT=gemini`
 //! 时——工具自己的 schema 一个字不改,别的供应商照旧。
 
 use serde_json::{json, Map, Value};
@@ -26,10 +33,78 @@ const GEMINI_KEYS: &[&str] = &[
 ];
 
 pub(in crate::cli) fn shape_for_dialect(schema: Value, dialect: &str) -> Value {
+    let schema = sanitize(schema);
     match dialect {
         "gemini" => gemini_compatible(schema),
         _ => schema,
     }
+}
+
+/// 与方言无关的净化。只在 schema 位置递归:这一层的 `enum`/`default` 是关键字,
+/// `properties` 下面的同名键是**属性名**,不碰。
+pub(in crate::cli) fn sanitize(schema: Value) -> Value {
+    let Value::Object(mut map) = schema else {
+        return schema;
+    };
+    let declared_type = map.get("type").cloned();
+    if let Some(Value::Array(values)) = map.remove("enum") {
+        let kept: Vec<Value> = values
+            .into_iter()
+            .filter(|value| enum_value_fits(value, declared_type.as_ref()))
+            .collect();
+        if !kept.is_empty() {
+            map.insert("enum".into(), Value::Array(kept));
+        }
+    }
+    if let (Some(default), Some(Value::Array(allowed))) = (map.get("default"), map.get("enum")) {
+        if !allowed.contains(default) {
+            map.remove("default");
+        }
+    }
+    if let Some(Value::Object(props)) = map.remove("properties") {
+        let cleaned: Map<String, Value> = props
+            .into_iter()
+            .map(|(name, sub)| (name, sanitize(sub)))
+            .collect();
+        map.insert("properties".into(), Value::Object(cleaned));
+    }
+    if let Some(items) = map.remove("items") {
+        map.insert("items".into(), sanitize(items));
+    }
+    for key in ["anyOf", "oneOf", "allOf"] {
+        if let Some(Value::Array(variants)) = map.remove(key) {
+            map.insert(
+                key.into(),
+                Value::Array(variants.into_iter().map(sanitize).collect()),
+            );
+        }
+    }
+    Value::Object(map)
+}
+
+/// enum 项要非空、且与声明的类型对得上(没声明类型就只挡空串)。
+fn enum_value_fits(value: &Value, declared_type: Option<&Value>) -> bool {
+    if value.as_str().is_some_and(str::is_empty) || value.is_null() {
+        return false;
+    }
+    let types: Vec<&str> = match declared_type {
+        Some(Value::String(one)) => vec![one.as_str()],
+        Some(Value::Array(many)) => many.iter().filter_map(Value::as_str).collect(),
+        _ => return true,
+    };
+    if types.is_empty() {
+        return true;
+    }
+    types.iter().any(|kind| match *kind {
+        "string" => value.is_string(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "number" => value.is_number(),
+        "boolean" => value.is_boolean(),
+        "array" => value.is_array(),
+        "object" => value.is_object(),
+        "null" => value.is_null(),
+        _ => true,
+    })
 }
 
 fn gemini_compatible(schema: Value) -> Value {
@@ -172,5 +247,75 @@ mod tests {
         let shaped = shape_for_dialect(raw.clone(), "gemini");
         assert_eq!(shaped, json!({ "type": "object" }));
         assert_eq!(shape_for_dialect(raw.clone(), ""), raw);
+    }
+
+    /// 净化对所有方言生效:空串/类型不符的 enum 项剔掉,剔空连键删,default 不在
+    /// enum 里剔掉;items 与 anyOf/oneOf/allOf 里的也一样。
+    #[test]
+    fn sanitizing_drops_bad_enum_items_on_every_dialect() {
+        let raw = json!({
+            "type": "object",
+            "properties": {
+                "site": { "type": "string", "enum": ["zh", "cn", "uk", "ja", ""], "default": "cn" },
+                "count": { "type": "integer", "enum": [1, "two", 3, null], "default": "two" },
+                "gone": { "type": "string", "enum": ["", ""] },
+                "list": { "type": "array", "items": { "type": "string", "enum": ["a", ""] } },
+                "either": { "anyOf": [ { "type": "string", "enum": ["", "x"] }, { "type": "integer" } ] },
+                "loose": { "enum": ["k", "", 2] }
+            }
+        });
+        for dialect in ["", "gemini"] {
+            let shaped = shape_for_dialect(raw.clone(), dialect);
+            let props = &shaped["properties"];
+            assert_eq!(
+                props["site"]["enum"],
+                json!(["zh", "cn", "uk", "ja"]),
+                "{dialect}"
+            );
+            assert_eq!(props["count"]["enum"], json!([1, 3]));
+            assert!(
+                props["count"].get("default").is_none(),
+                "default 不在 enum 里要剔掉"
+            );
+            assert!(props["gone"].get("enum").is_none(), "剔空了连键一起删");
+            assert_eq!(props["list"]["items"]["enum"], json!(["a"]));
+            assert_eq!(
+                props["loose"]["enum"],
+                json!(["k", 2]),
+                "没声明类型只挡空串"
+            );
+        }
+        // 无方言路径除净化外一个字不改:default 还在、anyOf 还在(gemini 方言本来
+        // 就不认 anyOf,整个键被剔,那是整形不是净化)。
+        let plain = shape_for_dialect(raw.clone(), "");
+        assert_eq!(plain["properties"]["site"]["default"], "cn");
+        assert_eq!(
+            plain["properties"]["either"]["anyOf"][0]["enum"],
+            json!(["x"])
+        );
+    }
+
+    /// 递归只走 schema 位置:`properties` 底下名字就叫 enum / default / items 的
+    /// **属性**原样保留(PR #46 的无差别递归会把它们删掉)。
+    #[test]
+    fn properties_named_like_keywords_survive() {
+        let raw = json!({
+            "type": "object",
+            "properties": {
+                "enum": { "type": "string", "description": "a field that happens to be called enum" },
+                "default": { "type": "integer" },
+                "items": { "type": "array", "items": { "type": "string", "enum": ["", "q"] } },
+                "nested": {
+                    "type": "object",
+                    "properties": { "enum": { "type": "string", "enum": ["", "z"] } }
+                }
+            }
+        });
+        let shaped = shape_for_dialect(raw, "");
+        let props = &shaped["properties"];
+        assert_eq!(props["enum"]["type"], "string");
+        assert_eq!(props["default"]["type"], "integer");
+        assert_eq!(props["items"]["items"]["enum"], json!(["q"]));
+        assert_eq!(props["nested"]["properties"]["enum"]["enum"], json!(["z"]));
     }
 }

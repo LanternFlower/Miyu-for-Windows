@@ -100,7 +100,7 @@ pub(in crate::cli) fn inline_fuzzy_scroll(selected: usize, scroll: usize, visibl
 }
 
 pub(in crate::cli) fn inline_fuzzy_bar() -> String {
-    input_prompt_bar(AgentMode::Normal)
+    input_prompt_bar(PersonaLane::Active)
 }
 
 pub(in crate::cli) fn inline_fuzzy_header(query: &str, width: usize) -> String {
@@ -290,26 +290,12 @@ pub(in crate::cli) fn inline_single_help_line(width: usize, deletable: bool) -> 
     format!("\x1b[2m{}\x1b[0m", truncate_visible_width(line, width))
 }
 
-pub(in crate::cli) fn truncate_display(value: &str, max: usize) -> String {
-    if value.chars().count() <= max {
-        value.to_string()
-    } else {
-        format!(
-            "{}…",
-            value
-                .chars()
-                .take(max.saturating_sub(1))
-                .collect::<String>()
-        )
-    }
-}
-
 pub(in crate::cli) struct InlineRawMode {
     pub(in crate::cli) stdout: io::Stdout,
 }
 
 impl InlineRawMode {
-    pub(in crate::cli) fn start() -> Result<Self> {
+    pub fn start() -> Result<Self> {
         terminal::enable_raw_mode()?;
         spawn_hangup_watchdog();
         Ok(Self {

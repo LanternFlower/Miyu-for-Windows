@@ -73,8 +73,8 @@ fn short_image_link(path: &std::path::Path, filename: &str) -> Result<String> {
 }
 
 pub(in crate::cli) fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
-    match crate::clipboard::read_clipboard() {
-        Ok(crate::clipboard::ClipboardContent::Image(img)) => {
+    match miyu_base::clipboard::read_clipboard() {
+        Ok(miyu_base::clipboard::ClipboardContent::Image(img)) => {
             let path = img.write_temp_file(&paths.cache_dir, 0)?;
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("image");
             // 占位符里的文件名是跨进程找回图片的唯一线索,删不得;但 32 位
@@ -89,7 +89,7 @@ pub(in crate::cli) fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
             io::stdout().flush()?;
             Ok(())
         }
-        Ok(crate::clipboard::ClipboardContent::MediaPath(path)) => {
+        Ok(miyu_base::clipboard::ClipboardContent::MediaPath(path)) => {
             let source = std::path::Path::new(&path);
             let filename = source
                 .file_name()
@@ -97,7 +97,7 @@ pub(in crate::cli) fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
                 .unwrap_or("image");
             let dir = paths.cache_dir.join("clipboard_images");
             std::fs::create_dir_all(&dir)?;
-            crate::clipboard::cleanup_clipboard_images(&dir);
+            miyu_base::clipboard::cleanup_clipboard_images(&dir);
             // 这条路(剪贴板里是图片**文件**而不是图片数据,例如从 QQ 或文件
             // 管理器复制)原先原样打出源文件名,而 QQ 的文件名正好是 32 位
             // 哈希,占位符就又长又吵——`Image` 分支早就截短了,这里漏了
@@ -113,12 +113,13 @@ pub(in crate::cli) fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
             io::stdout().flush()?;
             Ok(())
         }
-        Ok(crate::clipboard::ClipboardContent::TextPath(path)) => {
+        Ok(miyu_base::clipboard::ClipboardContent::TextPath(path)) => {
             print!("{}", path);
             io::stdout().flush()?;
             Ok(())
         }
-        Ok(crate::clipboard::ClipboardContent::Text(text)) => {
+        Ok(miyu_base::clipboard::ClipboardContent::Text(text)) => {
+            let text = normalize_pasted_newlines(&text);
             if should_summarize_pasted_text(&text) {
                 let index = shell_pasted_text_index(&paths.cache_dir, &text)?;
                 let placeholder = pasted_text_placeholder(index, pasted_text_line_count(&text));
@@ -201,7 +202,7 @@ pub(in crate::cli) async fn run_shell_intercept(
             clean_message,
             None,
             false,
-            AgentMode::Normal,
+            PersonaLane::Active,
             TurnSession::Current,
             None,
         )
@@ -220,9 +221,26 @@ pub(in crate::cli) async fn run_shell_intercept(
             println!("\x1b[2m{}\x1b[0m", t("cancelled", "已取消"));
             Ok(())
         }
-        // 其余错误这里不打印：往上返回后 `main.rs` 会打一次。以前这里先打
-        // 一遍再返回 Err，同一句「错误: …」就会出现两次。
-        other => other,
+        // 其余错误**在这儿打到 stdout**，再带着退出码、空正文返回——`main.rs`
+        // 见正文为空就不复述，同一句不会打两遍。
+        //
+        // 不能只靠 `main.rs` 打 stderr：fish 钩子里 `fish_command_not_found`
+        // 那两条路是 `miyu --shell-intercept … 2>/dev/null`，stderr 整个被吞，
+        // 「no LLM provider/model endpoint succeeded」这种回合失败就一个字都
+        // 看不见（用户实测）。
+        Err(err) => {
+            println!(
+                "\x1b[31m{}: {:#}\x1b[0m",
+                miyu_base::i18n::text("error", "错误"),
+                err
+            );
+            let _ = io::stdout().flush();
+            Err(crate::cli::exit_code::exit_with(
+                crate::cli::exit_code::exit_code_for(&err),
+                "",
+            ))
+        }
+        ok => ok,
     }
 }
 

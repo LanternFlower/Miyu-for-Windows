@@ -10,21 +10,26 @@ CLI 的参数与工具注册、工具层引用平台层。这类边只要还在�
 
     config / paths / i18n      最底层，谁都能用，它谁都不用
     llm / state / memory       不许 use web / cli / config_tui / platforms
+    memory / skills / persona_hint  子系统之间也不许互相 use(查询走端口,通知走事件)
     tools                      不许 use web / cli / config_tui / platforms
     render                     不许 use web / cli / platforms
-    agent                      不许 use web / cli / config_tui
+    agent                      不许 use web / cli / config_tui / render
     platforms                  不许 use web / cli / config_tui
     web                        不许 use cli / config_tui
     cli / config_tui           最上层，可以用下面所有
 
-白名单（`scripts/arch-dep-waivers.json`）记录**现存**违规的条数，每条都写明为什么还在。拆分推进时逐条删除；
+09-16 起再加一张**完整层序表**（`TIERS`，拆 crate 的边界草图）：每个顶层模块都登记在某一层，
+同层之间随便引，低层引用高层就是违规；没登记的新顶层模块直接失败。`FORBIDDEN` 里同层内部的禁令
+（记忆 / 技能 / 人格提醒互不 use）照旧生效。
+
+白名单（`test_scripts/arch-dep-waivers.json`）记录**现存**违规的条数，每条都写明为什么还在。拆分推进时逐条删除；
 新增违规不会命中白名单，直接失败。
 
 用法：
 
-    python3 scripts/arch_dep_check.py            # 报告 + 白名单外的违规即失败
-    python3 scripts/arch_dep_check.py --warn      # 只报告，永远退出 0
-    python3 scripts/arch_dep_check.py --write-waivers  # 把当前违规写成白名单
+    python3 test_scripts/arch_dep_check.py            # 报告 + 白名单外的违规即失败
+    python3 test_scripts/arch_dep_check.py --warn      # 只报告，永远退出 0
+    python3 test_scripts/arch_dep_check.py --write-waivers  # 把当前违规写成白名单
 """
 import argparse
 import json
@@ -35,20 +40,49 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
+SRC_ROOTS = [SRC] + sorted((ROOT / "crates").glob("*/src"))
 # 白名单跟脚本走,不认目录名——目录改名(scripts → test_scripts)后硬编码路径
 # 会静默失效:找不到基线时每一条既有引用都被当成新增,门禁全红(08-26)。
 WAIVER_FILE = Path(__file__).resolve().parent / "arch-dep-waivers.json"
 
+# 完整层序(自底向上)。拆 crate 时同一层就是一个 crate 的候选;跨层只能向下引用。
+# 放层的依据是「谁该知道谁」而不是今天的引用现状:render 消费 agent 的事件所以在 agent 之上;
+# 宿主端口(host_ports:ports/host_grants/host_query/live_turn)已从 runtime 拆出来放在 tools 之下,
+# runtime 只剩 DaemonState 那一半,留在场所层。
+TIERS = [
+    ("基础", ["i18n", "logging", "json_extract", "token_estimate", "token_counter", "prompts",
+             "default_models", "provider_url", "memory_types", "platform_types", "host_info",
+             "paths", "shell", "notify", "clipboard", "terminal", "question",
+             "process", "durations", "media_mime", "http_response", "orphan_guard",
+             "persona_lane",
+             "tool_names", "random_id",
+             "workspace", "sandbox"]),
+    ("配置", ["config", "host_ports", "provider_catalog", "models_cache", "embedding"]),
+    ("存储与协议", ["alarm", "ledger", "state", "llm"]),
+    ("子系统", ["memory", "skills", "persona_hint"]),
+    ("传输", ["ipc", "args", "slash_commands"]),
+    ("工具与引擎", ["tools", "voice", "transfer", "agent", "default_kb"]),
+    ("场所与展示", ["platforms", "runtime", "web", "daemon", "render"]),
+    # feature_sources 是引导与设置界面共用的那张功能表(它要问 tools/skills 有什么,
+    # 所以只能待在工具与引擎之上),消费者就是 oobe 与 config_tui,同层。
+    ("入口", ["pm", "oobe", "config_tui", "cli", "question_tui", "bin", "feature_sources"]),
+]
+TIER_OF = {module: index for index, (_, modules) in enumerate(TIERS) for module in modules}
+
 FORBIDDEN = {
     "llm": {"web", "cli", "config_tui", "platforms"},
     "state": {"web", "cli", "config_tui", "platforms"},
-    "memory": {"web", "cli", "config_tui", "platforms"},
+    # 子系统之间不许直接 use(09-16 接口治理):要信息走查询端口,要通知走事件。
+    "memory": {"web", "cli", "config_tui", "platforms", "skills", "persona_hint"},
+    "skills": {"web", "cli", "config_tui", "platforms", "memory", "persona_hint"},
+    "persona_hint": {"web", "cli", "config_tui", "platforms", "memory", "skills"},
     # tools → platforms 是方案里明确要断的边：平台作用域工具（看图、QQ 群管）
     # 现在直接拿 PlatformTurnContext，要断得先抽 trait。先记进白名单让它只减
     # 不增。
     "tools": {"web", "cli", "config_tui", "platforms"},
     "render": {"web", "cli", "platforms"},
-    "agent": {"web", "cli", "config_tui"},
+    # render 消费 agent 的事件(render::agent_events),所以 agent 不能再反向 use render(09-16)。
+    "agent": {"web", "cli", "config_tui", "render"},
     "platforms": {"web", "cli", "config_tui"},
     "web": {"cli", "config_tui"},
 }
@@ -59,18 +93,25 @@ CRATE_PATH = re.compile(r"\bcrate::([a-z_][a-z0-9_]*)::")
 
 def module_of(path):
     """文件属于哪个顶层模块。`src/tools/web.rs` → `tools`，`src/cli.rs` → `cli`。"""
-    rel = path.relative_to(SRC)
+    root = next(r for r in SRC_ROOTS if path.is_relative_to(r))
+    rel = path.relative_to(root)
     return rel.parts[0][:-3] if len(rel.parts) == 1 else rel.parts[0]
 
 
 def scan():
     """返回 {(来源模块, 目标模块): [(文件, 行号, 原文)]}"""
     edges = defaultdict(list)
-    for path in sorted(SRC.rglob("*.rs")):
+    unknown = set()
+    for path in sorted(p for r in SRC_ROOTS for p in r.rglob("*.rs")):
         source = module_of(path)
-        banned = FORBIDDEN.get(source)
-        if not banned:
+        if source in ("lib", "main"):
             continue
+        if source not in TIER_OF:
+            unknown.add(source)
+            continue
+        banned = set(FORBIDDEN.get(source, ())) | {
+            module for module, tier in TIER_OF.items() if tier > TIER_OF[source]
+        }
         for number, line in enumerate(
             path.read_text(encoding="utf-8", errors="replace").split("\n"), 1
         ):
@@ -88,6 +129,10 @@ def scan():
                     edges[(source, target)].append(
                         (str(path.relative_to(ROOT)), number, line.strip()[:100])
                     )
+    if unknown:
+        print("未登记进 TIERS 的顶层模块:", ", ".join(sorted(unknown)))
+        print("  新模块先在 test_scripts/arch_dep_check.py 的 TIERS 里定层,门禁才知道它能引谁。")
+        sys.exit(1)
     return edges
 
 

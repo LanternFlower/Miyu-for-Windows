@@ -7,7 +7,17 @@ use crate::cli::*;
 
 pub(in crate::cli) fn inline_fuzzy_select(
     items: &[String],
+    active: Vec<bool>,
+) -> Result<Option<Vec<bool>>> {
+    inline_fuzzy_select_with(items, active, None)
+}
+
+/// 带一条 Tab 规矩的多选：`toggle` 给了就由它决定按 Tab 时哪几格翻（`/models` 的
+/// 「继承」连带，见 `model_cmds::toggle_model_row`）；没给就是翻高亮那一格。
+pub(in crate::cli) fn inline_fuzzy_select_with(
+    items: &[String],
     mut active: Vec<bool>,
+    toggle: Option<&dyn Fn(&mut [bool], usize)>,
 ) -> Result<Option<Vec<bool>>> {
     let menu_lines = inline_fuzzy_lines(items.len());
     reserve_inline_fuzzy_space(menu_lines)?;
@@ -42,9 +52,16 @@ pub(in crate::cli) fn inline_fuzzy_select(
             &active,
         )?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code,
+            modifiers,
+            kind,
+            ..
         }) = event::read()?
         {
+            // Windows 上 crossterm 连松键一起报（Unix 不报）；不过滤一次按键算两下。
+            if kind == KeyEventKind::Release {
+                continue;
+            }
             match code {
                 KeyCode::Char('c')
                     if modifiers.contains(KeyModifiers::CONTROL)
@@ -74,8 +91,13 @@ pub(in crate::cli) fn inline_fuzzy_select(
                 }
                 KeyCode::Tab => {
                     if let Some((_, index)) = matches.get(selected) {
-                        if let Some(value) = active.get_mut(*index) {
-                            *value = !*value;
+                        match toggle {
+                            Some(toggle) => toggle(&mut active, *index),
+                            None => {
+                                if let Some(value) = active.get_mut(*index) {
+                                    *value = !*value;
+                                }
+                            }
                         }
                     }
                 }
@@ -146,9 +168,16 @@ pub(in crate::cli) fn inline_fuzzy_select_single(
             &active,
         )?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code,
+            modifiers,
+            kind,
+            ..
         }) = event::read()?
         {
+            // Windows 上 crossterm 连松键一起报（Unix 不报）；不过滤一次按键算两下。
+            if kind == KeyEventKind::Release {
+                continue;
+            }
             match code {
                 KeyCode::Char('c')
                     if modifiers.contains(KeyModifiers::CONTROL)
@@ -261,20 +290,6 @@ pub(in crate::cli) fn inline_select_key(
     }
 }
 
-pub(in crate::cli) fn inline_single_select(
-    title: &str,
-    lines: &[String],
-    search: &[String],
-    initial_selected: usize,
-) -> Result<Option<usize>> {
-    match inline_single_select_deletable(title, lines, search, initial_selected, None)? {
-        InlineSelectOutcome::Chosen(index) => Ok(Some(index)),
-        // Unreachable without delete labels, but folding it into `None` keeps
-        // callers that never opted in from having to care.
-        InlineSelectOutcome::Cancelled | InlineSelectOutcome::Deleted(_) => Ok(None),
-    }
-}
-
 /// Fuzzy picker. Passing `delete_labels` (one per row, used in the inline
 /// confirmation) enables Ctrl+D deletion and returns `Deleted` once the user
 /// confirms; the caller performs the deletion and decides whether to reopen.
@@ -294,10 +309,11 @@ pub(in crate::cli) fn inline_single_select_deletable(
     let mut scroll = 0usize;
     let (_, cursor_y) = cursor::position().unwrap_or((0, menu_lines.saturating_sub(1)));
     let anchor_y = cursor_y.saturating_sub(menu_lines.saturating_sub(1));
+    // Ctrl+D **当场删**，没有 y/N（用户 09-20 拍板；全屏那条路同步改了，见
+    // `repl::session_picker`）。`delete_labels` 现在只用来判「这个选择器能不能
+    // 删」；`draw_inline_single` 的确认表头那一支留着没动，别的选择器将来要
+    // 确认还用得上。
     let deletable = delete_labels.is_some();
-    // Index awaiting a y/N answer. Confirming inside the picker keeps the
-    // drawing intact instead of tearing it down for a separate prompt.
-    let mut confirming: Option<usize> = None;
     loop {
         let matches = fuzzy_matches(&matcher, search, &query);
         if selected >= matches.len() {
@@ -305,11 +321,6 @@ pub(in crate::cli) fn inline_single_select_deletable(
         }
         let visible = matches.len().min(menu_lines.saturating_sub(2) as usize);
         scroll = inline_fuzzy_scroll(selected, scroll, visible);
-        let confirm_label = confirming.and_then(|index| {
-            delete_labels
-                .and_then(|labels| labels.get(index))
-                .map(String::as_str)
-        });
         draw_inline_single(
             &mut session.stdout,
             anchor_y,
@@ -321,22 +332,19 @@ pub(in crate::cli) fn inline_single_select_deletable(
             selected,
             scroll,
             deletable,
-            confirm_label,
+            None,
         )?;
         let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code,
+            modifiers,
+            kind,
+            ..
         }) = event::read()?
         else {
             continue;
         };
-        if let Some(index) = confirming {
-            // Only an explicit yes deletes; every other key backs out.
-            let confirmed = matches!(code, KeyCode::Char('y') | KeyCode::Char('Y'));
-            confirming = None;
-            if confirmed {
-                clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
-                return Ok(InlineSelectOutcome::Deleted(index));
-            }
+        // Windows 上 crossterm 连松键一起报（Unix 不报）；不过滤一次按键算两下。
+        if kind == KeyEventKind::Release {
             continue;
         }
         match inline_select_key(code, modifiers, deletable) {
@@ -353,7 +361,11 @@ pub(in crate::cli) fn inline_single_select_deletable(
                 });
             }
             InlineSelectKey::DeleteRequest => {
-                confirming = matches.get(selected).map(|(_, index)| *index);
+                if let Some((_, index)) = matches.get(selected) {
+                    let index = *index;
+                    clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
+                    return Ok(InlineSelectOutcome::Deleted(index));
+                }
             }
             InlineSelectKey::Up => selected = selected.saturating_sub(1),
             InlineSelectKey::Down => {

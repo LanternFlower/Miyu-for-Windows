@@ -1,22 +1,25 @@
-use crate::agent::{
-    archive_and_delete_visible_turns, Agent, AgentEvent, AgentMode, AgentTurnControl,
+use miyu_base::config::{ActiveProviderModelConfig, AppConfig};
+use miyu_base::i18n::{is_zh, text as t};
+use miyu_base::paths::MiyuPaths;
+use miyu_core::ipc::{self, Command as IpcCommand, Frame as IpcFrame, Request as IpcRequest};
+use miyu_core::llm::{
+    ChatResult, ChatStreamChunk, GenerationSpeed, OpenAiCompatibleClient, ThinkingVariantOptions,
+    TurnTokens, Usage,
 };
-use crate::config::{ActiveProviderModelConfig, AppConfig};
-use crate::i18n::{is_zh, text as t};
-use crate::ipc::{self, Command as IpcCommand, Frame as IpcFrame, Request as IpcRequest};
-use crate::llm::{
-    ChatResult, ChatStreamChunk, OpenAiCompatibleClient, ThinkingVariantOptions, TurnTokens, Usage,
+use miyu_core::memory::{MemoryOrganizer, MemoryStore};
+use miyu_engine::agent::{
+    archive_and_delete_visible_turns, Agent, AgentEvent, AgentTurnControl, PersonaLane,
 };
-use crate::memory::{MemoryOrganizer, MemoryStore};
-use crate::paths::MiyuPaths;
 mod args;
 mod daemon_cmds;
+mod entry_flows;
 pub(crate) mod exit_code;
 mod inline_picker;
 mod localize;
 mod mcp_schema;
 mod mcp_serve;
 mod output;
+mod question_panel;
 mod session_cmds;
 mod setup;
 mod stdin_input;
@@ -26,6 +29,7 @@ mod turn_request;
 mod usage_view;
 use args::*;
 use daemon_cmds::*;
+use entry_flows::*;
 use inline_picker::*;
 use localize::*;
 use mcp_serve::*;
@@ -39,35 +43,50 @@ mod data_cmds;
 mod embed_cmds;
 use embed_cmds::*;
 mod footer;
+mod history_replay;
+mod host_cmds;
+mod layout_cmds;
 mod migrate_cmds;
 mod model_cmds;
+mod pm_cmds;
 mod pop_cmds;
 mod repl;
 mod select;
 mod shell_bridge;
 mod stt;
+mod terminal_guard;
+mod variant_menu;
 
 // 日志读取与格式化已拆到 daemon_log。
 use alarm_worker::*;
 use daemon_log::*;
 use data_cmds::*;
 use footer::*;
+use history_replay::*;
+use host_cmds::*;
+use layout_cmds::*;
 use migrate_cmds::*;
 use model_cmds::*;
+use pm_cmds::*;
 use pop_cmds::*;
 use select::*;
 use shell_bridge::*;
 use stt::*;
+pub(crate) use terminal_guard::*;
+use variant_menu::*;
 #[cfg(test)]
 mod tests;
 
 // 宽度计算与输入编辑已拆到 repl 子模块，这里引回来。
 // repl 下几个新拆的子模块整组导入（原本就在 cli/mod.rs 里，平铺可见）
-pub(in crate::cli) use repl::{commands::*, jobs::*, layout::*, placeholder::*, session::*};
+pub(in crate::cli) use repl::{
+    commands::*, input_layout::*, jobs::*, layout::*, pickers::*, placeholder::*, session::*,
+};
 // 命令表已上提到 crate 级与 WebUI 共用；这里再导出一次，cli 内的调用点不变。
-pub(in crate::cli) use crate::slash_commands::*;
+pub(in crate::cli) use miyu_core::slash_commands::*;
 use repl::direct::{run_chat_with_images, run_chat_with_options, run_direct_repl};
 use repl::editor::{load_repl_input_history, repl_input_lines};
+pub(in crate::cli) use repl::herdr;
 use repl::input::render_repl_input_with_footer;
 use repl::live_turn::{
     handle_live_agent_event, handle_live_post_turn_overflow, run_live_agent_turn,
@@ -80,14 +99,10 @@ use repl::tail::{
 use repl::wake::follow_wake_run;
 use repl::width::{truncate_visible_width, visible_width, wrap_visible_width};
 
-use crate::render;
-use crate::tools::build_tool_registry;
+use miyu_engine::tools::build_tool_registry;
+use miyu_hosts::render;
 
 // 参数类型已下沉到基础层；这里 re-export，外部按 `cli::WebArgs` 引用不断。
-pub use crate::args::WebArgs;
-use crate::shell;
-use crate::state::{QueuedPrompt, QueuedPromptAttachment, StateStore, Turn, TurnStatus};
-use crate::tools;
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use chrono::{DateTime, Local};
@@ -98,10 +113,14 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 };
 use crossterm::style::{Color, Print, Stylize};
-use crossterm::terminal::{self, BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate};
+use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{execute, queue};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
+use miyu_base::shell;
+pub use miyu_core::args::WebArgs;
+use miyu_core::state::{QueuedPrompt, QueuedPromptAttachment, StateStore, Turn, TurnStatus};
+use miyu_engine::tools;
 use std::ffi::OsString;
 use std::io::Cursor;
 use std::io::{self, IsTerminal, Read, Seek, SeekFrom, Write};
@@ -116,7 +135,51 @@ mod keyboard_enhancement;
 use keyboard_enhancement::KeyboardEnhancementState;
 
 pub fn parse() -> Cli {
-    parse_args(std::env::args_os().collect()).unwrap_or_else(|err| err.exit())
+    let args = apply_pm_shim(std::env::args_os().collect());
+    parse_args(args).unwrap_or_else(|err| err.exit())
+}
+
+/// `miyupm …` 是 `miyu pm …` 的 shim:按 argv[0] 的文件名识别(打包时做个符号链接
+/// 即可,不用第二个二进制)。`pm` 在帮助里已隐藏,这条显式入口照旧。
+pub(in crate::cli) fn apply_pm_shim(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    let invoked_as_pm = args
+        .first()
+        .map(std::path::PathBuf::from)
+        .and_then(|path| path.file_name().map(|name| name.to_os_string()))
+        .is_some_and(|name| name == "miyupm");
+    if invoked_as_pm {
+        args.insert(1, std::ffi::OsString::from("pm"));
+    }
+    args
+}
+
+/// 装着的 shell hook 和这个二进制对不上就悄悄换成新的。
+///
+/// hook 是**生成**的文件（顶上那行写着版本和内容指纹），升级之后本该跟着换，
+/// 否则新版的补全、按键绑定、拦截逻辑要等用户想起来手动跑一次 `fish-init`
+/// 才生效。只动已经存在的文件：没装过 shell 集成的人不会被自作主张装上，
+/// `.bashrc` / `.zshrc` 里那段 source 也一个字不碰。
+///
+/// 换完只对**新开的 shell** 生效，所以不打字——当前这条命令的输出里冒出一行
+/// 「已更新 hook」只会碍事（shellhook 那条路上还会糊进正文）。
+///
+/// **隔离家目录下不做**：fish 的 hook 在 `~/.config/fish/conf.d/` 下，
+/// 不跟着 `MIYU_HOME` 走，沙箱/测具一跑就会把用户真正在用的那份改掉。
+/// 走查要验这条路的话，把 `XDG_CONFIG_HOME` 也指进沙箱，再用
+/// `MIYU_SHELL_HOOK_SYNC=1` 强制打开。
+fn refresh_shell_hooks(paths: &MiyuPaths) {
+    let forced = std::env::var_os("MIYU_SHELL_HOOK_SYNC").is_some_and(|value| value == "1");
+    if !forced && std::env::var_os("MIYU_HOME").is_some() {
+        return;
+    }
+    let updated = miyu_base::shell::sync_installed_hooks(paths);
+    if !updated.is_empty() {
+        tracing::info!(
+            shells = updated.join(", "),
+            version = env!("CARGO_PKG_VERSION"),
+            "refreshed installed shell hooks"
+        );
+    }
 }
 
 pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
@@ -142,7 +205,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
     let _logging_guard = if skip_diagnostic_logging {
         None
     } else {
-        match crate::logging::init(&paths, cli.debug) {
+        match miyu_base::logging::init(&paths, cli.debug) {
             Ok(guard) => Some(guard),
             Err(err) => {
                 eprintln!(
@@ -156,7 +219,10 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
             }
         }
     };
-    let mode = AgentMode::Normal;
+    refresh_shell_hooks(&paths);
+    // 终端集成会话那条车道按配置选模式（daemon 侧按会话人格强制，这里只管
+    // 直连路和 IPC 里那个遗留字段）。
+    let mode = terminal_lane_mode(&paths);
 
     if cli.shell_intercept {
         let shell_name = cli.shell.as_deref().unwrap_or("fish");
@@ -174,10 +240,29 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                 | Some(Command::PowerShellInit)
                 | Some(Command::RemoveShellHook)
                 | Some(Command::Paths)
+                | Some(Command::Layout(_))
+                | Some(Command::Pm(_))
+                | Some(Command::Host(_))
                 | Some(Command::Import(_))
         )
     {
-        run_init(&paths, InitKind::FirstRun)?;
+        // 紧接着就进引导或全屏画面的,初始化不打字:那几行会留在屏上。
+        let quiet = cli.banner
+            || (matches!(cli.command, None | Some(Command::Oobe))
+                && cli.message.is_empty()
+                && io::stdin().is_terminal());
+        run_init(
+            &paths,
+            if quiet {
+                InitKind::Quiet
+            } else {
+                InitKind::FirstRun
+            },
+        )?;
+    }
+    if cli.banner {
+        let config = AppConfig::load_or_default(&paths)?;
+        return crate::cli::repl::banner::preview::run(&config, &paths);
     }
 
     // Captured before `cli.command` is moved out: one-shot entry points below
@@ -191,19 +276,22 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
     match cli.command {
         Some(Command::AlarmWorker(args)) => run_alarm_worker(args),
         Some(Command::DaemonWorker(args)) => {
-            let _logging_guard = crate::logging::init(&paths, cli.debug).ok();
+            // 谁起的谁死就跟着死（真 daemon 除外，它带着 detached 标记）。
+            // 放在最前面：越早捆上，能漏掉的窗口越小。
+            miyu_base::orphan_guard::tie_lifetime_to_launcher();
+            let _logging_guard = miyu_base::logging::init(&paths, cli.debug).ok();
             // daemon 的 stdout/stderr 被重定向进 daemon.log，而 tracing 写的是
             // 另一个按天滚动的文件。出了事翻错文件是常态——排查一次长回复不转
             // 图片，我在 daemon.log 里绕了很久，真正的 warning 一直躺在
             // miyu.YYYY-MM-DD.log 里。所以在这条日志的开头指一次路。
             println!(
                 "{}",
-                crate::i18n::text(
+                miyu_base::i18n::text(
                     "Detailed logs (warnings, tool failures) go to miyu.YYYY-MM-DD.log in the same directory; this file only carries startup output.",
                     "详细日志（警告、工具失败）在同目录的 miyu.YYYY-MM-DD.log；本文件只有启动输出。"
                 )
             );
-            crate::daemon::run(paths, args).await
+            miyu_hosts::daemon::run(paths, args).await
         }
         Some(Command::Tool(args)) => run_tool(&paths, mode, args).await,
         Some(Command::Ask(args)) => {
@@ -230,6 +318,9 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
             paths.print();
             Ok(())
         }
+        Some(Command::Layout(args)) => run_layout(&paths, args),
+        Some(Command::Pm(args)) => run_pm(&paths, args).await,
+        Some(Command::Host(args)) => run_host(&paths, args).await,
         Some(Command::Config(args)) => {
             let saved = run_config(&paths, args).await?;
             if saved && ipc::daemon_info(&paths).await.is_some() {
@@ -302,15 +393,20 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                 let name = entry.name.clone();
                 session_cmds::compact_session(
                     &paths,
-                    crate::ipc::SessionRef::Id { id: entry.id },
+                    miyu_core::ipc::SessionRef::Id { id: entry.id },
                     Some(&name),
                     plain,
                 )
                 .await
             }
             None => {
-                session_cmds::compact_session(&paths, crate::ipc::SessionRef::Current, None, plain)
-                    .await
+                session_cmds::compact_session(
+                    &paths,
+                    miyu_core::ipc::SessionRef::Current,
+                    None,
+                    plain,
+                )
+                .await
             }
         },
         Some(Command::Kb(args)) => run_kb(&paths, args).await,
@@ -319,13 +415,14 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
         Some(Command::Memory(args)) => run_memory(&paths, args),
         Some(Command::Skills(args)) => run_skills(&paths, args),
         Some(Command::ResetMemoryCli) => run_reset_memory_command(&paths).await,
+        Some(Command::ResetAllMemoryCli) => run_reset_all_memory_command(&paths).await,
         Some(Command::Reset(args)) => {
             if let Some(target) = args.session.as_deref().or(session_arg.as_deref()) {
                 let entry = turn_request::resolve_managed_session(&paths, target).await?;
                 send_ipc_admin(
                     &paths,
                     IpcCommand::ResetConversation {
-                        target: crate::ipc::SessionRef::Id { id: entry.id },
+                        target: miyu_core::ipc::SessionRef::Id { id: entry.id },
                     },
                 )
                 .await?;
@@ -333,7 +430,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                 send_ipc_admin(
                     &paths,
                     IpcCommand::ResetConversation {
-                        target: crate::ipc::SessionRef::Current,
+                        target: miyu_core::ipc::SessionRef::Current,
                     },
                 )
                 .await?;
@@ -350,8 +447,17 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
             session_cmds::run_session_command(&paths, args.command, plain).await
         }
         Some(Command::Stdio) => stdio::run_stdio(&paths).await,
-        Some(Command::Normal) => run_repl(&paths, AgentMode::Normal).await,
-        Some(Command::Dev) => run_repl(&paths, AgentMode::Dev).await,
+        Some(Command::Dev) => run_repl(&paths, PersonaLane::Dev).await,
+        Some(Command::Oobe) => {
+            if run_oobe_flow(&paths).await? {
+                let result = run_repl(&paths, PersonaLane::Active).await;
+                // REPL 没能接过备用屏(启动失败)就自己退回主屏,别把终端留在备用屏上。
+                miyu_base::terminal::release_alt_screen_if_held();
+                result
+            } else {
+                Ok(())
+            }
+        }
         Some(Command::Web(args)) => run_web(&paths, args).await,
         Some(Command::Daemon(args)) => run_daemon_command(&paths, args).await,
         None => {
@@ -366,26 +472,15 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                         )
                     );
                 }
-                // 裸 miyu:按 default_mode 配置分流;未配置则打印模式说明,
-                // 逼一次显式选择(miyu normal / miyu dev)。
-                let default_mode = AppConfig::load_or_default(&paths)
-                    .map(|config| config.default_mode.trim().to_ascii_lowercase())
-                    .unwrap_or_default();
-                match default_mode.as_str() {
-                    "normal" => run_repl(&paths, AgentMode::Normal).await,
-                    "dev" => run_repl(&paths, AgentMode::Dev).await,
-                    "" => {
-                        print_mode_help();
-                        Ok(())
-                    }
-                    other => bail!(
-                        "{}: {other}",
-                        t(
-                            "invalid default_mode (expected normal or dev)",
-                            "default_mode 配置无效(应为 normal 或 dev)"
-                        )
-                    ),
+                // 裸 miyu = 普通 REPL(`miyu dev` 才是开发预设)。第一次先走
+                // 新手引导;老配置在 migrate 里已标成做过,不会被拦。
+                let config = AppConfig::load_or_default(&paths)?;
+                if crate::oobe::needed(&config) && !run_oobe_flow(&paths).await? {
+                    return Ok(());
                 }
+                let result = run_repl(&paths, PersonaLane::Active).await;
+                miyu_base::terminal::release_alt_screen_if_held();
+                result
             } else {
                 run_one_shot(&paths, root_turn, message, root_stdin, plain, mode).await
             }
@@ -393,110 +488,15 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
     }
 }
 
-/// 一次性回合的总入口(`miyu ask …` 与裸 `miyu "…"`)。
-///
-/// 没用到任何程序驱动特性时走原路(直连/阅后即焚/终端渲染),行为一字不改;
-/// 带了 `--create/--mode/--model/…` 或 JSON 输出时走新路:会话由
-/// `turn_request` 定,覆盖随 StartTurn 走,需要 daemon。
-async fn run_one_shot(
-    paths: &MiyuPaths,
-    options: TurnOptions,
-    message: String,
-    read_stdin: bool,
-    plain: bool,
-    mode: AgentMode,
-) -> Result<()> {
-    let message = if read_stdin {
-        append_stdin_to_eof(message)?
-    } else {
-        append_stdin_if_piped(message).await
-    };
-    let format = if plain {
-        OutputFormat::Text
-    } else {
-        options.output_format.unwrap_or_default()
-    };
-    let plain = plain || options.quiet;
-    let overrides = turn_request::build_overrides(paths, &options)?;
-    let programmatic = options.create
-        || options.mode.is_some()
-        || overrides.is_some()
-        || format != OutputFormat::Text
-        || !options.image.is_empty()
-        || options.cwd.is_some()
-        || options.timeout.is_some();
-    if !programmatic {
-        let session =
-            one_shot_session(paths, options.session.as_deref(), options.continue_session).await?;
-        return run_chat_with_options(paths, message, None, plain, mode, session, None).await;
+/// 「终端集成会话默认模式」：单次 / shellhook 那条路的模式。
+fn terminal_lane_mode(paths: &MiyuPaths) -> PersonaLane {
+    match AppConfig::load_or_default(paths) {
+        Ok(config) if config.terminal_session_is_dev() => PersonaLane::Dev,
+        _ => PersonaLane::Active,
     }
-    if message.is_empty() {
-        return Err(exit_code::usage_error(t(
-            "a message is required",
-            "需要给一条消息",
-        )));
-    }
-    let session = turn_request::resolve_turn_session(paths, &options).await?;
-    let outcome = match format {
-        OutputFormat::Text => {
-            if let Some(cwd) = options.cwd.as_deref() {
-                std::env::set_current_dir(cwd).map_err(|error| {
-                    exit_code::usage_error(format!(
-                        "{}: {} ({error})",
-                        t("cannot enter --cwd", "进不去 --cwd 目录"),
-                        cwd.display()
-                    ))
-                })?;
-            }
-            let images = options
-                .image
-                .iter()
-                .map(|path| {
-                    Some(crate::clipboard::PastedImage::Path(
-                        path.to_string_lossy().into_owned(),
-                    ))
-                })
-                .collect::<Vec<_>>();
-            let turn_session = match session.session_id.clone() {
-                Some(session_id) => TurnSession::Explicit(session_id),
-                None => TurnSession::Current,
-            };
-            repl::direct::run_chat_with_images_and_options(
-                paths,
-                message,
-                images,
-                plain,
-                mode,
-                turn_session,
-                overrides,
-            )
-            .await
-        }
-        OutputFormat::Json | OutputFormat::StreamJson => {
-            output::run_json_one_shot(
-                paths,
-                output::turn_client::TurnRequest {
-                    content: message,
-                    session_id: session.session_id.clone(),
-                    images: options.image.clone(),
-                    cwd: options.cwd.clone(),
-                    overrides,
-                    timeout: options.timeout.map(Duration::from_secs),
-                },
-                format,
-            )
-            .await
-        }
-    };
-    if session.ephemeral {
-        if let Some(session_id) = session.session_id.as_deref() {
-            discard_ephemeral_session(paths, session_id).await;
-        }
-    }
-    outcome
 }
 
-async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
+async fn run_repl(paths: &MiyuPaths, initial_mode: PersonaLane) -> Result<()> {
     if direct_mode_requested() {
         run_direct_repl(paths, initial_mode).await
     } else {
@@ -551,14 +551,14 @@ fn legacy_repl_history_file(paths: &MiyuPaths) -> PathBuf {
     paths.state_dir.join("repl-history.jsonl")
 }
 
-fn read_repl_history_file(path: &std::path::Path) -> Vec<String> {
+fn read_repl_history_file(path: &std::path::Path) -> Vec<ReplHistoryEntry> {
     let Ok(content) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
     content
         .lines()
-        .filter_map(|line| serde_json::from_str::<String>(line).ok())
-        .filter(|entry| !entry.trim().is_empty())
+        .filter_map(ReplHistoryEntry::parse_line)
+        .filter(|entry| !entry.display.trim().is_empty())
         .collect()
 }
 
@@ -566,7 +566,7 @@ fn read_repl_history_file(path: &std::path::Path) -> Vec<String> {
 /// append-only file, capped on load. Conversation resets delete turns, so the
 /// file is the durable source; the turns-derived list only seeds sessions that
 /// predate it.
-fn load_persistent_repl_history(paths: &MiyuPaths, session_id: &str) -> Vec<String> {
+fn load_persistent_repl_history(paths: &MiyuPaths, session_id: &str) -> Vec<ReplHistoryEntry> {
     let path = repl_history_file(paths, session_id);
     let mut entries = read_repl_history_file(&path);
     if entries.len() > REPL_HISTORY_CAP {
@@ -574,7 +574,7 @@ fn load_persistent_repl_history(paths: &MiyuPaths, session_id: &str) -> Vec<Stri
         // Opportunistic rewrite keeps the file from growing without bound.
         let rewritten = entries
             .iter()
-            .filter_map(|entry| serde_json::to_string(entry).ok())
+            .filter_map(ReplHistoryEntry::to_json_line)
             .collect::<Vec<_>>()
             .join("\n");
         let _ = std::fs::write(&path, rewritten + "\n");
@@ -585,20 +585,19 @@ fn load_persistent_repl_history(paths: &MiyuPaths, session_id: &str) -> Vec<Stri
 /// 会话内输入历史的容量上限:REPL 常开数天时防无界增长,超限丢最老。
 const REPL_HISTORY_LIMIT: usize = 500;
 
-fn push_history_capped(history: &mut Vec<String>, content: &str) {
-    history.push(content.to_string());
+fn push_history_capped(history: &mut Vec<ReplHistoryEntry>, entry: ReplHistoryEntry) {
+    history.push(entry);
     if history.len() > REPL_HISTORY_LIMIT {
         let excess = history.len() - REPL_HISTORY_LIMIT;
         history.drain(..excess);
     }
 }
 
-fn persist_repl_history_entry(paths: &MiyuPaths, session_id: &str, entry: &str) {
-    let entry = entry.trim();
-    if entry.is_empty() {
+fn persist_repl_history_entry(paths: &MiyuPaths, session_id: &str, entry: &ReplHistoryEntry) {
+    if entry.display.trim().is_empty() {
         return;
     }
-    let Ok(line) = serde_json::to_string(entry) else {
+    let Some(line) = entry.to_json_line() else {
         return;
     };
     let path = repl_history_file(paths, session_id);
@@ -618,15 +617,42 @@ fn persist_repl_history_entry(paths: &MiyuPaths, session_id: &str, entry: &str) 
 struct LiveSubmission {
     content: String,
     display_content: String,
-    images: Vec<Option<crate::clipboard::PastedImage>>,
+    images: Vec<Option<miyu_base::clipboard::PastedImage>>,
+    /// 提交时输入框里的粘贴载荷(按占位符序号),给上键历史留着。
+    pasted_texts: Vec<Option<PastedText>>,
+}
+
+fn trim_trailing_none<T>(mut items: Vec<Option<T>>) -> Vec<Option<T>> {
+    while matches!(items.last(), Some(None)) {
+        items.pop();
+    }
+    items
+}
+
+/// 把一条历史并进列表:同一次提交可能同时来自对话记录(展开全文)和历史
+/// 文件(占位符+载荷),按展开后的文本认作同一条,带载荷的那份胜出并留在原位。
+/// 返回是否新增了条目。
+fn merge_history_entry(history: &mut Vec<ReplHistoryEntry>, entry: ReplHistoryEntry) -> bool {
+    let expanded = entry.expanded();
+    if let Some(position) = history
+        .iter()
+        .position(|existing| existing.expanded() == expanded)
+    {
+        if entry.has_payload() && !history[position].has_payload() {
+            history[position] = entry;
+        }
+        return false;
+    }
+    push_history_capped(history, entry);
+    true
 }
 
 struct LiveAgentInput<'a> {
     content: &'a str,
-    images: &'a [Option<crate::clipboard::PastedImage>],
+    images: &'a [Option<miyu_base::clipboard::PastedImage>],
 }
 
-fn queued_prompt_lines(prompts: &[QueuedPrompt], mode: AgentMode, cols: usize) -> Vec<String> {
+fn queued_prompt_lines(prompts: &[QueuedPrompt], mode: PersonaLane, cols: usize) -> Vec<String> {
     let mut lines = Vec::new();
     for (index, prompt) in prompts.iter().enumerate() {
         if index > 0 {
@@ -642,7 +668,10 @@ fn queued_prompt_lines(prompts: &[QueuedPrompt], mode: AgentMode, cols: usize) -
     lines
 }
 
-fn write_committed_user_messages(messages: &[(&str, AgentMode)], leading_gap: bool) -> Result<()> {
+fn write_committed_user_messages(
+    messages: &[(&str, PersonaLane)],
+    leading_gap: bool,
+) -> Result<()> {
     write_committed_user_messages_from(messages, leading_gap, None)
 }
 
@@ -650,7 +679,7 @@ fn write_committed_user_messages(messages: &[(&str, AgentMode)], leading_gap: bo
 /// 查询(等应答会让 kitty 同步超时、提前提交半成品帧——光标闪屏),
 /// suspend 之后列是确定的,直接传进来。
 fn write_committed_user_messages_from(
-    messages: &[(&str, AgentMode)],
+    messages: &[(&str, PersonaLane)],
     leading_gap: bool,
     known_col: Option<u16>,
 ) -> Result<()> {
@@ -659,21 +688,33 @@ fn write_committed_user_messages_from(
     }
     let mut stdout = io::stdout();
     let col = known_col.unwrap_or_else(|| cursor_col_or(0));
-    if col > 0 {
-        writeln!(stdout)?;
-    }
-    let cols = terminal_cols();
     write!(
         stdout,
         "{}",
-        committed_user_messages_text(messages, leading_gap, cols)
+        committed_user_messages_frame(messages, leading_gap, col, terminal_cols())
     )?;
     stdout.flush()?;
     Ok(())
 }
 
+/// 回显要写到终端的全部字节:光标不在行首就先换行,再接回显正文。
+/// 单独成函数是为了让提交路径能拿同一串字节去推算写完后的光标位置。
+fn committed_user_messages_frame(
+    messages: &[(&str, PersonaLane)],
+    leading_gap: bool,
+    col: u16,
+    cols: usize,
+) -> String {
+    let mut frame = String::new();
+    if col > 0 {
+        frame.push('\n');
+    }
+    frame.push_str(&committed_user_messages_text(messages, leading_gap, cols));
+    frame
+}
+
 fn committed_user_messages_text(
-    messages: &[(&str, AgentMode)],
+    messages: &[(&str, PersonaLane)],
     leading_gap: bool,
     cols: usize,
 ) -> String {
@@ -694,89 +735,19 @@ fn committed_user_messages_text(
     output
 }
 
-/// Redraws finished turns of a session as one ANSI frame.
-///
-/// Feeds the stored transcript back through the same `StreamRenderer` a live
-/// turn uses, so tool blocks and prose come out identical — and re-wrapped for
-/// the terminal's *current* width, which a saved byte transcript could not do.
-/// Turns older than the transcript column fall back to prompt + final reply.
-fn session_replay_frame(
-    replays: &[crate::state::TurnReplay],
-    mode: AgentMode,
-    config: &AppConfig,
-    cols: usize,
-) -> Result<Vec<u8>> {
-    use crate::state::ReplayEntry;
-    let mut frame = Vec::new();
-    for replay in replays {
-        if replay.display_content.starts_with("[目标续轮]") {
-            // 目标续轮什么都不画——实时渲染也不打表头。一个长任务几十轮，
-            // 每轮一行只会把真正的输出挤散。
-        } else if replay.is_synthetic {
-            // daemon 自己合成的轮：实时渲染画的是一条暗色 `⚙` 提示，回放要
-            // 对齐，不能变成用户气泡。
-            frame.extend_from_slice(
-                format!(
-                    "\n\x1b[2m⚙ {}\x1b[0m\n\n",
-                    job_wake_headline(&replay.display_content)
-                )
-                .as_bytes(),
-            );
-        } else if !replay.display_content.trim().is_empty() {
-            frame.extend_from_slice(
-                committed_user_messages_text(&[(&replay.display_content, mode)], true, cols)
-                    .as_bytes(),
-            );
-        }
-        let mut renderer = render::StreamRenderer::new(
-            render::ReasoningDisplayMode::Hidden,
-            render::ToolCallDisplayMode::from_config(&config.display.tool_calls),
-            false,
-            config.display.readable_tool_names,
-            config.display.command_output_lines,
-        );
-        renderer.use_external_cursor_control();
-        renderer.use_buffered_output();
-        if replay.entries.is_empty() {
-            renderer.write_chunk(ChatStreamChunk {
-                kind: crate::llm::ChatStreamKind::Content,
-                text: replay.assistant_content.clone(),
-            })?;
-        } else {
-            for entry in &replay.entries {
-                match entry {
-                    ReplayEntry::Text { text } => renderer.write_chunk(ChatStreamChunk {
-                        kind: crate::llm::ChatStreamKind::Content,
-                        text: text.clone(),
-                    })?,
-                    ReplayEntry::ToolCall { name, arguments } => {
-                        renderer.write_tool_call(name, arguments)?
-                    }
-                    ReplayEntry::ToolResult { name, ok, output } => {
-                        renderer.write_tool_result(name, *ok, output)?
-                    }
-                }
-            }
-        }
-        renderer.finish()?;
-        frame.extend_from_slice(&renderer.take_output_frame());
-    }
-    Ok(frame)
-}
-
 fn queued_prompt_attachments(
-    images: &[Option<crate::clipboard::PastedImage>],
+    images: &[Option<miyu_base::clipboard::PastedImage>],
 ) -> Vec<QueuedPromptAttachment> {
     images
         .iter()
         .filter_map(|image| match image {
-            Some(crate::clipboard::PastedImage::Binary(image)) => {
+            Some(miyu_base::clipboard::PastedImage::Binary(image)) => {
                 Some(QueuedPromptAttachment::Binary {
                     mime: image.mime.clone(),
                     data_base64: base64::engine::general_purpose::STANDARD.encode(&image.data),
                 })
             }
-            Some(crate::clipboard::PastedImage::Path(path)) => {
+            Some(miyu_base::clipboard::PastedImage::Path(path)) => {
                 Some(QueuedPromptAttachment::Path { path: path.clone() })
             }
             None => None,
@@ -804,145 +775,50 @@ fn persist_queued_submission(
     )
 }
 
-/// Queues a submission for the turn currently running in the daemon, using
-/// the cross-process queue target so the daemon consumes it mid-turn.
-async fn persist_remote_queued_submission(
-    paths: &MiyuPaths,
-    run_id: &str,
-    turn_id: &str,
-    submission: &LiveSubmission,
-) -> Result<QueuedPrompt> {
-    let mut stream = ipc::connect(&paths.ipc_socket()).await?;
-    ipc::send(
-        &mut stream,
-        &IpcRequest::new(IpcCommand::QueueTurnUpdate {
-            run_id: run_id.to_string(),
-            turn_id: turn_id.to_string(),
-            content: submission.content.clone(),
-            display_content: submission.display_content.clone(),
-            images: ipc_images(&submission.images),
-            supersede: false,
-        }),
-    )
-    .await?;
-    match ipc::receive::<IpcFrame>(&mut stream).await? {
-        Some(IpcFrame::TurnUpdateAccepted {
-            prompt_id,
-            seq,
-            submitted_at,
-            ..
-        }) => Ok(QueuedPrompt {
-            prompt_id,
-            seq,
-            content: submission.content.clone(),
-            display_content: submission.display_content.clone(),
-            attachments: queued_prompt_attachments(&submission.images),
-            uploaded_attachments: Vec::new(),
-            submitted_at,
-        }),
-        Some(IpcFrame::Error { message, .. }) => bail!("{message}"),
-        Some(_) => bail!("Miyu core returned an invalid queue response"),
-        None => bail!("Miyu core closed the queue connection"),
-    }
-}
-
-struct ReplCursorRestore;
-
-impl Drop for ReplCursorRestore {
-    fn drop(&mut self) {
-        // 1. 会话级兜底：恢复括号粘贴与光标
-        // 2. 再关闭 raw mode；键盘增强由 LiveRawMode / 局部输入作用域负责 Pop
-        let _ = execute!(
-            io::stdout(),
-            DisableBracketedPaste,
-            DisableFocusChange,
-            Show
-        );
-        let _ = terminal::disable_raw_mode();
-    }
-}
-
-#[cfg(unix)]
-fn restore_live_output_processing() -> Result<()> {
-    let mut attributes = std::mem::MaybeUninit::<libc::termios>::uninit();
-    // Raw input is required for key events, but renderer output still relies on newline translation.
-    unsafe {
-        if libc::tcgetattr(libc::STDOUT_FILENO, attributes.as_mut_ptr()) != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        let mut attributes = attributes.assume_init();
-        attributes.c_oflag |= libc::OPOST | libc::ONLCR;
-        if libc::tcsetattr(libc::STDOUT_FILENO, libc::TCSANOW, &attributes) != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn restore_live_output_processing() -> Result<()> {
-    Ok(())
-}
-
-/// 终端已死(PTY 对端关闭):POLLHUP/POLLERR/POLLNVAL 任一命中。
-/// 不发 SIGHUP 的断开路径(tmux kill-pane、终端崩溃、SSH 掉线)只能靠它
-/// 兜底——否则 crossterm 的 poll 对 EOF fd 永远立即就绪、read 又读不出
-/// 事件,REPL 主循环全速空转,留下一个 98% CPU 的残留进程。
-/// 挂断看门狗:独立线程每 500ms 裸 poll 探测 stdin 挂断,确认后给优雅
-/// 退出路径 5 秒宽限——主线程若卡死在 crossterm 对 HUP fd 的任何内部
-/// 自旋(事件 poll、CPR 应答等待,均为实测形态),由这里强制收尾,
-/// 保证关终端后绝不留下吃 CPU 的残留进程。
-pub(crate) fn spawn_hangup_watchdog() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        std::thread::spawn(|| loop {
-            std::thread::sleep(Duration::from_millis(500));
-            if terminal_hangup() {
-                std::thread::sleep(Duration::from_secs(5));
-                if terminal_hangup() {
-                    std::process::exit(1);
-                }
-            }
-        });
-    });
-}
-
-fn terminal_hangup() -> bool {
-    crate::sys::stdin_hung_up()
-}
-
 enum LiveReplOutcome {
     Exit,
     Submit(
-        AgentMode,
+        PersonaLane,
         String,
-        Vec<Option<crate::clipboard::PastedImage>>,
+        Vec<Option<miyu_base::clipboard::PastedImage>>,
+        /// 进上键历史的样子(占位符+载荷),不是展开后的全文。
+        ReplHistoryEntry,
     ),
-    /// A daemon-initiated wake turn is running in this session; the caller
-    /// should attach and render it live.
+    /// 这个会话里有一轮**不是我起的**在跑，调用方该挂上去实时渲染。
+    ///
+    /// 两种来源：daemon 自己起的唤醒轮（后台任务跑完、目标续轮），以及同一个
+    /// 会话里**另一个客户端**起的轮（第二个 TUI、另一个终端的 shellhook）。
+    /// 后者要 `from_start`：它挂上来时那一轮可能已经流了一半。
     FollowWake {
         run_id: String,
         label: String,
+        from_start: bool,
     },
     /// Ctrl+C on an empty line while this session has background work: stop
     /// the work and stay in the REPL. Pressing it again then exits.
     StopJobs,
+    /// 全屏详情面板里按了 x：停掉**这一个**后台任务，人留在 REPL 里。
+    StopJob {
+        job_id: String,
+    },
+    /// 空会话里按了 Tab:换到另一条车道(普通 ↔ 开发)。调用方负责重绑会话。
+    SwitchMode(PersonaLane),
 }
 
 fn repl_history_is_clean(
     input: &str,
-    history: &[String],
+    history: &[ReplHistoryEntry],
     history_clean_index: Option<usize>,
 ) -> bool {
     history_clean_index
         .and_then(|index| history.get(index))
-        .map(|entry| entry == input)
+        .map(|entry| entry.display == input)
         .unwrap_or(false)
 }
 
 fn repl_should_browse_history(
     input: &str,
-    history: &[String],
+    history: &[ReplHistoryEntry],
     history_clean_index: Option<usize>,
 ) -> bool {
     input.is_empty() || repl_history_is_clean(input, history, history_clean_index)
@@ -953,52 +829,13 @@ fn run_history(paths: &MiyuPaths, args: HistoryArgs) -> Result<()> {
     run_history_with_state(&state, args)
 }
 
-fn run_history_with_state(state: &StateStore, args: HistoryArgs) -> Result<()> {
-    for entry in state.history(args.limit)? {
-        if args.raw {
-            println!("{}", serde_json::to_string(&entry)?);
-            continue;
-        }
-        let display_role = if entry.role.ends_with("_clarification") {
-            entry.role.trim_end_matches("_clarification")
-        } else {
-            entry.role.as_str()
-        };
-        println!("{} {display_role}", entry.timestamp);
-        if entry.role.starts_with("assistant") {
-            let response = crate::llm::ChatResult {
-                content: entry.content,
-                reasoning: if args.no_thinking {
-                    None
-                } else {
-                    entry.reasoning
-                },
-                usage: None,
-                usage_estimated: false,
-                tool_calls: Vec::new(),
-                provider_id: None,
-                model: None,
-                finish_reason: None,
-                thinking_signature: None,
-                last_request_usage: None,
-                responses_continuation: None,
-            };
-            render::print_assistant_response(&response, !args.no_thinking)?;
-        } else {
-            println!("{}", entry.content);
-        }
-        println!();
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod default_kb_progress_tests {
     use super::*;
 
     #[test]
     fn progress_is_emitted_as_a_complete_line() {
-        let stage = crate::default_kb::UpdateStage::FetchingRepository;
+        let stage = miyu_engine::default_kb::UpdateStage::FetchingRepository;
         let mut output = Vec::new();
 
         write_default_kb_update_progress(&mut output, stage).unwrap();
@@ -1014,95 +851,19 @@ fn join_message(parts: Vec<String>) -> String {
     parts.join(" ").trim().to_string()
 }
 
-fn handle_agent_event(renderer: &mut render::StreamRenderer, event: AgentEvent) -> Result<()> {
-    match event {
-        AgentEvent::TurnStarted { .. } => Ok(()),
-        AgentEvent::RawReasoning(_) => Ok(()),
-        AgentEvent::FlushJournal => Ok(()),
-        // 单次输出模式没有常驻 footer,逐请求计量快照无处可画。
-        AgentEvent::RoundUsage { .. } => Ok(()),
-        AgentEvent::Chunk(chunk) => {
-            renderer.write_chunk(chunk)?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::ReasoningStart { received_at } => renderer.start_reasoning_phase(received_at),
-        AgentEvent::ReasoningReset { received_at } => renderer.reset_reasoning_phase(received_at),
-        AgentEvent::ReasoningPartStart { received_at } => {
-            renderer.start_reasoning_part(received_at)
-        }
-        AgentEvent::ReasoningPartEnd { received_at } => renderer.finish_reasoning_part(received_at),
-        AgentEvent::ReasoningTitle(title) => {
-            renderer.write_reasoning_title(&title)?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::ToolCall {
-            name, arguments, ..
-        } => {
-            renderer.write_tool_call(&name, &arguments)?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::ToolPreparing { name, batch } => {
-            renderer.write_tool_preparing(&name, batch)?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::ToolResult {
-            name, ok, output, ..
-        } => {
-            renderer.write_tool_result(&name, ok, &output)?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::ToolProgress { name, message, .. } => {
-            renderer.write_tool_progress(&name, &message)?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::CommandOutput {
-            name,
-            stream,
-            chunk,
-            ..
-        } => {
-            renderer.write_command_output(&name, stream, &chunk)?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::PrepareForExternalOutput { ready } => {
-            renderer.prepare_for_external_output()?;
-            let _ = ready.send(true);
-            Ok(())
-        }
-        AgentEvent::Image { .. } | AgentEvent::Artifact { .. } => Ok(()),
-        AgentEvent::AskQuestion {
+/// 终端入口的事件处理:渲染交给 `render::apply_agent_event`,只有模型提问要在
+/// 这里弹面板(问题面板是终端入口自己的东西)。
+pub(crate) fn handle_agent_event(
+    renderer: &mut render::StreamRenderer,
+    event: AgentEvent,
+) -> Result<()> {
+    match render::apply_agent_event(renderer, event)? {
+        Some(AgentEvent::AskQuestion {
             request, responder, ..
-        } => {
+        }) => {
             renderer.prepare_for_external_output()?;
-            let response = crate::question_tui::ask(&request).unwrap_or_else(|err| {
-                crate::question::QuestionResponse::Unavailable(err.to_string())
-            });
-            if !matches!(&response, crate::question::QuestionResponse::Cancelled) {
-                renderer.start_waiting()?;
-            }
-            let _ = responder.send(response);
-            Ok(())
+            question_panel::answer(renderer, request, responder, None)
         }
-        AgentEvent::QueuedPromptsConsumed { .. } => Ok(()),
-        AgentEvent::GenerationSuperseded { .. } => Ok(()),
-        AgentEvent::SpinnerTick => renderer.tick_spinner(),
-        AgentEvent::CompactStart => {
-            renderer.write_system_message(t("Compacting context...", "正在压缩上下文..."))?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::CompactChunk(chunk) => {
-            renderer.write_compact_chunk(&chunk)?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::CompactEnd => {
-            renderer.finish_compact()?;
-            renderer.tick_spinner()
-        }
-        AgentEvent::PopStart => renderer.tick_spinner(),
-        AgentEvent::PopEnd => renderer.tick_spinner(),
-        AgentEvent::Notice { text } => {
-            renderer.write_system_message(&text)?;
-            renderer.tick_spinner()
-        }
+        _ => Ok(()),
     }
 }

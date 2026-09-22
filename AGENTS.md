@@ -1,20 +1,20 @@
-你是顶级RUST工程师，AI loop Agent、Harness 顶级设计师。
+你是顶级RUST工程师，顶级 AI loop、AI Agent、AI Harness 设计师。
 
-每次输出告知总体进度百分比，这样用户能知道当前进度。
+docs/中有过去所有的计划和文档，可以自行按需阅读。
 
-不要让单个代码文件体积膨胀成为“上帝文件”。
+必须重视代码质量，注重模块化、接口化、可复用、可扩展、避免耦合等，永远不要让单个代码文件体积膨胀成为“上帝文件”。
 
-代码应当注重模块化和可复用。
+每次输出自检并告知总体进度百分比，告知把握程度百分比。
 
-灵活使用子代理节省上下文的同时提高任务执行速度，但不要并行太多导致额度的不必要消耗。
+灵活使用子代理节省上下文的同时提高任务执行速度，但不要滥用并行导致额度的不必要消耗。
 
-不确定的点必须询问用户，告知你的推荐项，而不是自己决定。
+不确定的点必须询问用户，而不是自己决定，询问是告知你的推荐项。
 
-先定位问题，找根因，并告知用户，同时提出方案，让用户决定是否要开工。
+先定位问题，找到根因，提出方案，标记推荐选项，让用户做开工前的拍板。
 
-功能完成后应当简洁易懂地给出可照做的验收流程，经过用户验证后确认才可以commit。
+编写完成后应当给出清晰的可照做的验收流程。
 
-docs/中有所有的计划和文档，可以自行按需阅读。
+用户验收无误后新内容才可以commit，验收成功准备发布的内容在commit时应当记录在next release note中作为下次release note的草稿。
 
 ---
 
@@ -35,11 +35,11 @@ docs/中有所有的计划和文档，可以自行按需阅读。
 
 ## 2. 工具系统
 
-2.1 **描述/schema 真相源是 `src/tools/descriptions/*.json`**（经 tool_descriptions.rs 的 include_str! 宏；新增必须补宏行，忘了=JSON 静默失效）。Rust 里的描述只是占位，注册时被 JSON 整体覆盖（load_skill 例外）。权限只由 `.writes()`/`.presentation()` 决定，JSON 的 permission 字段是死字段。
+2.1 **描述/schema 真相源是 `src/tools/descriptions/*.json`**（经 `crates/miyu-engine/src/tools/tool_descriptions.rs` 的 include_str! 宏，JSON 等资源留在仓库 `src/` 不随 rs 进 crate；新增必须补宏行，忘了=JSON 静默失效）。Rust 里的描述只是占位，注册时被 JSON 整体覆盖（load_skill 例外）。权限只由 `.writes()`/`.presentation()` 决定，JSON 的 permission 字段是死字段。
 2.2 **工具名是最强的能力广告：域内聚合、域间分名**。编辑/读取类能力并入 edit（文件系统）/kb/artifact（补丁语义）与 read（`kb:`/`artifact:` 前缀），别为新存储开新读写工具。把能力藏进描述里的前缀/参数，模型想不起来（kb: 前缀实测翻车史）。
 2.3 **输出格式改造必须双兼容**：旧回合 tool_flow 逐字节回放，旧 JSON 解析器永远保留。“结构即功能”的不改：成败判定只认输出 JSON 的 success/ok 布尔（非 JSON=默认成功），错误路径保留 ok:false JSON。
 2.4 畸形参数在 registry 统一收口（按 schema 还原字符串化的数组/对象/数字），声明为 string 的参数一个字节不碰；报错说自己真正知道的（“期望整数，收到字符串 "1"”）。
-2.5 task 子代理是全新上下文、不继承主对话——定论，prompt 必须自包含。平台限额（生图张数等）由代码承担，不写进 prompt 求自觉。
+2.5 subagent 子代理是全新上下文、不继承主对话——定论，prompt 必须自包含。`dev=true` 的子代理走开发模式三件套（dev 人格作用域 + core_only 工具面 + 中转线 dev 工具作用域）。平台限额（生图张数等）由代码承担，不写进 prompt 求自觉。
 
 ## 3. 数据库与状态
 
@@ -60,16 +60,27 @@ docs/中有所有的计划和文档，可以自行按需阅读。
 5.2 量尺类测试标 #[ignore]；断言结果不断言耗时；性能对比看倍率不看绝对值。
 5.3 测试不受开发环境影响：终端探测（TERM/kitty）在 cfg!(test) 下走固定路径；PTY 测试等子进程真就位再断言。
 5.4 黑盒实测必须 MIYU_HOME 沙箱（普通 CLI 未知子命令会把参数当对话发给生产 daemon）。“改动没生效”先查幽灵 daemon 与测试 home 的配置残值。普通单次 CLI 阅后即焚会杀后台任务，测唤醒用 shellhook 形态。
-5.5 仓库自 08-26 起 fmt-clean（`939a2feb` 全量格式化，字节基线验证提示词未变），改完直接 `cargo fmt` 即可，别再手工挑文件——遗留的「rustfmt 会顺着 mod 声明递归刷子模块」陷阱随之失效。涉及 agent/llm/registry/提示词的改动，`scripts/refactor-check.sh` 五道门禁是验收硬要求。
+5.5 仓库自 08-26 起 fmt-clean（`939a2feb` 全量格式化，字节基线验证提示词未变），改完直接 `cargo fmt` 即可，别再手工挑文件——遗留的「rustfmt 会顺着 mod 声明递归刷子模块」陷阱随之失效。涉及 agent/llm/registry/提示词的改动，`test_scripts/refactor-check.sh` 五道门禁 + `test_scripts/arch_dep_check.py` 层序门禁是验收硬要求；改提示词组装/工具面还要跑 `request_shape_probe`（§8.5）证明字节零变化。
 5.6 报错信息是嫌疑人不是证词：先读规范/原始数据（curl 探针、协议原文、日志），最后才轮到推理。
 
 ## 6. 性能与重构
 
 6.1 没有实测数字不合并；“实测后判不做”清单见 `docs/plan/low-footprint.md` 与 `docs/fixed/2026-08-18-性能优化.md`（mimalloc、AppConfig→Arc 快照、资源外置、panic=abort 等），别重提。
-6.2 文件规模：目标 800 行 / 上限 1500 / 红线 2000。codegen-units=1 已定（release 编译 ~5.5 分钟属预期）。
+6.2 文件规模：目标 800 行 / 上限 1500 / 红线 2000。codegen-units=1 已定（release 编译 ~5.5 分钟属预期）；它与「单 crate」无关——09-16 起是 workspace（§8.2），体积靠 codegen-units=1 + LTO，不靠 crate 数。
 6.3 搬文件五坑（include_str 相对路径漂移/模块名遮蔽/super 语义改变/脚本必须拒绝覆盖已存在文件/回退前先看暂存区）：`docs/fixed/2026-08-18-代码拆分.md` §五。
 
 ## 7. 构建与发布
 
 7.1 `src/prompts/*`、web/ 静态资源、assets 词表全部编译进二进制——改完必须重新构建，daemon 按 MIYU_BUILD_ID 判断重启。
 7.2 发版链照 v0.4.5 流程：release commit → tag → 资产必须含 fonts/（`tar -tf` 验 + 包内二进制自报版本）→ AUR 包装包 → 本地 pacman 轮换。仓库 packaging/ 三份 PKGBUILD 是真相源，别让它与 AUR 克隆脱节。
+
+## 8. 分层、边界与重构（2026-09-16 定论）
+
+8.1 **层序的真相源是 `test_scripts/arch_dep_check.py` 的 `TIERS`**（基础 → 配置 → 存储与协议 → 子系统 → 传输 → 工具与引擎 → 场所与展示 → 入口）：同层互引随意，低层引高层就是违规，新顶层模块必须先登记；记忆 / 技能 / 人格提醒三个子系统互不 use。白名单 `arch-dep-waivers.json` 只减不增，每条 reason 就是待办。「门禁绿」只证明没新增违规，不证明无环——层序表才是无环的依据。
+8.2 **crate 划分**：根包 `miyu`（入口层 + 两个 bin）留原地，`crates/{miyu-base,miyu-core,miyu-engine,miyu-hosts}` 各收一到三层；打包脚本与 `target/release/miyu` 不变。放置规则：只有 `.rs` 归 crate，`src/prompts/*.md`、`src/memes`、`src/scripts`、`src/skills/*.md`、`assets/`、`web/` 留原处（`include_str!` 用相对路径，`paths::resources` 的开发态根读 `MIYU_WORKSPACE_ROOT`）；`build.rs` 两份各司其职：根包 `build.rs` 只算构建 id（唯一对整棵源码树 `rerun-if-changed` 的脚本，`miyu::run()` 用 `miyu_base::install_build_id` 装进去，下层运行时读 `miyu_base::build_id()`，**不许在下层编译期嵌构建 id**，否则改上层一行都从 base 起全量重编）；`crates/miyu-base/build.rs` 只烘焙资源（提示词 / o200k / `JIEBA_INDEX`）且只对资源文件 rerun。`concat!(env!)` 跨不了 crate。可见性只放宽编译器点名的（E0603/E0624/E0364/E0451），不批量 `pub(crate)` → `pub`；trait 方法不能带 `pub`。跨 crate 的测试夹具与测试态行为：`#[cfg(test)]` 只在**本 crate 自己的**测试里为真，上游 crate 的测试看到的是生产行为。所以下层 crate 里所有测试态开关（`miyu_executable` 的防 fork 炸弹闸、终端探测固定路径、进程内 embedding/渲染、块标记线程局部、重试延迟）一律写 `cfg(any(test, feature = "testkit"))`，夹具住 `test_support.rs`（模块私有，父模块 `pub use test_support::*`），上游在 `[dev-dependencies]` 里打开 `testkit`；测试找仓库资源用 `miyu_base::WORKSPACE_ROOT`，不用 `CARGO_MANIFEST_DIR`（那是 `crates/<crate>`）。
+8.3 **下层要上层的能力一律走端口**：下层定义窄 trait，拥有能力的层在 daemon 启动时装入（`host_ports::{VoicePort, QqOutreachPort}`、`platform_types::PlatformToolContext`、`agent::PlatformTurn`）；非 daemon 进程取到 `None` 用原错误文案兜底。禁止反向 `use`；要信息走查询端口（`miyu host` / `HostQuery`），要通知走事件。
+8.4 **测试夹具住各模块 `test_support.rs`**（`#[cfg(test)] mod test_support;` + `use test_support::*;` 再导出），生产文件里不写 `#[cfg(test)] fn`。「只有测试在用」≠ 死代码：裁决法是整体删掉跑测试构建，按编译错误的封闭函数看——薄包装把测试调用点改成直接调生产函数，独立死逻辑才连专用测试一起删，摆状态用的夹具留下。死代码清理两阶段：先全部标 `#[cfg(test)]` 保编译，再在测试构建下查；删之前列清单等拍板（`docs/plan/2026-09-16-dead-code-inventory.md` 是样板）。
+8.5 **重构验收三件套**：`request_shape_probe`（`MIYU_REQUEST_SHAPE_OUT=/tmp/x.json cargo test --lib request_shape_probe -- --ignored`，五张脸逐字节 diff，该变的只变那一段）+ `refactor-check.sh` 五道 + 层序门禁；碰 daemon / 扩展的再跑端到端探针（`testkit/host-query/run.py` 9 项、`testkit/oobe/mcp_probe.py` 7 项）。量尺：本机没有 `/usr/bin/time`，峰值内存读 cgroup `memory.peak`；跑整套测试与编译一律 `systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0`，同一时刻只跑一个 cargo。已知并行抖动（onebot notices 已加串行锁 / render::math 字体预热 / claude_code haiku）复跑一次，第二次仍红才算问题。
+8.6 **机械段可以委派便宜模型**：施工单必须写死硬约束（绝对路径、cgroup、一次一个 cargo、不 commit/stash/`cargo fix`）、逐步命令、验收三件套、「锚点对不上就停下报告」；判断题（归属、trait 形状、删还是搬）自己做；派出去后别碰会被编译的文件。检查点用 `git diff HEAD`（`git mv` 会暂存改名）。
+8.7 **下结论前的三条自查**：grep 别管 `head`（截断过后半段导致「生产从不读」误报）、跨行字段访问按字段名搜；worktree 里不 `cd`（会把后续命令的工作目录重置到主检出）；抓帧先确认目标在视口里。其余坑见 `docs/wiki/18-重构经验.md`。
+8.8 **一棵 worktree 只能一个会话动手**：要接手别人的树先 `ListAgents`/`SendMessage` 说清边界，`git add` 别用 `-A`（会把对方在途半成品扫进提交），跑验收用 `--all-targets`（只 `cargo build` 看不见测试里的路径错误）；场所与引擎之间只传 `PersonaLane`，`normal|dev` 是线上的词，代码里不许再造第二套模式枚举。
