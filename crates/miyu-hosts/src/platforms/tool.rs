@@ -21,6 +21,11 @@ pub fn register(
         register_mention(registry, context.clone());
     }
     register_usage_query(registry, context.clone());
+    // 主动出图(用户 09-22)。这里先装一份**不带附件清单**的:常规工具面每轮都
+    // 过这儿,工具必须恒在。带清单的那份由 `register_file_reader` 覆盖上来
+    // (同名后注册覆盖前一个)——只挂在那儿的话,agy 的 MCP 桥某些回合根本看不见
+    // 这件工具,她只能瞎猜名字然后撞上 unknown tool(09-22 真机实录)。
+    super::render_tool::register(registry, context.clone(), Vec::new());
     // 赞助记账。写限管理员(软拒绝),看开放;懒加载,full 模式照样全量给出。
     super::sponsor_tool::register(registry, context.clone());
     if crate::runtime::voice_port().is_some_and(|port| port.tts_available()) {
@@ -339,12 +344,16 @@ async fn send(arguments: Value, context: Arc<PlatformTurnContext>) -> Result<Str
         // 08-22:get_avatar 改为"只下载不投递",发送权交还模型——头像缓存
         // 目录与生图目录同为 Miyu 自产内容,一并豁免。
         let avatar_dir = context.paths.cache_dir.join("qq-avatars");
+        // 09-22:`render_image` 出的图同样是 Miyu 自产内容,一并豁免——否则非
+        // 管理员触发的「画张图」渲得出来却发不出去。
+        let rendered_dir = super::render_tool::rendered_dir_for(&context.paths, &context.config);
         let exempt = files.is_empty()
             && !image_paths.is_empty()
             && (all_within_generated_dir(
                 &context.config.plugins.image_generation.output_dir,
                 &image_paths,
-            ) || all_within_root(&avatar_dir, &image_paths));
+            ) || all_within_root(&avatar_dir, &image_paths)
+                || all_within_root(&rendered_dir, &image_paths));
         if !exempt {
             bail!("local attachments require an authorized platform administrator");
         }

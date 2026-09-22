@@ -10,6 +10,7 @@ mod activity;
 mod inflight;
 mod live_turns;
 mod logging;
+pub(crate) mod render_tool;
 mod reply;
 mod scheduling;
 mod turn_context;

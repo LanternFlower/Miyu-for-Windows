@@ -89,7 +89,8 @@ pub(super) fn built_in_admin_context(
     built_in_context_inner(kind, true)
 }
 
-pub(super) fn built_in_test_context(
+// render_tool 的端到端用例也要用它(它不在 tests 模块下),所以对 platforms 开放。
+pub(in crate::platforms) fn built_in_test_context(
     kind: ConversationKind,
 ) -> (tempfile::TempDir, Arc<PlatformTurnContext>) {
     built_in_context_inner(kind, false)

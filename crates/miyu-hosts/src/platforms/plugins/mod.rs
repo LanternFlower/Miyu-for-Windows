@@ -60,7 +60,9 @@ mod meme_collector;
 pub(crate) mod message_history;
 mod message_recall;
 pub(crate) mod real_context;
-mod renderer;
+// `render_image` 工具(platforms::render_tool)也要用这台渲染器:长文转图本来只
+// 给 before_send 钩子用,现在她能主动要图了,所以对同层开放。
+pub(super) mod renderer;
 mod reply_processor;
 pub(crate) mod scheduled_messages;
 

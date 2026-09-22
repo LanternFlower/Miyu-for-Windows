@@ -359,6 +359,44 @@ fn prune(dir: &Path) {
 /// 自己调 resvg 而不用 `mermaid_rs_renderer::write_output_png`,为的是两件事:
 /// 一是那个函数只会按自然尺寸出图(于是必然要再重采样一次,字就糊了);二是它
 /// **每次调用都 `load_system_fonts()`**,而字体库在这儿只加载一次。
+/// 把 mermaid 源码渲成 PNG，等比缩放塞进给定的框里。
+///
+/// 终端那条(`rasterize`)按格子定尺；成图渲染器按像素，而且**高度也要有上限**：
+/// 一张不能分页的图比整页还高的话，分页器只能把它整块丢到下一页，无限循环。
+/// 等比只缩不放：放大不会凭空长出细节。
+///
+/// 底色铺白：渲染器给的是浅色主题，透明底贴到深色纸面上线条会被吃掉。
+pub(crate) fn render_png_in_box(source: &str, max_width: u32, max_height: u32) -> Option<Vec<u8>> {
+    use resvg::tiny_skia;
+    use resvg::usvg;
+
+    if max_width == 0 || max_height == 0 {
+        return None;
+    }
+    let svg = render_svg(source).ok()?;
+    let options = usvg::Options {
+        font_family: default_font_family(),
+        fontdb: fonts(),
+        ..usvg::Options::default()
+    };
+    let tree = usvg::Tree::from_str(&svg, &options).ok()?;
+    let natural = tree.size();
+    if natural.width() <= 0.0 || natural.height() <= 0.0 {
+        return None;
+    }
+    let scale = (max_width as f32 / natural.width()).min(max_height as f32 / natural.height());
+    let width = (natural.width() * scale).round().max(1.0) as u32;
+    let height = (natural.height() * scale).round().max(1.0) as u32;
+    let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
+    pixmap.fill(tiny_skia::Color::WHITE);
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    pixmap.encode_png().ok()
+}
+
 fn rasterize(svg: &str, cell_w: usize, cell_h: usize, max_cols: usize) -> Option<Vec<u8>> {
     use resvg::tiny_skia;
     use resvg::usvg;

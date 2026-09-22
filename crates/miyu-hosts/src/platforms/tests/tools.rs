@@ -420,3 +420,22 @@ async fn sending_only_an_image_leaves_the_final_reply_alone() {
         "只发了图，最终回复是配文，不该被截"
     );
 }
+
+/// `render_image` 必须在**常规**平台工具面上就有，不能只挂在「本回合带附件」
+/// 那个钩子上。
+///
+/// 用户 09-22 真机实录：只挂在 `register_file_reader` 上时，agy 的 MCP 桥某些
+/// 回合看不见这件工具，她只能瞎猜名字，最后撞上
+/// `unknown tool: "mcp_miyu_render_image"`。
+#[test]
+fn render_image_is_on_the_plain_platform_face() {
+    let (_temp, context, _adapter) = test_turn_context(false);
+    let mut registry = miyu_engine::tools::ToolRegistry::new();
+    register_platform_tools(&mut registry, Arc::new(context));
+    let tool = registry
+        .get("render_image")
+        .expect("常规工具面上就该有出图工具");
+    let parameters = tool.parameters.to_string();
+    assert!(parameters.contains("markdown"), "{parameters}");
+    assert!(parameters.contains("file"), "{parameters}");
+}

@@ -34,6 +34,13 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 use unicode_segmentation::UnicodeSegmentation;
 
+/// 块内图片的高度上限。
+///
+/// 图片块不能分页（中间切一刀就废了），比一页还高的话分页器只能把它整块推到
+/// 下一页——推到哪一页都放不下，于是无限循环。渲染时就等比缩到这个高度以内。
+/// 取值留出上下边距还有富余。
+pub(in crate::platforms::plugins) const MAX_DIAGRAM_HEIGHT: u32 = 2200;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct RenderConfig {
     pub(crate) theme: String,

@@ -11,11 +11,16 @@ pub(in crate::platforms::plugins::renderer) const MAX_INPUT_CHARS: usize = 20_00
 pub(in crate::platforms::plugins::renderer) enum BlockKind {
     Paragraph,
     Heading(u8),
-    ListItem { depth: u8 },
+    ListItem {
+        depth: u8,
+    },
     Quote,
     Code,
     Table,
     Rule,
+    /// 已经光栅化好的图（现在只有 mermaid 围栏会产出）。位图挂在
+    /// `Block::image` 上，排版只量高、绘制只贴像素。
+    Image,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -39,6 +44,8 @@ pub(in crate::platforms::plugins::renderer) struct Block {
     pub(in crate::platforms::plugins::renderer) spans: Vec<RichSpan>,
     pub(in crate::platforms::plugins::renderer) table: Option<TableBlock>,
     pub(in crate::platforms::plugins::renderer) task: Option<bool>,
+    /// `BlockKind::Image` 的 PNG 字节。
+    pub(in crate::platforms::plugins::renderer) image: Option<Vec<u8>>,
 }
 
 impl Block {
@@ -48,6 +55,7 @@ impl Block {
             spans: Vec::new(),
             table: None,
             task: None,
+            image: None,
         }
     }
 
@@ -68,6 +76,7 @@ impl Block {
     pub(in crate::platforms::plugins::renderer) fn has_content(&self) -> bool {
         self.kind == BlockKind::Rule
             || self.spans.iter().any(|span| !span.text.is_empty())
+            || self.image.is_some()
             || self.table.as_ref().is_some_and(TableBlock::has_content)
             || self.task.is_some()
     }
@@ -172,6 +181,8 @@ pub(in crate::platforms::plugins::renderer) struct MarkdownCollector {
     pub(in crate::platforms::plugins::renderer) quote_depth: usize,
     pub(in crate::platforms::plugins::renderer) heading: Option<u8>,
     pub(in crate::platforms::plugins::renderer) code_block: bool,
+    /// 当前围栏是 mermaid（收尾时就地出图）。
+    pub(in crate::platforms::plugins::renderer) mermaid_fence: bool,
     pub(in crate::platforms::plugins::renderer) table: Option<TableBuilder>,
     pub(in crate::platforms::plugins::renderer) table_header: bool,
     pub(in crate::platforms::plugins::renderer) strong_depth: usize,
@@ -276,9 +287,16 @@ impl MarkdownCollector {
                 self.finish_current();
                 self.quote_depth = self.quote_depth.saturating_add(1);
             }
-            Tag::CodeBlock(_) => {
+            Tag::CodeBlock(kind) => {
                 self.finish_current();
                 self.code_block = true;
+                // 语言标识沿用终端那边的判据,免得两处对「什么算 mermaid」各有一套。
+                self.mermaid_fence = match &kind {
+                    pulldown_cmark::CodeBlockKind::Fenced(lang) => {
+                        crate::render::mermaid::is_mermaid_lang(lang)
+                    }
+                    pulldown_cmark::CodeBlockKind::Indented => false,
+                };
                 self.current = Some(Block::new(BlockKind::Code));
             }
             Tag::List(start) => {
@@ -352,6 +370,9 @@ impl MarkdownCollector {
                 self.quote_depth = self.quote_depth.saturating_sub(1);
             }
             TagEnd::CodeBlock => {
+                if std::mem::take(&mut self.mermaid_fence) {
+                    self.rasterize_current_fence();
+                }
                 self.finish_current();
                 self.code_block = false;
             }
@@ -490,6 +511,34 @@ impl MarkdownCollector {
             link: self.link_depth > 0,
             muted: self.strike_depth > 0,
         }
+    }
+
+    /// 把当前这个 mermaid 围栏渲成块内位图。
+    ///
+    /// 画不出来就原样留着当代码块——语法错了、图型不支持的时候，她至少还能看见
+    /// 自己写了什么（与终端同一条规矩）。
+    fn rasterize_current_fence(&mut self) {
+        let Some(block) = self.current.as_mut() else {
+            return;
+        };
+        let source = block
+            .spans
+            .iter()
+            .map(|span| span.text.as_str())
+            .collect::<String>();
+        if source.trim().is_empty() {
+            return;
+        }
+        let Some(png) = crate::render::mermaid::render_png_in_box(
+            &source,
+            super::layout::COLUMN_WIDTH,
+            super::MAX_DIAGRAM_HEIGHT,
+        ) else {
+            return;
+        };
+        block.kind = BlockKind::Image;
+        block.spans.clear();
+        block.image = Some(png);
     }
 
     pub(in crate::platforms::plugins::renderer) fn finish_current(&mut self) {

@@ -21,6 +21,8 @@ pub(in crate::platforms::plugins::renderer) struct LayoutBlock {
     pub(in crate::platforms::plugins::renderer) buffer: Option<Buffer>,
     pub(in crate::platforms::plugins::renderer) table: Option<LayoutTable>,
     pub(in crate::platforms::plugins::renderer) task: Option<TaskBox>,
+    /// 已解码的块内位图（`BlockKind::Image`）。
+    pub(in crate::platforms::plugins::renderer) image: Option<image::RgbaImage>,
     pub(in crate::platforms::plugins::renderer) total_height: u32,
     pub(in crate::platforms::plugins::renderer) vertical_padding: u32,
     pub(in crate::platforms::plugins::renderer) inset_left: u32,
@@ -80,12 +82,57 @@ pub(in crate::platforms::plugins::renderer) fn layout_block(
     palette: Palette,
     fonts: &ResolvedFonts,
 ) -> Result<LayoutBlock> {
+    if block.kind == BlockKind::Image {
+        // 位图在解析阶段就按 COLUMN_WIDTH × MAX_DIAGRAM_HEIGHT 缩好了,这里只
+        // 量高。`boundaries` 只有末尾一个 = 整块不可切：图中间切一刀就废了。
+        let decoded = block
+            .image
+            .as_deref()
+            .and_then(|png| image::load_from_memory(png).ok())
+            .map(|decoded| decoded.to_rgba8());
+        let Some(decoded) = decoded else {
+            // 解不出来就当它不存在,别把整篇渲染带崩。
+            return Ok(LayoutBlock {
+                kind: BlockKind::Rule,
+                buffer: None,
+                table: None,
+                task: None,
+                image: None,
+                total_height: 0,
+                vertical_padding: 0,
+                inset_left: 0,
+                boundaries: vec![0],
+                margin_before: 0,
+                margin_after: 0,
+                default_color: color(palette.text),
+                inline_code_background: palette.code_background,
+            });
+        };
+        let height = decoded.height();
+        return Ok(LayoutBlock {
+            kind: block.kind,
+            buffer: None,
+            table: None,
+            task: None,
+            image: Some(decoded),
+            total_height: height,
+            vertical_padding: 0,
+            inset_left: 0,
+            boundaries: vec![height],
+            margin_before: 24,
+            margin_after: 24,
+            default_color: color(palette.text),
+            inline_code_background: palette.code_background,
+        });
+    }
+
     if block.kind == BlockKind::Rule {
         return Ok(LayoutBlock {
             kind: block.kind,
             buffer: None,
             table: None,
             task: None,
+            image: None,
             total_height: 28,
             vertical_padding: 0,
             inset_left: 0,
@@ -185,6 +232,7 @@ pub(in crate::platforms::plugins::renderer) fn layout_block(
         palette.text
     };
     Ok(LayoutBlock {
+        image: None,
         kind: block.kind,
         buffer: Some(buffer),
         table: None,
@@ -288,6 +336,7 @@ pub(in crate::platforms::plugins::renderer) fn layout_table(
     Ok(LayoutBlock {
         kind: BlockKind::Table,
         buffer: None,
+        image: None,
         table: Some(LayoutTable {
             rows,
             header_height,
@@ -708,6 +757,8 @@ pub(in crate::platforms::plugins::renderer) fn block_margins(
         BlockKind::Heading(1) => (font_size, font_size / 2),
         BlockKind::Heading(_) => (font_size / 2, small),
         BlockKind::Code | BlockKind::Table => (font_size / 2, font_size / 2),
+        // 图自带白底,上下留足才不会贴着正文
+        BlockKind::Image => (font_size / 2, font_size / 2),
         BlockKind::Rule => (font_size / 2, font_size / 2),
         BlockKind::Quote => (small, small),
         BlockKind::ListItem { .. } => (small / 2, small / 2),
