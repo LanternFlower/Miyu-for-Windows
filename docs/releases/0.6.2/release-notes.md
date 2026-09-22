@@ -2,6 +2,8 @@
 
 她可以自己把内容渲成图片发进群了——表格、结构化说明和 mermaid 流程图画进同一张图。表情包接近真人手感：够表达意思时不再硬配一句话，单独成条发送，尺寸和 QQ 自带表情一致。工具面瘦了 29%，空会话从 18.3k token 降到 13.0k。另外修掉两个会咬人的：opencode Zen 下读文件死循环，以及同一个家目录被起两个 daemon。
 
+三十多条改动的完整记录在[这儿](https://github.com/SHORiN-KiWATA/miyu-agent/blob/v0.6.2/docs/releases/0.6.2/changelog.md)。
+
 ## 新增
 
 - **`render_image`**：把 markdown 渲成成品图片发到通讯平台。表格、结构化说明、mermaid 流程图（画进正文同一张图，不另起一张），也可以直接指定一个 `.md` 文件——文件内容不占对话额度。只生成，发哪张由她决定。
@@ -46,3 +48,49 @@
 
 - 工具：查询进程占用、查询环境变量、查看系统信息、Fcitx5 Wiki 查询、查询大模型 API 额度。前四件一条命令或一次搜索即可替代，最后一件只支持 DeepSeek 和 OpenRouter 两家。
 - 配置项：搜图的「自动预览」「默认预览数量」；「查询大模型 API 额度」的设置页。旧字段保留在配置文件里不会报错。
+
+## 升级注意
+
+- 要 `miyu daemon restart`。已经开着的终端得重开才用上新前端，控制台刷新一下页面。
+- 升级后第一次请求会重建一次提示缓存：工具清单瘦了 29%，前缀跟着变了。之后照常命中。
+- `query_token_usage` 改名成 `query_system_token_usage`。老会话的历史里留着旧名，她照着模仿会撞一次错再改口，新会话不受影响。
+- 搜图的「自动预览」「默认预览数量」两个配置项作废，留在配置文件里不会报错。「查询大模型 API 额度」的设置页一并移除。
+- 语音模型改成机器级共享（`~/.cache/miyu/voice-models`）。已经下过的不会重下也不会搬走。
+- 配置项「概率主动回复」改名为「开关概率主动回复」，值不变。
+
+## 下载与安装
+
+附件是 Linux x86_64 的六个安装包。主包自带字体、语义模型、表情、脚本、默认知识库和许可证；语音是可选包，版本要和主包一致，已经装了语音的请在同一条命令里写上两个包。
+
+| 发行版 | 主包 | 可选语音包 |
+| --- | --- | --- |
+| Arch Linux | `miyu-0.6.2-1-x86_64.pkg.tar.zst` | `miyu-voice-0.6.2-1-x86_64.pkg.tar.zst` |
+| Debian 13 / Ubuntu 24.04 LTS 及更新 / Linux Mint 22 | `miyu_0.6.2-1_amd64.deb` | `miyu-voice_0.6.2-1_amd64.deb` |
+| Fedora 44 | `miyu-0.6.2-1.fc44.x86_64.rpm` | `miyu-voice-0.6.2-1.fc44.x86_64.rpm` |
+
+```bash
+# Arch Linux
+sudo pacman -U ./miyu-0.6.2-1-x86_64.pkg.tar.zst
+
+# Debian / Ubuntu / Linux Mint
+sudo apt install ./miyu_0.6.2-1_amd64.deb
+
+# Fedora 44
+sudo dnf install ./miyu-0.6.2-1.fc44.x86_64.rpm
+```
+
+这六个包都在 Arch、Debian 13、Ubuntu 24.04、Ubuntu 26.04、Linux Mint 22.3、Fedora 44 的干净容器里装过一遍，每个都让她真回了一句话，42 项必需检查全过。Arch 也可以走 AUR：`miyu` / `miyu-voice` 是二进制包装，`miyu-git` 从源码构建。
+
+<details>
+<summary>SHA256 校验值（六个安装包）</summary>
+
+```text
+3b223f2cd1dd07076d8c088d48726aedcbe839ef6b0cc7808c2a78c19c5a7a64  miyu-0.6.2-1-x86_64.pkg.tar.zst
+1e653062f55afc4f7827ff55d8ca10de0fb09c8c029d3fdde312d89f553340a9  miyu-0.6.2-1.fc44.x86_64.rpm
+9dfacdf56ac5d2fa213cbcfc6aa0fa7c5c0bca29ff3ce312812b8ae443653141  miyu-voice-0.6.2-1-x86_64.pkg.tar.zst
+b4e95fc551f1036d95e997ef611526da9e0260ee7f87762d6ff239be2932ad90  miyu-voice-0.6.2-1.fc44.x86_64.rpm
+252385c49ed23ede382eae3036065a54583e3002820268a4dec1763f5fd60f8d  miyu-voice_0.6.2-1_amd64.deb
+650c9a202166abdcf39799e3d5e4dc29103889e86642c83b7b05e21e158e1291  miyu_0.6.2-1_amd64.deb
+```
+
+</details>
