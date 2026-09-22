@@ -141,6 +141,18 @@ impl AppConfig {
         if self.config_version < 3 {
             self.oobe_done = true;
         }
+        // v4：Arch 那套工具的默认开关改成跟着宿主走。但「默认值」只对**没写过
+        // 这一项**的配置起作用，而 Miyu 存配置是整份序列化——任何存过一次配置
+        // 的机器都把 `enabled: true` 写死了，新默认根本碰不到它们，而那正是要
+        // 解决的人群（用户 09-22 拍板做这次迁移）。
+        //
+        // 非 Arch 宿主上刷一次 false。配置里区分不出「当初是默认写进去的」还是
+        // 「用户真的想要」——两者长得一模一样——所以这是一次有损的选择：在非
+        // Arch 机器上主动要 AUR 工具的人会被关掉一次，去「人格和功能」里再开
+        // 即可，而那之后配置版本已是 v4，不会被刷第二次。
+        if self.config_version < 4 && !crate::config::tool_plugins::arch_host() {
+            self.plugins.archlinux.enabled = false;
+        }
         if self.config_version < 1 {
             for provider in &mut self.providers {
                 if (provider.temperature - LEGACY_DEFAULT_TEMPERATURE).abs() < f32::EPSILON {

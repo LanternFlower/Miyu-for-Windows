@@ -249,7 +249,7 @@ impl Default for FileSharingPluginConfig {
 /// 上再怎么找也不会有 pacman。
 ///
 /// 只算一次:配置每次加载都要问它,而这事在进程生命周期内不会变。
-fn arch_host() -> bool {
+pub(crate) fn arch_host() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| {
         if !cfg!(target_os = "linux") {
