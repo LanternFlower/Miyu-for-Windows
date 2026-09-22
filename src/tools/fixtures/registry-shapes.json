@@ -31,7 +31,7 @@
     "manage_ledger": "ec7aba3755c6595912ffe2ae0fa643e2126d7c1c9c16a79c61877eaa2ce65d00",
     "manage_meme": "cb69209d3bad4e0bae7bdc32a9b57282a80d16b1ab7e100fb93ca853c103054e",
     "print_image": "62c7cf9913913c6bdae04a5ebbf0ffaf52d8be86689444e05678667230133411",
-    "query_token_usage": "8b82c154204ff2478431903ebaa4720c82f9e0035db704eed2e48cfd41383218",
+    "query_system_token_usage": "52a0756feea3fba34f4b208a104a533acdda1c420b36ac7b9f6243c38e2d2579",
     "read": "396e57b5d1254290d6e58080a603e0e154c8ea45b8953d674427c6b4994f8e96",
     "recall_memories": "f3c99da4bb35460258cce732927bbe26abf44d93cafa0fddec2262068e5dacb4",
     "remember_fact": "d98efc61f5967fb55129dd77825e991056b0eb3a94b951e650583530bc867f59",

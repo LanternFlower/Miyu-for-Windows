@@ -129,10 +129,13 @@ async fn usage_query_tool_reports_platform_history() {
     let mut registry = miyu_engine::tools::ToolRegistry::new();
     register_platform_tools(&mut registry, Arc::new(context));
     let output = registry
-        .call("query_token_usage", r#"{"range":"7d"}"#)
+        .call("query_system_token_usage", r#"{"range":"7d"}"#)
         .await
         .unwrap();
-    assert!(output.contains("**Token 消耗 · 近 7 天**"), "{output}");
+    assert!(
+        output.contains("**Token 消耗 · 全局 · 近 7 天**"),
+        "{output}"
+    );
     assert!(output.contains("**QQ**"), "{output}");
     assert!(output.contains("test-model"), "{output}");
     assert!(output.contains("缓存命中率 **40%**"), "{output}");

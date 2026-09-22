@@ -669,6 +669,32 @@ impl ConversationDb {
     /// 最新一条可见回合的上下文锚点,且仅当它是「已完成的普通回合 + 真实
     /// (非估算)用量」时才算数。摘要行在尾(刚压完)、被打断的回合、估算用量
     /// 一律返回 None —— 那些位置的数字不代表下一次请求的前缀大小。
+    /// 供应商最近一次报回来的上下文占用——**包括正在跑的这一轮**。
+    ///
+    /// `token_context_end` 是每**一次请求**结束就写一次的（见
+    /// `turn_loop::stream`），所以一轮里调了五次工具，它就被刷新了五次。取它
+    /// 的最新值，拿到的就是「上一次请求结束时」的实测数，这是发下一次请求
+    /// 之前能知道的最新事实（用户 09-22：「这个信息不是最新的」）。
+    ///
+    /// 和 `load_context_anchor` 的差别：那个取「最新一条」再判状态，于是回合
+    /// 跑着的时候最新一条就是它自己（running），一律返回 None——那是压缩触发线
+    /// 要的语义（宁可退回估算），别动。这里要的恰恰相反：running 那一条的数
+    /// 才是最新的。
+    pub fn latest_context_end_tokens(&self, session_id: &str) -> Result<Option<u64>> {
+        let conn = self.conn.lock().unwrap();
+        let tokens: Option<i64> = conn
+            .query_row(
+                "SELECT token_context_end FROM turns
+                  WHERE session_id = ?1 AND hidden = 0 AND is_summary = 0
+                    AND token_usage_estimated = 0 AND token_context_end > 0
+                  ORDER BY seq DESC LIMIT 1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(tokens.map(|value| value as u64))
+    }
+
     pub fn load_context_anchor(&self, session_id: &str) -> Result<Option<ContextAnchor>> {
         let conn = self.conn.lock().unwrap();
         let row = conn

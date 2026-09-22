@@ -134,6 +134,12 @@ pub(crate) fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         // 「子代理」,不然翻旧会话看到的是裸工具名。
         "subagent" | "task" => t("Subagent", "子代理"),
         "send_subagent_message" => t("Message subagent", "给子代理留言"),
+        // 显示名的真相源是这张表，不是 `ToolSpec::with_display_name`——那一份
+        // 只进工具目录，时间线画的是这里（09-22：这两件工具界面上是裸 id）。
+        // `query_token_usage` 是 09-22 拆成两件之前的旧名，同 "task" 的理由
+        // 留着：历史记录里存着的调用照样要显示成中文。
+        "query_system_token_usage" | "query_token_usage" => t("Token usage", "词元用量"),
+        "query_session_token_usage" => t("Session token usage", "本会话用量"),
         "read" | "read_file" => t("Read file", "读取文件"),
         "write_file" => t("Write file", "写入文件"),
         "edit_file" => t("Edit file", "编辑文件"),
@@ -224,4 +230,30 @@ pub(super) fn builtin_readable_group_name(group: &str) -> Option<&'static str> {
         "web" => t("Web tools", "联网工具组"),
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod display_name_tests {
+    use super::readable_tool_name;
+
+    /// 时间线上那一步的抬头走的是这张表。09-22 拆成两件工具时两个名字都不在
+    /// 表里，界面上就是裸 id——`ToolSpec::with_display_name` 救不了，那一份只
+    /// 进工具目录。旧名也得在：翻老会话时那些调用记录照样要显示成中文。
+    #[test]
+    fn both_token_usage_tools_have_a_readable_name() {
+        for name in [
+            "query_system_token_usage",
+            "query_session_token_usage",
+            "query_token_usage",
+        ] {
+            let display = readable_tool_name(name);
+            assert_ne!(display, name, "{name} 显示成了裸 id");
+            assert!(
+                display
+                    .chars()
+                    .any(|ch| ('\u{4e00}'..='\u{9fff}').contains(&ch)),
+                "{name} 的显示名不是中文: {display}"
+            );
+        }
+    }
 }

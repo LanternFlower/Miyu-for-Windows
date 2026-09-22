@@ -155,6 +155,14 @@ impl Agent {
             (String::new(), 0)
         };
         let on_overflow = config.context.on_overflow.clone();
+        // 「这个会话烧了多少」得等会话定下来才知道，而工具表是装配层按人格建
+        // 的、那时还没有会话。这里把取值器塞进去（同名覆盖，工具名与描述不变，
+        // 清单一个字节都不动）。闭包捕获的是 `StateStore` 而不是会话 id ——
+        // 它的会话是共享可换的，`/session` 切过去之后所有持有者一起换，跨回合
+        // 复用的 Agent 也照样问得出当前那条（用户 09-22 提议走工具，不往提示词
+        // 里塞常驻字段）。
+        let mut tools = tools;
+        bind_session_usage(&mut tools, &state, &client, &config);
         Ok(Self {
             state,
             client,
@@ -647,3 +655,41 @@ pub(in crate::agent) fn user_profile_applies(
 
 #[cfg(any(test, feature = "testkit"))]
 mod test_support;
+
+/// 装上「本会话用量」那件工具。
+///
+/// 它要的数只有回合开始时才知道（会话是那时才定的，装配层只认人格与工具面），
+/// 所以在这儿注册。跟着全局那件一起开关：工具面里没有 `query_system_token_usage`
+/// 的场合（插件关掉了、受限工具面）这件也不装——本会话的账和全局的账是同一
+/// 件事的两面，没道理一个在一个不在。
+fn bind_session_usage(
+    tools: &mut ToolRegistry,
+    state: &StateStore,
+    client: &OpenAiCompatibleClient,
+    config: &miyu_base::config::AppConfig,
+) {
+    if !tools
+        .tool_names()
+        .iter()
+        .any(|name| name == "query_system_token_usage")
+    {
+        return;
+    }
+    let state = state.clone();
+    let window_config = config.clone();
+    let window_client = client.clone();
+    let session: crate::tools::usage_query::SessionUsageFn = Arc::new(move || {
+        // 窗口跟着当前端点走，和 footer 上那个数同一个来源。
+        let context_window = window_client.context_window(&window_config).ok().flatten();
+        Some(crate::tools::usage_query::SessionUsage {
+            context_tokens: state.latest_context_end_tokens().ok().flatten(),
+            context_window,
+            spent: state.session_cumulative_token_totals().unwrap_or_default(),
+            turns: state
+                .load_visible_turns()
+                .map(|turns| turns.len())
+                .unwrap_or(0),
+        })
+    });
+    crate::tools::usage_query::register_session(tools, session);
+}

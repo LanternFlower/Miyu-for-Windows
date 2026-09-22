@@ -521,7 +521,7 @@ fn required_path(value: &Value, key: &str) -> Result<PathBuf> {
 fn register_usage_query(registry: &mut ToolRegistry, context: Arc<PlatformTurnContext>) {
     registry.register(
         ToolSpec::new(
-            "query_token_usage",
+            "query_system_token_usage",
             miyu_engine::tools::usage_query::DESCRIPTION,
             miyu_engine::tools::usage_query::parameters(),
             move |arguments| {
