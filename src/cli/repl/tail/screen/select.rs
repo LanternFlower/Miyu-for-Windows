@@ -29,20 +29,47 @@ impl Selection {
     }
 }
 
+/// 大厅星空用的字符（`terminal::starfield` 的两张表合起来）。
+///
+/// 空会话里星空是画在输入框**左边**的，所以提示符 `┃` 不在行首。要认出它是
+/// 提示符而不是正文，就得知道它左边那些字符是背景。
+const STARFIELD_GLYPHS: [char; 6] = ['.', '+', '✦', '✶', '*', '#'];
+
+/// 提示符 `┃` 落在第几列——前提是它左边只有空格和星空。
+///
+/// 判据收得紧是有原因的：`┃` 在 TUI 里是通用的竖条词汇，正文里也会出现
+/// （时间线、命令卡片都用它）。见着就跳的话，正文里带 `┃` 的行会被切掉一截。
+fn prompt_bar_column(text: &str) -> Option<u16> {
+    let mut column = 0u16;
+    for ch in text.chars() {
+        if ch == '┃' {
+            return Some(column);
+        }
+        if ch != ' ' && !STARFIELD_GLYPHS.contains(&ch) {
+            return None;
+        }
+        column = column.saturating_add(u16::try_from(char_columns(ch)).unwrap_or(0));
+    }
+    None
+}
+
 /// 这一行左边有多少列是装饰。
 ///
-/// 用户消息和输入区都由 `┃ ` 开头（`layout.rs` 的 `input_prompt_bar`），
-/// 那两列是画给人看的，不该进剪贴板。
+/// 用户消息和输入区都由 `┃ ` 开头（`layout.rs` 的 `input_prompt_bar`），那两列
+/// 是画给人看的，不该进剪贴板。
+///
+/// **空会话要特别处理**：大厅把星空画在输入框左边，`┃` 就不在行首了。原来只认
+/// 行首，于是空会话里拖选会把竖线一起选走（用户 09-22 报，非空会话正常正是因为
+/// 那时没有星空）。
 fn decoration_width(spans: &[AnsiSpan]) -> u16 {
-    if spans
-        .first()
-        .is_some_and(|first| first.text.starts_with('┃'))
-    {
-        return 2;
+    let text = spans_text(spans);
+    if let Some(column) = prompt_bar_column(&text) {
+        // 竖线本身一列，后面跟一个空格。
+        return column.saturating_add(2);
     }
     // 左边那两格是**页边距**（正文、时间线共用的装订边），不是内容。
     // 让它进选区的话，复制出来的每一行都带着两个莫名其妙的空格。
-    let leading = spans_text(spans)
+    let leading = text
         .chars()
         .take_while(|ch| *ch == ' ')
         .count()
@@ -422,4 +449,39 @@ fn push_chunk(
         style,
         link: None,
     });
+}
+
+#[cfg(test)]
+mod decoration_tests {
+    use super::*;
+
+    fn spans(text: &str) -> Vec<AnsiSpan> {
+        crate::cli::repl::tail::screen::ansi::parse_ansi_line(text)
+    }
+
+    /// 空会话：星空画在输入框左边，`┃` 不在行首——这是用户 09-22 报的那条
+    /// 「拖选会把左侧线选进去」。原来只认行首，于是这一行一列都不跳。
+    #[test]
+    fn the_prompt_bar_is_skipped_even_behind_the_starfield() {
+        // 非空会话:老样子,行首就是竖线。
+        assert_eq!(decoration_width(&spans("┃ hello")), 2);
+        // 空会话:左边有星空。跳到竖线之后那一格。
+        assert_eq!(decoration_width(&spans("   .  ✦   ┃ hello")), 12);
+        assert_eq!(decoration_width(&spans(" + ┃ hi")), 5);
+        // ASCII 星空(MIYU_ASCII=1)同样认。
+        assert_eq!(decoration_width(&spans("  * # ┃ hi")), 8);
+    }
+
+    /// 正文里的 `┃` 是内容，不许当提示符跳掉。
+    ///
+    /// `┃` 在 TUI 里是通用的竖条词汇（时间线、命令卡片都用），见着就跳会把
+    /// 正文切掉一截。判据是「它左边只能有空格和星空字符」。
+    #[test]
+    fn a_bar_inside_real_text_is_not_a_prompt() {
+        assert_eq!(decoration_width(&spans("abc ┃ def")), 0);
+        assert_eq!(decoration_width(&spans("  日志 ┃ 内容")), 2);
+        // 页边距那两格照旧。
+        assert_eq!(decoration_width(&spans("  正文")), 2);
+        assert_eq!(decoration_width(&spans("正文")), 0);
+    }
 }
