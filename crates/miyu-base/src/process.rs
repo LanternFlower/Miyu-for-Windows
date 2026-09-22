@@ -10,5 +10,10 @@ pub fn trim_process_memory() {
     }
 }
 
+/// 非 Linux 上没有 `malloc_trim`（那是 glibc 的扩展），空转即可。
+///
+/// 可见性必须和上面那支一致：`miyu-hosts` 的 `runtime/mod.rs` 把它再导出一层，
+/// 写成 `pub(crate)` 的话在 macOS 上就是 E0603——而 Linux 侧编得过，所以这个
+/// 错一直藏到 2026-09-22 加上 macOS CI 的第一次运行才现形。
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn trim_process_memory() {}
+pub fn trim_process_memory() {}
