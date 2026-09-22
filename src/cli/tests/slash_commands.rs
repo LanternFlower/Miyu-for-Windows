@@ -25,6 +25,67 @@ fn usage_and_persona_are_repl_commands() {
     );
 }
 
+/// `--allow-read` 前后都摘得掉,且不按空白切词——路径里可以有空格。
+#[test]
+fn allow_read_flag_is_taken_from_either_end() {
+    assert_eq!(
+        take_repl_flag("/home/a b/c --allow-read", "--allow-read"),
+        ("/home/a b/c", true)
+    );
+    assert_eq!(
+        take_repl_flag("--allow-read /home/a b/c", "--allow-read"),
+        ("/home/a b/c", true)
+    );
+    assert_eq!(take_repl_flag("--allow-read", "--allow-read"), ("", true));
+    assert_eq!(
+        take_repl_flag("  /home/proj  ", "--allow-read"),
+        ("/home/proj", false)
+    );
+    // 前缀像但不是开关的路径不能被吃掉。
+    assert_eq!(
+        take_repl_flag("--allow-readme", "--allow-read"),
+        ("--allow-readme", false)
+    );
+}
+
+/// 候选不随「打全」消失：`/sessio` 有、`/session` 也有，在打参数时也有。
+/// 以前打全那一刻候选没了，看着像自己把命令打错了（用户实测）。
+#[test]
+fn suggestions_survive_a_fully_typed_command() {
+    assert_eq!(repl_command_suggestions("/sessio"), vec!["/session"]);
+    assert_eq!(repl_command_suggestions("/session"), vec!["/session"]);
+    assert_eq!(repl_command_suggestions("/session "), vec!["/session"]);
+    assert_eq!(repl_command_suggestions("/session 3"), vec!["/session"]);
+    assert_eq!(repl_command_suggestions("/variant high"), vec!["/variant"]);
+    // 打了参数就不再按前缀筛：`/sessio 3` 什么都不是。
+    assert!(repl_command_suggestions("/sessio 3").is_empty());
+    // Tab 不碰已经在打参数的行，否则展开会把参数抹掉。
+    assert_eq!(complete_repl_command("/session 3"), None);
+    assert_eq!(complete_repl_command("/session"), Some("/session"));
+}
+
+/// 全屏候选面板：打全了照样在，并带上参数提示；别名那一行注明等于哪条正名。
+#[test]
+fn command_hint_panel_keeps_showing_a_fully_typed_command() {
+    let lines = command_hint_lines("/session", 80);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("/session [name|index]"), "{lines:?}");
+    let lines = command_hint_lines("/session 3", 80);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("/session [name|index]"), "{lines:?}");
+    // 没打全时不带参数提示，和以前一样只列名字。
+    let lines = command_hint_lines("/sessio", 80);
+    assert!(lines[0].starts_with("/session  "), "{lines:?}");
+    let lines = command_hint_lines("/var", 80);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("/variant"), "{lines:?}");
+    assert!(lines[0].contains("= /effort"), "{lines:?}");
+    // 无参数的命令打全了不带空的参数提示。
+    let lines = command_hint_lines("/usage", 80);
+    assert!(lines[0].starts_with("/usage  "), "{lines:?}");
+    assert!(command_hint_lines("/sessio 3", 80).is_empty());
+}
+
 #[test]
 fn command_suggestions_are_prefixed_and_truncated() {
     let suggestions = repl_command_suggestions("/");
@@ -47,7 +108,7 @@ fn truncation_respects_very_narrow_widths() {
 #[test]
 fn shortcut_hint_line_is_bar_aligned_and_truncated() {
     // Tab 切换模式已随闲聊模式删除,提示行首个词条现在是换行快捷键。
-    let line = repl_shortcut_hint_line(AgentMode::Normal, 24);
+    let line = repl_shortcut_hint_line(PersonaLane::Active, 24);
     assert!(strip_terminal_control_sequences(&line).contains("Shift+Enter"));
     assert!(visible_width(&line) <= 24);
 }
@@ -106,6 +167,34 @@ fn tab_completion_still_expands_unique_prefixes() {
     // 歧义前缀不展开:/config /compact /clear 都以 /c 开头。
     assert_eq!(complete_repl_command("/co"), None);
     assert_eq!(complete_repl_command("hello"), None);
+}
+
+/// 空会话撤大厅的判据:以路径开头的第一句话是**消息**,不是命令。
+///
+/// 退回修复前(两处各写一遍 `starts_with('/')`),`/home/x.md 删掉` 被当成命令
+/// 跳过撤场,可它回落成聊天照常发给了模型——大厅留在画面上,流式正文画上去
+/// 就是重影,整轮结束视图还停在大厅。
+#[test]
+fn a_path_like_first_message_still_leaves_the_lobby() {
+    for message in [
+        "/home/shorin/Downloads/群聊消息线程-实现方案.md 删除这个文件",
+        "/home/x.md 删掉",
+        "/usr/bin/env 是什么",
+        "/rest",
+        "你好",
+    ] {
+        assert!(
+            submission_leaves_lobby(message),
+            "should leave the lobby: {message:?}"
+        );
+    }
+    // 真命令与空输入不撤大厅。
+    for command in ["/config", "  /session  ", "/POP 3", "", "   "] {
+        assert!(
+            !submission_leaves_lobby(command),
+            "should keep the lobby: {command:?}"
+        );
+    }
 }
 
 #[test]
@@ -180,7 +269,7 @@ fn every_repl_slash_command_has_a_table_entry() {
 /// `GET /api/commands` 直接从这张表按 `web` 标记过滤。
 #[test]
 fn web_commands_are_a_subset_of_the_repl_table() {
-    let web = crate::slash_commands::web_commands();
+    let web = miyu_core::slash_commands::web_commands();
     assert!(!web.is_empty(), "WebUI 一条命令都没开，命令平面等于没做");
     for spec in &web {
         assert!(
@@ -198,6 +287,157 @@ fn web_commands_are_a_subset_of_the_repl_table() {
     let names = web.iter().map(|spec| spec.name).collect::<Vec<_>>();
     assert_eq!(
         names,
-        ["/pop", "/compact", "/goal", "/reset", "/reset-memory"]
+        [
+            "/sandbox",
+            "/pop",
+            "/compact",
+            "/goal",
+            "/reset",
+            "/reset-memory",
+            "/reset-all-memory"
+        ]
+    );
+}
+
+/// `/session` 两侧合并之后，当前车道的排前面、另一侧的排后面，各自保持原序。
+#[test]
+fn session_list_groups_the_current_lane_first() {
+    use crate::cli::repl::session::{order_entries_for_lane, SessionListEntry};
+    let entry = |name: &str, mode: &str| SessionListEntry {
+        context_tokens: None,
+        id: name.to_string(),
+        name: name.to_string(),
+        is_current: false,
+        turns: 1,
+        snippet: String::new(),
+        sandbox: None,
+        sandbox_read_all: false,
+        mode: mode.to_string(),
+    };
+    let mixed = vec![
+        entry("d1", "dev"),
+        entry("n1", "normal"),
+        entry("d2", "dev"),
+        entry("n2", "normal"),
+    ];
+    let names =
+        |entries: Vec<SessionListEntry>| entries.into_iter().map(|e| e.name).collect::<Vec<_>>();
+    assert_eq!(
+        names(order_entries_for_lane(
+            mixed.clone(),
+            miyu_base::config::PersonaLane::Active
+        )),
+        ["n1", "n2", "d1", "d2"]
+    );
+    assert_eq!(
+        names(order_entries_for_lane(
+            mixed,
+            miyu_base::config::PersonaLane::Dev
+        )),
+        ["d1", "d2", "n1", "n2"]
+    );
+}
+
+/// 输入框右上角那行 `/goal …`（用户 09-19）。
+///
+/// 长任务跑起来之后屏幕上一直只有正文，看不出「它还在自己往前跑吗、第几轮
+/// 了」。这行只说三件事：状态、轮数、这个状态持续了多久。
+#[test]
+fn the_goal_hint_says_state_rounds_and_elapsed() {
+    use crate::cli::footer::goal_hint_text;
+    use miyu_core::ipc::GoalHint;
+
+    assert_eq!(goal_hint_text(None), "", "没目标就什么都不画");
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    // 自己往前跑：状态 + 轮数 + 秒数。
+    let running = GoalHint {
+        phase: "active".into(),
+        armed: true,
+        awaiting: false,
+        rounds: 3,
+        since_unix: now - 12,
+    };
+    let text = goal_hint_text(Some(&running));
+    assert!(text.starts_with("/goal running"), "{text}");
+    assert!(text.contains("第 3 轮"), "{text}");
+    assert!(text.contains("12s"), "{text}");
+
+    // 上一轮一个工具都没调，驱动器停下来等人开口了：armed 还挂着，但它不会
+    // 自己往前跑——说成 running 就是在骗人，这正是这行提示要治的病。
+    let awaiting = GoalHint {
+        awaiting: true,
+        ..running.clone()
+    };
+    let text = goal_hint_text(Some(&awaiting));
+    assert!(text.starts_with("/goal paused"), "{text}");
+
+    // `active` 但没 armed，和 `paused` 对人是同一件事：停在这儿等人。
+    let waiting = GoalHint {
+        armed: false,
+        ..running.clone()
+    };
+    let text = goal_hint_text(Some(&waiting));
+    assert!(text.starts_with("/goal paused"), "{text}");
+    assert!(
+        !text.contains("12s"),
+        "停着的秒数每帧都一样，只会让人以为卡了: {text}"
+    );
+
+    let paused = GoalHint {
+        phase: "paused".into(),
+        armed: true,
+        ..running.clone()
+    };
+    assert!(goal_hint_text(Some(&paused)).starts_with("/goal paused"));
+
+    let blocked = GoalHint {
+        phase: "blocked".into(),
+        ..running.clone()
+    };
+    assert!(goal_hint_text(Some(&blocked)).starts_with("/goal blocked"));
+
+    // 时钟歪了（未来时间戳、或跨了一天）不画那个数，别显示 -3s 这种。
+    let skewed = GoalHint {
+        since_unix: now + 60,
+        ..running.clone()
+    };
+    assert!(
+        !goal_hint_text(Some(&skewed)).contains('s'),
+        "{}",
+        goal_hint_text(Some(&skewed))
+    );
+
+    // 还没起过轮就不说轮数。
+    let fresh = GoalHint {
+        rounds: 0,
+        ..running.clone()
+    };
+    assert!(!goal_hint_text(Some(&fresh)).contains("轮"));
+
+    // 配色 = 当前模式的高亮色，和左侧那根粗线、左下角的模式标签同一个
+    //（用户 09-19 指定）。三处同源，这里把它钉死：谁改跑偏了这条就红。
+    // 也不许带暗化——这行是常驻的状态灯，暗着就沉进背景里看不见了。
+    use crate::cli::footer::{colored_footer_mode_label, goal_hint_style};
+    for mode in [PersonaLane::Active, PersonaLane::Dev] {
+        let style = goal_hint_style(mode);
+        assert!(!style.is_empty() && !style.contains("\x1b[2m"), "{style:?}");
+        assert!(
+            submitted_echo_bar(mode).starts_with(style),
+            "{mode:?}: 得和左侧那根粗线同色"
+        );
+        assert!(
+            colored_footer_mode_label(mode).starts_with(style),
+            "{mode:?}: 得和左下角的模式标签同色"
+        );
+    }
+    assert_ne!(
+        goal_hint_style(PersonaLane::Active),
+        goal_hint_style(PersonaLane::Dev),
+        "两条车道的高亮色本来就不是一个"
     );
 }

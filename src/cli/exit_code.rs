@@ -53,7 +53,7 @@ pub fn session_not_found(target: &str) -> anyhow::Error {
         EXIT_SESSION_NOT_FOUND,
         format!(
             "{}: {target}",
-            crate::i18n::text("session not found", "找不到该会话")
+            miyu_base::i18n::text("session not found", "找不到该会话")
         ),
     )
 }

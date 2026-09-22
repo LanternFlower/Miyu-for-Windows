@@ -29,7 +29,7 @@ pub(in crate::cli) fn is_active() -> bool {
 }
 
 /// 开始听写。已在听写则无操作(返回 false)。
-pub(in crate::cli) fn start(paths: &MiyuPaths, auto_submit: bool) -> bool {
+pub fn start(paths: &MiyuPaths, auto_submit: bool) -> bool {
     let mut active = ACTIVE.lock().unwrap();
     if active.is_some() {
         return false;
@@ -57,7 +57,7 @@ pub(in crate::cli) fn start(paths: &MiyuPaths, auto_submit: bool) -> bool {
 }
 
 /// 停止听写(连接一断 daemon 就释放认领并恢复唤醒)。
-pub(in crate::cli) fn stop() {
+pub fn stop() {
     if let Some(mut session) = ACTIVE.lock().unwrap().take() {
         if let Some(stop) = session.stop.take() {
             let _ = stop.send(());

@@ -362,12 +362,12 @@ emit_row() {
 
 collect_all_rows() {
   local pid ppid user cpu mem_pct rss_kb comm args
-  local -a ps_args=(
-    ww
-    -eo
-    pid=,ppid=,user=,pcpu=,pmem=,rss=,comm=,args=
-    --no-headers
-  )
+  local -a ps_args=()
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    ps_args=(-A -ww -o pid=,ppid=,user=,pcpu=,pmem=,rss=,ucomm=,args=)
+  else
+    ps_args=(ww -eo pid=,ppid=,user=,pcpu=,pmem=,rss=,comm=,args= --no-headers)
+  fi
 
   while read -r pid ppid user cpu mem_pct rss_kb comm args; do
     emit_row "$cpu" "$mem_pct" "$rss_kb" "$pid" "$ppid" "$user" "$comm" "$args"
@@ -378,12 +378,12 @@ collect_app_rows() {
   local query="$1" expected_exec="$2" names="$3" expected_base="$4"
   local pid ppid user cpu mem_pct rss_kb comm args argv0 argv0_base
   local exe_base exe_path matched name row
-  local -a ps_args=(
-    ww
-    -eo
-    pid=,ppid=,user=,pcpu=,pmem=,rss=,comm=,args=
-    --no-headers
-  )
+  local -a ps_args=()
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    ps_args=(-A -ww -o pid=,ppid=,user=,pcpu=,pmem=,rss=,ucomm=,args=)
+  else
+    ps_args=(ww -eo pid=,ppid=,user=,pcpu=,pmem=,rss=,comm=,args= --no-headers)
+  fi
   local -a name_parts=()
 
   IFS='|' read -r -a name_parts <<< "$names"

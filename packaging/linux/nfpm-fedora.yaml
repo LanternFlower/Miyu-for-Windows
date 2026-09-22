@@ -1,0 +1,17 @@
+{
+  "arch": "amd64",
+  "platform": "linux",
+  "depends": [
+    "libgcc",
+    "libstdc++",
+    "alsa-lib",
+    "ripgrep",
+    "chafa",
+    "ca-certificates",
+    "python3"
+  ],
+  "recommends": [
+    "libnotify",
+    "pulseaudio-utils"
+  ]
+}

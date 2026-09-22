@@ -134,6 +134,7 @@ pub enum ToolPhase {
 #[serde(rename_all = "snake_case")]
 pub enum NoticeLevel {
     Info,
+    #[allow(dead_code)] // stream-json 协议的一档:实现今天还没发过 warning,变体是对外契约的一部分
     Warning,
 }
 

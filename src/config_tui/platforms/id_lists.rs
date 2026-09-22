@@ -38,7 +38,7 @@ pub(in crate::config_tui) fn parse_id_lines(value: &str) -> std::result::Result<
 }
 
 pub(in crate::config_tui) fn prompt_single_id(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     item_label: &str,
     current: Option<i64>,
 ) -> Result<Option<i64>> {
@@ -49,7 +49,7 @@ pub(in crate::config_tui) fn prompt_single_id(
     };
     let title = format!(" {action} {item_label} ");
     let Some(value) = edit_inline_value(
-        stdout,
+        ui,
         &title,
         &current.map(|id| id.to_string()).unwrap_or_default(),
         false,
@@ -60,7 +60,7 @@ pub(in crate::config_tui) fn prompt_single_id(
     match parse_positive_id(&value) {
         Ok(id) => Ok(Some(id)),
         Err(error) => {
-            message(stdout, &error)?;
+            message(ui, &error)?;
             Ok(None)
         }
     }
@@ -69,7 +69,7 @@ pub(in crate::config_tui) fn prompt_single_id(
 /// 管理员列表:每项 QQ 号 + 别名(别名给终端发消息工具的 `to` 列表用)。
 /// 第一项是主管理员。
 pub(in crate::config_tui) fn edit_qq_admin_list(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     title: &'static str,
     ids: &mut Vec<i64>,
     aliases: &mut std::collections::BTreeMap<String, String>,
@@ -94,7 +94,7 @@ pub(in crate::config_tui) fn edit_qq_admin_list(
             }
         }));
         draw_menu(
-            stdout,
+            ui,
             title,
             &options,
             selected,
@@ -103,7 +103,7 @@ pub(in crate::config_tui) fn edit_qq_admin_list(
                 "[Enter]新增/编辑 [Delete]删除 [j/k]移动 [q]返回",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
@@ -130,13 +130,13 @@ pub(in crate::config_tui) fn edit_qq_admin_list(
                         current_alias,
                     ),
                 ];
-                if !run_form_editing(stdout, t(" ADMINISTRATOR ", " 管理员 "), &mut fields)? {
+                if !run_form_editing(ui, t(" ADMINISTRATOR ", " 管理员 "), &mut fields)? {
                     continue;
                 }
                 let id = match parse_positive_id(&fields[0].value) {
                     Ok(id) => id,
                     Err(error) => {
-                        message(stdout, &error)?;
+                        message(ui, &error)?;
                         continue;
                     }
                 };
@@ -146,7 +146,7 @@ pub(in crate::config_tui) fn edit_qq_admin_list(
                     .enumerate()
                     .any(|(other, item)| Some(other) != index && *item == id)
                 {
-                    message(stdout, t("That id already exists.", "该号码已存在。"))?;
+                    message(ui, t("That id already exists.", "该号码已存在。"))?;
                     continue;
                 }
                 match index {
@@ -175,7 +175,7 @@ pub(in crate::config_tui) fn edit_qq_admin_list(
 }
 
 pub(in crate::config_tui) fn edit_qq_id_list(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     title: &'static str,
     item_label: &'static str,
     ids: &mut Vec<i64>,
@@ -188,7 +188,7 @@ pub(in crate::config_tui) fn edit_qq_id_list(
         ];
         options.extend(ids.iter().map(ToString::to_string));
         draw_menu(
-            stdout,
+            ui,
             title,
             &options,
             selected,
@@ -197,12 +197,12 @@ pub(in crate::config_tui) fn edit_qq_id_list(
                 "[Enter]新增/编辑 [Delete]删除 [j/k]移动 [q]返回",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter if selected == 0 => {
-                if let Some(id) = prompt_single_id(stdout, item_label, None)? {
+                if let Some(id) = prompt_single_id(ui, item_label, None)? {
                     if !ids.contains(&id) {
                         ids.push(id);
                     }
@@ -211,7 +211,7 @@ pub(in crate::config_tui) fn edit_qq_id_list(
             KeyCode::Enter if selected == 1 => {
                 let mut value = String::new();
                 loop {
-                    edit_textarea(stdout, &mut value)?;
+                    edit_textarea(ui, &mut value)?;
                     match parse_id_lines(&value) {
                         Ok(additions) => {
                             for id in additions {
@@ -221,19 +221,19 @@ pub(in crate::config_tui) fn edit_qq_id_list(
                             }
                             break;
                         }
-                        Err(error) => message(stdout, &error.to_string())?,
+                        Err(error) => message(ui, &error.to_string())?,
                     }
                 }
             }
             KeyCode::Enter => {
                 let index = selected - 2;
-                if let Some(id) = prompt_single_id(stdout, item_label, ids.get(index).copied())? {
+                if let Some(id) = prompt_single_id(ui, item_label, ids.get(index).copied())? {
                     if ids
                         .iter()
                         .enumerate()
                         .any(|(other, item)| other != index && *item == id)
                     {
-                        message(stdout, t("That id already exists.", "该号码已存在。"))?;
+                        message(ui, t("That id already exists.", "该号码已存在。"))?;
                     } else if let Some(item) = ids.get_mut(index) {
                         *item = id;
                     }
@@ -273,7 +273,7 @@ pub(in crate::config_tui) fn parse_keyword_lines(
 }
 
 pub(in crate::config_tui) fn edit_keyword_list(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     keywords: &mut Vec<String>,
 ) -> Result<()> {
     let mut selected = 0usize;
@@ -284,19 +284,19 @@ pub(in crate::config_tui) fn edit_keyword_list(
         ];
         options.extend(keywords.iter().cloned());
         draw_menu(
-            stdout,
+            ui,
             t(" GROUP WAKE KEYWORDS ", " 群聊触发关键词 "),
             &options,
             selected,
             "",
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter if selected == 0 => {
                 if let Some(value) =
-                    edit_inline_value(stdout, t(" ADD KEYWORD ", " 新增关键词 "), "", false)?
+                    edit_inline_value(ui, t(" ADD KEYWORD ", " 新增关键词 "), "", false)?
                 {
                     match parse_keyword_lines(&value) {
                         Ok(additions) if additions.len() == 1 => {
@@ -306,7 +306,7 @@ pub(in crate::config_tui) fn edit_keyword_list(
                             }
                         }
                         _ => message(
-                            stdout,
+                            ui,
                             t("Enter exactly one valid keyword.", "请输入一个有效关键词。"),
                         )?,
                     }
@@ -315,7 +315,7 @@ pub(in crate::config_tui) fn edit_keyword_list(
             KeyCode::Enter if selected == 1 => {
                 let mut value = String::new();
                 loop {
-                    edit_textarea(stdout, &mut value)?;
+                    edit_textarea(ui, &mut value)?;
                     match parse_keyword_lines(&value) {
                         Ok(additions) => {
                             for keyword in additions {
@@ -325,14 +325,14 @@ pub(in crate::config_tui) fn edit_keyword_list(
                             }
                             break;
                         }
-                        Err(error) => message(stdout, &error.to_string())?,
+                        Err(error) => message(ui, &error.to_string())?,
                     }
                 }
             }
             KeyCode::Enter => {
                 let index = selected - 2;
                 if let Some(value) = edit_inline_value(
-                    stdout,
+                    ui,
                     t(" EDIT KEYWORD ", " 编辑关键词 "),
                     &keywords[index],
                     false,
@@ -345,16 +345,13 @@ pub(in crate::config_tui) fn edit_keyword_list(
                                 .enumerate()
                                 .any(|(other, item)| other != index && item == &value)
                             {
-                                message(
-                                    stdout,
-                                    t("That keyword already exists.", "该关键词已存在。"),
-                                )?;
+                                message(ui, t("That keyword already exists.", "该关键词已存在。"))?;
                             } else {
                                 keywords[index] = value;
                             }
                         }
                         _ => message(
-                            stdout,
+                            ui,
                             t("Enter exactly one valid keyword.", "请输入一个有效关键词。"),
                         )?,
                     }
@@ -367,13 +364,6 @@ pub(in crate::config_tui) fn edit_keyword_list(
             _ => {}
         }
     }
-}
-
-pub(in crate::config_tui) fn format_id_list(ids: &[i64]) -> String {
-    ids.iter()
-        .map(i64::to_string)
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 pub(in crate::config_tui) fn parse_id_list(value: &str) -> Result<Vec<i64>> {

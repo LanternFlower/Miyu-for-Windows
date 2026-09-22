@@ -9,10 +9,10 @@
 //! (运行时套运行时会 panic,整个 TUI 崩出):网络请求与 IPC 统统丢到独立
 //! 线程里,那个线程自己起一个 current_thread 运行时。
 
-use crate::config::{MiniMaxTtsConfig, VoiceTtsConfig, TTS_PROVIDERS};
 use crate::config_tui::*;
-use crate::web::voice_tts::{MIMO_MODELS, MIMO_VOICES};
 use anyhow::Context as _;
+use miyu_base::config::{MiniMaxTtsConfig, VoiceTtsConfig, TTS_PROVIDERS};
+use miyu_hosts::web::voice_tts::{MIMO_MODELS, MIMO_VOICES};
 
 /// MiMo 风格标签(文档 2026-09):情绪 / 语气 / 音色定位 / 角色 / 方言,多选。
 const MIMO_STYLES: &[&str] = &[
@@ -113,7 +113,7 @@ where
 
 /// 问 `miyu-voice devices` 要输入源列表(源名, 描述);拿不到返回空。
 fn list_microphones() -> Vec<(String, String)> {
-    let Some(binary) = crate::web::voice_bridge::locate_binary() else {
+    let Some(binary) = miyu_hosts::web::voice_bridge::locate_binary() else {
         return Vec::new();
     };
     let Ok(output) = std::process::Command::new(binary)
@@ -138,10 +138,9 @@ fn list_microphones() -> Vec<(String, String)> {
 /// MiniMax 音色列表 (value, label)。
 fn fetch_minimax_voice_list(cfg: &MiniMaxTtsConfig) -> Result<Vec<(String, String)>> {
     let cfg = cfg.clone();
-    let voices =
-        block_on_thread(
-            move || async move { crate::web::voice_tts::list_minimax_voices(&cfg).await },
-        )?;
+    let voices = block_on_thread(move || async move {
+        miyu_hosts::web::voice_tts::list_minimax_voices(&cfg).await
+    })?;
     Ok(voices
         .iter()
         .filter_map(|voice| {
@@ -174,21 +173,21 @@ fn preview_tts(
     tts.active = Some(provider.to_string());
     let socket = paths.ipc_socket();
     block_on_thread(move || async move {
-        let mut stream = crate::ipc::connect(&socket).await.context(t(
+        let mut stream = miyu_core::ipc::connect(&socket).await.context(t(
             "Miyu daemon is not running (preview needs it)",
             "Miyu daemon 未运行(试听要 daemon 在跑)",
         ))?;
-        crate::ipc::send(
+        miyu_core::ipc::send(
             &mut stream,
-            &crate::ipc::Request::new(crate::ipc::Command::VoiceSpeak {
+            &miyu_core::ipc::Request::new(miyu_core::ipc::Command::VoiceSpeak {
                 text,
                 tts: Some(tts),
             }),
         )
         .await?;
-        match crate::ipc::receive::<crate::ipc::Frame>(&mut stream).await? {
-            Some(crate::ipc::Frame::Ack) => Ok(()),
-            Some(crate::ipc::Frame::Error { message, .. }) => bail!("{message}"),
+        match miyu_core::ipc::receive::<miyu_core::ipc::Frame>(&mut stream).await? {
+            Some(miyu_core::ipc::Frame::Ack) => Ok(()),
+            Some(miyu_core::ipc::Frame::Error { message, .. }) => bail!("{message}"),
             other => bail!("unexpected reply to VoiceSpeak: {other:?}"),
         }
     })
@@ -255,7 +254,7 @@ fn adopt_provider_if_current_unusable(tts: &mut VoiceTtsConfig, provider: &str) 
 
 /// 语音功能入口菜单:语音唤醒开关 / 文本转语音开关 / 播报供应商 / 识别与唤醒设置。
 pub(in crate::config_tui) fn edit_voice(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
 ) -> Result<()> {
@@ -281,13 +280,13 @@ pub(in crate::config_tui) fn edit_voice(
             t("Recognition and wake settings", "识别与唤醒设置").to_string(),
         ];
         draw_menu(
-            stdout,
+            ui,
             t(" VOICE ", " 语音功能 "),
             &options,
             selected,
             t("[Enter]toggle/open [q]back", "[Enter]切换/进入 [q]返回"),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
@@ -303,11 +302,11 @@ pub(in crate::config_tui) fn edit_voice(
                         config.voice.tts.enabled = !config.voice.tts.enabled;
                         Ok(())
                     }
-                    2 => edit_tts_providers(stdout, paths, config),
-                    _ => edit_voice_form(stdout, config),
+                    2 => edit_tts_providers(ui, paths, config),
+                    _ => edit_voice_form(ui, config),
                 };
                 if let Err(error) = outcome {
-                    show_tui_error(stdout, &error)?;
+                    show_tui_error(ui, &error)?;
                 }
             }
             _ => {}
@@ -320,11 +319,7 @@ pub(in crate::config_tui) fn edit_voice(
 // ---------------------------------------------------------------------------
 
 /// 预置的播报供应商列表:`[*]` 是当前生效的那个;[Enter] 配置,[Tab] 设为当前。
-fn edit_tts_providers(
-    stdout: &mut io::Stdout,
-    paths: &MiyuPaths,
-    config: &mut AppConfig,
-) -> Result<()> {
+fn edit_tts_providers(ui: &mut Ui, paths: &MiyuPaths, config: &mut AppConfig) -> Result<()> {
     let mut selected = 0usize;
     loop {
         let tts = &config.voice.tts;
@@ -337,7 +332,7 @@ fn edit_tts_providers(
             })
             .collect();
         draw_menu(
-            stdout,
+            ui,
             t(" TTS PROVIDERS ", " 播报供应商 "),
             &options,
             selected,
@@ -347,7 +342,7 @@ fn edit_tts_providers(
             ),
         )?;
         let provider = TTS_PROVIDERS[selected.min(TTS_PROVIDERS.len() - 1)].0;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
@@ -356,11 +351,11 @@ fn edit_tts_providers(
             }
             KeyCode::Enter => {
                 let outcome = match provider {
-                    "mimo" => edit_mimo(stdout, paths, config),
-                    _ => edit_minimax(stdout, paths, config),
+                    "mimo" => edit_mimo(ui, paths, config),
+                    _ => edit_minimax(ui, paths, config),
                 };
                 if let Err(error) = outcome {
-                    show_tui_error(stdout, &error)?;
+                    show_tui_error(ui, &error)?;
                 }
             }
             _ => {}
@@ -373,7 +368,7 @@ fn edit_tts_providers(
 // ---------------------------------------------------------------------------
 
 /// MiMo 配置菜单:连接与模型 / 风格与指令 / 试听。
-fn edit_mimo(stdout: &mut io::Stdout, paths: &MiyuPaths, config: &mut AppConfig) -> Result<()> {
+fn edit_mimo(ui: &mut Ui, paths: &MiyuPaths, config: &mut AppConfig) -> Result<()> {
     let mut selected = 0usize;
     loop {
         let cfg = &config.voice.tts.mimo;
@@ -406,31 +401,31 @@ fn edit_mimo(stdout: &mut io::Stdout, paths: &MiyuPaths, config: &mut AppConfig)
                 } else {
                     format!(
                         " · {}",
-                        crate::web::voice_bridge::clip(cfg.prompt.trim(), 24)
+                        miyu_hosts::web::voice_bridge::clip(cfg.prompt.trim(), 24)
                     )
                 }
             ),
             t("Preview", "试听").to_string(),
         ];
         draw_menu(
-            stdout,
+            ui,
             " Xiaomi MiMo ",
             &options,
             selected,
             t("[Enter]open [q]back", "[Enter]进入 [q]返回"),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter => {
                 let outcome = match selected {
-                    0 => edit_mimo_connection(stdout, config),
-                    1 => edit_mimo_style(stdout, config),
+                    0 => edit_mimo_connection(ui, config),
+                    1 => edit_mimo_style(ui, config),
                     _ => preview_tts(paths, &config.voice.tts, "mimo", None),
                 };
                 if let Err(error) = outcome {
-                    show_tui_error(stdout, &error)?;
+                    show_tui_error(ui, &error)?;
                 }
             }
             _ => {}
@@ -438,7 +433,7 @@ fn edit_mimo(stdout: &mut io::Stdout, paths: &MiyuPaths, config: &mut AppConfig)
     }
 }
 
-fn edit_mimo_connection(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> {
+fn edit_mimo_connection(ui: &mut Ui, config: &mut AppConfig) -> Result<()> {
     let cfg = config.voice.tts.mimo.clone();
     // 音色下拉显示「冰糖 · 中文女声」,写回的是 id。
     let voice_labels: Vec<String> = MIMO_VOICES
@@ -479,7 +474,7 @@ fn edit_mimo_connection(stdout: &mut io::Stdout, config: &mut AppConfig) -> Resu
         ),
     ];
     run_form_without_buttons(
-        stdout,
+        ui,
         t(" MiMo CONNECTION ", " MiMo 连接、模型与音色 "),
         &mut fields,
     )?;
@@ -499,7 +494,7 @@ fn edit_mimo_connection(stdout: &mut io::Stdout, config: &mut AppConfig) -> Resu
     Ok(())
 }
 
-fn edit_mimo_style(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> {
+fn edit_mimo_style(ui: &mut Ui, config: &mut AppConfig) -> Result<()> {
     let cfg = config.voice.tts.mimo.clone();
     let mut fields = vec![
         // 多选菜单(Enter 进入,Tab 勾选),值是逗号分隔;发请求时转成 MiMo 要的空格。
@@ -518,11 +513,7 @@ fn edit_mimo_style(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()
             config.voice.tts.preview_text.clone(),
         ),
     ];
-    run_form_without_buttons(
-        stdout,
-        t(" MiMo STYLE ", " MiMo 风格与提示词 "),
-        &mut fields,
-    )?;
+    run_form_without_buttons(ui, t(" MiMo STYLE ", " MiMo 风格与提示词 "), &mut fields)?;
     let tts = &mut config.voice.tts;
     tts.mimo.style = fields[0].value.trim().to_string();
     tts.mimo.prompt = fields[1].value.trim().to_string();
@@ -540,7 +531,7 @@ fn edit_mimo_style(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()
 // ---------------------------------------------------------------------------
 
 /// MiniMax 配置菜单。
-fn edit_minimax(stdout: &mut io::Stdout, paths: &MiyuPaths, config: &mut AppConfig) -> Result<()> {
+fn edit_minimax(ui: &mut Ui, paths: &MiyuPaths, config: &mut AppConfig) -> Result<()> {
     let mut selected = 0usize;
     loop {
         let cfg = &config.voice.tts.minimax;
@@ -579,25 +570,25 @@ fn edit_minimax(stdout: &mut io::Stdout, paths: &MiyuPaths, config: &mut AppConf
             t("Preview", "试听").to_string(),
         ];
         draw_menu(
-            stdout,
+            ui,
             " MiniMax ",
             &options,
             selected,
             t("[Enter]open [q]back", "[Enter]进入 [q]返回"),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter => {
                 let outcome = match selected {
-                    0 => edit_minimax_connection(stdout, config),
-                    1 => browse_minimax_voices(stdout, paths, config),
-                    2 => edit_minimax_params(stdout, config),
+                    0 => edit_minimax_connection(ui, config),
+                    1 => browse_minimax_voices(ui, paths, config),
+                    2 => edit_minimax_params(ui, config),
                     _ => preview_tts(paths, &config.voice.tts, "minimax", None),
                 };
                 if let Err(error) = outcome {
-                    show_tui_error(stdout, &error)?;
+                    show_tui_error(ui, &error)?;
                 }
             }
             _ => {}
@@ -605,7 +596,7 @@ fn edit_minimax(stdout: &mut io::Stdout, paths: &MiyuPaths, config: &mut AppConf
     }
 }
 
-fn edit_minimax_connection(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> {
+fn edit_minimax_connection(ui: &mut Ui, config: &mut AppConfig) -> Result<()> {
     let cfg = config.voice.tts.minimax.clone();
     let mut fields = vec![
         Field::new(
@@ -623,7 +614,7 @@ fn edit_minimax_connection(stdout: &mut io::Stdout, config: &mut AppConfig) -> R
         ),
     ];
     run_form_without_buttons(
-        stdout,
+        ui,
         t(" MiniMax CONNECTION ", " MiniMax 连接与模型 "),
         &mut fields,
     )?;
@@ -637,7 +628,7 @@ fn edit_minimax_connection(stdout: &mut io::Stdout, config: &mut AppConfig) -> R
     Ok(())
 }
 
-fn edit_minimax_params(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> {
+fn edit_minimax_params(ui: &mut Ui, config: &mut AppConfig) -> Result<()> {
     let cfg = config.voice.tts.minimax.clone();
     let mut emotion_field =
         Field::new(t("Emotion", "情绪"), cfg.emotion.clone()).choices(TTS_EMOTIONS);
@@ -664,7 +655,7 @@ fn edit_minimax_params(stdout: &mut io::Stdout, config: &mut AppConfig) -> Resul
             config.voice.tts.preview_text.clone(),
         ),
     ];
-    run_form_without_buttons(stdout, t(" SPEECH PARAMETERS ", " 播报参数 "), &mut fields)?;
+    run_form_without_buttons(ui, t(" SPEECH PARAMETERS ", " 播报参数 "), &mut fields)?;
     let tts = &mut config.voice.tts;
     tts.minimax.speed = fields[0].value.trim().parse::<f32>()?.clamp(0.5, 2.0);
     tts.minimax.vol = fields[1].value.trim().parse::<f32>()?.clamp(0.1, 10.0);
@@ -803,11 +794,7 @@ fn voice_matches_tags(tags: &[&str], picked: &[&'static str]) -> bool {
 
 /// 音色浏览:列表来自 `get_voice`(名字 + 描述),`/` 搜索,`t` 按标签筛选
 /// (多选,Tab 勾选),`p` 试听当前行,`Enter` 选用。
-fn browse_minimax_voices(
-    stdout: &mut io::Stdout,
-    paths: &MiyuPaths,
-    config: &mut AppConfig,
-) -> Result<()> {
+fn browse_minimax_voices(ui: &mut Ui, paths: &MiyuPaths, config: &mut AppConfig) -> Result<()> {
     let all = fetch_minimax_voice_list(&config.voice.tts.minimax)?;
     if all.is_empty() {
         bail!(t("no voices returned", "MiniMax 没有返回音色"));
@@ -891,7 +878,7 @@ fn browse_minimax_voices(
             tagged.len()
         );
         draw_menu(
-            stdout,
+            ui,
             &title,
             &options,
             selected,
@@ -908,7 +895,7 @@ fn browse_minimax_voices(
             },
         )?;
         if searching {
-            match read_key()? {
+            match read_key(ui)? {
                 KeyCode::Esc => {
                     search.clear();
                     searching = false;
@@ -927,7 +914,7 @@ fn browse_minimax_voices(
             }
             continue;
         }
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
@@ -954,7 +941,7 @@ fn browse_minimax_voices(
                     }))
                     .collect();
                     draw_menu(
-                        stdout,
+                        ui,
                         t(" TAGS ", " 标签 "),
                         &options,
                         pick,
@@ -963,7 +950,7 @@ fn browse_minimax_voices(
                             "[Tab/空格]勾选 [Enter/q]应用",
                         ),
                     )?;
-                    match read_key()? {
+                    match read_key(ui)? {
                         KeyCode::Up | KeyCode::Char('k') => pick = pick.saturating_sub(1),
                         KeyCode::Down | KeyCode::Char('j') => {
                             pick = (pick + 1).min(options.len() - 1)
@@ -990,7 +977,7 @@ fn browse_minimax_voices(
                 let mut tts = config.voice.tts.clone();
                 tts.minimax.voice_id = shown[selected].0.clone();
                 if let Err(error) = preview_tts(paths, &tts, "minimax", None) {
-                    show_tui_error(stdout, &error)?;
+                    show_tui_error(ui, &error)?;
                 }
             }
             KeyCode::Enter if !shown.is_empty() => {
@@ -1006,7 +993,7 @@ fn browse_minimax_voices(
 // 识别与唤醒设置
 // ---------------------------------------------------------------------------
 
-fn edit_voice_form(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> {
+fn edit_voice_form(ui: &mut Ui, config: &mut AppConfig) -> Result<()> {
     let voice = &config.voice;
     let default_mic = t("(system default)", "(系统默认)");
     let current_mic = voice
@@ -1099,9 +1086,9 @@ fn edit_voice_form(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()
         13,
         "voice fields changed: update the read-back"
     );
-    run_form_without_buttons(stdout, t(" RECOGNITION ", " 识别与唤醒设置 "), &mut fields)?;
+    run_form_without_buttons(ui, t(" RECOGNITION ", " 识别与唤醒设置 "), &mut fields)?;
 
-    let keywords = crate::config::split_wake_keywords(&fields[0].value);
+    let keywords = miyu_base::config::split_wake_keywords(&fields[0].value);
     if keywords.is_empty() {
         bail!(t("wake keyword is empty", "唤醒词为空"));
     }

@@ -12,9 +12,9 @@ const TOOL_SCOPES: &[&str] = &["off", "dev", "normal", "all"];
 /// base_url/协议/API Key/超时/额外请求体;取而代之的是启用总开关和 CLI
 /// 中转的双四档工具作用域。
 pub(in crate::config_tui) fn edit_claude_code_provider_form(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     provider: ProviderConfig,
-    plugin: &mut crate::config::ClaudeCodePluginConfig,
+    plugin: &mut miyu_base::config::ClaudeCodePluginConfig,
 ) -> Result<Option<ProviderConfig>> {
     let mut fields = vec![
         Field::new(
@@ -58,7 +58,7 @@ pub(in crate::config_tui) fn edit_claude_code_provider_form(
     ];
     loop {
         if !run_form(
-            stdout,
+            ui,
             t(" EDIT CLAUDE CODE ", " 编辑 Claude Code "),
             &mut fields,
         )? {
@@ -67,7 +67,7 @@ pub(in crate::config_tui) fn edit_claude_code_provider_form(
         let enabled = match parse_bool_field(&fields[0].value) {
             Ok(value) => value,
             Err(error) => {
-                message(stdout, &format!("{error:#}"))?;
+                message(ui, &format!("{error:#}"))?;
                 continue;
             }
         };

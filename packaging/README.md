@@ -1,35 +1,85 @@
-# packaging
+# Packaging
 
-各发行版/平台的打包适配，每个平台一个子目录：
+`common/assets.json` 是字体、模型、表情、脚本、知识库和许可证的共同清单。
+`ci/stage.py` 用它生成完整目录，GNU DEB/RPM/tar 与 Arch 包都从这个目录打包。
+资源随主包提供，voice 是可选包，不存在独立 assets 包。
 
-- `arch/miyu-git/` — AUR VCS 包（从最新 main 源码构建），AUR `miyu-git` 的真相源
-- `arch/miyu-release/` — 发布资产构建器：从 `v<版本>` 标签构建预编译
-  `miyu-<版本>-<rel>-x86_64.pkg.tar.zst`，上传到 GitHub Release
-- `arch/miyu/` — AUR 二进制包装包（下载上述 Release 资产），AUR `miyu` 的真相源
-- `arch/miyu-voice/` — AUR 二进制包装包（下载 `miyu-release` 拆出的 `miyu-voice` 资产），
-  AUR `miyu-voice` 的真相源；依赖 `miyu`
+Linux 0.6.1 已发布并通过容器安装和真实模型输出验收：Arch x86_64、Debian 13、
+Ubuntu 24.04 LTS/26.04、Linux Mint 22.3、固定的 Fedora 稳定版。macOS 尚未通过原生验收，
+本轮不发布 Mac 资产。具体输入、资产和必需检查以冻结的 release input 与报告为准。
 
-## 发布流程（Arch）
+**2026-09-20 起 GNU 渠道的支持下限是 Ubuntu 24.04 LTS**（此前是 25.10）。下限由构建
+基座决定：GNU builder 从 Debian 13（glibc 2.41）换成 `ubuntu:24.04`（glibc 2.39），
+包里的 `libc6` 下限不再写字面量、从 `common/toolchain.lock.json` 的
+`builders.gnu-x86_64.glibc` 读。安装验收的两个 Ubuntu 目标改成一头一尾：
+`ubuntu2404-x86_64`（下限）与 `ubuntu2604-x86_64`（最新）。同一份 DEB 另外在
+`mint22-x86_64` 上验收——Linux Mint 22.x 的基座正是 Ubuntu 24.04，镜像固定在最新
+稳定版 22.3（zena）。它是 Ubuntu 派生但自带一套软件源，装 DEB 时拉的依赖
+（`ripgrep`、`chafa`、`libasound2t64`）来自 Mint 自己的镜像，值得单独装一次证明。
 
-1. `Cargo.toml` 升版本 → 提交 `release: vX.Y.Z` → 打标签 `vX.Y.Z` → push（含标签）
-2. 在干净目录用 `arch/miyu-release/PKGBUILD` 构建：
-   `PACKAGER='Miyu Release <noreply@example.com>' makepkg -Cf`
-3. `gh release create vX.Y.Z miyu-X.Y.Z-1-x86_64.pkg.tar.zst miyu-voice-X.Y.Z-1-x86_64.pkg.tar.zst --title "Miyu X.Y.Z"`
-   （两个资产都要传，AUR `miyu-voice` 靠第二个）
-4. 更新 `arch/miyu/PKGBUILD`、`arch/miyu-voice/PKGBUILD` 的 `pkgver` 与资产 sha256，
-   `arch/miyu-git/PKGBUILD` 刷新 `pkgver` 快照
-5. 复制三份 PKGBUILD 到 AUR 检出目录（`~/Documents/aur/miyu`、`miyu-voice`、`miyu-git`），
-   `makepkg -Cf` 本地实测，`makepkg --printsrcinfo > .SRCINFO`，提交 `upd: X.Y.Z` 并 push
+GitHub Release 附件只提供 Arch、DEB、RPM 三种格式的主包与可选 voice 包，共六个。
+Debian、两个 Ubuntu 与 Linux Mint 共用同一个 DEB，不需要为每个发行版重复上传。GNU tar、OOBE
+截图、SHA256SUMS、验收 JSON、SBOM、provenance、release input 和 release manifest
+保留在完整验证 bundle 或 CI artifact 中，不上传 Release。OOBE 截图从仓库资源嵌入
+发布说明。公开附件名单由冻结资产清单中的 `archlinux`、`deb`、`rpm` 格式集中选出；
+内部文件仍须通过完整性和验收检查，`publish.py --dry-run` 只列实际公开的六个包。
 
-## 系统资产约定
+## Arch 的四份真相源
 
-除 `/usr/bin/miyu` 外，Miyu 运行时按固定路径查找以下系统资产，
-打包时需要一并安装：
+| 目录 | 用途 |
+|---|---|
+| `arch/miyu-git/` | AUR VCS 包，继续从 Git 源码构建；`pkgver()` 读取实际版本和提交 |
+| `arch/miyu-release/` | 从普通版本 tag，或明确声明的补丁提交，构建主包/voice 拆包 |
+| `arch/miyu/` | AUR 主包包装器，下载已发布的 Arch 主包后完整重包 |
+| `arch/miyu-voice/` | AUR voice 包装器，依赖与下载资产一致的主包精确版本 |
 
-| 路径 | 内容 | 来源 | 缺失时的行为 |
-|---|---|---|---|
-| `/usr/share/miyu/fonts/` | 长回复转图片的渲染字体 | Noto 上游（AUR 包装包下载；发布资产不含字体） | 长文转图静默退化为纯文本 |
-| `/usr/share/miyu/memes/miyu/` | 内置表情库 | `src/memes/miyu/` | 默认人格无内置表情 |
-| `/usr/share/miyu/default-kb/` | 默认知识库 | 本仓库 `kb/` + Shorin Wiki 仓库，运行时 `miyu update-default-kb` 更新 | 默认知识库为空 |
-| `/usr/share/miyu/scripts/personas/default/` | 内置脚本（属默认人格 Miyu） | `src/scripts/personas/default/` | 无内置脚本 |
-| `/usr/share/miyu/models/<id>/` | 内置本地 embedding 模型（语义检索辅助，默认 `bge-small-zh-v1.5-int8`） | `assets/models/` | 语义检索静默退回关键词；运行库 `libonnxruntime` 来自 `onnxruntime-cpu` 或 `onnxruntime-cuda`（都 provides `onnxruntime`） |
+源构建的 `package()` 调用源码内 `ci/lib/arch_package.py source-install`，直接使用
+`common/assets.json`。因此配方只需 Git 源码及其声明的 source 文件，Python 已列入
+makedepends，不依赖执行机的 CI 绝对路径。VCS 的远端源码必须包含这套资源清单和脚本后
+才能发布对应 AUR 配方；本轮不会自动推送 AUR。
+
+`miyu-release` 默认构建 `v0.6.0`，Wiki 固定为
+`af99c4ac22a1be849206639807577a51b9e12061`。本地安装验收使用冻结源码快照的原生构建，
+不需要先创建公开 tag。若发布资产确实使用 tag 以外的补丁，必须明确提供
+`MIYU_RELEASE_SOURCE_COMMIT`、`MIYU_RELEASE_PATCH_REASON`，并记录到 release input；
+Wiki 覆盖同样必须是完整提交哈希。禁止偷偷取远端 main 作为普通 release 来源。
+
+二进制 AUR 配方已同步公开的 0.6.0-2 与真实 SHA256。后续新包产生且通过验收后，
+渠道更新步骤才写入新的 `pkgver`、`pkgrel`、`_release_pkgrel` 和真实资产 SHA256。
+不能预填 0.6.0 的假哈希，也不能把公开二进制资产校验改成 `SKIP`。
+包装器复制整个 `usr/`，因此保留 `miyupm` 别名、字体、资源、许可证和未来新增文件。
+
+## 原生 Arch 构建与打包
+
+`linux/builders/Dockerfile.arch` 固定基础镜像 digest、Arch Archive 2026/09/13
+软件源和 Rust 1.96.1。builder 准备依赖，源码构建与 makepkg 阶段以非 root 用户执行。
+生成包时禁止网络，并使用 `makepkg --nodeps`，不会在打包阶段安装依赖。
+
+`ci/lib/arch_package.py::package_arch` 接受已验证的 release input、asset、stage、
+逐文件 inventory、明确输出路径和已准备的 builder image。它拒绝变化的目录清单，
+校验产物 `.PKGINFO`，保存 makepkg/namcap 日志，并清理本次临时容器和目录。
+Arch 主包依赖系统 `onnxruntime` provider，不携带 GNU 渠道的私有 ORT。
+voice 精确依赖同次主包的 `版本-包修订号`。
+
+验收在容器中完成：生成 `.SRCINFO`，检查 namcap 报告，`pacman -U` 安装主包与
+voice，核对包内资源清单、自报版本与真实模型输出。测试包不可安装到执行机的生产 Arch。
+所有实测证据保存在忽略提交的 `out/distribution/`。
+
+## 安装资源
+
+资源搜索顺序为显式 override、原本支持的用户覆盖（models）、安装前缀下的
+`share/miyu`、Linux 系统 fallback、仅 debug 的源码 fallback。release 不读当前目录
+伪造的 `src/memes` 或 `assets/models`。所有相对路径均相对安装 prefix；Arch 为 `/usr`。
+
+| 路径 | 内容 | 缺失时的行为 |
+|---|---|---|
+| `bin/miyu`、`bin/miyupm` | 主程序及别名 | 主程序不可用 |
+| `bin/miyu-voice` | 可选语音前端 | 语音不可用 |
+| `share/miyu/fonts/` | Noto CJK、Noto Emoji、JetBrains Mono；发布资产已包含 | 渲染可能退回文本 |
+| `share/miyu/models/<id>/` | 本地 embedding 模型及 tokenizer | 语义检索退回关键词 |
+| `share/miyu/memes/` | 内置表情库 | 内置表情不可用 |
+| `share/miyu/scripts/` | 内置脚本 | 对应脚本不可用 |
+| `share/miyu/default-kb/` | 项目 kb、固定 Wiki 和来源 manifest | 默认知识库不可用 |
+| `share/licenses/miyu*/` | 项目、字体、模型及语音依赖许可证 | 包验收失败 |
+
+GNU 渠道还在 `lib/miyu/` 携带固定 CPU ORT；Arch 继续使用系统 provider。

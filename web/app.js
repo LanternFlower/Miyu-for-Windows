@@ -7,6 +7,14 @@
   const MAX_ATTACHMENTS = 12;
   const COMMAND_OUTPUT_PREVIEW_ROWS = 8;
   const NEAR_BOTTOM_PX = 120;
+  // 常驻任务面板的宽度闸,与 styles.css 里 `.main-stage.is-wide` 的判据一致。
+  const STAGE_WIDE_PX = 1360;
+  // smooth 滚动的兜底:动画期间 scroll 事件由 programmaticScroll 守卫吃掉,
+  // 万一条数不够(或压根没滚动)也不能让守卫永久卡住。
+  const PROGRAMMATIC_SCROLL_MS = 600;
+  // auto 滚动的兜底:视口已经在底时 scrollTo 不会派发 scroll 事件,守卫没有
+  // 那条「回执」可吃,得靠超时解除,否则用户下一次滚动的第一条事件会被吞掉。
+  const PROGRAMMATIC_SCROLL_AUTO_MS = 150;
   // Mirrors the CSS --ui-scale custom property; mobile drops it to 1 via a
   // media query, so read it at runtime instead of hardcoding.
   let UI_SCALE = 1.1;
@@ -42,6 +50,7 @@
     "arrow-down": [["path", { d: "M12 5v14" }], ["path", { d: "m19 12-7 7-7-7" }]],
     "arrow-up": [["path", { d: "m5 12 7-7 7 7" }], ["path", { d: "M12 19V5" }]],
     atom: [["circle", { cx: "12", cy: "12", r: "1" }], ["path", { d: "M20.2 20.2c2.04-2.03.02-7.37-4.5-11.9-4.52-4.52-9.87-6.54-11.9-4.5-2.04 2.03-.02 7.37 4.5 11.9 4.52 4.52 9.87 6.54 11.9 4.5Z" }], ["path", { d: "M15.7 15.7c4.52-4.52 6.54-9.87 4.5-11.9-2.03-2.04-7.37-.02-11.9 4.5-4.52 4.52-6.54 9.87-4.5 11.9 2.03 2.04 7.37.02 11.9-4.5Z" }]],
+    lightbulb: [["path", { d: "M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5" }], ["path", { d: "M9 18h6" }], ["path", { d: "M10 22h4" }]],
     brain: [["path", { d: "M9.5 4A2.5 2.5 0 0 1 12 6.5v11a2.5 2.5 0 0 1-4.96.44A2.5 2.5 0 0 1 5.5 13a3 3 0 0 1 .34-5.98A2.5 2.5 0 0 1 9.5 4Z" }], ["path", { d: "M14.5 4A2.5 2.5 0 0 0 12 6.5v11a2.5 2.5 0 0 0 4.96.44A2.5 2.5 0 0 0 18.5 13a3 3 0 0 0-.34-5.98A2.5 2.5 0 0 0 14.5 4Z" }]],
     check: [["path", { d: "M20 6 9 17l-5-5" }]],
     "chevron-down": [["path", { d: "m6 9 6 6 6-6" }]],
@@ -55,6 +64,8 @@
     clipboard: [["rect", { x: "8", y: "2", width: "8", height: "4", rx: "1", ry: "1" }], ["path", { d: "M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" }]],
     calculator: [["rect", { x: "4", y: "2", width: "16", height: "20", rx: "2" }], ["line", { x1: "8", x2: "16", y1: "6", y2: "6" }], ["line", { x1: "16", x2: "16", y1: "14", y2: "18" }], ["path", { d: "M16 10h.01" }], ["path", { d: "M12 10h.01" }], ["path", { d: "M8 10h.01" }], ["path", { d: "M12 14h.01" }], ["path", { d: "M8 14h.01" }], ["path", { d: "M12 18h.01" }], ["path", { d: "M8 18h.01" }]],
     search: [["circle", { cx: "11", cy: "11", r: "8" }], ["path", { d: "m21 21-4.3-4.3" }]],
+    wallet: [["path", { d: "M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1" }], ["path", { d: "M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4" }]],
+
     puzzle: [["path", { d: "M19.439 7.85c-.049.322.059.648.289.878l1.568 1.568c.47.47.706 1.087.706 1.704s-.235 1.233-.706 1.704l-1.611 1.611a.98.98 0 0 1-.837.276c-.47-.07-.802-.48-.968-.925a2.501 2.501 0 1 0-3.214 3.214c.446.166.855.497.925.968a.979.979 0 0 1-.276.837l-1.61 1.61a2.404 2.404 0 0 1-1.705.707 2.402 2.402 0 0 1-1.704-.706l-1.568-1.568a1.026 1.026 0 0 0-.877-.29c-.493.074-.84.504-1.02.968a2.5 2.5 0 1 1-3.237-3.237c.464-.18.894-.527.967-1.02a1.026 1.026 0 0 0-.289-.877l-1.568-1.568A2.402 2.402 0 0 1 1.998 12c0-.617.236-1.234.706-1.704L4.23 8.77c.24-.24.581-.353.917-.303.515.077.877.528 1.073 1.01a2.5 2.5 0 1 0 3.259-3.259c-.482-.196-.933-.558-1.01-1.073-.05-.336.062-.676.303-.917l1.525-1.525A2.402 2.402 0 0 1 12 1.998c.617 0 1.234.236 1.704.706l1.568 1.568c.23.23.556.338.877.29.493-.074.84-.504 1.02-.968a2.5 2.5 0 1 1 3.237 3.237c-.464.18-.894.527-.967 1.02Z" }]],
     package: [["path", { d: "m7.5 4.27 9 5.15" }], ["path", { d: "M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" }], ["path", { d: "m3.3 7 8.7 5 8.7-5" }], ["path", { d: "M12 22V12" }]],
     sparkles: [["path", { d: "M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z" }], ["path", { d: "M20 3v4" }], ["path", { d: "M22 5h-4" }]],
@@ -69,6 +80,8 @@
     "pause": [["rect", { x: "14", y: "4", width: "4", height: "16", rx: "1" }], ["rect", { x: "6", y: "4", width: "4", height: "16", rx: "1" }]],
     "play": [["polygon", { points: "6 3 20 12 6 21 6 3" }]],
     "x": [["path", { d: "M18 6 6 18" }], ["path", { d: "m6 6 12 12" }]],
+    "pin": [["path", { d: "M12 17v5" }], ["path", { d: "M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" }]],
+    "undo-2": [["path", { d: "M9 14 4 9l5-5" }], ["path", { d: "M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11" }]],
     "circle-alert": [["circle", { cx: "12", cy: "12", r: "10" }], ["line", { x1: "12", x2: "12", y1: "8", y2: "12" }], ["line", { x1: "12", x2: "12.01", y1: "16", y2: "16" }]],
     "circle-help": [["circle", { cx: "12", cy: "12", r: "10" }], ["path", { d: "M9.09 9a3 3 0 1 1 5.83 1c0 2-3 3-3 3" }], ["path", { d: "M12 17h.01" }]],
     "circle-stop": [["circle", { cx: "12", cy: "12", r: "10" }], ["rect", { width: "6", height: "6", x: "9", y: "9", rx: "1" }]],
@@ -87,6 +100,10 @@
     lightbulb: [["path", { d: "M9 18h6" }], ["path", { d: "M10 22h4" }], ["path", { d: "M15.09 14c.18-.59.59-1.05 1.05-1.52A6 6 0 1 0 7.86 12.5c.45.44.85.9 1.03 1.5" }], ["path", { d: "M9 14h6v1a3 3 0 0 1-6 0v-1Z" }]],
     "list-todo": [["rect", { x: "3", y: "5", width: "6", height: "6", rx: "1" }], ["path", { d: "m3 17 2 2 4-4" }], ["path", { d: "M13 6h8" }], ["path", { d: "M13 12h8" }], ["path", { d: "M13 18h8" }]],
     "loader-circle": [["path", { d: "M21 12a9 9 0 1 1-6.219-8.56" }]],
+    "log-out": [["path", { d: "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" }], ["polyline", { points: "16 17 21 12 16 7" }], ["line", { x1: "21", x2: "9", y1: "12", y2: "12" }]],
+    ticket: [["path", { d: "M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z" }], ["path", { d: "M13 5v2" }], ["path", { d: "M13 17v2" }], ["path", { d: "M13 11v2" }]],
+    user: [["path", { d: "M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" }], ["circle", { cx: "12", cy: "7", r: "4" }]],
+    "user-plus": [["path", { d: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" }], ["circle", { cx: "9", cy: "7", r: "4" }], ["line", { x1: "19", x2: "19", y1: "8", y2: "14" }], ["line", { x1: "22", x2: "16", y1: "11", y2: "11" }]],
     "lock-keyhole": [["circle", { cx: "12", cy: "16", r: "1" }], ["rect", { x: "3", y: "10", width: "18", height: "12", rx: "2" }], ["path", { d: "M7 10V7a5 5 0 0 1 10 0v3" }]],
     "log-in": [["path", { d: "M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" }], ["polyline", { points: "10 17 15 12 10 7" }], ["line", { x1: "15", x2: "3", y1: "12", y2: "12" }]],
     "message-circle": [["path", { d: "M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" }]],
@@ -94,6 +111,10 @@
     moon: [["path", { d: "M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" }]],
     "image-search": [["rect", { x: "3", y: "3", width: "14", height: "14", rx: "2" }], ["circle", { cx: "11", cy: "9", r: "2" }], ["path", { d: "m3 15 4-4 5 5" }], ["circle", { cx: "18", cy: "18", r: "3" }], ["path", { d: "m20.2 20.2 1.8 1.8" }]],
     image: [["rect", { x: "3", y: "3", width: "18", height: "18", rx: "2" }], ["circle", { cx: "8.5", cy: "8.5", r: "1.5" }], ["path", { d: "m21 15-5-5L5 21" }]],
+    "file-video": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "m10 12.5 4 2.5-4 2.5z" }]],
+    "file-audio": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "M15 12v5" }], ["path", { d: "M15 12l-4 1v5" }], ["circle", { cx: "9.5", cy: "18", r: "1.5" }], ["circle", { cx: "13.5", cy: "17", r: "1.5" }]],
+    "file-pdf": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "M8 18v-5h1.5a1.5 1.5 0 0 1 0 3H8" }], ["path", { d: "M13 18v-5h1a2 2 0 0 1 0 5z" }], ["path", { d: "M18 13h-2v5" }], ["path", { d: "M16 15.5h1.5" }]],
+    "file-archive": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "M9 6h1" }], ["path", { d: "M9 9h1" }], ["path", { d: "M9 12h1" }], ["rect", { x: "8", y: "15", width: "3", height: "4", rx: "1" }]],
     "file-code": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "m10 13-2 2 2 2" }], ["path", { d: "m14 13 2 2-2 2" }]],
     "file-markdown": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "M8 16v-4l2 2 2-2v4" }], ["path", { d: "M15 12v4" }]],
     "file-json": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "M8 12h1a1 1 0 0 1 0 2H8v2h1a1 1 0 0 1 0 2H8" }], ["path", { d: "M16 12h-1a1 1 0 0 0 0 2h1v2h-1" }]],
@@ -169,6 +190,7 @@
     "job.started",
     "job.finished",
     "job.acknowledged",
+    "job.progress",
     "resync_required"
   ];
 
@@ -190,11 +212,17 @@
     matugenThemeLink: document.getElementById("matugenThemeLink"),
     reasoningExpandToggle: document.getElementById("reasoningExpandToggle"),
     toolExpandToggle: document.getElementById("toolExpandToggle"),
+    procCollapseToggle: document.getElementById("procCollapseToggle"),
     sessionList: document.getElementById("sessionList"),
     sessionItems: document.getElementById("sessionItems"),
     contextNumbers: document.getElementById("contextNumbers"),
     contextTrack: document.getElementById("contextTrack"),
     contextBar: document.getElementById("contextBar"),
+    contextRing: document.getElementById("contextRing"),
+    composerSpeed: document.getElementById("composerSpeed"),
+    composerSpeedValue: document.getElementById("composerSpeedValue"),
+    composerCumulative: document.getElementById("composerCumulative"),
+    composerCumulativeValue: document.getElementById("composerCumulativeValue"),
     consoleButton: document.getElementById("consoleButton"),
     sidebarSettingsButton: document.getElementById("sidebarSettingsButton"),
     consoleView: document.getElementById("consoleView"),
@@ -248,12 +276,68 @@
     blockedTitle: document.getElementById("blockedTitle"),
     blockedMessage: document.getElementById("blockedMessage"),
     loginForm: document.getElementById("loginForm"),
+    loginUsername: document.getElementById("loginUsername"),
     loginPassword: document.getElementById("loginPassword"),
+    showRegisterButton: document.getElementById("showRegisterButton"),
+    showLoginButton: document.getElementById("showLoginButton"),
+    registerForm: document.getElementById("registerForm"),
+    setupForm: document.getElementById("setupForm"),
+    setupUsername: document.getElementById("setupUsername"),
+    setupDisplayName: document.getElementById("setupDisplayName"),
+    setupPassword: document.getElementById("setupPassword"),
+    setupPassword2: document.getElementById("setupPassword2"),
+    setupError: document.getElementById("setupError"),
+    setupSubmit: document.getElementById("setupSubmit"),
+    registerInvite: document.getElementById("registerInvite"),
+    registerUsername: document.getElementById("registerUsername"),
+    registerDisplayName: document.getElementById("registerDisplayName"),
+    registerPassword: document.getElementById("registerPassword"),
+    registerError: document.getElementById("registerError"),
+    registerSubmit: document.getElementById("registerSubmit"),
+    registerSubmitLabel: document.getElementById("registerSubmitLabel"),
+    accountStamp: document.getElementById("accountStamp"),
+    accountSelfHint: document.getElementById("accountSelfHint"),
+    accountUsername: document.getElementById("accountUsername"),
+    accountDisplayName: document.getElementById("accountDisplayName"),
+    accountCurrentPassword: document.getElementById("accountCurrentPassword"),
+    accountNewPassword: document.getElementById("accountNewPassword"),
+    accountProfile: document.getElementById("accountProfile"),
+    accountSave: document.getElementById("accountSave"),
+    accountLogout: document.getElementById("accountLogout"),
+    accountError: document.getElementById("accountError"),
+    inviteCreate: document.getElementById("inviteCreate"),
+    inviteFresh: document.getElementById("inviteFresh"),
+    inviteRows: document.getElementById("inviteRows"),
+    personaList: document.getElementById("personaList"),
+    personaCreate: document.getElementById("personaCreate"),
+    oobe: document.getElementById("oobe"),
+    oobeSteps: document.getElementById("oobeSteps"),
+    oobeSkip: document.getElementById("oobeSkip"),
+    oobePanes: document.getElementById("oobePanes"),
+    oobePersonaForm: document.getElementById("oobePersonaForm"),
+    oobeAvatarInput: document.getElementById("oobeAvatarInput"),
+    oobeAvatarPreview: document.getElementById("oobeAvatarPreview"),
+    oobeName: document.getElementById("oobeName"),
+    oobeDesc: document.getElementById("oobeDesc"),
+    oobePrompt: document.getElementById("oobePrompt"),
+    oobeSharedName: document.getElementById("oobeSharedName"),
+    oobeSharedHint: document.getElementById("oobeSharedHint"),
+    oobePlugins: document.getElementById("oobePlugins"),
+    oobeProfile: document.getElementById("oobeProfile"),
+    oobeDoneAvatar: document.getElementById("oobeDoneAvatar"),
+    oobeDoneTitle: document.getElementById("oobeDoneTitle"),
+    oobeDoneText: document.getElementById("oobeDoneText"),
+    oobeError: document.getElementById("oobeError"),
+    oobeBack: document.getElementById("oobeBack"),
+    oobeNext: document.getElementById("oobeNext"),
+    oobeNextLabel: document.getElementById("oobeNextLabel"),
+    accountRows: document.getElementById("accountRows"),
     loginError: document.getElementById("loginError"),
     loginSubmit: document.getElementById("loginSubmit"),
     loginSubmitLabel: document.getElementById("loginSubmitLabel"),
     retryBootstrapButton: document.getElementById("retryBootstrapButton"),
     timeline: document.getElementById("timeline"),
+    conversationStage: document.getElementById("conversationStage"),
     emptyState: document.getElementById("emptyState"),
     emptyVisual: document.getElementById("emptyVisual"),
     emptyBoardImage: document.getElementById("emptyBoardImage"),
@@ -308,6 +392,11 @@
   const state = {
     backgroundJobs: new Map(),
     jobsStripOpen: localStorage.getItem("miyu.web.jobsStripOpen") === "1",
+    expandedJobs: new Set(),
+    jobStreamSinks: new Map(),
+    commandLogs: new Map(),
+    commandPeekLine: new Map(),
+    commandPeekTimers: new Map(),
     bootId: null,
     latestEventId: 0,
     lastEventId: 0,
@@ -332,6 +421,9 @@
     viewSessionId: null,
     viewRunningTurnId: null,
     viewLoading: false,
+    // 正在切往的会话:点击标签的瞬间就高亮它、并铺一层加载动画,等 turns 拉回来
+    // 再真正应用视图(09-12 用户报「先加载后切换、点大会话像卡住」)。
+    switchingToSessionId: "",
     viewLoadGeneration: 0,
     viewSyncTimer: null,
     runsBySession: new Map(),
@@ -340,6 +432,10 @@
     // 「未读」才是——产生于回合结束，消失于用户切进那个会话。
     unreadSessions: new Set(),
     liveRuns: new Map(),
+    // 输入框「累计」合成用(#131):cumulativeBase = 后端给的会话实时累计基线;
+    // liveSubagentTokens = 正在跑的子代理各自的实时 token 估算,按 tool_id 存。
+    cumulativeBase: null,
+    liveSubagentTokens: new Map(),
     sessionMenuFor: null,
     sessionRenaming: null,
     sessionDragId: null,
@@ -351,13 +447,16 @@
       reasoning: "summary",
       tool_calls: "summary",
       readable_tool_names: true,
-      command_output_lines: 10,
+      command_output_lines: 8,
+      thinking_scroll_lines: 10,
       mixed_model_endpoint_display: "interactive",
       show_mixed_model_endpoint: false
     },
     context: { tokens: 0, window: null },
     usage: {},
     capabilities: {},
+    /// 登录者(阶段 5 多用户):{account_id, username, display_name, admin}。
+    account: null,
     version: null,
     eventSource: null,
     connection: "connecting",
@@ -406,15 +505,17 @@
     pinnedArtifacts: new Map(),
     dismissedArtifactIds: new Map(),
     colorScheme: null,
+    uiPrefs: {},
     matugenAvailable: null,
     reasoningExpanded: false,
     toolExpanded: false,
+    // 过程自动收起:她一开口,前面那串思考+工具收成一行总结。默认开。
+    procCollapse: true,
     finishedTurnArticles: new Map(),
     bootstrapPromise: null,
     resyncing: false,
     nearBottom: true,
     followOutput: true,
-    scrollRequestId: 0,
     programmaticScroll: false,
     settingsOpener: null,
     consolePanel: "usage",
@@ -489,6 +590,9 @@
   function makeIconSlot(name, className = "") {
     const slot = document.createElement("span");
     slot.className = `icon-slot${className ? ` ${className}` : ""}`;
+    // 图标名留在 DOM 上:走查要断言「视频附件用的是视频图标」,不然只能比 SVG
+    // 路径字符串,那是一读就废的测试。
+    slot.dataset.icon = name;
     slot.setAttribute("aria-hidden", "true");
     slot.appendChild(createIcon(name));
     return slot;
@@ -510,6 +614,42 @@
     }
   }
 
+  /*
+   * 外观偏好存在 daemon 那边。localStorage 按 **origin** 隔离:
+   * http://127.0.0.1:8300 和 http://192.168.1.7:8300 是两个源,同一台 Miyu 换个
+   * 地址进来就是另一份主题——「Miyu 长什么样」不该跟着浏览器地址栏走。
+   * 本地那份仍然写:它是首帧的即时值,服务端那份要等一个来回,先按本地上色能
+   * 免掉一次闪烁。窗口尺寸相关的偏好(侧栏折叠、分栏比例)故意不同步,手机和
+   * 台式机本来就该不一样。
+   */
+  const UI_PREF_KEYS = ["theme", "colorScheme", "chatFontSize", "reasoningExpanded", "toolExpanded", "procCollapse"];
+
+  function saveUiPref(key, value) {
+    if (!UI_PREF_KEYS.includes(key)) return;
+    if (state.uiPrefs[key] === value) return;
+    state.uiPrefs[key] = value;
+    apiRequest("/api/ui-prefs", { method: "PUT", body: JSON.stringify({ [key]: value }) }).catch(() => {});
+  }
+
+  /** 登录之后拉一次服务端偏好并应用。失败就维持本地那份,不打扰用户。 */
+  async function syncUiPrefs() {
+    let prefs;
+    try {
+      prefs = await (await apiRequest("/api/ui-prefs")).json();
+    } catch (_) {
+      return;
+    }
+    if (!prefs || typeof prefs !== "object") return;
+    // 先记下服务端的值:下面几个 setter 会走 saveUiPref,记过就不会再发回去。
+    state.uiPrefs = { ...prefs };
+    if (prefs.theme) setTheme(prefs.theme);
+    if (prefs.colorScheme) setColorScheme(prefs.colorScheme);
+    if (prefs.chatFontSize) setChatFontSize(prefs.chatFontSize);
+    if (prefs.reasoningExpanded) setReasoningExpanded(prefs.reasoningExpanded === "true");
+    if (prefs.toolExpanded) setToolExpanded(prefs.toolExpanded === "true");
+    if (prefs.procCollapse) setProcCollapse(prefs.procCollapse === "true");
+  }
+
   function setTheme(theme, persist = true) {
     const selected = theme === "linen" ? "linen" : "graphite";
     elements.body.dataset.theme = selected;
@@ -526,7 +666,10 @@
     }
     const themeColor = document.querySelector('meta[name="theme-color"]');
     if (themeColor) themeColor.content = selected === "graphite" ? "#171821" : "#f6f0e2";
-    if (persist) safeStorageSet("miyu.web.theme", selected);
+    if (persist) {
+      safeStorageSet("miyu.web.theme", selected);
+      saveUiPref("theme", selected);
+    }
   }
 
   /*
@@ -548,7 +691,10 @@
       // 探测不到 matugen 输出时,「壁纸取色」整个选项不显示。
       if (button.dataset.schemeChoice === "matugen") button.hidden = state.matugenAvailable !== true;
     });
-    if (persist) safeStorageSet("miyu.web.colorScheme", requested);
+    if (persist) {
+      safeStorageSet("miyu.web.colorScheme", requested);
+      saveUiPref("colorScheme", requested);
+    }
   }
 
   async function probeMatugenTheme() {
@@ -574,7 +720,10 @@
       button.classList.toggle("active", active);
       button.setAttribute("aria-pressed", String(active));
     });
-    if (persist) safeStorageSet("miyu.web.chatFontSize", selected);
+    if (persist) {
+      safeStorageSet("miyu.web.chatFontSize", selected);
+      saveUiPref("chatFontSize", selected);
+    }
   }
 
   function setReasoningExpanded(value, persist = true) {
@@ -584,7 +733,10 @@
     document.querySelectorAll(".reasoning-block").forEach((block) => {
       block.open = state.reasoningExpanded;
     });
-    if (persist) safeStorageSet("miyu.web.reasoningExpanded", String(state.reasoningExpanded));
+    if (persist) {
+      safeStorageSet("miyu.web.reasoningExpanded", String(state.reasoningExpanded));
+      saveUiPref("reasoningExpanded", String(state.reasoningExpanded));
+    }
   }
 
   function setToolExpanded(value, persist = true) {
@@ -595,7 +747,273 @@
       card.classList.toggle("collapsed", !state.toolExpanded);
       card.querySelector(".tool-head")?.setAttribute("aria-expanded", String(state.toolExpanded));
     });
-    if (persist) safeStorageSet("miyu.web.toolExpanded", String(state.toolExpanded));
+    if (persist) {
+      safeStorageSet("miyu.web.toolExpanded", String(state.toolExpanded));
+      saveUiPref("toolExpanded", String(state.toolExpanded));
+    }
+  }
+
+  function setProcCollapse(value, persist = true) {
+    state.procCollapse = Boolean(value);
+    elements.procCollapseToggle?.setAttribute("aria-checked", String(state.procCollapse));
+    // 对已经切断的时间线即时生效:开 → 露出总结行并收起;关 → 藏掉总结行并展开
+    document.querySelectorAll(".proc-line").forEach((line) => {
+      if (!line.miyuProc?.closed) return;
+      line.miyuProc.head.hidden = !state.procCollapse;
+      procLineSetOpen(line, !state.procCollapse);
+    });
+    if (persist) {
+      safeStorageSet("miyu.web.procCollapse", String(state.procCollapse));
+      saveUiPref("procCollapse", String(state.procCollapse));
+    }
+  }
+
+  /* ─── 过程时间线 ───
+   * 连续的思考块和工具签串成一条时间线(.proc-line):一根 1px 细线穿过图标列的中心,
+   * 图标处断开,图标就是节点。正文、媒体、任何不是思考/工具的东西一出现,就把当前
+   * 时间线「切断」——后面再来工具就另起一条。
+   * 「过程自动收起」开着时,切断那一刻收成一行总结(Worked for 5.4 s · 3 tools);
+   * 关着就保持展开,也不出总结行。运行中(还没切断)永远没有总结行。
+   * 细线是独立元素,起点和终点跟着可见节点走,ResizeObserver 一触发就重算,
+   * 高度交给 CSS transition——新出一行,线就平滑长到那个图标,不是瞬间跳。
+   */
+  function procLineCreate(isStatic) {
+    const line = document.createElement("div");
+    line.className = "proc-line is-live is-open";
+    if (isStatic) line.classList.add("is-static");
+    const rail = document.createElement("i");
+    rail.className = "proc-rail";
+    rail.setAttribute("aria-hidden", "true");
+    const head = document.createElement("button");
+    head.type = "button";
+    head.className = "proc-head";
+    head.hidden = true;
+    const node = document.createElement("span");
+    node.className = "proc-node";
+    node.appendChild(makeIconSlot("chevron-right", "proc-chevron"));
+    const summary = document.createElement("span");
+    summary.className = "proc-summary";
+    head.append(node, summary);
+    head.addEventListener("click", () => procLineSetOpen(line, !line.classList.contains("is-open")));
+    const wrap = document.createElement("div");
+    wrap.className = "proc-wrap";
+    const inner = document.createElement("div");
+    const steps = document.createElement("div");
+    steps.className = "proc-steps";
+    inner.appendChild(steps);
+    wrap.appendChild(inner);
+    line.append(rail, head, wrap);
+    line.miyuProc = { rail, head, summary, steps, closed: false, batchStart: -Infinity };
+    const fit = () => procLineFit(line);
+    if (typeof ResizeObserver === "function") new ResizeObserver(fit).observe(line);
+    window.requestAnimationFrame(fit);
+    return line;
+  }
+
+  const PROC_NODE_SELECTOR = ":scope > .tool-head > .tool-icon, :scope > summary > .reasoning-icon, :scope > summary > .subagent-brief-marker, :scope.tool-preparing-tag > .icon-slot";
+
+  function procLineFit(line) {
+    const proc = line.miyuProc;
+    if (!proc || !line.isConnected) return;
+    const nodes = [];
+    if (!proc.head.hidden) nodes.push(proc.head.querySelector(".proc-node"));
+    if (line.classList.contains("is-open") || proc.folding) {
+      for (const step of proc.steps.children) {
+        const node = step.querySelector(PROC_NODE_SELECTOR);
+        // 隐藏的签(生图签藏着)没有 offsetParent,不算节点
+        if (node && node.offsetParent) nodes.push(node);
+      }
+    }
+    if (!nodes.length) {
+      proc.rail.style.height = "0px";
+      return;
+    }
+    // app 壳 zoom 1.1 下 getBoundingClientRect 是缩放后的坐标,style 里的 px 是缩放前的,
+    // 用容器自己的 rect 宽 / offsetWidth 反推缩放比。
+    const box = line.getBoundingClientRect();
+    const zoom = line.offsetWidth ? box.width / line.offsetWidth : 1;
+    const center = (node) => {
+      const rect = node.getBoundingClientRect();
+      return (rect.top - box.top + rect.height / 2) / zoom;
+    };
+    const first = center(nodes[0]);
+    let last = center(nodes[nodes.length - 1]);
+    // 末尾那一步要是带着命令行（命令签的抬头底下那几行），线得跟到它们下面。
+    // 只算到最后一个**节点圆心**的话，末尾那段命令旁边就是空的——后面再跟一个
+    // 工具时才"看起来有线"，那根其实是下一段的连线（用户 09-20）。
+    // 只在这条时间线**展开着**（或正在开合）时才延伸——收起态的线必须收到 0，
+    // 而那几行命令这时还在布局里、只是被裁掉了，不判一下就会把线又拉出来
+    // （`rail_sized` / `fold_synced` 两条回归就是这么挂的）。
+    const lastStep =
+      line.classList.contains("is-open") || proc.folding
+        ? [...proc.steps.children].reverse().find((step) => {
+            const node = step.querySelector(PROC_NODE_SELECTOR);
+            return node && node.offsetParent;
+          })
+        : null;
+    const trailing = lastStep
+      ? [...lastStep.querySelectorAll(":scope > .tool-command-preview, :scope > .tool-command-more")]
+          .filter((el) => !el.hidden && el.getBoundingClientRect().height > 0)
+      : [];
+    for (const el of trailing) {
+      const rect = el.getBoundingClientRect();
+      last = Math.max(last, (rect.bottom - box.top) / zoom);
+    }
+    // 开合动画进行中:内层在被裁剪,线的终点不能超过当前可见底边,否则内容收完了线还拖在外面
+    const clip = proc.steps.parentElement.getBoundingClientRect();
+    last = Math.min(last, (clip.bottom - box.top) / zoom);
+    proc.rail.style.top = `${first}px`;
+    proc.rail.style.height = `${Math.max(0, last - first)}px`;
+  }
+
+  // 展开/收起时间线里某一项(思考块/工具卡)是瞬间的,但 proc-rail 靠 ResizeObserver
+  // + 0.45s transition 平滑跟随,不同步就抖一下(09-12 #3)。让细线立即贴合、这次不过渡。
+  // 展开/收起时把细线重贴一次内容(#8/#9):内容用 grid-rows fold 平滑展开(~0.3s),
+  // 而 .proc-rail 已去掉自己的 transition,靠 proc-line 的 ResizeObserver 在动画每一帧
+  // 重量节点位置、瞬时跟着内容长/缩。这里再补一次即时 fit 兜底(有些位移不改 proc-line
+  // 高度、ResizeObserver 不触发),不再跑 360ms rAF 循环(那是长页面卡死/崩溃的隐患)。
+  function railSnapFit(el) {
+    const line = el?.closest?.(".proc-line");
+    if (line?.miyuProc) procLineFit(line);
+  }
+
+  function procLineSetOpen(line, open) {
+    line.classList.toggle("is-open", open);
+    const proc = line.miyuProc;
+    if (!proc) return;
+    proc.head.setAttribute("aria-expanded", String(open));
+    // 收起「Worked for」整条时间线时,把里面已展开的思考块/工具卡(含子代理里的)
+    // 一并收起(#10),下次展开是干净收起态,不保留上次翻开的。
+    if (!open) {
+      proc.steps.querySelectorAll("details[open]").forEach((d) => { d.open = false; });
+      proc.steps.querySelectorAll(".tool-card:not(.collapsed)").forEach((c) => {
+        c.classList.add("collapsed");
+        const innerHead = c.querySelector(".tool-head");
+        if (innerHead) innerHead.setAttribute("aria-expanded", "false");
+      });
+    }
+    // 开合期间线逐帧跟裁剪边走,不自己再走一遍 transition(两条曲线叠起来就是线拖在内容后面)。
+    // 收起时节点仍算数,只是被裁剪边钳住;裁剪到头线也就到头了。
+    proc.rail.style.transition = "none";
+    proc.folding = true;
+    window.clearTimeout(proc.foldTimer);
+    proc.foldTimer = window.setTimeout(() => {
+      proc.folding = false;
+      proc.rail.style.transition = "";
+      procLineFit(line);
+    }, 420);
+    // ResizeObserver 是这一帧布局完才回调,线会慢内容一帧;开合期间每帧自己量一次,
+    // 读 rect 会拿到过渡当前值,写回去落在同一帧里。
+    const tick = () => {
+      if (!proc.folding) return;
+      procLineFit(line);
+      window.requestAnimationFrame(tick);
+    };
+    window.requestAnimationFrame(tick);
+    procLineFit(line);
+  }
+
+  // 把思考块 / 工具签挂进当前时间线;没有开着的就新起一条
+  function procLineAttach(blocks, element, isStatic = false) {
+    if (!blocks || !element) return null;
+    let line = blocks.lastElementChild;
+    if (!line?.classList?.contains("proc-line") || line.miyuProc?.closed) {
+      line = procLineCreate(isStatic);
+      blocks.appendChild(line);
+    }
+    if (!isStatic) {
+      // 快模型一口气吐几个调用:不压着后来的行等,而是让 250ms 窗口内到的行共用
+      // 同一条淡入时间轴(负延迟对齐到窗口起点),几行像一批一起浮起来;窗口过了
+      // 再开新一批。动画还是那条曲线,只是不会一行一行各自蹦。
+      const proc = line.miyuProc;
+      const now = performance.now();
+      if (now - proc.batchStart > 250) proc.batchStart = now;
+      const offset = now - proc.batchStart;
+      if (offset > 0) element.style.animationDelay = `-${Math.round(offset)}ms`;
+    }
+    line.miyuProc.steps.appendChild(element);
+    return line;
+  }
+
+  // 子代理任务简介作为「时间线的开头」插进去(用户:和 timeline 统一,不再是分离的一块)。
+  // 建一条 proc-line(若无),把 brief 放成第一个 step——它的 .subagent-brief-marker
+  // 会被 PROC_NODE_SELECTOR 认作节点,细线从它这里起头。
+  function attachSubBrief(blocks, brief) {
+    if (!blocks || !brief) return;
+    let line = blocks.lastElementChild;
+    if (!line?.classList?.contains("proc-line") || line.miyuProc?.closed) {
+      line = procLineCreate(false);
+      blocks.appendChild(line);
+    }
+    line.miyuProc.steps.insertBefore(brief, line.miyuProc.steps.firstChild);
+    procLineFit(line);
+  }
+
+  // 正文/媒体来了:把当前时间线切断
+  function procLineBreak(blocks) {
+    const line = blocks?.lastElementChild;
+    if (!line?.classList?.contains("proc-line") || line.miyuProc?.closed) return;
+    const proc = line.miyuProc;
+    proc.closed = true;
+    line.classList.remove("is-live");
+    procLineRefresh(line);
+    // 子过程时间线(前台/后台子代理展开区)恒展开,不做 procCollapse 折叠:那块本就是
+    // 限高滚动的紧凑区,折成「Thought / N tools」摘要既多余又会冒出一条怪「Thought」
+    // 顶在 prompt 上面(#2)。只有主对话的过程区才折。
+    if (state.procCollapse && !blocks.classList?.contains("sub-blocks")) {
+      proc.head.hidden = false;
+      procLineSetOpen(line, false);
+    }
+  }
+
+  // 总结行文字:Worked for 5.4 s · 3 tools · 1 thought · 1 err(回看的没有耗时)
+  function procLineRefresh(line) {
+    const proc = line?.miyuProc;
+    if (!proc?.closed) return;
+    const tools = proc.steps.querySelectorAll(":scope > .tool-card").length;
+    const thoughts = proc.steps.querySelectorAll(":scope > .reasoning-block").length;
+    const errs = proc.steps.querySelectorAll(":scope > .tool-card.is-failure").length;
+    // 「Worked for」= 第一个工具开跑到最后一个工具跑完。实时用 performance.now,
+    // 回看用落库的 Unix 毫秒,差值同一口径,刷新前后数字一致。
+    let first = Infinity;
+    let last = -Infinity;
+    for (const card of proc.steps.querySelectorAll(":scope > .tool-card")) {
+      const timing = card.miyuTiming;
+      if (!timing || timing.startedAt == null || timing.finishedAt == null) continue;
+      first = Math.min(first, timing.startedAt);
+      last = Math.max(last, timing.finishedAt);
+    }
+    const elapsed = Number.isFinite(first) && Number.isFinite(last) ? formatToolDuration(last - first) : "";
+    const parts = [];
+    const strong = (text) => {
+      const b = document.createElement("b");
+      b.textContent = text;
+      return b;
+    };
+    const plain = (text, className = "") => {
+      const span = document.createElement("span");
+      if (className) span.className = className;
+      span.textContent = text;
+      return span;
+    };
+    if (tools) {
+      const count = `${tools} tool${tools > 1 ? "s" : ""}`;
+      if (elapsed) {
+        parts.push(strong(`Worked for ${elapsed}`));
+        parts.push(plain(count));
+      } else {
+        parts.push(strong(count));
+      }
+      if (thoughts) parts.push(plain(`${thoughts} thought${thoughts > 1 ? "s" : ""}`));
+      if (errs) parts.push(plain(`${errs} err${errs > 1 ? "s" : ""}`, "proc-err"));
+    } else {
+      parts.push(strong("Thought"));
+    }
+    proc.summary.replaceChildren();
+    parts.forEach((part, index) => {
+      if (index) proc.summary.appendChild(plain(" · ", "proc-dot"));
+      proc.summary.appendChild(part);
+    });
   }
 
   function thinkingVariantLabel(variant, short = false) {
@@ -891,6 +1309,7 @@
       panel.hidden = panel.dataset.settingsPanel !== selected;
     });
     window.MiyuSettings?.onShow(selected);
+    if (consoleIsOpen() && state.consolePanel === "settings") writeConsoleHash(consoleHashFor("settings", selected));
   }
 
   function configValue(path, fallback = undefined) {
@@ -1036,6 +1455,9 @@
     renderConfigEditors();
     renderModelMenu();
     updateContext();
+    // /api/config 给的是全局池的窗口;看着的会话钉了模型时以会话接口为准,
+    // 否则打开设置页一次,上下文条就被改回全局默认模型的窗口。
+    if (state.viewSessionId) refreshSessionContext(state.viewSessionId);
   }
 
   async function loadConfigDraft() {
@@ -1154,6 +1576,11 @@
     } catch (_) {
       throw new ApiError("无法连接 Miyu WebUI", 0);
     }
+    if (response.status === 401 && !state.blocked && !path.startsWith("/api/auth/")) {
+      // 登录态没了(daemon 重启、令牌过期):直接回登录页,别等用户发消息时弹一句英文。
+      showBlockedState(true, "", { expired: true });
+      throw new ApiError("登录已过期,请重新登录", 401);
+    }
     if (!response.ok) throw new ApiError(await readErrorMessage(response), response.status);
     return response;
   }
@@ -1175,15 +1602,47 @@
   // 缓存命中率只以输入为分母：输出 token 要到下一轮才进入输入，把它算进
   // 分母会让同样的缓存效果随回复变长而显得越来越差。三家供应商的用量字段
   // 也都是这么定义的（DeepSeek 直接把 prompt 劈成 hit+miss）。
+  // 缓存命中率显示口径(09-11 用户拍板,与终端 render::usage::cache_percent 同规矩):
+  // 只有 >99.9 才显示成 100;99.1–99.9 留一位小数;99.0 及以下取整(99 不写 99.0)。
+  function formatCachePercent(hit, total) {
+    if (hit <= 0 || total <= 0) return null;
+    const raw = Math.min(100, (hit / total) * 100);
+    const roundedOne = Math.round(raw * 10) / 10;
+    if (roundedOne >= 100) return "100";
+    if (roundedOne > 99) return roundedOne.toFixed(1);
+    return String(Math.round(raw));
+  }
+
   function cacheSuffix(cached, prompt) {
     const hit = asFiniteNumber(cached, 0);
     const total = asFiniteNumber(prompt, 0);
-    if (hit <= 0 || total <= 0) return "";
-    return `（C${Math.min(100, Math.round((hit / total) * 100))}%）`;
+    const label = formatCachePercent(hit, total);
+    return label == null ? "" : `（C${label}%）`;
   }
 
-  function formatUsageMeta({ turnTotal, turnPrompt, turnCached, estimated, cumulative, cumulativePrompt, cumulativeCached }) {
+  // 输出速度:回合层测的「首块到末块」时长与对应 completion tokens,两者
+  // 任一为零就是没测到,不显示——和缓存率同一条规矩。
+  function formatGenerationSpeed(tokens, millis) {
+    const count = asFiniteNumber(tokens, 0);
+    const duration = asFiniteNumber(millis, 0);
+    if (count <= 0 || duration <= 0) return "";
+    const rate = (count * 1000) / duration;
+    return `每秒 ${rate >= 10 ? formatInteger(Math.round(rate)) : rate.toFixed(1)} toks`;
+  }
+
+  // 只取速度数字(给输入框下方信息行的「每秒 __ toks」用,模板已带「每秒/toks」)。
+  function generationSpeedValue(tokens, millis) {
+    const count = asFiniteNumber(tokens, 0);
+    const duration = asFiniteNumber(millis, 0);
+    if (count <= 0 || duration <= 0) return null;
+    const rate = (count * 1000) / duration;
+    return rate >= 10 ? formatInteger(Math.round(rate)) : rate.toFixed(1);
+  }
+
+  function formatUsageMeta({ turnTotal, turnPrompt, turnCached, estimated, cumulative, cumulativePrompt, cumulativeCached, generationTokens, generationMs }) {
     const parts = [];
+    const speed = formatGenerationSpeed(generationTokens, generationMs);
+    if (speed) parts.push(speed);
     if (asFiniteNumber(turnTotal) > 0) {
       parts.push(`本轮${estimated ? "约 " : " "}${formatTokens(turnTotal)}${cacheSuffix(turnCached, turnPrompt)}`);
     }
@@ -1315,13 +1774,44 @@
   function updateContext() {
     const tokens = Math.max(0, asFiniteNumber(state.context?.tokens));
     const windowSize = state.context?.window == null ? null : Math.max(0, asFiniteNumber(state.context.window));
-    elements.contextNumbers.textContent = windowSize ? `${formatTokens(tokens)} / ${formatTokens(windowSize)}` : `${formatTokens(tokens)} / --`;
+    if (elements.contextNumbers) {
+      elements.contextNumbers.textContent = windowSize ? `${formatTokens(tokens)} / ${formatTokens(windowSize)}` : `${formatTokens(tokens)} / --`;
+    }
     const percent = windowSize > 0 ? Math.min(100, Math.max(0, (tokens / windowSize) * 100)) : 0;
-    elements.contextBar.style.width = `${percent}%`;
-    elements.contextTrack.setAttribute("aria-valuenow", String(Math.round(percent)));
-    elements.contextTrack.setAttribute("aria-label", windowSize ? `上下文使用 ${Math.round(percent)}%` : `上下文 ${formatInteger(tokens)} tokens`);
-    elements.contextTrack.classList.toggle("is-high", percent >= 75 && percent < 90);
-    elements.contextTrack.classList.toggle("is-critical", percent >= 90);
+    // 上下文占用画成一个小圆环(比长条优雅,用户反馈原展示不美观):r=9,周长≈56.55,
+    // 按占用比例设 dashoffset;高/临界用配色区分。
+    if (elements.contextRing) {
+      const circ = 2 * Math.PI * 9;
+      elements.contextRing.style.strokeDasharray = `${circ.toFixed(2)}`;
+      elements.contextRing.style.strokeDashoffset = `${(circ * (1 - percent / 100)).toFixed(2)}`;
+    }
+    if (elements.contextTrack) {
+      elements.contextTrack.setAttribute("aria-valuenow", String(Math.round(percent)));
+      elements.contextTrack.setAttribute("aria-label", windowSize ? `上下文使用 ${Math.round(percent)}%` : `上下文 ${formatInteger(tokens)} tokens`);
+      elements.contextTrack.classList.toggle("is-high", percent >= 75 && percent < 90);
+      elements.contextTrack.classList.toggle("is-critical", percent >= 90);
+    }
+  }
+
+  // 输入框下方信息行的「每秒 toks」「累计」:取最新一轮的样本,回合结束/round_usage 时更新。
+  function setComposerUsage({ speed, cumulative } = {}) {
+    // undefined = 不动这一项(只想刷累计时别把速度顺手藏了);null/"" = 清空隐藏。
+    if (elements.composerSpeed && speed !== undefined) {
+      if (speed) {
+        elements.composerSpeedValue.textContent = speed;
+        elements.composerSpeed.hidden = false;
+      } else {
+        elements.composerSpeed.hidden = true;
+      }
+    }
+    if (elements.composerCumulative && cumulative !== undefined) {
+      if (cumulative) {
+        elements.composerCumulativeValue.textContent = cumulative;
+        elements.composerCumulative.hidden = false;
+      } else {
+        elements.composerCumulative.hidden = true;
+      }
+    }
   }
 
   function updateRuntimeUsage() {}
@@ -1912,7 +2402,7 @@
 
   function buildSessionItem(session) {
     const id = String(session?.session_id || "");
-    const isView = Boolean(id) && id === state.viewSessionId;
+    const isView = Boolean(id) && (id === state.viewSessionId || id === state.switchingToSessionId);
     // 终端集成会话固定为 id "default",不再跟随可变的全局指针。
     const isDefault = id === "default";
     const item = document.createElement("div");
@@ -1995,8 +2485,12 @@
     // Gemini-style list rows: name only; details live in the hover tooltip.
     if (!renaming) {
       const snippet = firstLine(session?.last_user_content || "");
-      const workspace = String(session?.workspace || "").trim();
-      const details = [snippet, workspace].filter(Boolean).join("\n");
+      const sandbox = String(session?.sandbox || "").trim();
+      // 只锁写的会话要和读写都锁的区分开，不然悬浮提示里长得一样。
+      const sandboxLine = sandbox
+        ? `sandbox: ${sandbox}${session?.sandbox_read_all ? "（只锁写）" : ""}`
+        : "";
+      const details = [snippet, sandboxLine].filter(Boolean).join("\n");
       if (details) {
         main.title = `${sessionDisplayName(session)}\n${details}`;
       }
@@ -2252,6 +2746,15 @@
     if (state.unreadSessions.delete(sessionId)) renderSessionList();
     const generation = ++state.viewLoadGeneration;
     state.viewLoading = true;
+    // 先切后加载:用户点标签的一刻立刻高亮目标会话、收起侧栏、给对话区铺一层
+    // 加载动画,大会话拉取期间不再像卡在旧会话上(09-12 用户报)。真正的视图
+    // 由下面 applySessionView 拉回后应用。
+    if (userInitiated && sessionId !== state.viewSessionId) {
+      state.switchingToSessionId = sessionId;
+      renderSessionList();
+      closeSidebar();
+      elements.conversationStage?.classList.add("is-switching");
+    }
     try {
       const response = await apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}/turns`);
       const payload = await response.json();
@@ -2269,6 +2772,8 @@
     } finally {
       if (generation === state.viewLoadGeneration) {
         state.viewLoading = false;
+        state.switchingToSessionId = "";
+        elements.conversationStage?.classList.remove("is-switching");
         updateControlState();
       }
     }
@@ -2388,17 +2893,85 @@
     connectEventSource(0);
   }
 
+  // 把落库的这一回合(含回合中途检查点写下的子代理子过程)按实时事件的**同一套
+  // handler** 回放进一个 live run:刷新/切会话重连时用它给 live 气泡「播种」,让后续
+  // 实时事件无缝接上,不再另起空壳、也不再画重复卡(#5b 重连渲染重做)。用真 handler
+  // 回放而不是自己搭 DOM,是为了让 live.tools/live.blocks/正文累计等内部状态和正常
+  // 流式时完全一致——尤其正在跑的那次子代理调用不喂 tool.finished,留着让实时续。
+  function seedLiveFromPersistedTurn(live, turn) {
+    ensureLiveArticle(live);
+    // 播种是回放历史,不该喂「累计」的实时子代理估算(否则已完成子代理会和后端基线
+    // 重复计;#131)。置旗让 tool.progress 里那段 liveSubagentTokens 更新跳过。
+    state.seedingLive = true;
+    try {
+      seedLiveRounds(live, turn);
+    } finally {
+      state.seedingLive = false;
+    }
+    // 播种是一次性灌进一大坨,子过程区停在顶部;若不拉到底,后续实时更新的
+    // subStickBottom 会「测得改前不在底」→ 从此不再跟随(#159 刷新后不自动向下滚)。
+    // 排在播种自身的 rAF 之后再拉一次底,让在跑的子代理接着贴底跟随。
+    window.requestAnimationFrame(() => {
+      for (const tool of live.tools.values()) {
+        if (tool?.isTask && !tool.finished && tool.blocks) {
+          const c = subScrollContainer(tool);
+          if (c) c.scrollTop = c.scrollHeight;
+        }
+      }
+    });
+  }
+  function seedLiveRounds(live, turn) {
+    const rounds = Array.isArray(turn?.tool_flow) ? turn.tool_flow : [];
+    for (const round of rounds) {
+      const reasoning = String(round?.assistant_reasoning || "");
+      if (reasoning.trim() && !reasoningHidden()) {
+        handleReasoningEvent("reasoning.start", live, {});
+        handleReasoningEvent("reasoning.delta", live, { delta: reasoning });
+        handleReasoningEvent("reasoning.part_end", live, {});
+      }
+      const content = String(round?.assistant_content || "");
+      if (content.trim()) appendAssistantDelta(live, content);
+      for (const call of Array.isArray(round?.calls) ? round.calls : []) {
+        handleToolEvent("tool.started", live, {
+          tool_id: call?.id, name: call?.name,
+          display_name: call?.display_name, arguments: call?.arguments,
+        });
+        if (isSubagentTool(call?.name) && Array.isArray(call?.sub_trace)) {
+          for (const marker of call.sub_trace) {
+            handleToolEvent("tool.progress", live, {
+              tool_id: call?.id, name: call?.name, message: String(marker),
+            });
+          }
+        }
+        const output = String(call?.output || "");
+        // 有真实输出 = 这次调用已完成才收尾;检查点里在跑的那次 output 是空的(或
+        // 派生时的占位「(tool result unavailable)」),不收尾——让它保持运行态,实时
+        // 事件到了继续更新同一张卡。
+        if (output && output !== "(tool result unavailable)") {
+          handleToolEvent("tool.finished", live, {
+            tool_id: call?.id, name: call?.name, output, ok: call?.ok !== false,
+          });
+        }
+      }
+    }
+  }
+
   function restoreLiveRuns(runs) {
     // 只有全新空壳需要事件重放;离屏保活切回来的 live 内容都在,重放反而
     // 会把正文写两遍。
     const fresh = new Set();
+    let seededConnect = false;
+    // 正在跑的那条回合:create 的 runs 不带 turn_id,靠回合状态兜底认它。
+    const runningTurn = state.turns.find((turn) => turn?.status === "running");
     for (const run of runs) {
       const runId = String(run?.run_id || "");
       if (!runId || state.terminalRunIds.has(runId)) continue;
       const kept = state.liveRuns.has(runId);
+      const turnId = String(run?.turn_id || "") || (runningTurn ? String(runningTurn.id) : "");
+      const turn = turnId ? state.turns.find((t) => String(t?.id) === turnId) : null;
       const live = createLiveForRun(runId, "", {
         operation: String(run?.operation || "create"),
-        turnId: String(run?.turn_id || "") || null,
+        turnId: turnId || null,
         inputId: String(run?.input_id || "") || null
       });
       if (live.operation === "redo" && state.turns.some((turn) => {
@@ -2406,22 +2979,47 @@
       })) {
         live.redoCommitted = true;
       }
-      // 立刻把气泡建出来,不等下一个事件。
-      //
-      // 事件环只留 4096 条,而一次流式回复光 delta 就能把它冲掉,所以
-      // `beginRunReplay()` 从 0 重放几乎必然撞上 resync——两轮之后放弃,
-      // 恢复的 run 就只剩一个空壳:没有气泡、没有停止按钮,要等下一个
-      // delta 才有东西可看。模型正在思考或跑长工具时,这段空白能有几十秒,
-      // 用户看到的是「明明在跑却什么都没有,也停不掉」。
-      //
-      // 气泡先立起来,停止按钮和等待动效就都回来了;正文由后续事件续上。
-      if (live.operation !== "redo") {
+      // 这条重连回合已被 renderConversation 按落库快照画成了持久气泡,而且快照里有回合
+      // 中途检查点写下的内容(#5a 起,子代理子过程也在)。这种情况把内容「播种」进
+      // live 气泡、删掉那张持久气泡,而不是另起一个空壳叠上去(#5b:刷新后一个空
+      // 「开发中」壳压在有内容的持久泡旁边);也不从 0 重放服务端事件(环缓冲早滚过
+      // →resync→bootstrap 死循环,几十秒空白还停不掉——#3)。改增量续上。
+      const canSeed = !kept && live.operation !== "redo" && turn && turn.status === "running"
+        && ((Array.isArray(turn.tool_flow) && turn.tool_flow.length)
+          || String(turn.assistant_content || "").trim());
+      if (live.operation === "redo") {
+        // redo 走原路(它自己会提交/重挂)。
+      } else if (canSeed) {
+        const persisted = [...elements.timeline.querySelectorAll(
+          `article.assistant-message[data-turn-id="${turnId}"]`
+        )].find((n) => !n.classList.contains("live-assistant"));
+        ensureLiveArticle(live);
+        seedLiveFromPersistedTurn(live, turn);
+        showTypingIndicator(live);
+        if (persisted) {
+          // 把 live 气泡挪到持久气泡原位再删持久气泡,保持时间线顺序。
+          if (persisted.parentNode === elements.timeline && live.article) {
+            elements.timeline.insertBefore(live.article, persisted);
+          }
+          persisted.remove();
+        }
+        seededConnect = true;
+      } else {
+        // 立刻把气泡建出来,不等下一个事件。停止按钮和等待动效就都回来了。
         ensureLiveArticle(live);
         showTypingIndicator(live);
+        if (!kept) fresh.add(runId);
       }
-      if (!kept) fresh.add(runId);
     }
-    if (fresh.size) beginRunReplay(fresh);
+    if (fresh.size) {
+      beginRunReplay(fresh);
+    } else if (seededConnect) {
+      // 播种过、没有需要从 0 重放的空壳:仍要连上事件流看后续与收尾(applySessionView
+      // 只在 liveRuns 为空时连,这里已非空)。从当前最新事件增量续上,不撞 resync。
+      state.replayRunIds = null;
+      state.lastEventId = Math.max(state.lastEventId, state.latestEventId);
+      connectEventSource(state.lastEventId);
+    }
   }
 
   async function openFallbackSessionView(excludedSessionId) {
@@ -2456,6 +3054,19 @@
       await loadSessionView(fallback);
       return;
     }
+    // 本地列表空了先跟服务端对一次：删最后一个会话时顶替的新会话由服务端建
+    // （session.created 先于 session.deleted 广播，DELETE 回执里也带着），这里
+    // 通常已经在列表里；SSE 掉过事件才会走到这一步。不这么对一次的话，每个
+    // 开着该会话的页面都会自己 POST 一个，删一个多出两个（09-10 复现）。
+    await refreshSessions();
+    const refreshed = String(state.sessions.find((session) => {
+      const id = String(session?.session_id || "");
+      return id !== excluded && !isTerminalSession(id);
+    })?.session_id || "");
+    if (refreshed) {
+      await loadSessionView(refreshed);
+      return;
+    }
     // 一个可见会话都不剩：直接新建一个顶上。落进空状态的话，用户面对的是一个
     // 不在侧栏里的「幽灵视图」，在里面打字实际写进隐藏的终端集成车道。
     // 不走 createSession()——删除流程还举着 sessionBusy，它会直接返回。
@@ -2486,9 +3097,14 @@
     if (state.sessionBusy) return;
     setSessionBusy(true);
     try {
-      await apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+      const response = await apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
       showToast("会话已删除");
       state.sessions = state.sessions.filter((item) => String(item?.session_id) !== String(sessionId));
+      // 删的是最后一个会话时，服务端已经建好顶替的那个并随回执带回；事件
+      // 到达有先后，这里直接收进列表，兜底就不会再去新建。
+      const replacement = (await response.json().catch(() => null))?.fallback;
+      const replacementId = String(replacement?.session_id || "");
+      if (replacementId && !findSession(replacementId)) state.sessions.unshift(replacement);
       renderSessionList();
       if (sessionId === state.viewSessionId) await openFallbackSessionView(sessionId);
     } catch (error) {
@@ -2514,7 +3130,8 @@
           session_id: sessionId,
           name: String(data?.name || ""),
           kind: "",
-          workspace: "",
+          sandbox: "",
+          sandbox_read_all: false,
           mode: data?.mode === "dev" ? "dev" : "normal",
           created_at: null,
           updated_at: new Date().toISOString(),
@@ -2536,8 +3153,9 @@
       }
     } else if (name === "session.updated") {
       const target = findSession(sessionId);
-      if (target && Object.prototype.hasOwnProperty.call(data || {}, "workspace")) {
-        target.workspace = String(data?.workspace || "");
+      if (target && Object.prototype.hasOwnProperty.call(data || {}, "sandbox")) {
+        target.sandbox = String(data?.sandbox || "");
+        target.sandbox_read_all = Boolean(data?.sandbox_read_all);
       }
       if (Object.prototype.hasOwnProperty.call(data || {}, "model_override") && sessionId === state.viewSessionId) {
         setSessionModelOverride(sessionId, data.model_override);
@@ -2604,9 +3222,14 @@
     return Array.from(String(value || "")).length;
   }
 
+  // 触屏设备(手机/平板):没有悬停、指针粗。回车语义与自动聚焦都按它分岔。
+  function isTouchComposer() {
+    return window.matchMedia("(hover: none), (pointer: coarse)").matches;
+  }
+
   // 触屏设备上程序化聚焦会弹出软键盘挡住内容，只在桌面端自动聚焦
   function focusComposerIfDesktop() {
-    if (window.matchMedia("(hover: none), (pointer: coarse)").matches) return;
+    if (isTouchComposer()) return;
     elements.composerInput.focus();
   }
 
@@ -2619,6 +3242,8 @@
     elements.characterCount.hidden = count < 18_000;
     elements.characterCount.classList.toggle("is-error", count > MAX_CONTENT_CHARS);
     updateControlState();
+    // 输入框多行增高时,artifact 浮层的让位高度跟着更新(#2)。
+    if (state.artifactOpen) syncComposerDockHeight();
     window.requestAnimationFrame(updateJumpButtonOffset);
   }
 
@@ -2857,6 +3482,21 @@
   // 逐句填进输入框。按一下开始,再按一下或 Esc 结束;静默 10 秒 daemon 自动收。
   // 按钮只在 daemon 说语音功能已启用时显示;LAN 上的 http 页面拿不到麦克风
   // (浏览器安全策略),这时提示改用本机 REPL 的 /stt。
+  /// 麦克风按钮显隐随 daemon 的语音开关;登录前这条 401,登录后要再拿一次。
+  function refreshVoiceButton() {
+    const button = elements.micButton;
+    if (!button) return;
+    apiRequest("/api/voice/status")
+      .then((response) => response.json())
+      .then((status) => {
+        // 语音按钮只在 miyu voice 可用时才存在(用户);具体显 mic 还是 send 由
+        // updateComposerControls 按有没有输入切换(空+语音可用=麦,有输入=发送)。
+        state.voiceEnabled = Boolean(status?.enabled);
+        updateControlState();
+      })
+      .catch(() => { state.voiceEnabled = false; updateControlState(); });
+  }
+
   function wireMicButton() {
     const button = elements.micButton;
     const indicator = elements.voiceIndicator;
@@ -2864,10 +3504,7 @@
     let session = null;
     const MAX_MS = 5 * 60_000;
 
-    apiRequest("/api/voice/status")
-      .then((response) => response.json())
-      .then((status) => { button.hidden = !status?.enabled; })
-      .catch(() => { button.hidden = true; });
+    refreshVoiceButton();
 
     function setIndicator(shown) {
       if (indicator) indicator.hidden = !shown;
@@ -3052,12 +3689,20 @@
     elements.sendButton.setAttribute("aria-label", elements.sendButton.title);
     elements.sendButton.disabled = state.blocked || state.adminBusy || state.submitting || hasPendingQuestion()
       || (inputCount === 0 && !attachmentReady) || inputCount > MAX_CONTENT_CHARS || attachmentUploading || attachmentError;
+    // 语音与发送合并成同一个位置(用户):miyu voice 可用、且没有输入、且不在排队/运行时
+    // 显麦克风(点了走语音),否则显发送。voice 不可用就永远是发送。
+    const hasDraft = inputCount > 0 || attachmentReady;
+    const showMic = state.voiceEnabled === true && !hasDraft && !running && !state.submitting;
+    elements.micButton.hidden = !showMic;
+    elements.sendButton.hidden = showMic;
     document.querySelectorAll(".edit-action, .redo-action").forEach((button) => {
       button.disabled = !revisionEligible();
     });
 
     if (state.blocked) elements.composerState.textContent = "未授权";
-    else if (hasPendingQuestion()) elements.composerState.textContent = "等待回答";
+    // 被问问题时不再在输入框页脚重复「等待回答」——问题卡自己就写着,页脚这份多余
+    // 且被模型芯片/速度挤成竖排(#3)。留空即可。
+    else if (hasPendingQuestion()) elements.composerState.textContent = "";
     else if (attachmentUploading) elements.composerState.textContent = "正在上传";
     else if (attachmentError) elements.composerState.textContent = "附件上传失败";
     else if (busy) elements.composerState.textContent = state.submitting ? (running ? "正在加入队列" : "正在发送") : "正在处理";
@@ -3079,9 +3724,22 @@
 
   function suspendOutputFollowing() {
     state.followOutput = false;
-    state.scrollRequestId += 1;
     elements.jumpBottomButton.hidden = false;
   }
+
+  /// 同一帧里的多次滚动请求合并成一个 rAF。
+  ///
+  /// 以前每次调用都 `++scrollRequestId`,后一次会把前一次已排队的 rAF 作废;
+  /// 流稳定时渲染回调与滚动回调挤在同一帧里,前一个请求被后一个作废、后一个
+  /// 又被下一条 delta 作废,滚动被连续饿死,某一帧放过去就整段下跳。现在排队
+  /// 的是「这一帧要不要滚」这件事本身,重复请求只是把 smooth 抬上去。
+  let scrollFrame = 0;
+  let scrollFrameSmooth = false;
+  let scrollFrameForce = false;
+  let programmaticScrollTimer = 0;
+  // smooth 动画会连发多条 scroll 事件,守卫不能只吃第一条——否则第二条就被
+  // 当成用户上滚,把「回到底部」的动画中途关掉跟随。
+  let programmaticScrollSmooth = false;
 
   function scrollToBottom({ force = false, smooth = false } = {}) {
     if (!force && !state.followOutput) {
@@ -3089,16 +3747,31 @@
       return;
     }
     if (force) state.followOutput = true;
-    const requestId = ++state.scrollRequestId;
-    window.requestAnimationFrame(() => {
-      if (!force && (!state.followOutput || requestId !== state.scrollRequestId)) return;
+    scrollFrameSmooth = scrollFrameSmooth || smooth;
+    // 已排队的非 force 请求不能把后来的 force 吞掉(点「回到底部」时若同一帧
+    // 里正好有一条跟随请求在排队,它记的 force 是 false)。
+    scrollFrameForce = scrollFrameForce || force;
+    if (scrollFrame) return;
+    scrollFrame = window.requestAnimationFrame(() => {
+      const smoothNow = scrollFrameSmooth;
+      const forceNow = scrollFrameForce;
+      scrollFrame = 0;
+      scrollFrameSmooth = false;
+      scrollFrameForce = false;
+      if (!forceNow && !state.followOutput) return;
       state.programmaticScroll = true;
-      elements.chatScroll.scrollTo({ top: elements.chatScroll.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+      programmaticScrollSmooth = smoothNow;
+      elements.chatScroll.scrollTo({ top: elements.chatScroll.scrollHeight, behavior: smoothNow ? "smooth" : "auto" });
       state.nearBottom = true;
       elements.jumpBottomButton.hidden = true;
-      window.setTimeout(() => {
+      // 守卫由紧随其后的 scroll 事件解除。两种情况没有那条事件可吃:smooth
+      // 期间事件被守卫吃掉、动画停下后没有下一条;auto 时视口本来就在底,
+      // scrollTo 没动就不派发。两边都补兜底超时,只是长短不同。
+      window.clearTimeout(programmaticScrollTimer);
+      programmaticScrollTimer = window.setTimeout(() => {
         state.programmaticScroll = false;
-      }, smooth ? 300 : 0);
+        programmaticScrollSmooth = false;
+      }, smoothNow ? PROGRAMMATIC_SCROLL_MS : PROGRAMMATIC_SCROLL_AUTO_MS);
     });
   }
 
@@ -3168,8 +3841,10 @@
 
   function revisionEligible(candidate = state.redoCandidate) {
     if (!candidate || !state.capabilities?.redo) return false;
+    // AI 输出中也允许改上一条 prompt(09-12 用户报):submitRedo 会先掐掉正在跑
+    // 的那轮再重发,所以这里不再拿 conversationRunning() 挡着。
     return !state.blocked && !state.viewLoading && !state.resyncing
-      && !conversationRunning() && !state.submitting && !state.revisionSubmitting
+      && !state.submitting && !state.revisionSubmitting
       && !state.adminBusy && !state.sessionBusy && !hasPendingQuestion()
       && state.queuedPrompts.length === 0;
   }
@@ -3256,6 +3931,18 @@
       editor.error.hidden = true;
     }
     updateControlState();
+    // AI 还在输出时改 prompt:先掐掉正在跑的那轮(redo 后端遇到 session_has_runs
+    // 会 409),等它收尾再重发。最多等 ~4s,到点就交给下面的 409 重试兜底。
+    if (conversationRunning()) {
+      for (const live of [...state.liveRuns.values()]) {
+        if (live && !live.ended) {
+          try { await cancelLiveRun(live); } catch { /* 尽力而为 */ }
+        }
+      }
+      for (let i = 0; i < 40 && conversationRunning(); i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
     try {
       const body = {
         expected_revision: candidate.revision,
@@ -3298,16 +3985,156 @@
     }
   }
 
-  function validHttpUrl(value) {
+  // 认得的协议。file:// 在里面是因为模型会用它指本地路径(MCP 服务器目录之类),
+  // 以前不认,整条 [label](file://…) 就原样漏成 Markdown 源码。
+  function validLinkUrl(value) {
     const raw = String(value || "").trim();
-    if (!/^https?:\/\//i.test(raw)) return null;
+    if (!/^(?:https?|file):\/\//i.test(raw)) return null;
     try {
       const url = new URL(raw);
-      return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+      return ["http:", "https:", "file:"].includes(url.protocol) ? url.href : null;
     } catch (_) {
       return null;
     }
   }
+
+  function isFileUrl(href) {
+    return /^file:/i.test(String(href || ""));
+  }
+
+  function filePathOf(href) {
+    try {
+      return decodeURIComponent(String(href).replace(/^file:\/\//i, "")) || String(href);
+    } catch (_) {
+      return String(href).replace(/^file:\/\//i, "");
+    }
+  }
+
+  // 一个链接节点。file:// 单独一条路:浏览器从 http 页面导航到 file:// 会被安全
+  // 策略**静默**拦下——做成真链接的话点了什么都不会发生,比不成链更让人困惑。
+  // 所以本地路径改成「点一下把路径复制走」,hover 看完整路径。
+  function createLink(href) {
+    const link = document.createElement("a");
+    link.href = href;
+    link.rel = "noopener noreferrer";
+    if (isFileUrl(href)) {
+      const path = filePathOf(href);
+      link.classList.add("path-link");
+      link.title = path;
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        copyText(path);
+      });
+    } else {
+      link.target = "_blank";
+    }
+    return link;
+  }
+
+  // 裸链接自动成链。模型经常直接把 URL 写进正文而不套 [](),以前这些只是纯文本,
+  // 点不动。识别到句尾标点要吐回去:"见 https://a.com。" 里的句号不属于地址。
+  const BARE_URL_TAIL = "。，、；：！？…～\"'`,.;:!?’”»›|*_~";
+  const BARE_URL_PAIRS = { ")": "(", "]": "[", "}": "{", "》": "《", "」": "「", "』": "『", "】": "【" };
+
+  function trimUrlTail(raw) {
+    let value = raw;
+    while (value.length) {
+      const last = value[value.length - 1];
+      const opener = BARE_URL_PAIRS[last];
+      if (opener) {
+        // 括号只在成对时留下:GitHub/维基的地址本身就带括号。
+        const opens = value.split(opener).length - 1;
+        const closes = value.split(last).length - 1;
+        if (closes <= opens) break;
+        value = value.slice(0, -1);
+        continue;
+      }
+      if (BARE_URL_TAIL.includes(last)) {
+        value = value.slice(0, -1);
+        continue;
+      }
+      break;
+    }
+    return value;
+  }
+
+  function bareUrlAt(text, index) {
+    // 前一个字符是字母数字时不认:避开 "xhttps://" 这类粘连。
+    if (index > 0 && /[A-Za-z0-9]/.test(text[index - 1])) return null;
+    // 中日韩标点一个都不能进地址。只在末尾修剪不够:「…archlinux.org、AUR」里
+    // 顿号后面还跟着字母,末尾修剪碰不到它,整段会被 new URL() 当成域名的一部分
+    // punycode 掉(实测变成 xn--orgaur-kr3e)。汉字本身不排除——维基那种带中文
+    // 路径的地址是合法的。
+    const matched = /^(?:https?|file):\/\/[^\s<>"'`\u00a0\u2000-\u206f\u3000-\u303f\uff00-\uffef]+/i.exec(
+      text.slice(index)
+    );
+    if (!matched) return null;
+    const raw = trimUrlTail(matched[0]);
+    if (!raw) return null;
+    const href = validLinkUrl(raw);
+    return href ? { raw, href } : null;
+  }
+
+  function insideAnchor(node) {
+    let cursor = node;
+    while (cursor) {
+      if (cursor.tagName === "A") return true;
+      cursor = cursor.parentElement;
+    }
+    return false;
+  }
+
+  function appendAutoLink(parent, raw, href) {
+    const link = createLink(href);
+    link.classList.add("auto-link");
+    link.textContent = raw;
+    parent.appendChild(link);
+  }
+
+  // 「标题 (地址)」独占一行:模型给参考资料就是这么写的,标题是纯文本,于是以前
+  // 只有括号里那半截像链接,读起来像标题和地址是两码事。整行命中时标题进同一个
+  // <a>,点标题和点地址都能走。规则跟终端那边(src/render/link.rs)是同一套。
+  const TITLE_URL_LINE = /^([ \t]*)(\S[^\n]*?)([ \t]*)([（(])[ \t]*((?:https?|file):\/\/[^\s)）]+)[ \t]*([)）])[ \t]*$/;
+
+  function titleUrlLineAt(text, index) {
+    const lineEnd = text.indexOf("\n", index);
+    const line = lineEnd < 0 ? text.slice(index) : text.slice(index, lineEnd);
+    const matched = TITLE_URL_LINE.exec(line);
+    if (!matched) return null;
+    const [, indent, title, gap, open, url, close] = matched;
+    // 标题里再有地址就不是「标题 (地址)」;结尾是 ] 说明这其实是 [label](url),
+    // 那条本来就有自己的分支——不拦住的话整条 Markdown 会被当成标题原样漏出来。
+    if (title.includes("://") || title.endsWith("]")) return null;
+    // 标题是一句话、不是一段话:句中有句号/问号/叹号/分号或长得离谱,就只让地址成链
+    // (09-11 手机端实测一整段中文正文被下划线包成一个链接)。
+    // 判据:中文句末标点直接算散文;英文只认「句点/问号/叹号 + 空格 + 大写或汉字」这种
+    // 句界——"vs." 这类缩写后面跟小写,不算。
+    if ([...title].length > 120 || /[。！？；]/.test(title) || /[.!?]\s+[A-Z\u4e00-\u9fff]/.test(title)) return null;
+    const href = validLinkUrl(url);
+    return href ? { length: line.length, indent, title, gap, open, url, close, href } : null;
+  }
+
+  function appendTitleUrlLine(parent, hit, appendTitle) {
+    if (hit.indent) parent.appendChild(document.createTextNode(hit.indent));
+    const link = createLink(hit.href);
+    link.classList.add("auto-link", "title-link");
+    const title = document.createElement("span");
+    title.className = "link-title";
+    appendTitle(title, hit.title);
+    link.appendChild(title);
+    link.appendChild(document.createTextNode(`${hit.gap}${hit.open}`));
+    const address = document.createElement("span");
+    address.className = "link-url";
+    address.textContent = hit.url;
+    link.appendChild(address);
+    link.appendChild(document.createTextNode(hit.close));
+    parent.appendChild(link);
+  }
+
+  // 无属性的 <br>/<br/>/<br />(大小写不限)是正文里唯一放行的 HTML 标签:表格单元格
+  // 内换行只能靠它。带属性的 <br class=x>、以及任何别的标签继续当纯文本走,既不解码
+  // &lt;br&gt; 再当标签认,也不给 innerHTML 开口子。粘性匹配,直接从游标处试。
+  const BREAK_TAG = /<br[ \t]*\/?>/iy;
 
   function appendInline(parent, source, depth = 0) {
     const text = String(source || "");
@@ -3321,6 +4148,17 @@
       if (end > plainStart) parent.appendChild(document.createTextNode(text.slice(plainStart, end)));
     };
     while (index < text.length) {
+      if ((index === 0 || text[index - 1] === "\n") && !insideAnchor(parent)) {
+        const titled = titleUrlLineAt(text, index);
+        if (titled) {
+          flushPlain(index);
+          appendTitleUrlLine(parent, titled, (node, source) =>
+            appendInline(node, source, depth + 1));
+          index += titled.length;
+          plainStart = index;
+          continue;
+        }
+      }
       if (text[index] === "\\" && text[index + 1] === "(") {
         const end = text.indexOf("\\)", index + 2);
         if (end > index + 1) {
@@ -3391,19 +4229,51 @@
         const labelEnd = text.indexOf("](", index + 1);
         const urlEnd = labelEnd >= 0 ? text.indexOf(")", labelEnd + 2) : -1;
         if (labelEnd > index + 1 && urlEnd > labelEnd + 2) {
-          const href = validHttpUrl(text.slice(labelEnd + 2, urlEnd));
+          const href = validLinkUrl(text.slice(labelEnd + 2, urlEnd));
           if (href) {
             flushPlain(index);
-            const link = document.createElement("a");
-            link.href = href;
-            link.target = "_blank";
-            link.rel = "noopener noreferrer";
+            const link = createLink(href);
             appendInline(link, text.slice(index + 1, labelEnd), depth + 1);
             parent.appendChild(link);
             index = urlEnd + 1;
             plainStart = index;
             continue;
           }
+        }
+      }
+      // <br> 排在 ` 之后:行内代码里的 <br> 仍是字面量。
+      if (text[index] === "<") {
+        BREAK_TAG.lastIndex = index;
+        const br = BREAK_TAG.exec(text);
+        if (br) {
+          flushPlain(index);
+          parent.appendChild(document.createElement("br"));
+          index += br[0].length;
+          plainStart = index;
+          continue;
+        }
+      }
+      // <https://…> 与裸链接。放在 ` 与 [](…) 之后:行内代码和 md 链接先被吃掉,
+      // 这里看不到它们的内容。已经在 <a> 里(md 链接的标签)就不再套一层。
+      if (text[index] === "<" && !insideAnchor(parent)) {
+        const end = text.indexOf(">", index + 1);
+        const href = end > index + 1 ? validLinkUrl(text.slice(index + 1, end)) : null;
+        if (href) {
+          flushPlain(index);
+          appendAutoLink(parent, text.slice(index + 1, end), href);
+          index = end + 1;
+          plainStart = index;
+          continue;
+        }
+      }
+      if ("hHfF".includes(text[index]) && !insideAnchor(parent)) {
+        const bare = bareUrlAt(text, index);
+        if (bare) {
+          flushPlain(index);
+          appendAutoLink(parent, bare.raw, bare.href);
+          index += bare.raw.length;
+          plainStart = index;
+          continue;
         }
       }
       if (text.startsWith("~~", index)) {
@@ -3419,8 +4289,8 @@
         }
       }
       const strongMarker = text.startsWith("**", index) ? "**" : text.startsWith("__", index) ? "__" : null;
-      if (strongMarker) {
-        const end = text.indexOf(strongMarker, index + 2);
+      if (strongMarker && !(strongMarker === "__" && isWordChar(text[index - 1]))) {
+        const end = strongMarker === "__" ? underscoreCloser(text, index + 2, "__") : text.indexOf(strongMarker, index + 2);
         if (end > index + 2 && text.slice(index + 2, end).trim()) {
           flushPlain(index);
           const strong = document.createElement("strong");
@@ -3431,9 +4301,9 @@
           continue;
         }
       }
-      if (text[index] === "*" || text[index] === "_") {
+      if (text[index] === "*" || (text[index] === "_" && !isWordChar(text[index - 1]))) {
         const marker = text[index];
-        const end = text.indexOf(marker, index + 1);
+        const end = marker === "_" ? underscoreCloser(text, index + 1, "_") : text.indexOf(marker, index + 1);
         if (end > index + 1 && text.slice(index + 1, end).trim()) {
           flushPlain(index);
           const emphasis = document.createElement("em");
@@ -3449,7 +4319,141 @@
     flushPlain(text.length);
   }
 
-  function codeBlock(language, codeText) {
+  // 已经渲染过的图：同一段源码不重复往服务端跑（流式重绘会把同一块反复重建）。
+  const mermaidCache = new Map();
+
+  /** ```mermaid 卡片：图直接画在回复里，源码折在后面。
+   *
+   * 图在**服务端**渲染（`POST /api/mermaid`，与终端同一个 Rust 渲染器），
+   * 前端不 vendor mermaid.js：终端那边本来就需要 Rust 渲染器，两边共用才不会
+   * 出图不一致，也省掉 800KB 脚本。画不出来就退回普通代码块——和终端一个规矩。
+   */
+  function mermaidBlock(codeText) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "code-block mermaid-block";
+    const toolbar = document.createElement("div");
+    toolbar.className = "code-toolbar";
+    const label = document.createElement("span");
+    label.textContent = "图表";
+    const sourceToggle = document.createElement("button");
+    sourceToggle.type = "button";
+    // 不蹭 `.code-copy-button`：那是给图标用的 25×23 定宽格子，塞中文会断成两行。
+    sourceToggle.className = "mermaid-source-toggle";
+    sourceToggle.textContent = "源码";
+    const copy = makeCopyButton(codeText, "复制源码");
+    copy.className = "code-copy-button";
+    // 两个按钮成一组靠右：工具栏是 space-between，散着放中间那个会飘到正中。
+    const actions = document.createElement("div");
+    actions.className = "mermaid-actions";
+    actions.append(sourceToggle, copy);
+    toolbar.append(label, actions);
+
+    const figure = document.createElement("div");
+    figure.className = "mermaid-figure";
+    figure.textContent = "正在画图…";
+
+    const source = plainCodeBlock("mermaid", codeText);
+    source.hidden = true;
+    source.classList.add("mermaid-source");
+    // 图和源码是同一块地方的两个视图，**互相替换**而不是源码追加在图下面
+    // （用户 09-20）。按钮上写的是「点了会切到哪儿」。
+    sourceToggle.addEventListener("click", () => {
+      const showSource = source.hidden;
+      source.hidden = !showSource;
+      figure.hidden = showSource;
+      sourceToggle.textContent = showSource ? "图表" : "源码";
+      sourceToggle.classList.toggle("is-active", showSource);
+      sourceToggle.setAttribute("aria-expanded", String(showSource));
+    });
+
+    wrapper.append(toolbar, figure, source);
+
+    const paint = (svg) => {
+      figure.textContent = "";
+      // 服务端来的 SVG 当 HTML 插：它是我们自己的渲染器产出的，不是模型原文。
+      figure.innerHTML = svg;
+      const node = figure.querySelector("svg");
+      if (!node) return;
+      // `width`/`height` 留着：渲染器给的是图的**自然尺寸**，摘掉之后 SVG 会
+      // 撑满卡片宽度——一张 200px 宽的小流程图被放大四倍，字大得离谱。
+      // 只加一道上限，宽过卡片才等比缩。
+      node.style.maxWidth = "100%";
+      node.style.height = "auto";
+      // 点图放大：走和图片一样的灯箱，SVG 包成 blob 给它。
+      figure.classList.add("is-zoomable");
+      figure.tabIndex = 0;
+      figure.setAttribute("role", "button");
+      figure.setAttribute("aria-label", "放大查看图表");
+      const open = () => {
+        const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+        window.MiyuLightbox?.open({ url, name: "图表" });
+      };
+      figure.addEventListener("click", open);
+      // 卡片限了高（见 styles.css），高图会被缩着放。缩了就在工具栏说一句，
+      // 否则「这张图其实不是原尺寸、点开能看全」没人知道。
+      requestAnimationFrame(() => {
+        const natural = parseFloat(node.getAttribute("height") || "0");
+        if (natural > 0 && node.getBoundingClientRect().height < natural - 2) {
+          wrapper.classList.add("is-scaled");
+          label.textContent = "图表 · 点开看原图";
+        }
+      });
+      figure.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          open();
+        }
+      });
+    };
+
+    const fallback = () => {
+      // 画不出来就只剩源码：把卡片整个换成那块普通代码块。
+      //
+      // `replaceWith` 对**还没插进 DOM** 的节点是静默无效的，所以这条路只留给
+      // 异步失败（那时卡片已经在页面上了）；「缓存里已知画不出来」在下面直接
+      // 返回代码块，不再造一个卡片出来再拆——那样会剩一个空壳裹着源码（09-20
+      // 走查抓到）。
+      source.hidden = false;
+      source.classList.remove("mermaid-source");
+      if (wrapper.parentNode) wrapper.replaceWith(source);
+    };
+
+    const cached = mermaidCache.get(codeText);
+    if (cached === null) {
+      return plainCodeBlock("mermaid", codeText);
+    } else if (cached) {
+      paint(cached);
+    } else {
+      apiRequest("/api/mermaid", { method: "POST", body: JSON.stringify({ source: codeText }) })
+        .then((response) => response.json())
+        .then((data) => {
+          if (!data || typeof data.svg !== "string") throw new Error("no svg");
+          mermaidCache.set(codeText, data.svg);
+          paint(data.svg);
+        })
+        .catch(() => {
+          mermaidCache.set(codeText, null);
+          fallback();
+        });
+    }
+    return wrapper;
+  }
+
+  function codeBlock(language, codeText, settled = true) {
+    // 闭合的 ```mermaid 走图表卡片；还在流的时候先当代码块画，
+    // 半截语法渲染出来的图只会闪。
+    if (settled && String(language || "").trim().toLowerCase() === "mermaid" && codeText.trim()) {
+      return mermaidBlock(codeText);
+    }
+    return plainCodeBlock(language, codeText, settled);
+  }
+
+  /** 带语法高亮的代码块本体。
+   *
+   * 和 `codeBlock` 分开，是因为 mermaid 卡片里折着的那份源码也要用它——走
+   * `codeBlock` 的话会被那条 mermaid 分支再接回卡片，无限递归。
+   */
+  function plainCodeBlock(language, codeText, settled = true) {
     const wrapper = document.createElement("div");
     wrapper.className = "code-block";
     const toolbar = document.createElement("div");
@@ -3463,6 +4467,9 @@
     const code = document.createElement("code");
     if (language) code.className = `language-${language}`;
     code.textContent = codeText;
+    // 语法高亮。纯 DOM 上色,不认识的语言/分词出岔子一律保持这份纯文本
+    // (见 highlight.js);settled=false 表示围栏还没闭合,这一轮先不上色。
+    window.MiyuHighlight?.paint(code, language, codeText, settled);
     pre.appendChild(code);
     wrapper.append(toolbar, pre);
     return wrapper;
@@ -3666,6 +4673,21 @@
     return null;
   }
 
+  // 字母、数字、下划线算词内字符:下划线强调两头都不能挨着它们(CommonMark 的 intraword 规则)
+  function isWordChar(ch) {
+    return Boolean(ch) && /[\p{L}\p{N}_]/u.test(ch);
+  }
+
+  // 找下划线强调的闭合位:闭合的 _ 后面不能紧跟词内字符,否则继续往后找
+  function underscoreCloser(text, from, marker) {
+    let end = text.indexOf(marker, from);
+    while (end !== -1) {
+      if (!isWordChar(text[end + marker.length])) return end;
+      end = text.indexOf(marker, end + 1);
+    }
+    return -1;
+  }
+
   function renderMarkdown(container, source) {
     const lines = String(source || "").replace(/\r\n?/g, "\n").split("\n");
     const fragment = document.createDocumentFragment();
@@ -3684,9 +4706,11 @@
           codeLines.push(lines[index]);
           index += 1;
         }
-        if (index < lines.length) index += 1;
+        // 收尾围栏还没到 = 这块代码正流式写着,内容随时会变,先不上色。
+        const closed = index < lines.length;
+        if (closed) index += 1;
         const language = /^[\w.+-]{1,40}$/.test(fence[1] || "") ? fence[1] : "";
-        fragment.appendChild(codeBlock(language, codeLines.join("\n")));
+        fragment.appendChild(codeBlock(language, codeLines.join("\n"), closed));
         continue;
       }
       const video = videoSourceFor(line);
@@ -3793,6 +4817,11 @@
       fragment.appendChild(paragraph);
     }
     container.replaceChildren(fragment);
+    // 独占一行的链接升级成卡片。这里只是排队:流式期间每来一段都会重渲染,
+    // 真正的抓取要等最后一次渲染安顿下来(见 linkcards.js 的防抖)。
+    window.MiyuLinkCards?.scan(container);
+    // 没闭合的围栏这一轮空着,等这块正文不再变了再补上色(同样是防抖)。
+    window.MiyuHighlight?.settle(container);
   }
 
   /// daemon 自己合成的轮，不是任何人敲的：后台任务唤醒、目标续轮。
@@ -3814,6 +4843,116 @@
     const node = createUserMessage(content, timestamp, attributes);
     if (node) parent.appendChild(node);
     return node;
+  }
+
+  /**
+   * 自己发出去的消息:只渲染代码块、行内代码和链接,别的一律原样。
+   *
+   * 不做完整 markdown 是有意的(09-09 用户拍板)。把 `*星号*` 变成斜体、`# 井号`
+   * 变成标题,等于把人原样打进去的字改掉了——而她收到的仍是原文,两边对不上。
+   * 代码块没有这个问题:``` 围栏本来就是「这段原样看」的意思;链接同理,地址
+   * 文字一个字都不变,只是变成可点的。
+   */
+  function renderUserText(container, source) {
+    const text = String(source || "");
+    const lines = text.split("\n");
+    const fragment = document.createDocumentFragment();
+    let buffer = [];
+    const flushText = () => {
+      if (!buffer.length) return;
+      const chunk = buffer.join("\n");
+      buffer = [];
+      // 围栏之间的空行不值得单独占一段。
+      if (!chunk.trim()) return;
+      const paragraph = document.createElement("p");
+      appendUserInline(paragraph, chunk);
+      fragment.appendChild(paragraph);
+    };
+    let index = 0;
+    while (index < lines.length) {
+      const fence = lines[index].match(/^\s*```\s*([\w.+-]*)\s*$/);
+      if (!fence) {
+        buffer.push(lines[index]);
+        index += 1;
+        continue;
+      }
+      flushText();
+      index += 1;
+      const body = [];
+      while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) {
+        body.push(lines[index]);
+        index += 1;
+      }
+      // 收尾围栏可能没打,那也照样当代码块渲染——半截的围栏更该原样看。
+      index += 1;
+      fragment.appendChild(codeBlock(fence[1] || "", body.join("\n")));
+    }
+    flushText();
+    container.replaceChildren(fragment);
+  }
+
+  /** 行内:反引号、<url>、裸地址,其余原样。 */
+  function appendUserInline(parent, source) {
+    const text = String(source || "");
+    let index = 0;
+    let plainStart = 0;
+    const flushPlain = (end) => {
+      if (end > plainStart) parent.appendChild(document.createTextNode(text.slice(plainStart, end)));
+    };
+    while (index < text.length) {
+      if (index === 0 || text[index - 1] === "\n") {
+        const titled = titleUrlLineAt(text, index);
+        if (titled) {
+          flushPlain(index);
+          appendTitleUrlLine(parent, titled, appendUserInline);
+          index += titled.length;
+          plainStart = index;
+          continue;
+        }
+      }
+      if (text[index] === "\n") {
+        flushPlain(index);
+        parent.appendChild(document.createElement("br"));
+        index += 1;
+        plainStart = index;
+        continue;
+      }
+      if (text[index] === "`") {
+        const end = text.indexOf("`", index + 1);
+        if (end > index + 1) {
+          flushPlain(index);
+          const code = document.createElement("code");
+          code.textContent = text.slice(index + 1, end);
+          parent.appendChild(code);
+          index = end + 1;
+          plainStart = index;
+          continue;
+        }
+      }
+      if (text[index] === "<") {
+        const end = text.indexOf(">", index + 1);
+        const href = end > index + 1 ? validLinkUrl(text.slice(index + 1, end)) : null;
+        if (href) {
+          flushPlain(index);
+          appendAutoLink(parent, text.slice(index + 1, end), href);
+          index = end + 1;
+          plainStart = index;
+          continue;
+        }
+      }
+      if ("hHfF".includes(text[index])) {
+        const bare = bareUrlAt(text, index);
+        if (bare) {
+          flushPlain(index);
+          appendAutoLink(parent, bare.raw, bare.href);
+          index += bare.raw.length;
+          plainStart = index;
+          continue;
+        }
+      }
+      index += 1;
+    }
+    flushPlain(text.length);
   }
 
   function createUserMessage(content, timestamp, attributes = {}) {
@@ -3867,18 +5006,33 @@
     if (attributes.inputId) article.dataset.inputId = attributes.inputId;
     const bubble = document.createElement("div");
     bubble.className = "user-bubble";
-    const paragraph = document.createElement("p");
     const textContent = String(content || "");
-    paragraph.textContent = textContent;
-    bubble.appendChild(paragraph);
+    renderUserText(bubble, textContent);
     bubble.hidden = !textContent.trim();
     const attachments = createUserAttachments(attributes.attachments);
+    if (attributes.queued) {
+      // 排队的消息:直接画在对话末尾,像一条已经发出去的,只是左边挂一枚「排队中」小签
+      // 和一个撤下按钮。轮到它时 consumeLiveQueue 会画真的那条,这条随之撤掉。
+      article.classList.add("is-queued");
+      article.dataset.queueId = String(attributes.queueId || "");
+      const badge = document.createElement("span");
+      badge.className = "queue-badge";
+      const label = document.createElement("span");
+      label.textContent = "排队中";
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "queue-remove";
+      remove.title = "撤回这条排队消息";
+      remove.setAttribute("aria-label", "撤回这条排队消息");
+      remove.appendChild(makeIconSlot("undo-2"));
+      remove.addEventListener("click", () => removeQueuedPrompt(attributes.queueId));
+      badge.append(label, remove);
+      if (attachments) article.appendChild(attachments);
+      article.append(badge, bubble);
+      return article;
+    }
     const actions = document.createElement("div");
     actions.className = "message-actions";
-    const time = document.createElement("span");
-    time.textContent = formatTime(timestamp) || "刚刚";
-    time.title = formatDateTime(timestamp);
-    actions.appendChild(time);
     if (attributes.revisionTarget) {
       const edit = makeMessageAction("square-pen", "编辑最后一条消息", () => {
         openRevisionEditor(article, bubble, textContent, attributes.revisionTarget, edit);
@@ -3890,6 +5044,34 @@
     if (attachments) article.appendChild(attachments);
     article.append(bubble, actions);
     return article;
+  }
+
+  /**
+   * 附件芯片的图标。全都画成 file-text 的话，一段视频和一份 md 长得一模一样,
+   * 扫一眼分不出哪个是哪个(09-09 用户实拍)。按 MIME 优先、拿不到再看扩展名。
+   */
+  const ATTACHMENT_EXTENSION_ICONS = {
+    md: "file-markdown", markdown: "file-markdown",
+    json: "file-json", jsonc: "file-json",
+    pdf: "file-pdf",
+    zip: "file-archive", tar: "file-archive", gz: "file-archive", xz: "file-archive",
+    zst: "file-archive", "7z": "file-archive", rar: "file-archive",
+    js: "file-code", mjs: "file-code", ts: "file-code", tsx: "file-code", jsx: "file-code",
+    py: "file-code", rs: "file-code", go: "file-code", c: "file-code", h: "file-code",
+    cpp: "file-code", hpp: "file-code", java: "file-code", rb: "file-code", php: "file-code",
+    sh: "file-code", bash: "file-code", zsh: "file-code", fish: "file-code", lua: "file-code",
+    toml: "file-code", yaml: "file-code", yml: "file-code", ini: "file-code", css: "file-code",
+    html: "file-code", xml: "file-code", sql: "file-code", nix: "file-code",
+  };
+
+  function attachmentIconName(attachment) {
+    const mime = String(attachment?.mime || "").toLowerCase();
+    if (attachment?.kind === "image" || mime.startsWith("image/")) return "image";
+    if (mime.startsWith("video/")) return "file-video";
+    if (mime.startsWith("audio/")) return "file-audio";
+    if (mime === "application/pdf") return "file-pdf";
+    const extension = String(attachment?.name || "").split(".").pop()?.toLowerCase() || "";
+    return ATTACHMENT_EXTENSION_ICONS[extension] || "file-text";
   }
 
   function createUserAttachments(values) {
@@ -3908,6 +5090,14 @@
         link.target = "_blank";
         link.rel = "noopener noreferrer";
         link.title = name;
+        // 会话里的图点开是放大预览，自己发的图没道理反而是「跳走一个新标签
+        // 页」。按住 Ctrl/⌘ 或中键仍然走链接原本的行为。
+        link.addEventListener("click", (event) => {
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+          if (!window.MiyuLightbox) return;
+          event.preventDefault();
+          window.MiyuLightbox.open({ url, name });
+        });
         const image = document.createElement("img");
         image.src = url;
         image.alt = name;
@@ -3921,20 +5111,50 @@
         list.appendChild(link);
         continue;
       }
-      const link = document.createElement("a");
-      link.className = "user-attachment-file";
-      link.href = url;
-      link.setAttribute("download", "");
-      link.title = `下载 ${name}`;
-      link.appendChild(makeIconSlot("file-text"));
+      // 能预览的芯片：整块是「看看是什么」，右边箭头单独负责下载。不能预览的
+      // 二进制维持原样，整块就是下载链接。
+      const previewable = Boolean(window.MiyuPreview?.canPreview(attachment));
+      const chip = document.createElement(previewable ? "div" : "a");
+      chip.className = "user-attachment-file";
+      if (previewable) {
+        chip.classList.add("is-previewable");
+        chip.tabIndex = 0;
+        chip.setAttribute("role", "button");
+        chip.title = `预览 ${name}`;
+        const openPreview = () => window.MiyuPreview.open({ ...attachment, url, name });
+        chip.addEventListener("click", openPreview);
+        chip.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          openPreview();
+        });
+      } else {
+        chip.href = url;
+        chip.setAttribute("download", "");
+        chip.title = `下载 ${name}`;
+      }
+      chip.appendChild(makeIconSlot(attachmentIconName(attachment)));
       const copy = document.createElement("span");
       const strong = document.createElement("strong");
       strong.textContent = name;
       const small = document.createElement("small");
       small.textContent = formatFileSize(attachment?.size);
       copy.append(strong, small);
-      link.append(copy, makeIconSlot("download"));
-      list.appendChild(link);
+      chip.appendChild(copy);
+      if (previewable) {
+        const download = document.createElement("a");
+        download.className = "user-attachment-download";
+        download.href = url;
+        download.setAttribute("download", "");
+        download.title = `下载 ${name}`;
+        download.setAttribute("aria-label", `下载 ${name}`);
+        download.addEventListener("click", (event) => event.stopPropagation());
+        download.appendChild(makeIconSlot("download"));
+        chip.appendChild(download);
+      } else {
+        chip.appendChild(makeIconSlot("download"));
+      }
+      list.appendChild(chip);
     }
     return list.childElementCount ? list : null;
   }
@@ -3984,13 +5204,16 @@
   }
 
   function artifactSupportsPreview(artifact) {
+    // svg 的 mime 是 image/svg+xml,靠下面这条命中图片通道——`<img>` 里的 SVG
+    // 浏览器强制禁脚本禁外链,既安全又白捡了缩放平移。
     return artifact?.kind === "image"
       || artifact?.mime?.startsWith("image/")
-      || ["markdown", "html", "pdf"].includes(artifact?.kind);
+      || ["markdown", "html", "pdf", "csv"].includes(artifact?.kind);
   }
 
   function artifactSupportsSource(artifact) {
-    return ["markdown", "html", "text", "code", "json"].includes(artifact?.kind)
+    // svg 是图片也是文本,两个视图都要给:光能看不能读,改起来无从下手。
+    return ["markdown", "html", "text", "code", "json", "csv", "svg"].includes(artifact?.kind)
       || artifact?.mime?.startsWith("text/")
       || artifact?.mime?.startsWith("application/json");
   }
@@ -4004,13 +5227,31 @@
     return Math.min(viewportWidth - 20, Math.max(320, viewportWidth * state.artifactWidthRatio));
   }
 
+  function syncComposerDockHeight() {
+    // 非分栏的桌面浮层态里,artifact 面板是绝对定位、bottom 贴到 10px,会盖住输入框
+    // 页脚(#2)。把页脚实际高度喂给 CSS,浮层的 bottom 就停在页脚上方、页脚照常可用。
+    const height = elements.composerDock?.offsetHeight || 0;
+    if (height) elements.mainStage.style.setProperty("--composer-dock-height", `${Math.round(height)}px`);
+    // 开面板当下量的是旧布局的页脚高度(面板一开正文列变窄、页脚里模型芯片会换行
+    // 变高),reflow 之后再量一次才对——否则「刚开盖住、跑一轮才正常」(#2 用户实测)。
+    window.requestAnimationFrame(() => {
+      const settled = elements.composerDock?.offsetHeight || 0;
+      if (settled) elements.mainStage.style.setProperty("--composer-dock-height", `${Math.round(settled)}px`);
+    });
+  }
+
   function syncArtifactLayout() {
     const width = artifactWidthPixels();
     elements.mainStage.style.setProperty("--artifact-width", `${Math.round(width)}px`);
+    syncComposerDockHeight();
     const roomForConversation = elements.mainStage.clientWidth - width - 10;
     const split = state.artifactOpen && !state.artifactMaximized && layoutViewportWidth() > 760 && roomForConversation >= 320;
     elements.mainStage.classList.toggle("artifact-split", split);
     elements.mainStage.classList.toggle("artifact-maximized", state.artifactOpen && state.artifactMaximized);
+    // 常驻任务面板的宽度闸。原先靠 .main-stage 上的容器查询,而容器查询容器会
+    // 让 WebKit 在后代 replaceChildren 时归零 scrollTop(见 styles.css 注释),
+    // 改成这里挂类,量的是同一个宽度。
+    elements.mainStage.classList.toggle("is-wide", elements.mainStage.clientWidth >= STAGE_WIDE_PX);
     syncSidebarSpace();
   }
 
@@ -4182,11 +5423,17 @@
 
   /// 就地改目标：点一下文字变输入框，回车提交，Esc 放弃。
   function beginGoalEdit(node, goal) {
-    const input = document.createElement("input");
-    input.type = "text";
+    // 多行文本框(09-12 用户报单行不好写不好看):自动撑高,回车提交、
+    // Shift+回车换行、Esc 放弃。
+    const input = document.createElement("textarea");
     input.className = "goal-bar-edit";
+    input.rows = 1;
     input.value = String(goal.objective || "");
     input.setAttribute("aria-label", "修改目标");
+    const autosize = () => {
+      input.style.height = "auto";
+      input.style.height = `${Math.min(input.scrollHeight, 220)}px`;
+    };
     // `finish` 会被回车和失焦各触发一次——提交时把输入框换掉，那一下又会
     // 触发 blur。没有这个闸就会连发两次 edit。
     let settled = false;
@@ -4199,7 +5446,7 @@
     };
     input.addEventListener("keydown", (event) => {
       event.stopPropagation();
-      if (event.key === "Enter") {
+      if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         finish(true);
       } else if (event.key === "Escape") {
@@ -4207,10 +5454,12 @@
         finish(false);
       }
     });
+    input.addEventListener("input", autosize);
     input.addEventListener("blur", () => finish(true));
     node.replaceWith(input);
     input.focus();
     input.select();
+    autosize();
   }
 
   async function runGoalAction(action) {
@@ -4436,6 +5685,7 @@
     if (artifact?.kind === "markdown") return "file-markdown";
     if (artifact?.kind === "json") return "file-json";
     if (artifact?.kind === "code" || artifact?.kind === "html") return "file-code";
+    if (artifact?.kind === "csv") return "layout-grid";
     return "file-text";
   }
 
@@ -4531,6 +5781,112 @@
     elements.artifactView.replaceChildren(failure);
   }
 
+  /**
+   * 源码视图的高亮语言。Prism 只打包了那十来门（拼装顺序写在
+   * `web/vendor/prism/prism.min.js` 头部），认不出来的传空字符串，
+   * `paint` 会原样留纯文本——正文缺一块颜色无所谓，缺一个字不行。
+   */
+  const ARTIFACT_SOURCE_LANGUAGES = {
+    html: "markup", htm: "markup", xml: "markup", svg: "markup",
+    css: "css", scss: "css",
+    js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "javascript",
+    ts: "typescript", tsx: "typescript",
+    json: "json", jsonl: "json",
+    md: "markdown", markdown: "markdown",
+    rs: "rust", py: "python", go: "go", lua: "lua", sql: "sql",
+    c: "c", h: "c", cpp: "cpp", cc: "cpp", hpp: "cpp",
+    sh: "bash", bash: "bash", zsh: "bash", fish: "bash",
+    toml: "toml", yaml: "yaml", yml: "yaml", diff: "diff"
+  };
+
+  function artifactSourceLanguage(artifact) {
+    const name = String(artifact?.name || "");
+    const extension = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
+    return ARTIFACT_SOURCE_LANGUAGES[extension] || "";
+  }
+
+  /** 表格最多画这么多行。再多浏览器就卡了,剩下的让她去看源码或下载。 */
+  const MAX_TABLE_ROWS = 2000;
+
+  /**
+   * 拆 CSV/TSV。只认最基本的那套规矩：双引号包住的字段里分隔符和换行都算正文，
+   * 连着两个双引号是一个字面量引号。够读她导出的表了，不做各家方言兼容。
+   */
+  function parseDelimited(text, delimiter) {
+    const rows = [];
+    let row = [];
+    let field = "";
+    let quoted = false;
+    for (let index = 0; index < text.length; index += 1) {
+      const char = text[index];
+      if (quoted) {
+        if (char !== '"') { field += char; continue; }
+        if (text[index + 1] === '"') { field += '"'; index += 1; continue; }
+        quoted = false;
+        continue;
+      }
+      if (char === '"') { quoted = true; continue; }
+      if (char === delimiter) { row.push(field); field = ""; continue; }
+      if (char === "\r") continue;
+      if (char === "\n") { row.push(field); rows.push(row); row = []; field = ""; continue; }
+      field += char;
+    }
+    // 最后一行没有换行收尾也要算,否则整张表少一行。
+    if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+    return rows;
+  }
+
+  /**
+   * CSV/TSV 画成表格。**纯 DOM，一个 HTML 字符串都不产生**——面板里这份内容
+   * 同样出自模型之手，和聊天正文一个待遇（理由见 highlight.js 头注释）。
+   * 外壳复用 markdown-body，表格样式就不用再写一套。
+   */
+  function buildArtifactTable(artifact, text) {
+    const tabbed = /\.tsv$/i.test(artifact.name) || artifact.mime.includes("tab-separated");
+    const rows = parseDelimited(text, tabbed ? "\t" : ",").filter(
+      (row) => row.length > 1 || (row[0] || "").trim() !== ""
+    );
+    const article = document.createElement("article");
+    article.className = "markdown-body artifact-markdown";
+    if (rows.length === 0) {
+      const note = document.createElement("p");
+      note.textContent = "这份表是空的。";
+      article.appendChild(note);
+      return article;
+    }
+    const clipped = rows.length > MAX_TABLE_ROWS + 1;
+    const body = rows.slice(1, clipped ? MAX_TABLE_ROWS + 1 : rows.length);
+    const columns = rows.reduce((most, row) => Math.max(most, row.length), 0);
+    const table = document.createElement("table");
+    const head = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    for (let index = 0; index < columns; index += 1) {
+      const cell = document.createElement("th");
+      cell.textContent = rows[0][index] ?? "";
+      headRow.appendChild(cell);
+    }
+    head.appendChild(headRow);
+    const tbody = document.createElement("tbody");
+    for (const row of body) {
+      const line = document.createElement("tr");
+      for (let index = 0; index < columns; index += 1) {
+        const cell = document.createElement("td");
+        cell.textContent = row[index] ?? "";
+        line.appendChild(cell);
+      }
+      tbody.appendChild(line);
+    }
+    table.append(head, tbody);
+    article.appendChild(table);
+    if (clipped) {
+      const note = document.createElement("p");
+      note.className = "artifact-table-note";
+      note.textContent = `表太长，只画了前 ${MAX_TABLE_ROWS} 行，共 ${rows.length - 1} 行。完整内容看源码或下载。`;
+      article.appendChild(note);
+    }
+    return article;
+  }
+
   async function renderArtifactSource(artifact, token) {
     let text = await loadArtifactSource(artifact);
     if (token !== state.artifactRenderToken) return;
@@ -4551,6 +5907,9 @@
     pre.className = "artifact-code";
     const code = document.createElement("code");
     code.textContent = text;
+    // 聊天正文里的代码块一直有高亮,这边却是一片纯白——同一个组件接上就是了。
+    // 这份内容已经完整(不是流式),所以 settled=true,当场上色。
+    window.MiyuHighlight?.paint(code, artifactSourceLanguage(artifact), text, true);
     pre.appendChild(code);
     source.append(gutter, pre);
     elements.artifactView.replaceChildren(source);
@@ -4574,8 +5933,27 @@
       frame.className = "artifact-frame";
       frame.src = artifact.url;
       frame.title = artifact.name;
-      frame.setAttribute("sandbox", "");
+      /*
+       * 她写的页面要能动——图表、按钮、切换,不放开脚本这些全是死的。放开的同时
+       * 靠这两样把它关在箱子里:
+       *   · 不给 allow-same-origin：iframe 拿不透明源,cookie / localStorage /
+       *     父页面 DOM 一律 SecurityError。别家(Claude、ChatGPT、LibreChat)给了
+       *     same-origin,所以不得不再买个独立域名来隔离 cookie;我们不给,也就
+       *     不需要独立域。代价是 artifact 里存不住状态,刷新即归零。
+       *   · 不给 allow-popups / allow-forms / allow-top-navigation：这三个各自是
+       *     一条外带通道(window.open、表单提交、top.location),**CSP 管不了,
+       *     只有 sandbox 管得了**。LibreChat 的 CVE-2026-54025 就死在第三条上。
+       * 出站那一半由后端的 CSP 掐(见 assets.rs 的 artifact_csp)。两道各管一半:
+       * sandbox 管权限,CSP 管外泄。
+       */
+      frame.setAttribute("sandbox", "allow-scripts allow-modals");
       elements.artifactView.replaceChildren(frame);
+      return;
+    }
+    if (artifact.kind === "csv") {
+      const text = await loadArtifactSource(artifact);
+      if (token !== state.artifactRenderToken) return;
+      elements.artifactView.replaceChildren(buildArtifactTable(artifact, text));
       return;
     }
     if (artifact.kind === "markdown") {
@@ -4674,11 +6052,15 @@
     elements.artifactTypeLabel.textContent = artifactTypeLabel(artifact);
     // ?download=1 → 后端强制 attachment,markdown/pdf 也直接落盘而不是再开预览。
     elements.artifactDownloadButton.href = `${artifact.url}?download=1`;
-    elements.artifactPreviewButton.parentElement.hidden = isImage;
-    elements.artifactImageActions.hidden = !isImage;
-    elements.artifactImageExternalButton.href = isImage ? artifact.url : "";
-    elements.artifactImageZoomOutButton.disabled = !isImage || state.artifactZoom <= 0.25;
-    elements.artifactImageZoomInButton.disabled = !isImage || state.artifactZoom >= 4;
+    // 两个视图都在才需要切换器。原来这里按「是不是图片」判断,svg 一来就露馅了:
+    // 它既是图片又是文本,两个视图都有,却因为 mime 是 image/* 被整组藏掉,
+    // 源码根本点不到。判据换成「有没有得切」,和具体类型脱钩。
+    const showPicture = isImage && state.artifactMode === "preview";
+    elements.artifactPreviewButton.parentElement.hidden = !(canPreview && canSource);
+    elements.artifactImageActions.hidden = !showPicture;
+    elements.artifactImageExternalButton.href = showPicture ? artifact.url : "";
+    elements.artifactImageZoomOutButton.disabled = !showPicture || state.artifactZoom <= 0.25;
+    elements.artifactImageZoomInButton.disabled = !showPicture || state.artifactZoom >= 4;
     elements.artifactPreviewButton.hidden = !canPreview;
     elements.artifactSourceButton.hidden = !canSource;
     elements.artifactPreviewButton.classList.toggle("active", state.artifactMode === "preview");
@@ -4686,7 +6068,8 @@
     elements.artifactPreviewButton.setAttribute("aria-pressed", String(state.artifactMode === "preview"));
     elements.artifactSourceButton.setAttribute("aria-pressed", String(state.artifactMode === "source"));
     elements.artifactCopyButton.disabled = !canSource && artifact.kind === "pdf";
-    elements.artifactCopyButton.hidden = isImage;
+    // 图片没有文本可复制,但 svg 有——同样不能只看 mime。
+    elements.artifactCopyButton.hidden = isImage && !canSource;
     elements.artifactMaximizeButton.replaceChildren(makeIconSlot(state.artifactMaximized ? "minimize-2" : "maximize-2"));
     elements.artifactMaximizeButton.title = state.artifactMaximized ? "退出全屏" : "全屏显示";
     elements.artifactMaximizeButton.setAttribute("aria-label", elements.artifactMaximizeButton.title);
@@ -4795,9 +6178,12 @@
         image.remove();
         fallback.hidden = false;
         figure.classList.add("is-error");
-        contentAdded(figure);
+        if (eager) contentAdded(figure);
       }, { once: true });
-      image.addEventListener("load", contentAdded, { once: true });
+      // 只有实时流的新图(eager)加载完才跟随滚动;历史重建(刷新)的图不该在
+      // 逐张加载时把视图一路拉到底——那正是「打印图片刷新后跳到 AI 输出尾部」
+      // 的原因(09-12 #19)。有 aspect-ratio 占位,历史图加载也不跳。
+      if (eager) image.addEventListener("load", contentAdded, { once: true });
       image.src = url;
       visual.append(image, fallback);
     } else {
@@ -4835,9 +6221,10 @@
   }
 
   /*
-   * display.reasoning 只决定后端产生什么(摘要/完整/不产生);
-   * WebUI 是否渲染仅以「有没有思考内容」为准,hidden 时若仍收到文本则不渲染(保底)。
-   * 默认展开/收起由本地偏好 miyu.web.reasoningExpanded 决定,与 summary/full 无关。
+   * 09-17 起「隐藏」那一档在配置里没有了(用户拍板删掉),后端只剩「展开/收起」
+   * 一位布尔。这个保底判断留着是给**老 daemon**用的:网页和 daemon 可以不同版本,
+   * 旧的那边仍可能报 `hidden`。WebUI 是否渲染仍以「有没有思考内容」为准;
+   * 默认展开/收起由本地偏好 miyu.web.reasoningExpanded 决定。
    */
   function reasoningHidden() {
     return state.display?.reasoning === "hidden";
@@ -4858,7 +6245,424 @@
     return { title: "", body: raw };
   }
 
-  function createReasoningBlock(text, title = "已思考", live = false, summaryOnly = false) {
+  // 窥视槽只放尾巴:换行折成空格,取最后 160 字,够撑满一行还不至于每个 delta 都重排一大段
+  function reasoningPeekText(text) {
+    return String(text || "").replace(/\s+/g, " ").trimEnd().slice(-160);
+  }
+
+  // 「思考滚动显示行数」(display.thinking_scroll_lines):思考收着时,正在想的那一行
+  // 底下开一扇窗,滚着露最近几行正文(和终端那扇窗一个意思,用户 09-17:「思考行
+  // 不是单行窥视,而是有滚动」)。0 = 不开窗,只留标题行里那截窥视。
+  function thinkingWindowLines() {
+    const n = Number(state.display?.thinking_scroll_lines);
+    return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 200) : 0;
+  }
+
+  // 窗里只放尾巴那一截(按每行 240 字估),免得每个 delta 重排整段;写完滚到底。
+  function setReasoningWindow(block, text) {
+    const node = block?.window;
+    if (!node) return;
+    const lines = Number(node.style.getPropertyValue("--think-window-lines")) || 10;
+    node.textContent = String(text || "").slice(-(lines * 240));
+    node.scrollTop = node.scrollHeight;
+  }
+
+  // 写入窥视文字并量一下:放得下就左对齐紧跟着时间;放不下才切到尾部可见 + 左侧渐隐
+  function setReasoningPeek(peek, text) {
+    if (!peek) return;
+    peek.textContent = reasoningPeekText(text);
+    const slot = peek.parentElement;
+    if (slot) slot.classList.toggle("is-overflow", peek.scrollWidth > slot.clientWidth + 1);
+  }
+
+  // ── 子代理进度:把中转来的标记流解析成结构化事件 ───────────────────
+  // 子代理内部的思考/工具活动经父回合的 tool.progress 通道以标记串上来。
+  // Summary 档只有纯文本行(用于标题窥视);Full 档带 __subtool_call__ /
+  // __subtool_result__ / __subagent_reasoning__(用于展开后的子过程时间线)。
+  const SUBAGENT_MARKERS = {
+    reasoning: "__subagent_reasoning__",
+    content: "__subagent_content__",
+    call: "__subtool_call__",
+    result: "__subtool_result__",
+    stats: "__subagent_stats__",
+    detach: "__subagent_detach__",
+    brief: "__subagent_brief__"
+  };
+
+  // 子代理任务简介 DOM(展开区最上方):标题 + 整段 prompt。前台从工具参数直接建;
+  // 后台经 __subagent_brief__ marker 建(后台事件流里没有参数,09-12 #9)。
+  function buildSubagentBrief(title, prompt) {
+    const t = String(title || "").trim();
+    const p = String(prompt || "").trim();
+    if (!t && !p) return null;
+    // prompt 做成默认收起的可展开 tag:子代理自动展开活区域时整段 prompt 会刷屏,
+    // 收成一行「任务标题」,想看再点开(用户反馈)。
+    const brief = document.createElement("details");
+    brief.className = "subagent-brief";
+    const summary = document.createElement("summary");
+    summary.className = "subagent-brief-title";
+    // 节点:和时间线其它步同一列、坐在细线上(它是时间线的开头,不再是分离的一块)。
+    // 平时显 📋,鼠标悬浮时原地换成展开箭头(不在右侧另起一个,用户要求)。
+    const marker = document.createElement("span");
+    marker.className = "subagent-brief-marker";
+    marker.append(
+      makeIconSlot("clipboard", "subagent-brief-icon"),
+      makeIconSlot("chevron-right", "subagent-brief-chevron"),
+    );
+    const label = document.createElement("span");
+    label.className = "subagent-brief-name";
+    label.textContent = t || "任务 prompt";
+    summary.append(marker, label);
+    brief.appendChild(summary);
+    if (p) {
+      const body = document.createElement("div");
+      body.className = "subagent-brief-prompt";
+      body.textContent = p;
+      brief.appendChild(body);
+    }
+    return brief;
+  }
+
+  function parseSubagentEvent(message) {
+    const text = String(message || "");
+    if (text.startsWith(SUBAGENT_MARKERS.reasoning)) {
+      // 不要 trim:逐 token 的 reasoning delta 前后的空格是词间空格,trim 掉就成了
+      // 「Actuallythetails」这种连成一坨(09-12 #8 思考内容没空格没换行的真因)。
+      return { kind: "reasoning", text: text.slice(SUBAGENT_MARKERS.reasoning.length) };
+    }
+    if (text.startsWith(SUBAGENT_MARKERS.content)) {
+      // 同 reasoning:不 trim,逐 token 的正文 delta 词间空格要留住。
+      return { kind: "content", text: text.slice(SUBAGENT_MARKERS.content.length) };
+    }
+    if (text.startsWith(SUBAGENT_MARKERS.call)) {
+      try {
+        const payload = JSON.parse(text.slice(SUBAGENT_MARKERS.call.length));
+        const args = typeof payload.args === "string" ? payload.args : JSON.stringify(payload.args ?? {});
+        return { kind: "call", name: String(payload.name || ""), display: String(payload.display || ""), args, subject: toolSubject(payload.name, args) };
+      } catch {
+        return { kind: "plain", text: text.slice(SUBAGENT_MARKERS.call.length).trim() };
+      }
+    }
+    if (text.startsWith(SUBAGENT_MARKERS.result)) {
+      try {
+        const payload = JSON.parse(text.slice(SUBAGENT_MARKERS.result.length));
+        const args = typeof payload.args === "string" ? payload.args : JSON.stringify(payload.args ?? {});
+        return { kind: "result", name: String(payload.name || ""), display: String(payload.display || ""), args, ok: payload.ok !== false, output: String(payload.output ?? "") };
+      } catch {
+        return { kind: "plain", text: text.slice(SUBAGENT_MARKERS.result.length).trim() };
+      }
+    }
+    if (text.startsWith(SUBAGENT_MARKERS.stats)) return { kind: "stats", text: text.slice(SUBAGENT_MARKERS.stats.length).trim() };
+    if (text.startsWith(SUBAGENT_MARKERS.brief)) {
+      try {
+        const p = JSON.parse(text.slice(SUBAGENT_MARKERS.brief.length));
+        return { kind: "brief", description: String(p.description || ""), prompt: String(p.prompt || "") };
+      } catch {
+        return { kind: "plain", text: "" };
+      }
+    }
+    if (text.startsWith(SUBAGENT_MARKERS.detach)) return { kind: "plain", text: text.slice(SUBAGENT_MARKERS.detach.length).trim() };
+    return { kind: "plain", text: text.trim() };
+  }
+
+  function subagentPeekLine(ev) {
+    if (ev.kind === "reasoning") return ev.text;
+    if (ev.kind === "content") return ev.text;
+    if (ev.kind === "call") return `调用 ${ev.name}${ev.subject ? " · " + ev.subject : ""}`;
+    if (ev.kind === "result") return `${ev.name} ${ev.ok ? "完成" : "出错"}`;
+    return ev.text || "";
+  }
+
+  // 子过程时间线:子代理自己的思考与工具流,复用主对话同一套渲染——proc-line
+  // 细线时间线 + createReasoningBlock(思考:累加、可展开、有窥视、动画)+
+  // createPersistedToolCard(完成的工具卡,与主流工具卡同构)。sink.blocks 承载
+  // proc-line;sink.think 是当前正累加的思考块。
+  function subEndReasoning(sink) {
+    if (sink.think) {
+      // 冲掉未触发的 rAF,把最终全文渲一遍,再释放帧句柄给下一个思考块。
+      if (sink.thinkFrame) {
+        window.cancelAnimationFrame(sink.thinkFrame);
+        sink.thinkFrame = null;
+      }
+      const finalText = sink.think.__acc != null ? sink.think.__acc : sink.thinkAccum;
+      sink.think.body.textContent = finalText || "";
+      setReasoningPeek(sink.think.peek, finalText || "");
+      sink.think.title.textContent = "已思考";
+      sink.think.element.classList.remove("is-live");
+      sink.think.element.classList.remove("has-window");
+      if (sink.think.window) {
+        sink.think.window.remove();
+        sink.think.window = null;
+      }
+      // 冻结读秒(09-12 #4:子过程思考读秒一直停在 0s)。startedAt 是创建时的
+      // performance.now();收尾时算出最终耗时定格,ticker 靠 is-live 判活,收尾即停。
+      const ls = sink.think.liveStatus;
+      if (ls && sink.think.startedAt != null) {
+        ls.textContent = `${((performance.now() - sink.think.startedAt) / 1000).toFixed(1)}s`;
+      }
+      sink.think = null;
+      sink.thinkAccum = "";
+    }
+  }
+
+  // 子代理正文段收尾:把当前正在累加的正文块定格(内容留在时间线里),
+  // 下一段正文会另起一块,中间穿插思考/工具卡——和主对话的交错渲染同构。
+  function subEndContent(sink) {
+    if (sink.contentBlock) {
+      // 收尾时把最终全文渲一遍(可能有帧还没触发),再释放帧句柄,让下一段正文能重新调度。
+      if (sink.contentFrame) {
+        window.cancelAnimationFrame(sink.contentFrame);
+        sink.contentFrame = null;
+      }
+      renderMarkdown(sink.contentBlock, sink.contentBlock.__subAcc || sink.contentAccum || "");
+      sink.contentBlock = null;
+      sink.contentAccum = "";
+    }
+  }
+
+  // 子过程时间线里「正在思考」的读秒 ticker:主对话那份有各自的 live 计时器,
+  // 子过程这份没有,所以读秒永远停在 0s。这个全局 ticker 按 is-live 更新所有
+  // 子过程思考块的读秒(用 dataset.subStart 存的起点)。
+  setInterval(() => {
+    if (document.hidden) return;
+    const nodes = document.querySelectorAll(".sub-blocks .reasoning-block.is-live .reasoning-live-status[data-sub-start]");
+    for (const ls of nodes) {
+      const start = Number(ls.dataset.subStart);
+      if (!Number.isFinite(start)) continue;
+      ls.textContent = `${Math.max(0, Math.floor((performance.now() - start) / 1000))}s`;
+    }
+    // 前台子代理行的读秒(09-12 #6):跑着时逐秒走,卡片进入成功/失败即定格。
+    for (const el of document.querySelectorAll(
+      ".tool-card.is-task .tool-task-seconds[data-task-start]," +
+        " .tool-card.is-command .tool-command-seconds[data-task-start]"
+    )) {
+      const start = Number(el.dataset.taskStart);
+      if (!Number.isFinite(start)) continue;
+      const card = el.closest(".tool-card");
+      const done = card && (card.classList.contains("is-success") || card.classList.contains("is-failure"));
+      const secs = (performance.now() - start) / 1000;
+      if (done) {
+        el.textContent = formatJobDuration(secs);
+        delete el.dataset.taskStart;
+      } else {
+        el.textContent = formatJobDuration(secs);
+      }
+    }
+  }, 1000);
+
+  // 子过程时间线增长时自动滚到底(09-12 #7:展开后 timeline 继续长不自动滚)。
+  // 滚的是最近的可滚容器(前台=.sub-blocks 本身,后台=外层 .job-stream-panel);
+  // 只有用户本来就贴着底才跟随,往上翻了就不抢。
+  function subScrollContainer(sink) {
+    const el = sink && sink.blocks;
+    if (!el) return null;
+    let c = el;
+    while (c && c !== document.body) {
+      const style = window.getComputedStyle(c);
+      if (/(auto|scroll)/.test(style.overflowY) && c.scrollHeight > c.clientHeight + 1) break;
+      c = c.parentElement;
+    }
+    if (!c || c === document.body) c = el;
+    return c;
+  }
+  // 贴底跟随:先量「改内容之前是不是贴着底」,mutate 完只在原本贴底时才拉回底。
+  // 不靠区分程序/用户滚动(那套 pinnedUp 会被程序自己的归位清掉、导致往上翻又被拽回 #139),
+  // 就一条:你原本在底我才跟,你往上翻了(改前就不在底)我一步都不动。
+  function subStickBottom(sink, mutate) {
+    const c = subScrollContainer(sink);
+    const atBottom = c ? (c.scrollHeight - c.scrollTop - c.clientHeight) < 30 : false;
+    mutate();
+    if (c && atBottom) c.scrollTop = c.scrollHeight;
+  }
+  function subAutoScroll(sink) {
+    // 内容已经加完了才调它(工具卡/结果那种低频路径):当前离底 <30 就跟,否则不动。
+    const c = subScrollContainer(sink);
+    if (!c) return;
+    if (c.scrollHeight - c.scrollTop - c.clientHeight < 30) c.scrollTop = c.scrollHeight;
+  }
+  // 往子过程区加一个块(思考块头/工具卡)必须走「加之前先量在不在底,加完只在原本
+  // 贴底时才拉回底」——直接 procLineAttach 会把容器撑高却不滚,一次没滚就把整条贴底
+  // 跟随链打断,之后逐 token 的 subStickBottom 全测得「改前不在底」再不跟(#159/#160,
+  // 前台后台同此)。subAutoScroll 是「加完再量」,块一高就已经离底 >30px 也修不回来。
+  function subAttach(sink, el) {
+    subStickBottom(sink, () => procLineAttach(sink.blocks, el));
+  }
+
+  function renderSubagentProgress(sink, message) {
+    const ev = parseSubagentEvent(message);
+    if (ev.kind === "stats") {
+      // stats 文本形如「工具调用 3 次　消耗词元 ≈1.2k」/「tool calls: 3　token cost: 1.2k」,
+      // 每步更新一次。抠出 token 数(可能带 ≈ 前缀),喂给任务条那行的 token 显示(09-12 item 4)。
+      const m = ev.text.match(/(?:词元|cost)\s*[：:]?\s*(≈?\s*[\d.]+\s*[kKmMbB万]?)/);
+      if (m) {
+        sink.tokenText = m[1].replace(/\s+/g, "");
+        if (sink.taskToken) sink.taskToken.textContent = sink.tokenText;
+        // 前台工具卡 / 后台任务条(job)都从这里过:把这次子代理的实时 token 估算按
+        // usageKey 汇进输入框那个「累计」(#131,后台子代理同样接上)。回放/播种时不接
+        // (那是历史,会和后端基线重复计)。
+        const key = sink.usageKey || (sink.id != null ? sink.id : null);
+        const n = tokensFromCount(sink.tokenText);
+        if (key != null && n != null && !state.seedingLive) {
+          // 保留已有的 done/baseAtDone:子代理收尾还可能再来一条 stats,别把完成态覆盖没了。
+          const prev = state.liveSubagentTokens.get(key);
+          state.liveSubagentTokens.set(key, { tokens: n, done: prev?.done || false, baseAtDone: prev?.baseAtDone });
+          refreshComposerCumulative();
+        }
+      }
+      return;
+    }
+    if (!sink.blocks) return;
+    if (ev.kind === "brief") {
+      // 后台子代理展开区顶部补任务简介(09-12 #9;前台已在 createTool 里建好并置
+      // sink.brief,不会重复)。插在子过程时间线容器之前。
+      if (!sink.brief) {
+        const brief = buildSubagentBrief(ev.description, ev.prompt);
+        if (brief) {
+          attachSubBrief(sink.blocks, brief);
+          sink.brief = true;
+        }
+      }
+      return;
+    }
+    if (ev.kind === "content") {
+      // 空 delta 直接丢:否则会造一个空正文块并 procLineBreak 切断时间线(「串」的根)。
+      if (!ev.text) return;
+      // 子代理正文逐 token 增量(#6:光有 timeline,正文没流出来)。先收思考,再把
+      // 正文累加到一个活的正文块;新起一段正文时切断当前时间线,正文落在段间,
+      // 之后的工具/思考会另起一条 proc-line——和主对话交错渲染同构。
+      if (!sink.contentBlock) {
+        subStickBottom(sink, () => {
+          subEndReasoning(sink);
+          procLineBreak(sink.blocks);
+          const div = document.createElement("div");
+          div.className = "sub-content markdown-body";
+          sink.blocks.appendChild(div);
+          sink.contentBlock = div;
+          sink.contentAccum = "";
+        });
+      }
+      sink.contentAccum += ev.text;
+      // markdown 渲染按 rAF 合并:逐 token 全量重解析太费,一帧渲一次就够顺。
+      // 累加文本挂在块元素上,帧触发时读它当前值(而非调度那刻的旧值),避免同一
+      // 帧内后到的 token 被丢。
+      const block = sink.contentBlock;
+      block.__subAcc = sink.contentAccum;
+      if (!sink.contentFrame) {
+        sink.contentFrame = window.requestAnimationFrame(() => {
+          sink.contentFrame = null;
+          subStickBottom(sink, () => renderMarkdown(block, block.__subAcc || ""));
+        });
+      }
+      sink.peekLine = sink.contentAccum;
+      if (sink.taskPeek) setReasoningPeek(sink.taskPeek, sink.contentAccum);
+      return;
+    }
+    if (ev.kind === "reasoning") {
+      // 空 delta 直接丢:否则会造一个空思考块(「串」尤其是思考的根)。
+      if (!ev.text) return;
+      // 思考逐 token 增量,累加到一个活的思考块(不能覆盖,否则只剩最后一个 token)。
+      subEndContent(sink);
+      if (!sink.think) {
+        sink.think = createReasoningBlock("", "正在思考", true);
+        sink.thinkAccum = "";
+        // 读秒 ticker 靠这个起点更新(见 subEndReasoning 上方的 setInterval)。
+        if (sink.think.liveStatus && sink.think.startedAt != null) {
+          sink.think.liveStatus.dataset.subStart = String(sink.think.startedAt);
+        }
+        subAttach(sink, sink.think.element);
+      }
+      sink.thinkAccum += ev.text;
+      sink.think.raw = sink.thinkAccum;
+      // 正文体逐 token 全量重写 textContent,展开态下每个 token 都重排,长思考会卡死
+      // (#114:打开正在思考的行特别卡)。按 rAF 合并:一帧只写一次当前全文。
+      const think = sink.think;
+      think.__acc = sink.thinkAccum;
+      if (!sink.thinkFrame) {
+        sink.thinkFrame = window.requestAnimationFrame(() => {
+          sink.thinkFrame = null;
+          subStickBottom(sink, () => {
+            think.body.textContent = think.__acc || "";
+            setReasoningPeek(think.peek, think.__acc || "");
+            setReasoningWindow(think, think.__acc || "");
+            // 行窥视也合进这一帧:每 token 各测一次 scrollWidth 会引发同步重排,连带把
+            // 已完成的「已思考」行窥视一起抖(#3 疯狂抖动)。一帧只测一次。
+            if (sink.taskPeek) setReasoningPeek(sink.taskPeek, think.__acc || "");
+          });
+        });
+      }
+      sink.peekLine = sink.thinkAccum;
+      return;
+    }
+    if (ev.kind === "call") {
+      subEndReasoning(sink);
+      subEndContent(sink);
+      // Full 档:call 先记着,result 到了再落一张完成卡(带 args + output)。
+      sink.pendingCall = { name: ev.name, display: ev.display, args: ev.args, subject: ev.subject };
+      // 窥视也用友好显示名(#7:展开是「运行命令」,窥视却还是裸的 run_command)。
+      const callLabel = ev.display || ev.name;
+      sink.peekLine = ev.subject ? callLabel + " · " + ev.subject : "调用 " + callLabel;
+      if (sink.taskPeek) setReasoningPeek(sink.taskPeek, sink.peekLine);
+      return;
+    }
+    if (ev.kind === "result") {
+      subEndReasoning(sink);
+      subEndContent(sink);
+      const call = sink.pendingCall || { name: ev.name, display: ev.display, args: ev.args };
+      sink.pendingCall = null;
+      const card = createPersistedToolCard({ name: call.name, display_name: call.display, arguments: call.args != null ? call.args : ev.args, output: ev.output, ok: ev.ok });
+      subAttach(sink, card);
+      sink.peekLine = (call.display || call.name) + " " + (ev.ok ? "完成" : "出错");
+      if (sink.taskPeek) setReasoningPeek(sink.taskPeek, sink.peekLine);
+      return;
+    }
+    if (ev.kind === "plain" && ev.text) {
+      // Summary 档没有结构化标记(WebUI 回合强制 Full,一般走不到这):只有
+      // `工具 #N：名字 · 主语 运行中/ok/err`。运行中不落卡(没 args/output),
+      // ok/err 时落一张完成卡。
+      const match = ev.text.match(/^(?:工具|tool)\s*#(\d+)[:：]?\s*(.*)$/i);
+      if (!match) {
+        sink.peekLine = ev.text;
+        if (sink.taskPeek) setReasoningPeek(sink.taskPeek, ev.text);
+        return;
+      }
+      const rest = match[2].trim();
+      const running = /(?:运行中|running)$/i.test(rest);
+      const errored = /(?:\berr\b|错误|失败)$/i.test(rest);
+      const finished = !running && /(?:\bok\b|\berr\b|完成|失败|错误)$/i.test(rest);
+      const label = rest.replace(/\s*(?:运行中|running|ok|err)$/i, "").trim();
+      sink.peekLine = label || rest;
+      if (sink.taskPeek) setReasoningPeek(sink.taskPeek, sink.peekLine);
+      if (finished) {
+        subEndReasoning(sink);
+        const at = label.indexOf(" · ");
+        const nm = at >= 0 ? label.slice(0, at) : label;
+        const subj = at >= 0 ? label.slice(at + 3) : "";
+        const card = createPersistedToolCard({ name: nm, arguments: subj, output: "", ok: !errored });
+        subAttach(sink, card);
+      }
+    }
+  }
+
+  // 后台子代理的子过程流:一个 job 一份,持久存在 state.jobStreamSinks 里
+  // (任务条整条重建时面板 DOM 也不丢),点开对应任务条那行时挂到它下面。
+  function jobStreamSink(jobId) {
+    let sink = state.jobStreamSinks.get(jobId);
+    if (!sink) {
+      const panel = document.createElement("div");
+      panel.className = "job-stream-panel";
+      const blocks = document.createElement("div");
+      blocks.className = "sub-blocks assistant-blocks";
+      panel.appendChild(blocks);
+      // taskPeek / taskToken 由 renderJobsStrip 每次重建时挂到当前那行的窥视/
+      // token 元素上(09-12 用户要回行窥视:跑到工具显示工具、跑到思考窥思考;
+      // token 每步更新)。标题本身仍保持完整、不被窥视替换。
+      sink = { panel, blocks, taskPeek: null, taskToken: null, tokenText: "", think: null, thinkAccum: "", pendingCall: null, peekLine: "", usageKey: "job:" + jobId };
+      state.jobStreamSinks.set(jobId, sink);
+    }
+    return sink;
+  }
+
+  function createReasoningBlock(text, title = "已思考", live = false, summaryOnly = false, withWindow = false) {
     const details = document.createElement("details");
     details.className = "reasoning-block";
     details.classList.toggle("is-summary", summaryOnly);
@@ -4888,7 +6692,33 @@
       progressFill.setAttribute("aria-hidden", "true");
       progress.appendChild(progressFill);
     }
+    // 思考内容收着的时候,标题行右边那片空白放思考的尾巴:正在想就跟着滚,想完了
+    // 也留着(回看那份同样有),展开时才让位。尾部对齐,新字从右边推进来,旧字从左边淡出。
+    const slot = document.createElement("span");
+    slot.className = "reasoning-peek";
+    const peek = document.createElement("span");
+    slot.appendChild(peek);
+    summary.appendChild(slot);
+    // 此时还没挂进文档量不到宽度;先写字,挂上后由 fit/下一次 delta 再量
+    peek.textContent = reasoningPeekText(text);
+    window.requestAnimationFrame(() => setReasoningPeek(peek, text));
     summary.appendChild(chevron);
+    // 正在想 + 思考收着:标题底下那扇滚动窗(见 thinkingWindowLines)。想完或点开
+    // 就让位——想完那一行收成「已思考 · Xs」,和原来一样。
+    // 它得挂在 <summary> 里(summary 换行铺满一行):<details> 合着时 summary 以外
+    // 的子元素浏览器根本不画,量得到尺寸却不上屏(Chromium 151 实测)。
+    // 只给主线的思考块开窗:子代理子过程、后台任务流里那些块仍是标题行里那截
+    // 单行窥视(用户 09-17:子代理那一路回滚,全部沿用以前的单行刷新窥视)。
+    let windowNode = null;
+    const windowLines = live && withWindow ? thinkingWindowLines() : 0;
+    if (windowLines > 0) {
+      windowNode = document.createElement("div");
+      windowNode.className = "reasoning-window";
+      windowNode.style.setProperty("--think-window-lines", String(windowLines));
+      windowNode.setAttribute("aria-hidden", "true");
+      details.classList.add("has-window");
+      summary.appendChild(windowNode);
+    }
     const body = document.createElement("div");
     body.className = "reasoning-text";
     body.textContent = String(text || "");
@@ -4901,6 +6731,8 @@
       liveStatus,
       progress,
       body,
+      peek,
+      window: windowNode,
       raw: String(text || ""),
       pendingTitle: "",
       summaryOnly,
@@ -4916,6 +6748,7 @@
         return;
       }
       block.userToggled = true;
+      railSnapFit(details);
     });
     return block;
   }
@@ -4927,12 +6760,20 @@
     // 工具轮次（持久化回合用）。实时那份由事件流按到达顺序往 blocks 里插，
     // 推理、正文、工具卡是交错的；这里从 turn.tool_flow 重建同样的顺序。
     toolRounds = [],
+    // 已回答的问题(#5b):按时序落在它对应的 ask_question 工具位上,不再被整
+    // 堆到助手消息之前(刷新后问答卡跑到正文前面就是这么来的)。ask_question 在
+    // tool_flow 里就是一个调用,这里遇到它就用第 N 个 exchange 顶替那张裸工具卡。
+    questionExchanges = [],
     assets = [],
     timestamp = null,
     tokenTotal = 0,
     tokenPrompt = 0,
     tokenCached = 0,
     tokenEstimated = false,
+    // 刷新后也要有的「累计」与「每秒」(09-11):累计由 renderConversation 按顺序算好
+    cumulative = null,
+    generationTokens = 0,
+    generationMs = 0,
     providerId = "",
     model = "",
     activeContext = true,
@@ -4955,10 +6796,7 @@
     const identity = document.createElement("div");
     const name = document.createElement("strong");
     name.textContent = state.persona.name;
-    const time = document.createElement("span");
-    time.textContent = formatTime(timestamp) || "";
-    time.title = formatDateTime(timestamp);
-    identity.append(name, time);
+    identity.append(name);
     header.append(avatar, identity);
     const assistantContent = document.createElement("div");
     assistantContent.className = "assistant-content";
@@ -4970,40 +6808,63 @@
     //
     // 卡片必须挂在 blocks 里:样式表是 `.assistant-blocks > .tool-card`,
     // 挂在外面选择器不命中,会退化成一行裸文本。
+    const exchangeQueue = Array.isArray(questionExchanges) ? [...questionExchanges] : [];
     for (const round of Array.isArray(toolRounds) ? toolRounds : []) {
       const roundReasoning = String(round?.assistant_reasoning || "");
       if (roundReasoning.trim() && !reasoningHidden()) {
         const parsed = splitReasoningText(roundReasoning);
-        blocks.appendChild(createReasoningBlock(parsed.body, "已思考", false).element);
+        procLineAttach(blocks, createReasoningBlock(parsed.body, "已思考", false).element, true);
       }
       const roundContent = String(round?.assistant_content || "");
       if (roundContent.trim()) {
         const markdown = document.createElement("div");
         markdown.className = "markdown-body";
         renderMarkdown(markdown, roundContent);
+        procLineBreak(blocks);
         blocks.appendChild(markdown);
       }
       for (const call of Array.isArray(round?.calls) ? round.calls : []) {
-        blocks.appendChild(createPersistedToolCard(call));
+        // ask_question 这一步:用它对应的已回答卡顶替裸工具卡,落在原时序位。
+        if (String(call?.name || "") === "ask_question" && exchangeQueue.length) {
+          procLineBreak(blocks);
+          blocks.appendChild(createAnsweredQuestionCard(exchangeQueue.shift()));
+          continue;
+        }
+        procLineAttach(blocks, createPersistedToolCard(call), true);
         // share_file 的富预览(播放器/图片/下载条)重建:实时靠 tool.finished
         // 的输出渲染,刷新/切换后从落库的 tool_flow 输出里复原同一份。
         if (window.MiyuShared?.isShareTool(String(call?.name || ""))) {
           const shared = window.MiyuShared.renderCard(String(call?.output || ""));
-          if (shared) blocks.appendChild(shared);
+          if (shared) {
+            procLineBreak(blocks);
+            blocks.appendChild(shared);
+          }
         }
       }
     }
     if (String(reasoning || "").trim() && !reasoningHidden()) {
       const parsed = splitReasoningText(reasoning);
-      blocks.appendChild(createReasoningBlock(parsed.body, "已思考", false).element);
+      procLineAttach(blocks, createReasoningBlock(parsed.body, "已思考", false).element, true);
     }
     if (String(content || "").trim()) {
       const markdown = document.createElement("div");
       markdown.className = "markdown-body";
       renderMarkdown(markdown, content);
+      procLineBreak(blocks);
       blocks.appendChild(markdown);
     }
-    for (const asset of Array.isArray(assets) ? assets : []) blocks.appendChild(createConversationMedia(asset));
+    // tool_flow 里没找到对应 ask_question 调用的已回答卡(边角情形)兜底补在末尾,
+    // 总比丢掉强;正常情形上面已按位插完,这里为空。
+    for (const exchange of exchangeQueue) {
+      procLineBreak(blocks);
+      blocks.appendChild(createAnsweredQuestionCard(exchange));
+    }
+    for (const asset of Array.isArray(assets) ? assets : []) {
+      procLineBreak(blocks);
+      blocks.appendChild(createConversationMedia(asset));
+    }
+    // 回合以工具收尾(没有最终正文)时,最后那条时间线也要切断,否则总结行永远不出
+    procLineBreak(blocks);
     assistantContent.appendChild(blocks);
     assistantContent.classList.toggle("is-slim", !blocks.querySelector(WIDE_BLOCK_SELECTOR));
     article.append(header, assistantContent);
@@ -5016,11 +6877,18 @@
       endpoint.textContent = [providerId, model].map((value) => String(value || "").trim()).filter(Boolean).join(" / ");
       meta.appendChild(endpoint);
     }
+    // 刷新后的回合也带「累计」与「每秒」:累计按会话里到这一轮为止的顺序求和(与
+    // run.completed 事件里 daemon 算的口径一致),速度用落库的样本。
     const usageText = formatUsageMeta({
       turnTotal: tokenTotal,
       turnPrompt: tokenPrompt,
       turnCached: tokenCached,
-      estimated: tokenEstimated
+      estimated: tokenEstimated,
+      cumulative: cumulative?.total,
+      cumulativePrompt: cumulative?.prompt,
+      cumulativeCached: cumulative?.cached,
+      generationTokens: generationTokens,
+      generationMs: generationMs
     });
     if (usageText) {
       const token = document.createElement("span");
@@ -5066,9 +6934,7 @@
     card.className = "answered-question-card";
     if (compact) card.classList.add("is-compact");
     const header = document.createElement("header");
-    const icon = document.createElement("span");
-    icon.className = "question-icon";
-    icon.appendChild(makeIconSlot("check"));
+    // 去掉左边那个大对钩(#143 用户嫌大):「已回答」二字已经表达状态了。
     const copy = document.createElement("div");
     const status = document.createElement("small");
     status.textContent = "已回答";
@@ -5076,7 +6942,7 @@
     const questions = Array.isArray(exchange?.questions) ? exchange.questions : [];
     title.textContent = questions.length === 1 ? String(questions[0]?.header || "补充确认") : `${questions.length} 项补充确认`;
     copy.append(status, title);
-    header.append(icon, copy);
+    header.append(copy);
     const list = document.createElement("dl");
     list.className = "answered-question-list";
     const answers = Array.isArray(exchange?.answers) ? exchange.answers : [];
@@ -5154,11 +7020,12 @@
       return stash[stashIndex++].article;
     };
 
-    // 已回答的问题卡在 live article 内部原位保留;仅在无存档时用快照重建。
-    if (!stash && !claimed) {
-      const exchanges = Array.isArray(turn?.question_exchanges) ? turn.question_exchanges : [];
-      for (const exchange of exchanges) elements.timeline.appendChild(createPersistedQuestion(exchange, turnId));
-    }
+    // 已回答的问题卡:live 存档里原位保留;快照重建时**不再**整堆甩在助手消息
+    // 之前(#5b:刷新后问答卡跑到正文前面),而是交给下面的 createAssistantMessage
+    // 按 ask_question 的时序位插进 blocks。只有在没有最终助手块可挂时才在这里兜底。
+    const persistedExchanges = (!stash && !claimed && Array.isArray(turn?.question_exchanges))
+      ? turn.question_exchanges
+      : [];
 
     const followups = Array.isArray(turn?.followups) ? turn.followups : [];
     for (const followup of followups) {
@@ -5211,12 +7078,14 @@
       && (assistantContent.trim()
         || assistantReasoning.trim()
         || assets.length
-        || persistedToolRounds.length)
+        || persistedToolRounds.length
+        || persistedExchanges.length)
     ) {
       elements.timeline.appendChild(createAssistantMessage({
         content: assistantContent,
         reasoning: assistantReasoning,
         toolRounds: persistedToolRounds,
+        questionExchanges: persistedExchanges,
         providerId: turn?.provider_id,
         model: turn?.model,
         assets,
@@ -5225,6 +7094,9 @@
         tokenPrompt: turn?.token_prompt,
         tokenCached: turn?.token_cache_read,
         tokenEstimated: Boolean(turn?.token_usage_estimated),
+        cumulative: state.cumulativeByTurn?.get(turnId) || null,
+        generationTokens: turn?.generation_tokens,
+        generationMs: turn?.generation_ms,
         activeContext: turn?.active_context !== false,
         turnId,
         segmentKind: "final",
@@ -5245,11 +7117,54 @@
     elements.loadingState.hidden = true;
     elements.blockedState.hidden = true;
     clearQuestionDock();
+    // 每条回合的「累计」=会话里到它为止的顺序求和(与 run.completed 里 daemon 报的口径一致)
+    state.cumulativeByTurn = new Map();
+    {
+      let total = 0;
+      let prompt = 0;
+      let cached = 0;
+      for (const turn of state.turns) {
+        total += asFiniteNumber(turn?.token_total);
+        prompt += asFiniteNumber(turn?.token_prompt);
+        cached += asFiniteNumber(turn?.token_cache_read);
+        state.cumulativeByTurn.set(String(turn?.id || ""), { total, prompt, cached });
+      }
+    }
+    // 刷新/切会话后,输入框下方信息行按最后一轮回填(速度 + 累计),不然刷新就空了(#99)。
+    {
+      const lastTurn = state.turns[state.turns.length - 1];
+      const lastCum = lastTurn ? state.cumulativeByTurn.get(String(lastTurn.id || "")) : null;
+      // 回填给「累计」定基线,重连后若正跑子代理,refreshComposerCumulative 有基线可加。
+      // 但**只在没有基线、或候选更高时才用它**:按落库回合求和会漏算子代理子会话,每秒
+      // 轮询若照它下调,会把实时事件维护的、含子代理的权威累计压低——后台子代理跑完后
+      // 累计瞬间掉一大块正是这么来的(#131)。可信度更高的 bootstrap 会话累计(含子代理)
+      // 也纳入比较,取最高的当基线。/reset 等清零场景由 conversation.* 事件另行清基线。
+      const cand = lastCum && lastCum.total > 0
+        ? { total: lastCum.total, prompt: lastCum.prompt, cached: lastCum.cached }
+        : null;
+      const ctxTotal = asFiniteNumber(state.context?.cumulative_tokens);
+      const ctx = ctxTotal > 0
+        ? { total: ctxTotal, prompt: asFiniteNumber(state.context?.cumulative_prompt_tokens), cached: asFiniteNumber(state.context?.cumulative_cache_read_tokens) }
+        : null;
+      const best = [state.cumulativeBase, ctx, cand]
+        .filter((c) => c && c.total > 0)
+        .reduce((a, b) => (!a || b.total > a.total ? b : a), null);
+      state.cumulativeBase = best;
+      setComposerUsage({
+        speed: lastTurn ? generationSpeedValue(lastTurn.generation_tokens, lastTurn.generation_ms) : null,
+      });
+      refreshComposerCumulative();
+    }
     // 回合运行期间每秒轮询都可能整段重建（refreshViewSnapshot）。用户正往回
     // 翻历史时不能每秒被拽回底部：只有明确导航（换会话/启动）或用户本来就
     // 跟着输出走时才滚到底，否则原地恢复滚动位置。
     const keepScroll = !forceScroll && !state.followOutput;
     const previousScrollTop = elements.chatScroll.scrollTop;
+    // replaceChildren 让 scrollHeight 瞬间塌掉,浏览器把 scrollTop 钳到 0 并派发
+    // 一条 scroll 事件;这条事件先于下面的 rAF 到达监听器。不守卫的话监听器
+    // 把「跳到顶」当成用户上滚,关掉跟随——后台任务完成的通知落库触发整段
+    // 重建时就是这么把自动滚动弄丢的(之后 AI 继续输出也不再往下走)。
+    armProgrammaticScroll();
     elements.timeline.replaceChildren();
     const turns = [...state.turns].sort((left, right) => asFiniteNumber(left?.seq) - asFiniteNumber(right?.seq));
     state.turns = turns;
@@ -5287,6 +7202,7 @@
     if (keepScroll) {
       // 同步恢复（不等下一帧），重建就不会闪一下再跳回来。上方内容高度
       // 变化仍可能让视口偏移，先接受这个近似。
+      armProgrammaticScroll();
       elements.chatScroll.scrollTop = previousScrollTop;
       state.nearBottom = isNearBottom();
       elements.jumpBottomButton.hidden = false;
@@ -5294,11 +7210,33 @@
       state.nearBottom = true;
       state.followOutput = true;
       elements.jumpBottomButton.hidden = true;
+      // 先同步钉到底:replaceChildren 之后 scrollTop 被钳成 0,只等下一帧再滚
+      // 的话会画出一帧顶部——手机上每轮结束整段重建都闪一下(09-10 沙盒实测
+      // 采样到 scrollTop 291→0→291)。rAF 那次是布局稳定后的最终校正。
+      armProgrammaticScroll();
+      elements.chatScroll.scrollTop = elements.chatScroll.scrollHeight;
       window.requestAnimationFrame(() => {
+        armProgrammaticScroll();
         elements.chatScroll.scrollTop = elements.chatScroll.scrollHeight;
+        // 重建前后都可能有 scroll 事件进监听器,跟随位在这里再钉一次。
+        state.followOutput = true;
+        state.nearBottom = true;
+        elements.jumpBottomButton.hidden = true;
       });
     }
     updateConversationChrome();
+  }
+
+  /// 标记「接下来这次滚动是程序发起的」:监听器看到守卫就不把它当用户上滚。
+  /// 非 smooth 滚动由紧随其后的那条 scroll 事件解除;没动(scrollTop 没变)
+  /// 就不派发事件,靠超时兜底。
+  function armProgrammaticScroll() {
+    state.programmaticScroll = true;
+    programmaticScrollSmooth = false;
+    window.clearTimeout(programmaticScrollTimer);
+    programmaticScrollTimer = window.setTimeout(() => {
+      state.programmaticScroll = false;
+    }, PROGRAMMATIC_SCROLL_AUTO_MS);
   }
 
   /// 把还在跑的 live 气泡挂回重建后的时间线。
@@ -5315,7 +7253,10 @@
       if (!liveViewed(live)) continue;
       // 落库的 running 占位与直播气泡是同一轮:重挂前撤掉占位。
       removeRunningStatus(live.turnId);
-      if (!live.article.isConnected) elements.timeline.appendChild(live.article);
+      if (!live.article.isConnected) {
+        elements.timeline.appendChild(live.article);
+        pinQueuedMessages();
+      }
       if (live.stopButton && !live.stopButton.isConnected) {
         elements.liveStopRail.appendChild(live.stopButton);
         elements.liveStopRail.hidden = false;
@@ -5381,32 +7322,52 @@
     return isSyntheticTurnContent(raw);
   }
 
+  // 排队的消息不再放输入框上方的托盘,直接画在对话末尾(用户气泡 + 「排队中」小签),
+  // 就是它轮到时会出现的位置。这里按 state.queuedPrompts 同步时间线里的占位:
+  // 少了的撤掉,多了的补上,顺序和位置(永远在最后)由 pinQueuedMessages 兜底。
   function renderQueueTray() {
-    // 后台任务完成的自动跟进不是用户消息，不在排队托盘里显示。
+    // 后台任务完成的自动跟进不是用户消息，不画。
     const prompts = (Array.isArray(state.queuedPrompts) ? state.queuedPrompts : [])
       .filter((prompt) => !isJobFollowupContent(prompt?.content) && !isJobFollowupContent(prompt?.display_content));
-    elements.queueTray.replaceChildren();
-    elements.queueTray.hidden = prompts.length === 0;
-    for (const prompt of prompts) {
-      const row = document.createElement("div");
-      row.className = "queue-item";
-      const text = document.createElement("span");
-      const attachmentCount = Array.isArray(prompt?.attachments) ? prompt.attachments.length : 0;
-      const promptText = String(prompt?.content || "").trim();
-      text.textContent = attachmentCount
-        ? `${promptText || "附件消息"} · ${attachmentCount} 个附件`
-        : promptText;
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "queue-remove";
-      remove.title = "移除排队消息";
-      remove.setAttribute("aria-label", "移除排队消息");
-      remove.appendChild(makeIconSlot("x"));
-      remove.addEventListener("click", () => removeQueuedPrompt(prompt.id));
-      row.append(text, remove);
-      elements.queueTray.appendChild(row);
+    if (elements.queueTray) {
+      elements.queueTray.replaceChildren();
+      elements.queueTray.hidden = true;
     }
+    const ids = new Set(prompts.map((prompt) => String(prompt?.id)));
+    for (const node of elements.timeline.querySelectorAll(".user-message.is-queued")) {
+      if (!ids.has(String(node.dataset.queueId))) node.remove();
+    }
+    let added = null;
+    for (const prompt of prompts) {
+      const id = String(prompt?.id);
+      if (queuedMessageNode(id)) continue;
+      const node = createUserMessage(prompt?.content || "", prompt?.submitted_at || new Date(), {
+        queued: true,
+        queueId: id,
+        attachments: prompt?.attachments
+      });
+      if (!node) continue;
+      elements.timeline.appendChild(node);
+      added = node;
+    }
+    pinQueuedMessages();
+    if (added) contentAdded(added);
     updateControlState();
+  }
+
+  function queuedMessageNode(id) {
+    for (const node of elements.timeline.querySelectorAll(".user-message.is-queued")) {
+      if (String(node.dataset.queueId) === String(id)) return node;
+    }
+    return null;
+  }
+
+  // 排队占位永远贴在时间线末尾,按排队顺序:直播气泡后挂进来、回合重建之后都要再钉一次
+  function pinQueuedMessages() {
+    for (const prompt of Array.isArray(state.queuedPrompts) ? state.queuedPrompts : []) {
+      const node = queuedMessageNode(prompt?.id);
+      if (node && node !== elements.timeline.lastElementChild) elements.timeline.appendChild(node);
+    }
   }
 
   async function removeQueuedPrompt(promptId) {
@@ -5471,8 +7432,13 @@
       runId: live.runId,
       attachments: live.userAttachments
     });
-    if (live.article?.isConnected) elements.timeline.insertBefore(message, live.article);
-    else elements.timeline.appendChild(message);
+    // 目标续轮等合成内容不画用户气泡(createUserMessage 返回 null),别的
+    // 调用点都走 appendUserMessage 的空值兜底,这里以前直接 appendChild(null)
+    // 抛 TypeError,把整段 live 装配掐断。
+    if (message) {
+      if (live.article?.isConnected) elements.timeline.insertBefore(message, live.article);
+      else elements.timeline.appendChild(message);
+    }
     live.userRendered = true;
     updateConversationChrome();
     contentAdded();
@@ -5483,6 +7449,23 @@
     const status = Array.from(elements.timeline.querySelectorAll("[data-turn-status]"))
       .find((node) => node.dataset.turnStatus === String(turnId));
     status?.remove();
+  }
+
+  /// 中断落定后在原位补一条「本轮已中断」状态行,取代整会话静默重拉。
+  /// 后端实测 cancel→run.cancelled 仅 ~12ms,之前那次 loadSessionView 把整条
+  /// 对话全量重渲染才是中断「不是秒停 / 感觉加载很久」的真因;这里只动这一条。
+  function showInterruptedMarker(turnId, article) {
+    const id = String(turnId || "");
+    removeRunningStatus(turnId);
+    const turn = (id && state.turns.find((item) => String(item?.id) === id)) || { id, status: "interrupted" };
+    const line = createTurnStatus({ ...turn, status: "interrupted" });
+    let anchor = article && article.isConnected ? article : null;
+    if (!anchor && id) {
+      const nodes = Array.from(elements.timeline.querySelectorAll(`[data-turn-id="${CSS.escape(id)}"]`));
+      anchor = nodes.length ? nodes[nodes.length - 1] : null;
+    }
+    if (anchor?.parentNode) anchor.parentNode.insertBefore(line, anchor.nextSibling);
+    else elements.timeline.appendChild(line);
   }
 
   function commitRedoLive(live) {
@@ -5519,10 +7502,20 @@
   }
 
   function createTypingIndicator() {
+    // AI 输出的「加载中」用编排点动效(用户拍板):三点走三角·顺时针→聚合→三角→
+    // 逆时针→聚合→三角,6s 循环;没有「水平一行」这个姿态(用户 09-18)。
+    // 输入框那份仍是旧的匀速三点。
     const indicator = document.createElement("div");
-    indicator.className = "typing-indicator";
+    indicator.className = "miyu-run typing-run";
     indicator.setAttribute("aria-hidden", "true");
-    for (let index = 0; index < 3; index += 1) indicator.appendChild(document.createElement("i"));
+    const spin = document.createElement("span");
+    spin.className = "mr-spin";
+    for (const cls of ["mr1", "mr2", "mr3"]) {
+      const dot = document.createElement("i");
+      dot.className = cls;
+      spin.appendChild(dot);
+    }
+    indicator.appendChild(spin);
     return indicator;
   }
 
@@ -5706,7 +7699,10 @@
     streamRail.className = "assistant-stream-rail";
     streamRail.hidden = true;
     article.append(header, bubble, meta, streamRail);
-    if (viewed) elements.timeline.appendChild(article);
+    if (viewed) {
+      elements.timeline.appendChild(article);
+      pinQueuedMessages();
+    }
     live.article = article;
     live.blocks = blocks;
     live.headerStatus = status;
@@ -5724,11 +7720,40 @@
     live.currentText = null;
   }
 
+  /// 流式渲染时把没闭合的行内标记先补上:模型正在输出 `` `sudo pacman -Syu` ``,
+  /// 闭合反引号没到之前整段按普通文字排版,一到就换成代码样式——每次这么
+  /// 一换,那一行前后的字全部重排,看起来就是「字在跳」(09-10 沙盒逐帧取证)。
+  /// 只补三样:未闭合的围栏代码块、行内反引号、`**` 粗体;单个 `*`/`_` 与列表
+  /// 和数学冲突,不碰。回合结束后按落库原文重画,这里的补丁不进任何存档。
+  function stabilizeStreamingMarkdown(raw) {
+    const text = String(raw || "");
+    if (!text) return text;
+    const lines = text.split("\n");
+    let fenceOpen = false;
+    let tailStart = 0;
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (/^\s*(```|~~~)/.test(line)) {
+        fenceOpen = !fenceOpen;
+        // 围栏一关,尾巴从它后面算:围栏里的反引号不参与行内配对
+        if (!fenceOpen) tailStart = index + 1;
+      } else if (!fenceOpen && !line.trim()) tailStart = index + 1;
+    }
+    if (fenceOpen) return `${text}\n\`\`\``;
+    const tail = lines.slice(tailStart).join("\n");
+    let patched = text;
+    const backticks = (tail.match(/`/g) || []).length;
+    if (backticks % 2 === 1) patched += "`";
+    const bolds = (tail.match(/\*\*/g) || []).length;
+    if (bolds % 2 === 1) patched += "**";
+    return patched;
+  }
+
   function scheduleMarkdownRender(block) {
     if (block.renderFrame) return;
     block.renderFrame = window.requestAnimationFrame(() => {
       block.renderFrame = null;
-      renderMarkdown(block.element, block.raw);
+      renderMarkdown(block.element, stabilizeStreamingMarkdown(block.raw));
       contentAdded(block.element);
     });
   }
@@ -5743,6 +7768,7 @@
       const element = document.createElement("div");
       element.className = "markdown-body live-text-block";
       const block = { element, raw: "", renderFrame: null };
+      procLineBreak(live.blocks);
       live.blocks.appendChild(element);
       syncBubbleWidth(live.article);
       live.currentText = block;
@@ -5753,7 +7779,7 @@
     live.assistantText += text;
     live.copyButton.hidden = !live.assistantText.trim();
     if (startsText) {
-      renderMarkdown(live.currentText.element, live.currentText.raw);
+      renderMarkdown(live.currentText.element, stabilizeStreamingMarkdown(live.currentText.raw));
       promoteTypingIndicator(live);
     } else {
       scheduleMarkdownRender(live.currentText);
@@ -5786,11 +7812,11 @@
     if (live.reasoning) return live.reasoning;
     breakLiveText(live);
     live.contextOperation = null;
-    const reasoning = createReasoningBlock("", "正在思考", true);
+    const reasoning = createReasoningBlock("", "正在思考", true, false, true);
     // 计时从 reasoning.start 事件算起,而不是签出现的时刻(签是惰性创建的)
     if (live.reasoningClockStart != null) reasoning.startedAt = live.reasoningClockStart;
     reasoning.pendingTitle = normalizeReasoningTitle(live.reasoningTitle);
-    if (!reasoningHidden()) live.blocks.appendChild(reasoning.element);
+    if (!reasoningHidden()) procLineAttach(live.blocks, reasoning.element);
     live.reasoning = reasoning;
     live.reasoningParts.push(reasoning);
     if (live.reasoningTimer) window.clearInterval(live.reasoningTimer);
@@ -5826,9 +7852,14 @@
       reasoning.element.remove();
     } else {
       reasoning.element.classList.remove("is-live");
+      reasoning.element.classList.remove("has-window");
       reasoning.title.textContent = title;
       reasoning.body.textContent = reasoning.raw;
       if (reasoning.progress) reasoning.progress.remove();
+      if (reasoning.window) {
+        reasoning.window.remove();
+        reasoning.window = null;
+      }
       if (reasoning.liveStatus) {
         if (reasoning.startedAt != null) {
           reasoning.liveStatus.textContent = `${((performance.now() - reasoning.startedAt) / 1000).toFixed(1)}s`;
@@ -5860,6 +7891,7 @@
         live.reasoning.raw = "";
         live.reasoning.body.textContent = "";
         live.reasoning.pendingTitle = "";
+        setReasoningWindow(live.reasoning, "");
       }
       return;
     }
@@ -5876,6 +7908,9 @@
       const reasoning = ensureLiveReasoning(live);
       reasoning.raw += delta;
       reasoning.body.textContent = reasoning.raw;
+      // 窥视槽只放尾巴:换行折成空格,取最后 160 字,够撑满一行还不至于每个 delta 都重排一大段
+      setReasoningPeek(reasoning.peek, reasoning.raw);
+      setReasoningWindow(reasoning, reasoning.raw);
       live.assistantReasoning = collectLiveReasoning(live);
       contentAdded(live);
       return;
@@ -5887,20 +7922,50 @@
 
   function prettyArguments(value) {
     if (value == null) return "";
+    let obj = value;
     if (typeof value === "string") {
       const trimmed = value.trim();
       if (!trimmed) return "";
       try {
-        return JSON.stringify(JSON.parse(trimmed), null, 2);
+        obj = JSON.parse(trimmed);
       } catch (_) {
         return value;
       }
     }
-    try {
-      return JSON.stringify(value, null, 2);
-    } catch (_) {
-      return String(value);
+    if (obj == null) return "";
+    // 顶层对象 → 「键：值」逐行,不再是裹着大括号的裸 JSON(09-12 #6:工具展开
+    // 信息不该是裸 json)。嵌套值压成一行紧凑 JSON;非对象/数组回退 pretty JSON。
+    if (typeof obj !== "object" || Array.isArray(obj)) {
+      try {
+        return JSON.stringify(obj, null, 2);
+      } catch (_) {
+        return String(obj);
+      }
     }
+    const lines = [];
+    for (const [key, raw] of Object.entries(obj)) {
+      let rendered;
+      if (raw == null) rendered = "";
+      else if (typeof raw === "object") {
+        try { rendered = JSON.stringify(raw); } catch (_) { rendered = String(raw); }
+      } else rendered = String(raw);
+      lines.push(`${key}: ${rendered}`);
+    }
+    return lines.join("\n");
+  }
+
+  // 子代理事件名后端格式化成 `subagent:<描述>`(让并行子代理各有独立事件名,
+  // 见 agent::reports::tool_event_name),所以判定/取图标要认这个前缀,不能只比
+  // 精确名——否则子代理工具行认不出来,窥视/子过程时间线整套都不触发(09-11
+  // 用户报「气泡还在、渲染不对」的真因,Playwright 实测揪出)。
+  function subagentToolBaseName(name) {
+    const n = String(name || "");
+    const at = n.search(/[:：]/);
+    return at >= 0 ? n.slice(0, at) : n;
+  }
+  function isSubagentTool(name) {
+    const base = subagentToolBaseName(name);
+    return base === "subagent" || base === "task";
   }
 
   function parsedToolArguments(value) {
@@ -5962,7 +8027,7 @@
     if (["webfetch", "web_fetch"].includes(toolName)) return compactLine(args.url);
     if (["web_search", "search_web", "search_web_images"].includes(toolName)) return compactLine(args.query || args.q);
     if (toolName === "generate_image") return compactLine(args.prompt);
-    if (toolName === "task") return compactLine(args.description || args.prompt);
+    if (isSubagentTool(toolName)) return compactLine(args.description || args.prompt);
     if (toolName === "load_skill") return compactLine(args.name);
     const preferred = ["query", "command", "path", "filePath", "url", "name", "id", "target"];
     for (const key of preferred) {
@@ -5990,20 +8055,149 @@
     return rest || s;
   }
 
+  function commandPreviewBudget() {
+    return Math.max(0, Number(state.display?.command_output_lines ?? 8) || 0);
+  }
+
+  /** 命令抬头底下露几行命令本身，跟 `display.command_output_lines`（默认 8）。
+   *
+   * 这个数是**屏幕上占几行**，不是「命令有几行」：一条很长的单行命令会软换行
+   * 把这几行空间用满（用户 09-20），而不是截成一行加省略号。取源码时按逻辑行
+   * 切到同样的数就够了——每条逻辑行至少占一行，多切也填不进去。
+   *
+   * 留头不留尾：超出的在**底部**换成一个 `⋮`。前几行才说明这条命令在干什么，
+   * 尾巴通常是重定向和管道。0 = 一行都不露。
+   */
+  function commandPreviewRows(text) {
+    const max = commandPreviewBudget();
+    const lines = String(text || "").replace(/\s+$/, "").split("\n");
+    if (max === 0 || (lines.length === 1 && !lines[0])) return { lines: [], omitted: false };
+    if (lines.length <= max) return { lines, omitted: false };
+    return { lines: lines.slice(0, max), omitted: true };
+  }
+
+  /** 裁到 `max` 个**可见**行；裁着了就让出最后一行给 `⋮`。
+   *
+   * 只能量出来，算不出来——软换行占几行取决于卡片当时多宽。宽度变了要重量，
+   * 所以下面挂了 ResizeObserver；只在**宽度**真的变了才重跑，不然改高度这件事
+   * 自己会把观察器再触发一遍，绕不出来。
+   */
+  function clipCommandPreview(tool) {
+    const host = tool.commandPreview;
+    if (!host || host.hidden) return;
+    const max = commandPreviewBudget();
+    if (max <= 0) return;
+    host.style.setProperty("--command-rows", String(max));
+    const clipped = host.scrollHeight > host.clientHeight + 1;
+    const more = clipped || tool.commandOmitted;
+    if (more && max > 1) host.style.setProperty("--command-rows", String(max - 1));
+    if (tool.commandMore) tool.commandMore.hidden = !more;
+    // 行数一定，连线的终点跟着变（末尾那一步的线要盖到命令行底下）。
+    railSnapFit(host);
+  }
+
+  function watchCommandPreviewWidth(tool) {
+    if (tool.commandWidthWatcher || !tool.commandPreview || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    let lastWidth = -1;
+    tool.commandWidthWatcher = new ResizeObserver((entries) => {
+      const width = Math.round(entries[0]?.contentRect?.width ?? 0);
+      if (width === lastWidth) return;
+      lastWidth = width;
+      clipCommandPreview(tool);
+    });
+    tool.commandWidthWatcher.observe(tool.commandPreview);
+  }
+
+  /** 造出「命令那几行 + ⋮」这一对，并把点击/裁剪都接好。
+   *
+   * 实时那条路（`createTool`）和刷新重建那条路（`createPersistedToolCard`）**都要
+   * 用它**。以前只改了实时那条，于是一刷新命令签就退回老样子：命令挤回抬头当窥视、
+   * 底下没有命令行（用户 09-20）。
+   */
+  function buildCommandRows(commandText, head) {
+    const preview = document.createElement("div");
+    preview.className = "tool-command-preview";
+    preview.setAttribute("aria-label", "命令");
+    const more = document.createElement("span");
+    more.className = "tool-command-more";
+    more.textContent = "⋮";
+    more.title = "还有，点开看完整命令";
+    more.hidden = true;
+    // 命令那几行在 `.tool-head`（button）**外面**，不接就只有抬头那一条窄缝可点，
+    // 而视线正落在命令上。拖着选文字不算点：有选区就放过，否则复制命令会顺手把
+    // 卡片折起来。
+    const expandOnClick = (event) => {
+      if (String(window.getSelection?.() || "").length) return;
+      event.preventDefault();
+      head.click();
+    };
+    for (const node of [preview, more]) {
+      node.addEventListener("click", expandOnClick);
+    }
+    const handle = { commandPreview: preview, commandMore: more, commandText };
+    paintCommandPreview(handle);
+    return { preview, more, handle };
+  }
+
+  /** 第一块可见详情不带分界线，后面每块都带。`root` 是放详情的那层容器。 */
+  function markFirstDetail(root) {
+    let first = true;
+    for (const detail of root.querySelectorAll(".tool-detail")) {
+      const visible = !detail.hidden;
+      detail.classList.toggle("is-first-detail", visible && first);
+      if (visible) first = false;
+    }
+  }
+
+  function paintCommandPreview(tool) {
+    const host = tool.commandPreview;
+    if (!host) return;
+    const { lines, omitted } = commandPreviewRows(tool.commandText);
+    tool.commandOmitted = omitted;
+    host.textContent = "";
+    for (const line of lines) {
+      const row = document.createElement("span");
+      row.className = "tool-command-line";
+      // 空行也得占一行高，否则命令里的空行会让行数对不上。
+      row.textContent = line || " ";
+      host.appendChild(row);
+    }
+    host.hidden = lines.length === 0;
+    if (tool.commandMore) tool.commandMore.hidden = true;
+    if (host.hidden) return;
+    // 量高度得等这一帧排完版。
+    requestAnimationFrame(() => {
+      clipCommandPreview(tool);
+      watchCommandPreviewWidth(tool);
+    });
+  }
+
+  /** 展开态里，除第一块可见详情外都带一道分界线。
+   *
+   * CSS 选不出「前一个**可见**兄弟」——中间那几块（进度／命令输出／错误输出）
+   * 是 `hidden` 的，相邻选择器照样匹配它们，所以第一块由这儿打标记。
+   */
+  function refreshDetailDividers(tool) {
+    markFirstDetail(tool.card);
+  }
+
   function updateToolSummary(tool) {
     const details = [];
     const subject = dedupeToolSubject(tool.titleText, tool.subject);
+    refreshDetailDividers(tool);
     if (tool.commandPreview) {
-      tool.commandPreview.textContent = tool.commandText || subject || "等待命令";
-      tool.summary.textContent = tool.finishedAt == null
-        ? ""
-        : formatToolDuration(tool.finishedAt - tool.startedAt);
+      paintCommandPreview(tool);
+      // 抬头右边给 short_title；没填就空着，不退回塞命令文本——命令就在下面。
+      tool.summary.textContent = tool.commandTitle || "";
       return;
     }
     if (subject) details.push(subject);
     if (tool.imageCount) details.push(`${tool.imageCount} 张图片`);
-    if (tool.finishedAt != null) details.push(formatToolDuration(tool.finishedAt - tool.startedAt));
-    tool.summary.textContent = details.filter(Boolean).join(" · ") || (tool.finished ? "无输出" : "等待输出");
+    // 没有主语就空着:「无输出 / 等待输出」是旧芯片时代占摘要位的话,时间线上耗时和转圈
+    // 都在状态位,这里再写字只会让人以为工具真的没输出。
+    tool.summary.textContent = details.filter(Boolean).join(" · ");
   }
 
   function scrollToolOutputToEnd(tool) {
@@ -6032,7 +8226,7 @@
     card.className = state.toolExpanded ? "tool-card" : "tool-card collapsed";
     const name = String(call?.name || "");
     if (name === "run_command" || name === "Bash") card.classList.add("is-command");
-    if (name === "task") card.classList.add("is-task");
+    if (isSubagentTool(name)) card.classList.add("is-task");
     // 图标配色来自 is-success（金）/ is-failure（红）。两个都不加会退回默认色，
     // 看起来就是「颜色不对」。
     //
@@ -6061,43 +8255,111 @@
     title.className = "tool-title";
     const displayName = document.createElement("strong");
     displayName.textContent = String(call?.display_name || name || "工具");
+    // 子代理:显示「子代理 / 开发中」,不显裸的 `subagent:xxx`(刷新回看时历史里存的
+    // display_name 是技术名,和实时的「子代理」不一致,#97 刷新后变回原始名)。任务
+    // 标题走下面的 summary(toolSubject → description)。
+    if (isSubagentTool(name)) {
+      displayName.textContent =
+        parsedToolArguments(call?.arguments)?.dev === true ? "开发中" : "子代理";
+    }
+    // 名字被芯片截断时,悬浮还能看全(load_tools 一次点名几个工具就会超长)。
+    displayName.title = displayName.textContent;
     const realName = document.createElement("small");
     realName.className = "tool-technical-name";
     realName.textContent = name;
     const summary = document.createElement("small");
     summary.className = "tool-summary";
-    summary.textContent = toolSubject(name, call?.arguments) || "";
+    const persistedArgs = parsedToolArguments(call?.arguments);
+    const isCommandCall = name === "run_command" || name === "Bash";
+    // 命令签的抬头右边给 short_title（模型自报的 `title`），命令本身排到下面；
+    // 别的工具照旧给主语。两条路必须一致，否则一刷新命令签就变回老样子。
+    summary.textContent = isCommandCall
+      ? String(persistedArgs?.title || "").trim()
+      : toolSubject(name, call?.arguments) || "";
     title.append(displayName, realName, summary);
     // 与实时那份同构：head 是 icon / title / status / chevron 四段。少了
     // status 这段，回看时卡片会比实时的窄一块，右边空一片。
     const status = document.createElement("span");
     status.className = "tool-status";
     const statusText = document.createElement("span");
-    statusText.textContent = ok ? "完成" : "失败";
+    const startedMs = Number(call?.started_ms);
+    const finishedMs = Number(call?.finished_ms);
+    const hasSpan = Number.isFinite(startedMs) && Number.isFinite(finishedMs) && finishedMs >= startedMs;
+    if (hasSpan) card.miyuTiming = { startedAt: startedMs, finishedAt: finishedMs };
+    statusText.textContent = ok ? (hasSpan ? formatToolDuration(finishedMs - startedMs) || "完成" : "完成") : "失败";
     status.append(makeIconSlot(ok ? "check" : "circle-alert"), statusText);
     head.append(icon, title, status, makeIconSlot("chevron-down", "tool-chevron"));
+    // 读秒：落库的起止时间算得出真实耗时，和实时那条定格的是同一个数。
+    if (isCommandCall && ok && hasSpan) {
+      const seconds = document.createElement("small");
+      seconds.className = "tool-command-seconds";
+      seconds.textContent = statusText.textContent;
+      title.insertBefore(seconds, summary);
+    }
     head.addEventListener("click", () => {
       const collapsed = card.classList.toggle("collapsed");
       head.setAttribute("aria-expanded", String(!collapsed));
+      railSnapFit(card);
     });
+
+    const commandRows = isCommandCall
+      ? buildCommandRows(
+          String(persistedArgs?.command || persistedArgs?.cmd || "").trim(),
+          head
+        )
+      : null;
 
     const body = document.createElement("div");
     body.className = "tool-body";
-    const argumentText = prettyArguments(call?.arguments);
-    if (argumentText) {
-      const detail = createToolDetail("参数", true);
-      detail.content.textContent = argumentText;
-      detail.wrapper.hidden = false;
-      body.appendChild(detail.wrapper);
+    // 文件编辑:把 patchText 参数画成 diff(增删配色),而不是摊一坨补丁 JSON。
+    // patchText 随 tool_flow 落库,回看/刷新走同一份。渲不出(解析失败)再退回原始参数。
+    const diffView = window.MiyuDiff?.renderFromCall?.(call) || null;
+    if (diffView) {
+      body.appendChild(diffView);
+    } else {
+      const argumentText = prettyArguments(call?.arguments);
+      if (argumentText) {
+        const detail = createToolDetail("参数", true);
+        detail.content.textContent = argumentText;
+        detail.wrapper.hidden = false;
+        body.appendChild(detail.wrapper);
+      }
     }
     const output = String(call?.output || "");
-    if (output) {
+    // 编辑成功时,结果就是 `{ok:true, files:[…]}` 这类样板,和上面的 diff 重复——藏掉;
+    // 失败时结果是报错原文,留着(diffView 存在=是编辑工具且解析出了补丁)。
+    const hideEditOutput = diffView && ok;
+    if (output && !hideEditOutput) {
       const detail = createToolDetail("结果", true);
       detail.content.textContent = output;
       detail.wrapper.hidden = false;
       body.appendChild(detail.wrapper);
     }
-    card.append(head, body);
+    // 子代理:回看/刷新时把落库的子过程标记流回放成时间线(#9)。放在参数/结果之前,
+    // 和实时展开态一个样。用一个一次性 sink 走同款 renderSubagentProgress。
+    if (isSubagentTool(name) && Array.isArray(call?.sub_trace) && call.sub_trace.length) {
+      const subBlocks = document.createElement("div");
+      subBlocks.className = "sub-blocks assistant-blocks";
+      const sink = {
+        blocks: subBlocks, brief: false, think: null, thinkAccum: "", contentBlock: null,
+        contentAccum: "", pendingCall: null, taskPeek: null, taskToken: null, peekLine: "",
+      };
+      for (const marker of call.sub_trace) renderSubagentProgress(sink, String(marker));
+      subEndReasoning(sink);
+      subEndContent(sink);
+      body.insertBefore(subBlocks, body.firstChild);
+      card.classList.add("is-task");
+    }
+    markFirstDetail(body);
+    const fold = document.createElement("div");
+    fold.className = "tool-fold";
+    fold.appendChild(body);
+    card.append(head, fold);
+    // 命令那几行排在抬头和展开区之间——和实时那条同一个次序。
+    if (commandRows) {
+      card.insertBefore(commandRows.preview, fold);
+      card.insertBefore(commandRows.more, fold);
+    }
     // 待办列表挂在签外面,收起态也看得见——那是给人看的产出,不是调试信息。
     const todos = window.MiyuTodos?.isTodoTool(name) ? window.MiyuTodos.render(output) : null;
     if (todos) card.appendChild(todos);
@@ -6121,10 +8383,18 @@
 
   function updateToolStatus(tool, status, iconName, statusClass = "") {
     tool.statusText.textContent = status;
+    // 命令签的读秒定格成**真实耗时**（`status` 里就是它，比如「23 ms」），并停掉
+    // ticker。ticker 算的是「卡片建出来到现在」，对一条 23ms 就跑完的命令毫无
+    // 意义——它会一直涨到下一次 tick 才停在一个错数上。
+    if (tool.commandSeconds && iconName !== "loader-circle") {
+      delete tool.commandSeconds.dataset.taskStart;
+      tool.commandSeconds.textContent = status === "失败" ? "" : status;
+    }
     tool.statusIcon.replaceChildren(createIcon(iconName));
     tool.statusIcon.classList.toggle("is-spinning", iconName === "loader-circle");
     tool.card.classList.remove("is-success", "is-failure");
     if (statusClass) tool.card.classList.add(statusClass);
+    procLineRefresh(tool.card.closest(".proc-line"));
   }
 
   function renderCommandOutputPreview(tool) {
@@ -6179,7 +8449,7 @@
     if (["recall_memories", "recall_past_events", "remember_fact", "search_evicted_context"].includes(n)) return "brain";
     if (["create_goal", "get_goal", "update_goal"].includes(n)) return "target";
     if (n === "todowrite" || n === "todoupdate") return "list-todo";
-    if (n === "task" || n === "deep_research") return "bot";
+    if (isSubagentTool(n)) return "bot";
     if (n.includes("knowledge_base")) return "book-open";
     if (n === "ask_question") return "circle-help";
     if (n === "generate_image") return "paintbrush";
@@ -6234,7 +8504,7 @@
     }
   }
 
-  function createTool(live, data) {
+  function createTool(live, data, opts = {}) {
     ensureLiveArticle(live);
     clearTypingIndicator(live, { waitingOnly: true });
     breakLiveText(live);
@@ -6247,8 +8517,15 @@
     card.dataset.toolId = toolId;
     const isCommand = ["run_command", "Bash"].includes(String(data?.name || ""));
     if (isCommand) card.classList.add("is-command");
-    const isTask = String(data?.name || "") === "task" || /^task[:：]/i.test(String(data?.display_name || ""));
-    if (isTask) card.classList.add("is-task");
+    const isTask =
+      isSubagentTool(data?.name) ||
+      /^(subagent|task)[:：]/i.test(String(data?.display_name || ""));
+    if (isTask) {
+      card.classList.add("is-task");
+      // 前台子代理:运行时自动展开那块四行活区域,子过程实时流入(用户拍板);
+      // 跑完(tool.finished)再收起成一行。head 的 aria-expanded 也置真。
+      card.classList.remove("collapsed");
+    }
     const subjectText = toolSubject(data?.name, data?.arguments);
     const commandArguments = isCommand ? parsedToolArguments(data?.arguments) : null;
     const commandText = isCommand ? String(commandArguments?.command || commandArguments?.cmd || "").trim() : "";
@@ -6267,6 +8544,11 @@
     title.className = "tool-title";
     const displayName = document.createElement("strong");
     displayName.textContent = String(data?.display_name || data?.name || "工具");
+    // 开发模式子代理显示「开发中」而非「子代理」,和普通子代理区分开(09-11)。
+    if (isTask && parsedToolArguments(data?.arguments)?.dev === true) {
+      displayName.textContent = "开发中";
+    }
+    displayName.title = displayName.textContent;
     const realName = document.createElement("small");
     realName.className = "tool-technical-name";
     realName.textContent = String(data?.name || "");
@@ -6280,13 +8562,67 @@
     statusText.textContent = "运行中";
     status.append(statusIcon, statusText);
     const chevron = makeIconSlot("chevron-down", "tool-chevron");
-    head.append(icon, title, status, chevron);
+    // 子代理:标题行里放一条单行窥视(和「已思考」标题右侧尾巴同款),收起态
+    // 显示子代理当前在做什么;不再用带底色的方块(那读起来像独立 tag,09-11)。
+    let taskPeek = null;
+    let taskToken = null;
+    if (isTask) {
+      const peekSlot = document.createElement("span");
+      peekSlot.className = "reasoning-peek tool-peek";
+      taskPeek = document.createElement("span");
+      peekSlot.appendChild(taskPeek);
+      // 前台子代理行也带 token 消耗 + 读秒(09-12 #6,与后台任务条同口径)。
+      // token 由 renderSubagentProgress 解析 stats 后写进 taskToken;读秒由全局
+      // ticker 按 data-task-start 更新,卡片进入 is-success/is-failure 即定格。
+      taskToken = document.createElement("span");
+      taskToken.className = "job-chip-token tool-task-token";
+      const seconds = document.createElement("span");
+      seconds.className = "tool-task-seconds";
+      seconds.dataset.taskStart = String(performance.now());
+      seconds.textContent = "0s";
+      // 布局(#2):子代理·title · token 秒数 · <淡出过渡> 窥视(撑开)。token/秒数紧跟标题,
+      // 窥视占满余下、左侧淡出,不再夹在标题和 token 之间把标题顶开。
+      head.append(icon, title, taskToken, seconds, peekSlot, status, chevron);
+    } else {
+      head.append(icon, title, status, chevron);
+    }
     let commandPreview = null;
+    let commandMore = null;
     let commandOutputPreview = null;
+    let commandSeconds = null;
     if (isCommand) {
-      commandPreview = document.createElement("pre");
+      // 读秒塞进 `.tool-title` 里（工具名和 short_title 之间），不挪 `.tool-summary`：
+      // 现有 CSS 有一堆 `.tool-title .tool-summary` 的选择器（失败变红、省略、悬浮），
+      // 把它移出去会牵动别的工具签。`.tool-status` 那个位置指望不上——它的文字被
+      // `.tool-status > span:not(.icon-slot){display:none}` 全局藏着，成功的行上
+      // 图标也藏了，所以那儿从来什么都没有。
+      commandSeconds = document.createElement("small");
+      commandSeconds.className = "tool-command-seconds";
+      commandSeconds.dataset.taskStart = String(performance.now());
+      commandSeconds.textContent = "0s";
+      title.insertBefore(commandSeconds, summary);
+      // 命令本身按行排在抬头底下，靠时间线那根竖线（`.proc-rail`）串起来。
+      commandPreview = document.createElement("div");
       commandPreview.className = "tool-command-preview";
-      commandPreview.textContent = commandText || subjectText || "等待命令";
+      commandPreview.setAttribute("aria-label", "命令");
+      // `⋮` 得在裁剪容器**外面**，否则它自己也被 max-height 裁掉。
+      commandMore = document.createElement("span");
+      commandMore.className = "tool-command-more";
+      commandMore.textContent = "⋮";
+      commandMore.title = "还有，点开看完整命令";
+      commandMore.hidden = true;
+      // 命令那几行也要能点开——它们在 `.tool-head`（button）**外面**，不点就
+      // 只有抬头那一条窄缝可点，而视线正落在命令上（用户 09-20）。
+      // 拖着选文字不算点：有选区就放过，否则复制命令会顺手把卡片折起来。
+      const expandOnClick = (event) => {
+        if (String(window.getSelection?.() || "").length) return;
+        event.preventDefault();
+        head.click();
+      };
+      for (const node of [commandPreview, commandMore]) {
+        node.addEventListener("click", expandOnClick);
+        node.style.cursor = "pointer";
+      }
       commandOutputPreview = document.createElement("div");
       commandOutputPreview.className = "tool-command-output-preview";
       commandOutputPreview.setAttribute("aria-label", "最近命令输出");
@@ -6301,29 +8637,59 @@
     const stderrDetail = createToolDetail("错误输出", true);
     stderrDetail.wrapper.classList.add("is-stderr");
     const resultDetail = createToolDetail("结果", true);
-    const argumentText = prettyArguments(data?.arguments);
+    // 文件编辑:patchText 参数画成 diff,而不是摊一坨补丁 JSON(实时与刷新回看同一份)。
+    const diffView = window.MiyuDiff?.renderFromCall?.({ name: data?.name, arguments: data?.arguments }) || null;
+    const argumentText = diffView ? "" : prettyArguments(data?.arguments);
     if (argumentText) {
       argumentsDetail.raw = argumentText;
       argumentsDetail.content.textContent = argumentText;
       argumentsDetail.wrapper.hidden = false;
     }
     body.append(argumentsDetail.wrapper, progressDetail.wrapper, stdoutDetail.wrapper, stderrDetail.wrapper, resultDetail.wrapper);
-    // 子代理签:标题行下方的实时进度面板,收起态也可见,tool.progress 原地刷新
+    if (diffView) body.insertBefore(diffView, argumentsDetail.wrapper);
+    // 子代理:收起看标题行的窥视,展开看下面的「子过程时间线」——子代理自己的
+    // 思考与工具流,和主智能体的过程区同款渲染(09-11 用户要求)。不再用方块。
     let liveProgress = null;
+    let subBlocks = null;
+    let briefBuilt = false;
     if (isTask) {
-      liveProgress = document.createElement("div");
-      liveProgress.className = "tool-live-progress";
-      liveProgress.textContent = subjectText || "正在启动子代理…";
-      card.append(head, liveProgress, body);
+      // 子过程时间线的承载容器:proc-line 挂进这里(和主对话过程区同构)。
+      subBlocks = document.createElement("div");
+      subBlocks.className = "sub-blocks assistant-blocks";
+      body.insertBefore(subBlocks, body.firstChild);
+      // 子代理的任务简介放在展开区最上方,美化呈现,不再让人去读裸 JSON 参数
+      //(09-12 #6):标题=description,正文=prompt(整段保留换行)。裸参数那栏
+      // 对子代理收起来(信息都在简介里了)。
+      const taskArgs = parsedToolArguments(data?.arguments);
+      const brief = buildSubagentBrief(taskArgs.description, taskArgs.prompt);
+      if (brief) {
+        attachSubBrief(subBlocks, brief);
+        argumentsDetail.wrapper.hidden = true;
+        briefBuilt = true;
+      }
+      const fold = document.createElement("div");
+      fold.className = "tool-fold";
+      fold.appendChild(body);
+      card.append(head, fold);
+      if (taskPeek) taskPeek.textContent = reasoningPeekText(subjectText || "正在启动子代理…");
     } else {
       card.append(head);
       if (commandPreview) card.appendChild(commandPreview);
+      if (commandMore) card.appendChild(commandMore);
       if (commandOutputPreview) card.appendChild(commandOutputPreview);
-      card.appendChild(body);
+      const fold = document.createElement("div");
+      fold.className = "tool-fold";
+      fold.appendChild(body);
+      card.appendChild(fold);
     }
     const tool = {
       id: toolId,
       name: String(data?.name || ""),
+      // 抬头右边那句：命令给的是模型自报的 `title`，不是命令文本——命令印在抬头
+      // 底下（和 Rust 侧 `tool_display::command_peek()` 同口径）。没填就空着。
+      commandTitle: isCommand ? String(commandArguments?.title || "").trim() : "",
+      commandSeconds,
+      commandMore,
       card,
       head,
       body,
@@ -6344,6 +8710,13 @@
       resultDetail,
       isTask,
       liveProgress,
+      taskPeek,
+      taskToken,
+      brief: briefBuilt,
+      blocks: subBlocks,
+      think: null,
+      thinkAccum: "",
+      pendingCall: null,
       titleText: String(data?.display_name || data?.name || "工具"),
       subject: subjectText,
       startedAt: performance.now(),
@@ -6357,17 +8730,38 @@
     head.addEventListener("click", () => {
       const collapsed = card.classList.toggle("collapsed");
       head.setAttribute("aria-expanded", String(!collapsed));
+      // 收起子代理状态行时,把里面已展开的思考/工具也一并收起,下次展开是干净的
+      // 收起态(#5),不然收起只是把外层折了、里面还留着上次的展开。
+      if (collapsed) {
+        card.querySelectorAll(".sub-blocks details[open]").forEach((d) => {
+          d.open = false;
+        });
+        card.querySelectorAll(".sub-blocks .tool-card:not(.collapsed)").forEach((inner) => {
+          inner.classList.add("collapsed");
+          const innerHead = inner.querySelector(".tool-head");
+          if (innerHead) innerHead.setAttribute("aria-expanded", "false");
+        });
+      }
+      railSnapFit(card);
       syncBubbleWidth(live.article);
       if (!collapsed) {
         window.requestAnimationFrame(() => {
           scrollToolOutputToEnd(tool);
+          // 展开从「当前进行中」看起,而不是从顶部(#8)。滚到底 = 最新那一步。
+          const sc = subScrollContainer(tool);
+          if (sc) { sc.__pinnedUp = false; sc.scrollTop = sc.scrollHeight; }
           contentAdded();
         });
       }
     });
     updateToolSummary(tool);
+    card.miyuTiming = tool;
     live.tools.set(toolId, tool);
-    live.blocks.appendChild(card);
+    // 顶替「准备 xx」占位签时不重放淡入:占位签已经平滑滑入,这里只是原地
+    // 把文字换成正式工具名,再滑一次会显得整行错位(#17,只在会发 preparing
+    // 的中转线后端出现)。
+    if (opts.staticEnter) card.style.animation = "none";
+    procLineAttach(live.blocks, card);
     if (isImageTool) {
       const bubble = document.createElement("div");
       bubble.className = "image-gen-bubble";
@@ -6376,6 +8770,7 @@
       label.textContent = toolName === "print_image" ? "正在加载图片" : "正在生成图片";
       if (subjectText) bubble.title = subjectText;
       bubble.appendChild(label);
+      procLineBreak(live.blocks);
       live.blocks.appendChild(bubble);
       startImageGenDots(bubble);
       tool.imagePlaceholder = bubble;
@@ -6455,7 +8850,7 @@
     const label = document.createElement("span");
     label.className = "tool-preparing-label";
     tag.append(makeIconSlot("loader-circle", "is-spinning"), label);
-    live.blocks.appendChild(tag);
+    procLineAttach(live.blocks, tag);
     live.preparingTool = tag;
     renderPreparingLabel(live);
     live.preparingTimer = window.setInterval(() => renderPreparingLabel(live), 200);
@@ -6471,8 +8866,9 @@
     if (name === "tool.started") {
       // 只撤标签,不清 `preparingSince`：同一批里下一个工具的准备提示紧接着
       // 到来,那还是同一个等待窗口。
+      const morphing = !!live.preparingTool;
       clearPreparingTool(live);
-      createTool(live, data);
+      createTool(live, data, { staticEnter: morphing });
       return;
     }
     const tool = ensureTool(live, data);
@@ -6493,6 +8889,7 @@
             tool.imagePlaceholder.replaceWith(media);
             tool.imagePlaceholder = null;
           } else {
+            procLineBreak(live.blocks);
             live.blocks.appendChild(media);
           }
           // 不自动进 artifact:图片已经在气泡里画出来了,再塞进面板等于同一张
@@ -6547,8 +8944,20 @@
         tool.progressDetail.wrapper.hidden = false;
       }
       updateToolSummary(tool);
+    } else if (name === "tool.progress" && tool.isTask) {
+      // 子代理:标题行单行窥视 + 展开后的子过程时间线,不再用带底色的方块。
+      // (实时 token 汇进「累计」的逻辑统一在 renderSubagentProgress 的 stats 分支里,
+      // 前台工具卡与后台任务条同源,见 #131。)
+      renderSubagentProgress(tool, String(data?.message || ""));
+      if (!tool.finished) updateToolStatus(tool, "运行中", "loader-circle");
     } else if (name === "tool.progress") {
       let message = String(data?.message || "");
+      // 文件编辑(edit/kb/artifact):diff 卡已由 patchText 参数在建卡时画好,「准备修改」
+      // 这类阶段签、`__patch_preview__` 预览等中间进度都是噪点,一律丢弃,只留 diff + 结果。
+      if (message.startsWith("__patch_preview__") || window.MiyuDiff?.isEditTool?.(tool.name)) return;
+      // 阶段签(「准备修改」这类)只描述过程,不是结果:工具失败后不该留在卡片上
+      // 当错误说明(09-11 手机端实测 edit 被沙盒拒后还挂着「准备修改」)。
+      tool.lastProgressWasPhase = message.startsWith("__tool_phase__");
       if (message.startsWith("__tool_phase__")) {
         message = message.slice("__tool_phase__".length).replace(/^~\s*/, "").trim();
       } else if (message.startsWith("__subagent_stats__")) {
@@ -6556,12 +8965,19 @@
       } else if (message.startsWith("__subagent_detach__")) {
         message = message.slice("__subagent_detach__".length).trim();
       }
-      // 任何持续汇报进度的工具(插件子代理如深度研究/兼容性调查)都惰性获得实时进度面板,
+      // 任何持续汇报进度的工具(插件子代理如兼容性调查)都惰性获得实时进度面板,
       // 不再仅限内置 task 工具
       if (!tool.liveProgress && !tool.finished && message) {
         tool.liveProgress = document.createElement("div");
         tool.liveProgress.className = "tool-live-progress";
-        tool.card.insertBefore(tool.liveProgress, tool.body);
+        // body 在普通/命令卡里包在 .tool-fold 里,不是 card 的直接子节点,直接
+        // card.insertBefore(_, body) 会抛 NotFoundError(编辑工具的「准备修改」阶段
+        // 一直在悄悄抛,live 进度面板从来没真出现过)。挂到 body 顶部即可。
+        if (tool.body.parentNode === tool.card) {
+          tool.card.insertBefore(tool.liveProgress, tool.body);
+        } else {
+          tool.body.insertBefore(tool.liveProgress, tool.body.firstChild);
+        }
       }
       tool.progressDetail.raw = message;
       tool.progressDetail.content.textContent = message;
@@ -6585,10 +9001,32 @@
     } else if (name === "tool.finished") {
       tool.finished = true;
       tool.finishedAt = performance.now();
+      // 子代理跑完了,把最后停在「正在思考」的那块思考收尾成「已思考」(#4/#7)——
+      // subEndReasoning 平时只在下一个工具调用到来时触发,子代理以思考结尾就没人收。
+      // 跑完把那块四行活区域平滑收起成一行(用户拍板:运行时展开、完成后收起,可再点开)。
+      if (tool.isTask) {
+        subEndReasoning(tool);
+        tool.card.classList.add("collapsed");
+        tool.head.setAttribute("aria-expanded", "false");
+        railSnapFit(tool.card);
+        // 子代理跑完:它的实时估算先「冻住」保留(别立刻抽走,否则基线还没把它算进来
+        // 之前累计会掉一下),等下个主回合的权威基线接管时再删(见 handleRoundUsage)。
+        const doneId = String(data?.tool_id || tool.id || "");
+        const entry = doneId && state.liveSubagentTokens.get(doneId);
+        if (entry) { entry.done = true; entry.baseAtDone = asFiniteNumber(state.cumulativeBase?.total); refreshComposerCumulative(); }
+      }
       const output = String(data?.output || "");
       tool.resultDetail.raw = output.length > MAX_TOOL_OUTPUT_CHARS ? `[较早输出已省略]\n${output.slice(-MAX_TOOL_OUTPUT_CHARS)}` : output;
       tool.resultDetail.content.textContent = tool.resultDetail.raw;
-      tool.resultDetail.wrapper.hidden = !tool.resultDetail.raw;
+      // 子代理的最终输出要显示出来(#6:用户要看 AI 的最终输出,上批误删了)。
+      // 编辑工具成功时结果是 `{ok:true,files:[…]}` 样板,和 diff 卡重复——藏掉;失败留报错。
+      const hideEditOutput = Boolean(data?.ok) && window.MiyuDiff?.isEditTool?.(tool.name)
+        && tool.body.querySelector(".diff-view");
+      tool.resultDetail.wrapper.hidden = !tool.resultDetail.raw || Boolean(hideEditOutput);
+      if (tool.commandPreview && tool.resultDetail.raw) {
+        tool.stdoutDetail.wrapper.hidden = true;
+        tool.stderrDetail.wrapper.hidden = true;
+      }
       const ok = Boolean(data?.ok);
       resetPreparingWindow(live);
       // 只刷正在看的那个会话——后台会话的 todowrite 不该改屏幕上这块面板。
@@ -6624,10 +9062,11 @@
       if (tool.isImageTool && !ok) {
         tool.card.classList.remove("image-tool-chip");
       }
-      updateToolStatus(tool, ok ? "完成" : "失败", ok ? "check" : "circle-alert", ok ? "is-success" : "is-failure");
+      // 时间线上成功不打勾不写「完成」,右侧就是耗时;失败才写字
+      updateToolStatus(tool, ok ? formatToolDuration(tool.finishedAt - tool.startedAt) || "完成" : "失败", ok ? "check" : "circle-alert", ok ? "is-success" : "is-failure");
       updateToolSummary(tool);
       if (tool.liveProgress) {
-        if (ok) tool.liveProgress.hidden = true;
+        if (ok || tool.lastProgressWasPhase) tool.liveProgress.hidden = true;
         else tool.liveProgress.classList.add("is-error");
         tool.progressDetail.wrapper.hidden = !tool.progressDetail.raw;
         syncBubbleWidth(live.article);
@@ -6797,7 +9236,9 @@
     questionState.card.removeAttribute("aria-label");
     questionState.card.setAttribute("aria-labelledby", questionState.titleId);
     questionState.status.textContent = "已回答";
-    questionState.icon.replaceChildren(makeIconSlot("check"));
+    // 去掉那个大对钩(#143/#161):和落库回看的已回答卡一致,「已回答」二字已够表达状态。
+    questionState.icon.replaceChildren();
+    questionState.icon.hidden = true;
     questionState.error.hidden = true;
     setQuestionControlsDisabled(questionState, true);
     renderQuestionAnswerSummary(questionState, answers);
@@ -7165,6 +9606,7 @@
     output.hidden = true;
     block.append(title, output);
     const operation = { kind, block, title: title.lastChild, output, raw: "" };
+    procLineBreak(live.blocks);
     live.blocks.appendChild(block);
     syncBubbleWidth(live.article);
     live.contextOperation = operation;
@@ -7210,15 +9652,121 @@
 
   function visibleBackgroundJobs() {
     // 会话隔离: 状态条只显示当前查看会话的任务(无会话标记的旧任务保持可见)。
+    // 后代(子代理/孙代理)的后台任务也列:它们归自己的会话,树根是当前会话(09-18 会话化)。
     return Array.from(state.backgroundJobs.values()).filter(
-      (job) => !job.session_id || !state.viewSessionId || job.session_id === state.viewSessionId
+      (job) => !job.session_id || !state.viewSessionId
+        || job.session_id === state.viewSessionId || job.root_session_id === state.viewSessionId
     );
+  }
+
+  // 盲文点阵转圈 spinner(09-12 用户指定):一个全局 ticker 刷所有 .job-braille
+  // 的字符,避免每行各自 CSS 动画在任务条重建时被打回起点。
+  // 空心盲文点阵转圈(和会话列表 BRAILLE_FRAMES 同款),不是之前那组实心的
+  // ⣾⣽⣻…(09-12 #2 用户指出实心不对)。
+  const JOB_BRAILLE = BRAILLE_FRAMES;
+  let jobBrailleFrame = 0;
+
+  function makeJobSpinner() {
+    // 左侧标记槽:默认点阵 spinner,鼠标悬浮时原地换成展开/收起箭头
+    //(09-12 #8b 用户要求,和子代理一样)。展开态箭头旋转 180°。
+    const slot = document.createElement("span");
+    slot.className = "job-chip-marker-slot";
+    const s = document.createElement("span");
+    s.className = "job-chip-marker job-braille";
+    s.textContent = JOB_BRAILLE[jobBrailleFrame];
+    slot.appendChild(s);
+    slot.appendChild(makeIconSlot("chevron-down", "job-chip-chevron"));
+    return slot;
+  }
+
+  setInterval(() => {
+    if (document.hidden) return;
+    const nodes = elements.jobsStrip?.querySelectorAll(".job-braille");
+    if (!nodes || !nodes.length) return;
+    jobBrailleFrame = (jobBrailleFrame + 1) % JOB_BRAILLE.length;
+    const frame = JOB_BRAILLE[jobBrailleFrame];
+    nodes.forEach((node) => {
+      node.textContent = frame;
+    });
+  }, 110);
+
+  // 后台命令没有实时进度流,展开那行时拉日志尾巴看输出(09-12 用户报「命令无法
+  // 点击展开看输出」);运行中每 1.5s 轮询一次,退出即停。
+  function commandLogPanel(jobId) {
+    let entry = state.commandLogs.get(jobId);
+    if (!entry) {
+      const panel = document.createElement("div");
+      panel.className = "job-stream-panel job-log-panel";
+      const pre = document.createElement("pre");
+      pre.className = "job-log-pre";
+      pre.textContent = "…";
+      panel.appendChild(pre);
+      entry = { panel, pre, timer: null };
+      state.commandLogs.set(jobId, entry);
+    }
+    return entry;
+  }
+
+  async function refreshCommandLog(jobId) {
+    const entry = state.commandLogs.get(jobId);
+    if (!entry) return;
+    try {
+      // apiRequest 返回的是 Response,得再 .json()(09-12 #8a 命令永远「暂无输出」
+      // 的真凶:直接把 Response 当 JSON 用,data.log 恒为 undefined)。
+      const resp = await apiRequest(`/api/jobs/${encodeURIComponent(jobId)}/log`);
+      const data = await resp.json();
+      const atBottom = entry.pre.scrollTop + entry.pre.clientHeight >= entry.pre.scrollHeight - 8;
+      entry.pre.textContent = data?.log || "(暂无输出)";
+      if (atBottom) entry.pre.scrollTop = entry.pre.scrollHeight;
+      if (!data?.running && entry.timer) {
+        clearInterval(entry.timer);
+        entry.timer = null;
+      }
+    } catch {
+      entry.pre.textContent = "(读取日志失败)";
+    }
+  }
+
+  // 后台命令的窥视(#120):轮询日志尾行,取最后一条非空行喂给状态行窥视。命令没有
+  // 进度流,但输出全在日志里,尾行就是「它现在在干嘛」。行会随任务条重建而换元素,
+  // 所以 timer 里每次都从当前 DOM 找回该 job 的窥视 span。
+  function trackCommandPeek(jobId) {
+    if (state.commandPeekTimers.has(jobId)) return;
+    const tick = async () => {
+      const job = state.backgroundJobs.get(jobId);
+      const running = job && job.running;
+      try {
+        const resp = await apiRequest(`/api/jobs/${encodeURIComponent(jobId)}/log`);
+        const data = await resp.json();
+        const lines = String(data?.log || "").split("\n").map((l) => l.trimEnd()).filter(Boolean);
+        const last = lines.length ? lines[lines.length - 1] : "";
+        if (last) {
+          state.commandPeekLine.set(jobId, last);
+          const el = elements.jobsStrip?.querySelector(`.job-chip[data-job-id="${CSS.escape(jobId)}"] .job-chip-peek > span`);
+          if (el) setReasoningPeek(el, last);
+        }
+        if (data?.running === false) stop();
+      } catch { /* 忽略,下次再试 */ }
+      if (!running) stop();
+    };
+    const stop = () => {
+      const t = state.commandPeekTimers.get(jobId);
+      if (t) clearInterval(t);
+      state.commandPeekTimers.delete(jobId);
+    };
+    tick();
+    state.commandPeekTimers.set(jobId, setInterval(tick, 1500));
   }
 
   function renderJobsStrip() {
     const strip = elements.jobsStrip;
     if (!strip) return;
     const jobs = visibleBackgroundJobs();
+    // 并行任务数首次达到收缩阈值(≥3)时自动收起成「后台任务 ×N」一行(#11):
+    // 从 <3 跨到 ≥3 的那一刻强制收起(刷新时 prev=0 也算跨越),之后用户手动展开保留。
+    const prevJobCount = state.prevJobCount || 0;
+    state.prevJobCount = jobs.length;
+    if (jobs.length >= 3 && prevJobCount < 3) state.jobsStripOpen = false;
     if (!jobs.length) {
       strip.hidden = true;
       strip.replaceChildren();
@@ -7228,18 +9776,26 @@
     const fragment = document.createDocumentFragment();
     const collapsible = jobs.length >= 3;
     if (collapsible) {
-      const toggle = document.createElement("button");
-      toggle.type = "button";
-      toggle.className = state.jobsStripOpen ? "jobs-strip-toggle is-open" : "jobs-strip-toggle";
+      // 合并行做成和单行一样的 job-chip 外观(09-12 用户报):braille spinner +
+      // 「后台任务 ×N」+ 展开箭头,不再是另一种带 ▸ 前缀的按钮。
+      const toggle = document.createElement("div");
+      toggle.className = state.jobsStripOpen ? "job-chip is-toggle is-open" : "job-chip is-toggle";
+      toggle.setAttribute("role", "button");
       toggle.setAttribute("aria-expanded", String(state.jobsStripOpen));
-      const toggleMarker = document.createElement("span");
-      toggleMarker.className = "job-chip-marker is-spinning";
-      toggleMarker.textContent = "\u25cc";
-      const toggleText = document.createElement("span");
-      toggleText.textContent = (state.jobsStripOpen ? "\u25be " : "\u25b8 ") + "\u540e\u53f0\u4efb\u52a1 \u00d7" + jobs.length;
-      toggle.replaceChildren(toggleMarker, toggleText);
+      const label = document.createElement("span");
+      label.className = "job-chip-label";
+      label.textContent = `后台任务 ×${jobs.length}`;
+      toggle.append(makeJobSpinner(), label);
       toggle.addEventListener("click", () => {
         state.jobsStripOpen = !state.jobsStripOpen;
+        // 收起「后台任务 ×N」合并行时,把里面所有已展开的状态行 + 思考/工具卡
+        // 一并收起(09-12 #15),不留展开残留。
+        if (!state.jobsStripOpen) {
+          state.expandedJobs.clear();
+          for (const sink of state.jobStreamSinks.values()) {
+            sink.panel?.querySelectorAll("details[open]").forEach((d) => { d.open = false; });
+          }
+        }
         localStorage.setItem("miyu.web.jobsStripOpen", state.jobsStripOpen ? "1" : "0");
         renderJobsStrip();
       });
@@ -7247,37 +9803,113 @@
     }
     const showRows = !collapsible || state.jobsStripOpen;
     for (const job of showRows ? jobs : []) {
+      const jid = String(job.job_id);
+      // kind 是 "subagent" 或 "dev"(开发模式子代理单列一类,见 jobs::kind_label);
+      // 原来只认前者,开发模式的后台子代理被当成命令画:标签「命令」、点开是日志
+      // 面板而不是子过程时间线(用户 09-18 截图)。
+      const isSubagent = job.kind === "subagent" || job.kind === "dev";
       const row = document.createElement("div");
-      row.className = "job-chip";
-      row.dataset.jobId = String(job.job_id);
-      const marker = document.createElement("span");
-      marker.className = "job-chip-marker is-spinning";
-      marker.textContent = "◌";
+      row.className = "job-chip is-expandable";
+      row.dataset.jobId = jid;
+
       const label = document.createElement("span");
       label.className = "job-chip-label";
-      const kindWord = job.kind === "subagent" ? "子代理" : "命令";
-      label.textContent = `${kindWord} ${job.job_id} · ${job.title}`;
+      const kindWord = isSubagent ? (job.dev ? "开发中" : "子代理") : "命令";
+      // 后代的任务前面挂个 ↳,看得出不是这一层开的。
+      const nested = job.root_session_id && job.session_id && job.root_session_id !== job.session_id;
+      label.textContent = `${kindWord} ${nested ? "↳ " : ""}${job.job_id} · ${job.title}`;
       label.title = label.textContent;
+
+      // 行窥视:跑到工具显示工具、跑到思考窥思考,单行滚动刷新(仅子代理有进度流,
+      // 命令没有进度流所以窥视留空)。标题保持完整、不被窥视替换。
+      const peekSlot = document.createElement("span");
+      peekSlot.className = "job-chip-peek reasoning-peek";
+      const peek = document.createElement("span");
+      peekSlot.appendChild(peek);
+
+      const token = document.createElement("span");
+      token.className = "job-chip-token";
+
       const time = document.createElement("span");
       time.className = "job-chip-time";
       const seconds = job.running
         ? Math.max(0, Math.round(job.runtime_seconds + (Date.now() - job.receivedAt) / 1000))
         : job.runtime_seconds;
       time.textContent = formatJobDuration(seconds);
+
       const stop = document.createElement("button");
       stop.type = "button";
       stop.className = "job-chip-stop";
       stop.textContent = "✕";
-      stop.title = "停止该后台命令";
-      stop.addEventListener("click", async () => {
+      stop.title = "停止该后台任务";
+      stop.addEventListener("click", async (event) => {
+        event.stopPropagation();
         try {
-          await apiRequest(`/api/jobs/${encodeURIComponent(job.job_id)}`, { method: "DELETE" });
+          await apiRequest(`/api/jobs/${encodeURIComponent(jid)}`, { method: "DELETE" });
         } catch (error) {
           showToast(error.message || "停止失败", "error");
         }
       });
-      row.append(marker, label, time, stop);
-      fragment.appendChild(row);
+
+      // 布局(09-12 #2):节点 · 标题 · token 秒数 · <淡出过渡> 窥视(撑开右对齐) · ✕。
+      // 标题贴左 hug、token/时间紧跟其后,窥视占满余下空间、左侧淡出滚动,不再让标题
+      // flex 撑开把窥视顶到最右留下大空档(#12)。展开箭头合进左侧标记槽。
+      row.append(makeJobSpinner(), label, token, time, peekSlot, stop);
+
+      if (isSubagent) {
+        const sink = jobStreamSink(jid);
+        sink.taskPeek = peek;
+        sink.taskToken = token;
+        if (sink.peekLine) setReasoningPeek(peek, sink.peekLine);
+        if (sink.tokenText) token.textContent = sink.tokenText;
+      } else {
+        // 后台命令没有进度流,但有输出日志(#120):把日志尾行当窥视,轮询刷新;
+        // 先用已缓存的尾行填上(重建行时不闪)。
+        if (state.commandPeekLine?.has(jid)) setReasoningPeek(peek, state.commandPeekLine.get(jid));
+        if (job.running) trackCommandPeek(jid, peek);
+      }
+
+      const expanded = state.expandedJobs.has(jid);
+      row.classList.toggle("is-open", expanded);
+      row.setAttribute("aria-expanded", String(expanded));
+      row.addEventListener("click", (event) => {
+        if (event.target.closest(".job-chip-stop")) return;
+        if (state.expandedJobs.has(jid)) {
+          state.expandedJobs.delete(jid);
+          // 收起状态行时,把里面已展开的思考/工具卡也一并收起(09-12 #5),
+          // 下次展开是收起态,而不是保留上次的展开。
+          const sink = state.jobStreamSinks.get(jid);
+          if (sink?.panel) {
+            sink.panel.querySelectorAll("details[open]").forEach((d) => { d.open = false; });
+          }
+        } else {
+          state.expandedJobs.add(jid);
+        }
+        renderJobsStrip();
+      });
+
+      const wrap = document.createElement("div");
+      wrap.className = "job-chip-wrap";
+      wrap.appendChild(row);
+      if (expanded) {
+        if (isSubagent) {
+          wrap.appendChild(jobStreamSink(jid).panel);
+        } else {
+          const entry = commandLogPanel(jid);
+          wrap.appendChild(entry.panel);
+          refreshCommandLog(jid);
+          if (job.running && !entry.timer) {
+            entry.timer = setInterval(() => refreshCommandLog(jid), 1500);
+          }
+        }
+      } else if (!isSubagent) {
+        const entry = state.commandLogs.get(jid);
+        if (entry?.timer) {
+          clearInterval(entry.timer);
+          entry.timer = null;
+        }
+      }
+      fragment.appendChild(wrap);
     }
     strip.replaceChildren(fragment);
     strip.hidden = false;
@@ -7293,14 +9925,35 @@
 
   async function seedJobsStrip() {
     try {
-      const data = await apiRequest("/api/jobs");
+      // apiRequest 返回 Response,得再 .json()(与 #8a 命令日志同一坑:直接把
+      // Response 当 JSON,data.jobs 恒为 undefined → 刷新后一个后台任务都存不进,
+      // 状态行整条消失。job.started 只在开跑那一刻发,刷新后不重放,全靠这里补拉)。
+      const data = await (await apiRequest("/api/jobs")).json();
       state.backgroundJobs.clear();
       for (const job of data?.jobs || []) {
-        state.backgroundJobs.set(String(job.job_id), { ...job, receivedAt: Date.now() });
+        const jid = String(job.job_id);
+        state.backgroundJobs.set(jid, { ...job, receivedAt: Date.now() });
+        // 刷新后子代理展开区是空的(子过程只在内存里,#9)。补拉这个任务到目前为止的
+        // 原始标记流回放进它的 sink,展开就能看到之前的思考/工具/正文;之后的实时进度
+        // 继续往同一个 sink 追加。每个 sink 只回放一次。
+        if (job.kind === "subagent" || job.kind === "dev") seedJobTrace(jid);
       }
       renderJobsStrip();
     } catch {
       /* daemon may predate the jobs API */
+    }
+  }
+
+  async function seedJobTrace(jid) {
+    const sink = jobStreamSink(jid);
+    if (sink.__replayed) return;
+    sink.__replayed = true;
+    try {
+      const data = await (await apiRequest(`/api/jobs/${encodeURIComponent(jid)}/trace`)).json();
+      for (const marker of data?.trace || []) renderSubagentProgress(sink, String(marker));
+      if ((data?.trace || []).length) renderJobsStrip();
+    } catch {
+      sink.__replayed = false; /* 拉失败下次再试 */
     }
   }
 
@@ -7325,6 +9978,29 @@
   }, 1000);
   setTimeout(seedJobsStrip, 800);
 
+  // 回到前台补一刀(09-12 #9:手机切到别的程序再切回,后台期间任务完成了却不刷新;
+  // #3:刷新/断连回来状态行没了)。手机后台久了系统会掐断 SSE 且不自动重连,所以:
+  // 连接死了就按 lastEventId 重连、补拉后台任务;当前没有在跑的直播时静默补同步一次
+  // 会话,追回后台期间错过的完成事件(有直播在跑就不动,免得打断流式重挂)。
+  let lastVisibleResync = 0;
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden || state.blocked) return;
+    const src = state.eventSource;
+    const dead = !src || src.readyState === EventSource.CLOSED;
+    if (dead) connectEventSource(state.lastEventId || 0);
+    seedJobsStrip();
+    // 只有 SSE 真的断过(切走太久被系统掐了)才补同步会话:SSE 一直连着就没漏事件,
+    // 没必要重建整个对话。长对话整段 loadSessionView 很重,每次切回前台都重建正是
+    // 「滚动中切回来渲染丢失/卡死」的诱因(09-12 #13:visibilitychange 无条件重建)。
+    if (!dead) return;
+    const now = Date.now();
+    if (now - lastVisibleResync < 1500) return;
+    lastVisibleResync = now;
+    if (!conversationRunning() && state.viewSessionId && !state.viewLoading) {
+      loadSessionView(state.viewSessionId, { quiet: true });
+    }
+  });
+
   function appendRunNotice(live, message, error = false) {
     ensureLiveArticle(live);
     clearTypingIndicator(live);
@@ -7333,8 +10009,12 @@
     notice.className = `run-notice${error ? " is-error" : ""}`;
     notice.append(makeIconSlot(error ? "circle-alert" : "circle-stop"));
     const text = document.createElement("span");
+    // 报错现在是多行的（一句结论 + 每个端点一行 + 一句该怎么办，见 BUG-16），
+    // 顶上那句和明细得分开显示；`flex` 默认是竖向居中，多行时图标要顶对齐。
     text.textContent = String(message || "");
+    if (text.textContent.includes("\n")) notice.classList.add("is-multiline");
     notice.appendChild(text);
+    procLineBreak(live.blocks);
     live.blocks.appendChild(notice);
   }
 
@@ -7369,9 +10049,15 @@
 
   function consumeLiveQueue(live, data) {
     finalizeLiveReasoning(live);
+    procLineBreak(live.blocks);
     setLiveEndpoint(live, data?.provider_id, data?.model);
-    if (live.headerStatus) live.headerStatus.textContent = "刚刚";
-    if (live.meta) live.meta.textContent = "已完成";
+    if (live.headerStatus) live.headerStatus.textContent = "";
+    // followup 插在步与步之间时,前一段末尾不再打「已完成」那条带背景的小字
+    // (09-12 用户报没必要):中间段没有独立用量可报,留空并隐藏那行。
+    if (live.meta) {
+      live.meta.textContent = "";
+      live.meta.hidden = true;
+    }
 
     const ids = new Set((Array.isArray(data?.prompt_ids) ? data.prompt_ids : []).map(String));
     const consumed = state.queuedPrompts.filter((prompt) => ids.has(String(prompt?.id)));
@@ -7461,16 +10147,78 @@
         turnTotal: asFiniteNumber(data?.turn_total),
         turnPrompt: data?.turn_prompt,
         turnCached: data?.turn_cache_read,
-        estimated: data?.estimated
+        estimated: data?.estimated,
+        generationTokens: data?.turn_generation_tokens,
+        generationMs: data?.turn_generation_ms
       });
       if (usage) live.meta.textContent = usage;
     }
+    // 输入框下方那个「累计」逐请求刷新(#131:以前只有 run.completed 才刷,子代理跑
+    // 完的花销要等整回合结束才体现)。后端现在每个主回合都带会话实时累计。
+    state.cumulativeBase = {
+      total: asFiniteNumber(data?.cumulative_tokens),
+      prompt: asFiniteNumber(data?.cumulative_prompt_tokens),
+      cached: asFiniteNumber(data?.cumulative_cache_read_tokens),
+    };
+    // 已跑完的子代理:基线确实涨上来把它算进去了才摘掉那份估算(见 absorbDoneSubagents,
+    // 躲开后端竞态导致的掉数)。
+    absorbDoneSubagents(state.cumulativeBase.total);
+    refreshComposerCumulative({
+      speed: generationSpeedValue(data?.turn_generation_tokens, data?.turn_generation_ms),
+    });
     const round = data?.usage;
     const contextTokens = asFiniteNumber(round?.prompt_tokens, 0) + asFiniteNumber(round?.completion_tokens, 0);
     if (contextTokens > 0) {
       state.context.tokens = contextTokens;
       updateContext();
     }
+  }
+
+  // 输入框「累计」的合成:基线(后端每回合 / 收尾给的会话实时累计)+ 正在跑的子代理
+  // 的实时估算之和(#131)。子代理还没落库的花销靠估算先顶上、跑完由下个主回合的
+  // 基线接管;并行子代理各自更新自己那一份,这里只求个和、按 rAF 合并刷,不会鬼畜抖。
+  function composerCumulativeTokens() {
+    const base = state.cumulativeBase || null;
+    if (!base || !(base.total > 0)) return null;
+    let extra = 0;
+    for (const v of state.liveSubagentTokens?.values() || []) extra += asFiniteNumber(v?.tokens);
+    const total = base.total + extra;
+    return { total, prompt: base.prompt, cached: base.cached };
+  }
+  // 收尾:把「已跑完」的子代理估算从合成里摘掉——但只在权威基线确实已经把它算进来
+  // 之后才摘(基线比标记完成时涨了至少估算的一半)。否则会撞上后端竞态:子代理刚跑完、
+  // 它的用量还没落库进会话累计,唤醒回合的 round_usage 先带了一个不含它的基线过来,
+  // 这会儿摘掉估算 = 累计瞬间掉一大块(#131 后台子代理实测到的掉数)。等基线真涨上来
+  // 再摘,既不掉也不会和基线重复计。
+  function absorbDoneSubagents(newBaseTotal) {
+    for (const [id, entry] of state.liveSubagentTokens) {
+      if (!entry?.done) continue;
+      const grewBy = asFiniteNumber(newBaseTotal) - asFiniteNumber(entry.baseAtDone);
+      if (grewBy >= asFiniteNumber(entry.tokens) * 0.5) state.liveSubagentTokens.delete(id);
+    }
+  }
+  function refreshComposerCumulative(opts = {}) {
+    const cum = composerCumulativeTokens();
+    const payload = {};
+    if ("speed" in opts) payload.speed = opts.speed;
+    payload.cumulative = cum
+      ? `${formatTokens(cum.total)}${cacheSuffix(cum.cached, cum.prompt)}`
+      : null;
+    setComposerUsage(payload);
+  }
+  // 「≈1.2k」「498.9K」「1.2万」这类计数文本抠成数值(带 k/m/b/万 单位)。是估算,精度
+  // 到单位,足够撑「累计」逐步涨,收尾由后端权威基线纠正。抠不出返回 null。
+  function tokensFromCount(text) {
+    const m = String(text || "").match(/([\d.]+)\s*([kKmMbB万]?)/);
+    if (!m) return null;
+    let n = parseFloat(m[1]);
+    if (!Number.isFinite(n)) return null;
+    const unit = (m[2] || "").toLowerCase();
+    if (unit === "k") n *= 1e3;
+    else if (unit === "m") n *= 1e6;
+    else if (unit === "b") n *= 1e9;
+    else if (m[2] === "万") n *= 1e4;
+    return Math.round(n);
   }
 
   function finishLiveRun(kind, data, live) {
@@ -7492,13 +10240,14 @@
     clearPreparingTool(live);
     clearTypingIndicator(live);
     finalizeLiveReasoning(live);
+    procLineBreak(live.blocks);
     setLiveEndpoint(live, data?.provider_id, data?.model);
     removeLiveStopButton(live);
     state.terminalRunIds.add(runId);
     if (state.terminalRunIds.size > 30) state.terminalRunIds.delete(state.terminalRunIds.values().next().value);
 
     if (kind === "completed") {
-      if (live.headerStatus) live.headerStatus.textContent = "刚刚";
+      if (live.headerStatus) live.headerStatus.textContent = "";
       if (live.meta) {
         const usage = formatUsageMeta({
           turnTotal: effectiveUsageTotal(data?.usage),
@@ -7507,10 +10256,26 @@
           estimated: data?.usage_estimated,
           cumulative: data?.cumulative_tokens,
           cumulativePrompt: data?.cumulative_prompt_tokens,
-          cumulativeCached: data?.cumulative_cache_read_tokens
+          cumulativeCached: data?.cumulative_cache_read_tokens,
+          generationTokens: data?.usage?.generation_tokens,
+          generationMs: data?.usage?.generation_ms
         });
         live.meta.textContent = usage || "已完成";
       }
+      // 输入框下方信息行:最新一轮的输出速度 + 会话累计 token(#99/#131)。收尾时
+      // 会话累计是权威值(所有子代理都跑完、子会话都记好了),直接当基线,把中途的
+      // 子代理实时估算清空(已被基线接管)。
+      state.cumulativeBase = {
+        total: asFiniteNumber(data?.cumulative_tokens),
+        prompt: asFiniteNumber(data?.cumulative_prompt_tokens),
+        cached: asFiniteNumber(data?.cumulative_cache_read_tokens),
+      };
+      // 只摘「已跑完且基线确实涨上来把它算进去」的子代理估算;仍在跑的后台子代理会活过
+      // 父回合,别清;唤醒回合竞态下基线还没含它时也别清(见 absorbDoneSubagents,#131)。
+      absorbDoneSubagents(state.cumulativeBase.total);
+      refreshComposerCumulative({
+        speed: generationSpeedValue(data?.usage?.generation_tokens, data?.usage?.generation_ms),
+      });
     } else if (kind === "cancelled") {
       markUnfinishedTools(live);
       endPendingQuestions(live, "本轮已停止，无法再提交回答");
@@ -7533,16 +10298,23 @@
       && !String(live.assistantText || "").trim()
       && !(live.reasoningParts && live.reasoningParts.length)
       && !(live.tools && live.tools.size);
+    const cancelledInView = kind === "cancelled" && data?.session_id
+      && String(data.session_id) === String(state.viewSessionId || "");
+    const markerTurnId = live.turnId;
+    const markerArticle = (!emptyCancelled && live.article?.isConnected) ? live.article : null;
     if (emptyCancelled) {
       disposeLiveState(live);
       state.liveRuns.delete(runId);
     } else {
       stashLiveArticle(live, "final");
     }
-    if (kind === "cancelled" && data?.session_id && String(data.session_id) === String(state.viewSessionId || "")) {
-      // 中断轮已落库（含部分输出与状态），静默重拉让「本轮已中断」标记
-      // 立即出现，不等下一次轮询。
-      loadSessionView(state.viewSessionId, { quiet: true });
+    if (cancelledInView) {
+      // 中断轮已落库（含部分输出与状态）。以前这里整会话静默重拉，把「本轮已中断」
+      // 标记捎带渲染出来——但那次全量重渲染在长对话里就是中断「特别高延迟 / 感觉
+      // 加载很久」的由来。改成只在原位补这一条状态行（后端 cancel 事件仅 ~12ms）。
+      showInterruptedMarker(markerTurnId, markerArticle);
+      // 紧跟着的那次 120ms 后台快照别再整会话重渲染一遍(上面已画对)。
+      state.suppressPostCancelRender = true;
     }
     if (kind === "completed" || kind === "cancelled") {
       // 上下文条跟着正在看的会话走（没有视图时退回终端车道）。
@@ -7626,7 +10398,12 @@
         state.turns = nextTurns;
         state.queuedPrompts = Array.isArray(payload?.queued_prompts) ? payload.queued_prompts : state.queuedPrompts;
         state.redoCandidate = nextCandidate;
-        if (turnsChanged || candidateChanged) renderConversation();
+        // 刚中断那次不必整会话重渲染(#1):原位补的「本轮已中断」+ 留在原地的直播
+        // 气泡已经把最终态画对了,重渲染只是把同样的东西再拼一遍——长对话里这一下
+        // 就是中断残留的卡顿。只吞这一次纯 turns 变更;redo 候选变了照常渲染。
+        const suppress = state.suppressPostCancelRender && !candidateChanged;
+        state.suppressPostCancelRender = false;
+        if ((turnsChanged || candidateChanged) && !suppress) renderConversation();
         renderQueueTray();
         restoreLiveRuns(runs);
       }
@@ -7782,6 +10559,10 @@
   }
 
   function handleSseEvent(name, event) {
+    // 登录态没了(blocked)时,一律不再处理 SSE 事件:否则一边弹登录界面、一边还
+    // 触发 loadBootstrap/「正在重新同步」的会话重载提示,两个提示重复(09-12 #18)。
+    // showBlockedState 已经关了 SSE,这里挡住任何残留在途的事件。
+    if (state.blocked) return;
     let data;
     try {
       data = event.data ? JSON.parse(event.data) : {};
@@ -7827,12 +10608,32 @@
       }
       return;
     }
+    if (name === "job.progress") {
+      const jobId = String(data?.job_id || "");
+      const message = String(data?.message || "");
+      if (jobId && message) {
+        // 后台子代理的实时进度:喂给该 job 的子过程流(与前台子代理工具行同款
+        // 解析后渲进该 job 的子过程时间线(展开时可见,持久累积)。
+        renderSubagentProgress(jobStreamSink(jobId), message);
+      }
+      return;
+    }
     if (name === "job.finished") {
-      if (state.backgroundJobs.delete(String(data?.job_id))) renderJobsStrip();
+      const jobId = String(data?.job_id || "");
+      // 后台子代理跑完:它的实时估算先「冻住」(别立刻抽走,否则基线还没算进它之前
+      // 累计会掉一下),等下个主回合权威基线接管时再删(#131,与前台同款)。
+      const entry = state.liveSubagentTokens.get("job:" + jobId);
+      if (entry) { entry.done = true; entry.baseAtDone = asFiniteNumber(state.cumulativeBase?.total); refreshComposerCumulative(); }
+      state.expandedJobs.delete(jobId);
+      state.jobStreamSinks.delete(jobId);
+      if (state.backgroundJobs.delete(jobId)) renderJobsStrip();
       return;
     }
     if (name === "job.acknowledged") {
-      if (state.backgroundJobs.delete(String(data?.job_id))) renderJobsStrip();
+      const jobId = String(data?.job_id || "");
+      state.expandedJobs.delete(jobId);
+      state.jobStreamSinks.delete(jobId);
+      if (state.backgroundJobs.delete(jobId)) renderJobsStrip();
       return;
     }
     if (name === "queue.removed") {
@@ -7844,6 +10645,12 @@
     }
     if (name === "conversation.reset" || name === "conversation.pop" || name === "conversation.compacted") {
       const sessionId = typeof data?.session_id === "string" ? data.session_id : "";
+      // 清空/压缩/pop 会重排或清零会话累计;把「不下调」用的基线与子代理估算一并清了,
+      // 让它按重载后的权威值重新起算(#131:否则 max 会把清零前的旧高值锁住)。
+      if (!sessionId || sessionId === state.viewSessionId) {
+        state.cumulativeBase = null;
+        state.liveSubagentTokens.clear();
+      }
       if (sessionId && sessionId !== state.viewSessionId) {
         refreshSessions();
       } else if (!state.viewSessionId || state.viewSessionId === state.currentSessionId) {
@@ -7919,8 +10726,10 @@
     for (const name of EVENT_NAMES) source.addEventListener(name, (event) => handleSseEvent(name, event));
   }
 
-  function showBlockedState(unauthorized, message = "") {
+  function showBlockedState(unauthorized, message = "", { expired = false } = {}) {
     state.blocked = true;
+    document.body.classList.toggle("is-login", Boolean(unauthorized));
+    document.body.classList.toggle("is-blocked", true);
     state.viewRunningTurnId = null;
     clearViewSyncTimer();
     disposeAllLiveRuns();
@@ -7931,15 +10740,88 @@
     elements.emptyState.hidden = true;
     elements.blockedState.hidden = false;
     elements.blockedTitle.textContent = unauthorized ? "登录 Miyu" : "无法载入 Miyu WebUI";
-    elements.blockedMessage.textContent = unauthorized ? "输入访问密码以继续。" : message || "本地服务暂时无法访问";
+    elements.blockedMessage.textContent = unauthorized
+      ? (expired ? "登录已过期,请重新登录。" : "输入用户名和密码以继续。")
+      : message || "本地服务暂时无法访问";
     elements.loginForm.hidden = !unauthorized;
+    elements.registerForm.hidden = true;
+    elements.setupForm.hidden = true;
     elements.retryBootstrapButton.hidden = unauthorized;
+    if (unauthorized) refreshLoginHint();
     elements.loginError.textContent = "";
     elements.loginError.hidden = true;
+    elements.registerError.textContent = "";
+    elements.registerError.hidden = true;
     setLoginSubmitting(false);
+    setRegisterSubmitting(false);
     setConnectionStatus(unauthorized ? "blocked" : "offline");
     updateControlState();
     if (unauthorized) window.requestAnimationFrame(() => elements.loginPassword.focus());
+  }
+
+  /// 还没建管理员账号:登录页直说「输入内置口令」;之后就是普通的用户名+密码。
+  async function refreshLoginHint() {
+    try {
+      const status = await fetch("/api/auth/status", { cache: "no-store" }).then((response) => response.json());
+      if (!document.body.classList.contains("is-login") || !elements.loginForm || elements.loginForm.hidden) return;
+      if (elements.blockedMessage.textContent.startsWith("登录已过期")) return;
+      if (status?.setup_pending) {
+        elements.blockedMessage.textContent = "首次使用:用户名 miyu、密码 miyu 登录,然后创建管理员账号。";
+        elements.loginUsername.placeholder = "miyu";
+      } else {
+        elements.blockedMessage.textContent = "输入用户名和密码以继续。";
+        elements.loginUsername.placeholder = "用户名";
+      }
+    } catch (_) { /* 提示拿不到就用默认文案 */ }
+  }
+
+  /// 引导第 0 步:拿内置口令登进来、还没有管理员账号——先建号,建完直接以它登录。
+  function showSetupAdmin() {
+    state.blocked = true;
+    document.body.classList.add("is-login", "is-blocked");
+    elements.loadingState.hidden = true;
+    elements.timeline.hidden = true;
+    elements.emptyState.hidden = true;
+    elements.blockedState.hidden = false;
+    elements.blockedTitle.textContent = "创建管理员账号";
+    elements.blockedMessage.textContent = "内置账号 miyu 只用这一次;建好账号后用它登录,别人凭邀请码注册。";
+    elements.loginForm.hidden = true;
+    elements.registerForm.hidden = true;
+    elements.setupForm.hidden = false;
+    elements.retryBootstrapButton.hidden = true;
+    elements.setupError.textContent = "";
+    elements.setupError.hidden = true;
+    if (!elements.setupUsername.value) elements.setupUsername.value = state.account?.setup_username || "";
+    setConnectionStatus("blocked");
+    updateControlState();
+    window.requestAnimationFrame(() => (elements.setupUsername.value ? elements.setupPassword : elements.setupUsername).focus());
+  }
+
+  async function submitSetupAdmin() {
+    if (state.setupSubmitting) return;
+    const username = elements.setupUsername.value.trim();
+    const password = elements.setupPassword.value;
+    const fail = (text, focus) => { elements.setupError.textContent = text; elements.setupError.hidden = false; focus?.focus(); };
+    if (!username) return fail("先起个用户名", elements.setupUsername);
+    if (!password) return fail("请输入密码", elements.setupPassword);
+    if (password !== elements.setupPassword2.value) return fail("两次密码不一样", elements.setupPassword2);
+    elements.setupError.hidden = true;
+    state.setupSubmitting = true;
+    elements.setupSubmit.disabled = true;
+    try {
+      await apiRequest("/api/auth/setup-admin", {
+        method: "POST",
+        body: JSON.stringify({ username, display_name: elements.setupDisplayName.value.trim(), password }),
+      });
+      elements.setupPassword.value = "";
+      elements.setupPassword2.value = "";
+      await loadBootstrap();
+    } catch (error) {
+      fail(error.message || "创建失败", elements.setupUsername);
+    } finally {
+      state.setupSubmitting = false;
+      elements.setupSubmit.disabled = false;
+    }
   }
 
   const VIEW_SESSION_KEY = "miyu.web.viewSession";
@@ -7964,7 +10846,13 @@
   }
 
   function applyBootstrap(snapshot) {
+    if (snapshot?.account?.setup_pending) {
+      state.account = snapshot.account;
+      showSetupAdmin();
+      return;
+    }
     state.blocked = false;
+    document.body.classList.remove("is-login", "is-blocked");
     clearViewSyncTimer();
     disposeAllLiveRuns();
     state.bootId = String(snapshot?.boot_id || "");
@@ -7975,6 +10863,9 @@
     state.context = snapshot?.context && typeof snapshot.context === "object" ? snapshot.context : { tokens: 0, window: null };
     state.usage = snapshot?.usage && typeof snapshot.usage === "object" ? snapshot.usage : {};
       state.capabilities = snapshot?.capabilities && typeof snapshot.capabilities === "object" ? snapshot.capabilities : {};
+    state.account = snapshot?.account && typeof snapshot.account === "object" ? snapshot.account : null;
+    applyRoleVisibility();
+    if (state.account?.oobe_pending && !oobeState.open) window.setTimeout(() => openOobe({ reason: "first" }), 350);
     state.sessions = Array.isArray(snapshot?.sessions) ? snapshot.sessions : [];
     state.currentSessionId = typeof snapshot?.current_session_id === "string" && snapshot.current_session_id ? snapshot.current_session_id : null;
     state.sessionMenuFor = null;
@@ -7985,6 +10876,8 @@
     state.runsBySession = new Map();
     for (const run of allRuns) trackRun(String(run.session_id), String(run.run_id));
     elements.loginForm.hidden = true;
+    elements.registerForm.hidden = true;
+    elements.setupForm.hidden = true;
     elements.retryBootstrapButton.hidden = false;
     elements.loginPassword.value = "";
     elements.loginError.textContent = "";
@@ -8064,6 +10957,14 @@
         const response = await apiRequest("/api/bootstrap");
         const snapshot = await response.json();
         applyBootstrap(snapshot);
+        // 认证过了才拉外观偏好:未登录时这个接口本来就该 401。
+        syncUiPrefs();
+        // 命令清单与麦克风状态同理:WebUI 永远要登录(09-11),页面初始化那次
+        // 拿到的是 401,登录之后必须重拿,否则 /reset /compact 全都当普通消息发出去。
+        if (!state.blocked) {
+          window.MiyuCommands?.load(apiRequest);
+          refreshVoiceButton();
+        }
       } catch (error) {
         showBlockedState(error.status === 401, error.message);
       }
@@ -8075,8 +10976,93 @@
     }
   }
 
+  /// 成员看不到管理台(供应商/密钥、共享人格、脚本、QQ、记忆库……),
+  /// 只留数据统计(自己的)与账号页。没开口令时人人都是管理员。
+  function isAdmin() {
+    return state.capabilities?.admin !== false;
+  }
+
+  function applyRoleVisibility() {
+    const admin = isAdmin();
+    const multiUser = Boolean(state.capabilities?.multi_user);
+    for (const element of document.querySelectorAll("[data-admin-only]")) element.hidden = !admin;
+    for (const element of document.querySelectorAll("[data-multi-user-only]")) element.hidden = !multiUser;
+    for (const element of document.querySelectorAll("[data-member-only]")) element.hidden = admin || !multiUser;
+    // 成员的记忆/知识库/表情包/记账面板跟当前人格开了什么走(服务端算好的清单)。
+    const dashboards = Array.isArray(state.account?.persona?.dashboards) ? state.account.persona.dashboards : [];
+    for (const panel of ["memory", "kb", "memes", "ledger"]) {
+      const item = elements.consoleView.querySelector(`.con-rail-item[data-console-panel="${panel}"]`);
+      if (item) item.hidden = !admin && !dashboards.includes(panel);
+    }
+    if (!admin && consoleIsOpen() && isAdminOnlyPanel(state.consolePanel)) setConsolePanel("usage");
+  }
+
+  function isAdminOnlyPanel(panel) {
+    const item = elements.consoleView.querySelector(`.con-rail-item[data-console-panel="${panel}"]`);
+    return Boolean(item?.hasAttribute("data-admin-only") || item?.hidden);
+  }
+
+  function showRegisterForm(show) {
+    elements.loginForm.hidden = show;
+    elements.registerForm.hidden = !show;
+    elements.blockedMessage.textContent = show ? "凭管理员发的邀请码创建账号。" : "输入用户名和密码以继续。";
+    window.requestAnimationFrame(() => (show ? elements.registerInvite : elements.loginUsername).focus());
+  }
+
+  function setRegisterSubmitting(submitting) {
+    state.registerSubmitting = Boolean(submitting);
+    for (const input of [elements.registerInvite, elements.registerUsername, elements.registerDisplayName, elements.registerPassword]) {
+      input.disabled = state.registerSubmitting;
+    }
+    elements.registerSubmit.disabled = state.registerSubmitting;
+    elements.registerSubmit.classList.toggle("is-loading", state.registerSubmitting);
+    elements.registerSubmitLabel.textContent = state.registerSubmitting ? "正在注册" : "注册并登录";
+  }
+
+  async function submitRegister() {
+    if (state.registerSubmitting) return;
+    const invite = elements.registerInvite.value.trim();
+    const username = elements.registerUsername.value.trim();
+    const display_name = elements.registerDisplayName.value.trim();
+    const password = elements.registerPassword.value;
+    const fail = (message, input) => {
+      elements.registerError.textContent = message;
+      elements.registerError.hidden = false;
+      input?.focus();
+    };
+    if (!invite) return fail("请输入邀请码", elements.registerInvite);
+    if (!username) return fail("请输入用户名", elements.registerUsername);
+    if (!password) return fail("请输入密码", elements.registerPassword);
+    elements.registerError.hidden = true;
+    setRegisterSubmitting(true);
+    try {
+      await apiRequest("/api/auth/register", {
+        method: "POST",
+        body: JSON.stringify({ invite, username, display_name, password })
+      });
+      elements.registerPassword.value = "";
+      elements.registerInvite.value = "";
+      await loadBootstrap();
+    } catch (error) {
+      fail(error.message || "注册失败", elements.registerInvite);
+    } finally {
+      setRegisterSubmitting(false);
+    }
+  }
+
+  async function logout() {
+    try {
+      await apiRequest("/api/auth/logout", { method: "POST" });
+    } catch (_) {
+      // 令牌已失效也一样回到登录页
+    }
+    if (consoleIsOpen()) consoleClose();
+    showBlockedState(true);
+  }
+
   function setLoginSubmitting(submitting) {
     state.loginSubmitting = Boolean(submitting);
+    elements.loginUsername.disabled = state.loginSubmitting;
     elements.loginPassword.disabled = state.loginSubmitting;
     elements.loginSubmit.disabled = state.loginSubmitting;
     elements.loginSubmit.classList.toggle("is-loading", state.loginSubmitting);
@@ -8087,9 +11073,16 @@
 
   async function submitLogin() {
     if (state.loginSubmitting) return;
+    const username = elements.loginUsername.value.trim();
     const password = elements.loginPassword.value;
+    if (!username) {
+      elements.loginError.textContent = "请输入用户名";
+      elements.loginError.hidden = false;
+      elements.loginUsername.focus();
+      return;
+    }
     if (!password) {
-      elements.loginError.textContent = "请输入访问密码";
+      elements.loginError.textContent = "请输入密码";
       elements.loginError.hidden = false;
       elements.loginPassword.focus();
       return;
@@ -8100,12 +11093,14 @@
     try {
       await apiRequest("/api/auth/login", {
         method: "POST",
-        body: JSON.stringify({ password })
+        body: JSON.stringify({ username, password })
       });
       elements.loginPassword.value = "";
       await loadBootstrap();
     } catch (error) {
-      elements.loginError.textContent = error.status === 401 ? "密码不正确，请重试" : error.message || "登录失败";
+      elements.loginError.textContent = error.status === 401
+        ? "用户名或密码不正确，请重试"
+        : error.message || "登录失败";
       elements.loginError.hidden = false;
       window.requestAnimationFrame(() => {
         elements.loginPassword.focus();
@@ -8174,6 +11169,8 @@
       state.modelSelectionSubmitting = false;
       closeModelMenu();
       setSessionModelOverride(sessionId, payload?.model_override);
+      // 换了模型池,窗口大小也跟着换;不拉的话上下文条要到跑完一轮才纠正。
+      refreshSessionContext(sessionId);
       showToast(follow ? "本会话已恢复跟随全局" : "本会话模型已更新（下一轮生效）");
     } catch (error) {
       state.modelMenuError = error.message || "模型设置未保存";
@@ -8196,6 +11193,10 @@
     const sessionId = state.viewSessionId;
     const queueing = conversationRunning();
     const updateTarget = queueing ? activeTurnUpdateTarget(sessionId) : null;
+    // 只有确定了追加目标才走 /api/queue;否则(在跑但目标不唯一/还没定,常见于
+    // 子代理执行中——手机端尤甚)改走 /api/turns,由后端按会话排进当前在跑的轮
+    // (09-12 #10:手机端子代理执行时新消息/followup 发不出)。
+    const canQueue = queueing && !!updateTarget;
     const content = elements.composerInput.value.trim();
     // 命中命令表就当命令执行，不当消息发。不命中的 `/xxx` 照常发给模型
     // ——与 REPL 同一语义（slash_commands::parse_repl_input）。
@@ -8239,7 +11240,8 @@
           // 之后来的新回合就不会把回执顶下去。
           anchorTurnId: commandAnchorTurnId(),
           // /pop、/compact 这类要重排上下文的命令不能插在运行中的回合上。
-          isRunning: () => [...state.liveRuns.values()].some((entry) => entry && !entry.ended),
+          // 只看当前查看的会话:别的会话在跑不该挡这里的 /reset /compact /pop(09-10 沙盒实测)
+          isRunning: () => conversationRunning(),
           // /pop 无参数时的轮次多选器。
           openPopPicker: () => openPopPicker(),
         });
@@ -8275,26 +11277,21 @@
       elements.composerState.classList.add("is-error");
       return;
     }
-    if (queueing && !updateTarget) {
-      elements.composerState.textContent = "当前存在多个回复或回复仍在启动，无法确定追加目标";
-      elements.composerState.classList.add("is-error");
-      return;
-    }
     state.submitting = true;
     if (!queueing) state.pendingSubmission = { content, attachments: sentAttachments };
     clearInlineError();
     updateControlState();
     try {
-      const body = queueing
+      const body = canQueue
         ? { content, run_id: updateTarget.runId, turn_id: updateTarget.turnId, attachment_ids: attachmentIds }
         : { content, attachment_ids: attachmentIds };
       if (sessionId) body.session_id = sessionId;
-      const response = await apiRequest(queueing ? "/api/queue" : "/api/turns", {
+      const response = await apiRequest(canQueue ? "/api/queue" : "/api/turns", {
         method: "POST",
         body: JSON.stringify(body)
       });
       const payload = await response.json();
-      const queuedPrompt = queueing ? payload : payload?.queued ? payload.prompt : null;
+      const queuedPrompt = canQueue ? payload : payload?.queued ? payload.prompt : null;
       if (queuedPrompt) {
         if (!state.queuedPrompts.some((prompt) => String(prompt?.id) === String(queuedPrompt?.id))) {
           state.queuedPrompts.push(queuedPrompt);
@@ -8304,6 +11301,8 @@
         committedComposerAttachments();
         resizeComposer();
         renderQueueTray();
+        // 自己发的消息就该看着它:哪怕之前上滚过,也回到底部
+        scrollToBottom({ force: true, smooth: true });
         if (!queueing) {
           // 服务端发现该会话已有 turn 在运行并自动转排队：同步该 run 的 live 状态。
           const runningRunId = String(payload?.run_id || "");
@@ -8337,6 +11336,8 @@
         elements.composerInput.value = "";
         committedComposerAttachments();
         resizeComposer();
+        // 自己发的消息就该看着它:哪怕之前上滚过,也回到底部
+        scrollToBottom({ force: true, smooth: true });
         updateRuntimeUsage();
         updateConversationChrome();
         renderSessionList();
@@ -8346,7 +11347,30 @@
       // 409 = 后端认为这个会话已经在跑，而前端以为没有。原文案（「正在同步」
       // ＋「请重新发送」）把机器的调度问题说成用户该重来一遍，而且说了两遍。
       // 现在只留一条，说清楚发生了什么。
-      if (error.status === 409) {
+      // 排队请求 409 = 盯着的那条轮已经跑完/被顶替,会话此刻空闲。别再弹
+      // 「再发一次」让用户重来——直接改走 /api/turns 起一条新轮,消息不丢
+      // (/api/turns 会自动排队或新建,09-12 用户报「排队消息却提示要等」)。
+      if (canQueue && error.status === 409) {
+        try {
+          const body = { content, attachment_ids: attachmentIds };
+          if (sessionId) body.session_id = sessionId;
+          const retry = await apiRequest("/api/turns", { method: "POST", body: JSON.stringify(body) });
+          const payload = await retry.json();
+          const qp = payload?.queued ? payload.prompt : null;
+          if (qp && !state.queuedPrompts.some((p) => String(p?.id) === String(qp?.id))) {
+            state.queuedPrompts.push(qp);
+          }
+          elements.composerInput.value = "";
+          committedComposerAttachments();
+          resizeComposer();
+          renderQueueTray();
+          if (sessionId) await loadSessionView(sessionId, { quiet: true });
+          else await loadBootstrap();
+          return;
+        } catch (retryError) {
+          showToast(retryError.message || "发送失败", "error");
+        }
+      } else if (error.status === 409) {
         showToast("这条没发出去：会话刚开始新的一轮，再发一次", "error");
       } else {
         showInlineError(error.message);
@@ -8754,6 +11778,26 @@
     return rate.toFixed(2);
   }
 
+  // 控制台位置写进 URL hash:#console/<面板> 与 #console/settings/<子页>。
+  // 刷新、分享链接都能回到同一页;老的裸 #console 仍开数据统计。
+  function consoleHashFor(panel, view) {
+    return panel === "settings" && view ? `#console/settings/${view}` : `#console/${panel}`;
+  }
+  function writeConsoleHash(hash) {
+    const target = hash || `${window.location.pathname}${window.location.search}`;
+    if ((hash && window.location.hash === hash) || (!hash && !window.location.hash)) return;
+    window.history.replaceState(null, "", target); // 不用 location.hash=,那会留个孤零零的 # 并滚动
+  }
+  function parseConsoleHash() {
+    const match = /^#console(?:\/([a-z-]+))?(?:\/([a-z-]+))?$/.exec(window.location.hash || "");
+    if (!match) return null;
+    const panel = match[1] || "usage";
+    // 面板清单只有 index.html 一份,这里查 DOM 而不是再抄一遍。
+    const known = Boolean(elements.consoleView.querySelector(`.con-panel[data-console-panel="${panel}"]`));
+    const allowed = known && (isAdmin() || !isAdminOnlyPanel(panel));
+    return { panel: allowed ? panel : "usage", view: match[2] || "" };
+  }
+
   function consoleOpen(panel = "usage") {
     elements.consoleView.hidden = false;
     elements.consoleView.setAttribute("aria-hidden", "false");
@@ -8763,6 +11807,7 @@
     elements.consoleView.hidden = true;
     elements.consoleView.setAttribute("aria-hidden", "true");
     usageTipHide();
+    writeConsoleHash("");
   }
   function consoleIsOpen() {
     return !elements.consoleView.hidden;
@@ -8771,7 +11816,9 @@
   /// 切控制台标签页。数据统计的图表要等真正显示了才量得到尺寸,配置也是进了
   /// 设置页才拉——都放在这里,免得开个控制台把两边的请求都打出去。
   function setConsolePanel(panel) {
+    if (!isAdmin() && isAdminOnlyPanel(panel)) panel = "usage";
     state.consolePanel = panel;
+    if (panel === "account") loadAccountPanel();
     for (const item of elements.consoleView.querySelectorAll(".con-rail-item[data-console-panel]")) {
       item.classList.toggle("active", item.dataset.consolePanel === panel);
     }
@@ -8788,6 +11835,7 @@
     if (panel === "settings" && !state.configLoaded && !state.configLoading) loadConfigDraft();
     // 插件 dashboard 面板各自独立文件,首次进入挂载、之后只刷新。
     if (window.MiyuDash?.has(panel)) window.MiyuDash.open(panel);
+    writeConsoleHash(consoleHashFor(panel, panel === "settings" ? state.settingsView : ""));
   }
 
   async function loadUsageStats() {
@@ -9046,6 +12094,642 @@
     });
   }
 
+  /* ── 账号面板(阶段 5 多用户) ── */
+  const accountState = { names: new Map(), loadSeq: 0 };
+
+  function accountLabel(accountId) {
+    if (!accountId) return "未署名";
+    const entry = accountState.names.get(accountId);
+    if (!entry) return accountId;
+    return entry.display_name && entry.display_name !== entry.username
+      ? `${entry.display_name} (${entry.username})`
+      : entry.username;
+  }
+
+  async function loadAccountNames() {
+    const response = await apiRequest("/api/admin/accounts");
+    const data = await response.json();
+    accountState.names = new Map((data.accounts || []).map((account) => [account.id, account]));
+    return data.accounts || [];
+  }
+
+  function showAccountError(message) {
+    elements.accountError.textContent = message || "";
+    elements.accountError.hidden = !message;
+  }
+
+  async function loadAccountPanel() {
+    const seq = ++accountState.loadSeq;
+    showAccountError("");
+    const account = state.account || {};
+    const noRow = !account.account_id;
+    elements.accountUsername.value = account.username || (noRow ? "(访问密码登录)" : "");
+    elements.accountDisplayName.value = account.display_name || "";
+    elements.accountDisplayName.disabled = noRow;
+    elements.accountCurrentPassword.disabled = noRow;
+    elements.accountNewPassword.disabled = noRow;
+    elements.accountSave.disabled = noRow;
+    elements.accountSelfHint.textContent = noRow
+      ? "用访问密码登录的是机器级管理员,密码在启动参数里改;用管理员用户名登录可以改显示名。"
+      : account.admin ? "管理员" : "成员";
+    elements.accountSave.disabled = false;
+    elements.accountStamp.textContent = "";
+    try {
+      const me = await apiRequest("/api/account").then((response) => response.json());
+      if (seq !== accountState.loadSeq) return;
+      elements.accountProfile.value = typeof me.profile === "string" ? me.profile : "";
+      accountState.profile = elements.accountProfile.value;
+    } catch (_) {
+      // 档案读不到就留空,保存时再报
+    }
+    if (!isAdmin()) {
+      loadPersonaCard();
+      return;
+    }
+    elements.inviteFresh.hidden = true;
+    try {
+      const [accounts, invitesResponse, usageResponse] = await Promise.all([
+        loadAccountNames(),
+        apiRequest("/api/admin/invites").then((response) => response.json()),
+        apiRequest("/api/admin/usage/accounts?range=30d").then((response) => response.json()).catch(() => ({ accounts: [] })),
+      ]);
+      if (seq !== accountState.loadSeq) return;
+      renderInviteRows(invitesResponse.invites || []);
+      renderAccountRows(accounts, usageResponse.accounts || []);
+    } catch (error) {
+      if (seq !== accountState.loadSeq) return;
+      elements.accountStamp.textContent = `载入失败:${error.message || error}`;
+    }
+  }
+
+  function renderInviteRows(invites) {
+    const body = elements.inviteRows;
+    body.replaceChildren();
+    if (!invites.length) {
+      body.innerHTML = `<tr><td colspan="5" class="acct-muted">还没有邀请码</td></tr>`;
+      return;
+    }
+    const statusLabel = { open: "可用", used: "已使用", expired: "已过期" };
+    for (const invite of invites) {
+      const row = document.createElement("tr");
+      const usedBy = invite.used_by ? accountLabel(invite.used_by) : "—";
+      row.innerHTML = `<td>${statusLabel[invite.status] || invite.status}</td><td>${formatDateTime(invite.created_at)}</td><td>${formatDateTime(invite.expires_at)}</td><td></td><td></td>`;
+      row.children[3].textContent = usedBy;
+      if (invite.status !== "used") {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "secondary-button acct-row-action";
+        remove.textContent = "作废";
+        remove.addEventListener("click", async () => {
+          remove.disabled = true;
+          try {
+            await apiRequest(`/api/admin/invites/${encodeURIComponent(invite.id)}`, { method: "DELETE" });
+            loadAccountPanel();
+          } catch (error) {
+            showToast(error.message || "作废失败", "error");
+            remove.disabled = false;
+          }
+        });
+        row.children[4].appendChild(remove);
+      }
+      body.appendChild(row);
+    }
+  }
+
+  function renderAccountRows(accounts, usage) {
+    const body = elements.accountRows;
+    body.replaceChildren();
+    const usageById = new Map(usage.map((entry) => [entry.acct, entry]));
+    for (const account of accounts) {
+      const row = document.createElement("tr");
+      const spent = usageById.get(account.id);
+      const cells = [
+        account.username,
+        account.display_name,
+        account.admin ? "管理员" : "成员",
+        account.last_login_at ? formatRelativeTime(account.last_login_at) : "从未",
+        spent ? usageFmt(asFiniteNumber(spent.total)) : "0",
+        spent ? (usageFmtCost(asFiniteNumber(spent.cost)) || "—") : "—",
+      ];
+      cells.forEach((text, index) => {
+        const cell = document.createElement("td");
+        if (index >= 4) cell.className = "num";
+        cell.textContent = text;
+        row.appendChild(cell);
+      });
+      if (account.disabled) row.classList.add("acct-muted");
+      const actions = document.createElement("td");
+      const isSelf = state.account?.account_id === account.id;
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "secondary-button acct-row-action";
+      toggle.textContent = account.disabled ? "恢复" : "停用";
+      toggle.disabled = isSelf;
+      toggle.addEventListener("click", () => patchAccount(account.id, { disabled: !account.disabled }, toggle));
+      const reset = document.createElement("button");
+      reset.type = "button";
+      reset.className = "secondary-button acct-row-action";
+      reset.textContent = "重设密码";
+      reset.addEventListener("click", () => {
+        const password = window.prompt(`给 ${account.username} 设一个新密码:`);
+        if (password == null) return;
+        patchAccount(account.id, { password }, reset);
+      });
+      actions.append(toggle, reset);
+      row.appendChild(actions);
+      body.appendChild(row);
+    }
+  }
+
+  async function patchAccount(accountId, patch, button) {
+    if (button) button.disabled = true;
+    try {
+      await apiRequest(`/api/admin/accounts/${encodeURIComponent(accountId)}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch)
+      });
+      loadAccountPanel();
+    } catch (error) {
+      showToast(error.message || "操作失败", "error");
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function createInvite() {
+    elements.inviteCreate.disabled = true;
+    try {
+      const response = await apiRequest("/api/admin/invites", { method: "POST", body: JSON.stringify({}) });
+      const data = await response.json();
+      elements.inviteFresh.textContent = data.code || "";
+      elements.inviteFresh.hidden = !data.code;
+      const invitesResponse = await apiRequest("/api/admin/invites").then((r) => r.json());
+      renderInviteRows(invitesResponse.invites || []);
+    } catch (error) {
+      showToast(error.message || "生成失败", "error");
+    } finally {
+      elements.inviteCreate.disabled = false;
+    }
+  }
+
+  async function saveAccount() {
+    const patch = {};
+    const displayName = elements.accountDisplayName.value.trim();
+    if (displayName && displayName !== (state.account?.display_name || "")) patch.display_name = displayName;
+    const newPassword = elements.accountNewPassword.value;
+    if (newPassword) {
+      patch.password = newPassword;
+      patch.current_password = elements.accountCurrentPassword.value;
+    }
+    const profile = elements.accountProfile.value;
+    if (profile !== (accountState.profile ?? "")) patch.profile = profile;
+    if (!Object.keys(patch).length) return showAccountError("没有要保存的改动");
+    elements.accountSave.disabled = true;
+    try {
+      const response = await apiRequest("/api/account", { method: "PATCH", body: JSON.stringify(patch) });
+      const data = await response.json();
+      if (data.account && state.account) {
+        state.account.display_name = data.account.display_name;
+      }
+      elements.accountCurrentPassword.value = "";
+      elements.accountNewPassword.value = "";
+      if (patch.profile != null) accountState.profile = patch.profile;
+      showAccountError("");
+      showToast("已保存", "success");
+    } catch (error) {
+      showAccountError(error.message || "保存失败");
+    } finally {
+      elements.accountSave.disabled = false;
+    }
+  }
+
+  /* ── 欢迎引导 / 成员人格(阶段 8) ── */
+  const oobeState = { open: false, step: 1, mode: "private", editing: null, avatarFile: null, boardFile: null, plugins: [], busy: false, reason: "first" };
+
+  function oobeShowError(message) {
+    elements.oobeError.textContent = message || "";
+    elements.oobeError.hidden = !message;
+  }
+
+  function oobeSetStep(step) {
+    oobeState.step = step;
+    for (const pane of elements.oobePanes.querySelectorAll(".oobe-pane")) {
+      const active = Number(pane.dataset.oobeStep) === step;
+      pane.classList.toggle("is-active", active);
+      if (active) {
+        pane.style.animation = "none";
+        void pane.offsetWidth; // 重新触发入场动画
+        pane.style.animation = "";
+      }
+    }
+    for (const item of elements.oobeSteps.querySelectorAll("li")) {
+      const n = Number(item.dataset.step);
+      item.classList.toggle("on", n === step);
+      item.classList.toggle("done", n < step);
+    }
+    const last = step === 3;
+    elements.oobeBack.hidden = step === 1 || step === 4;
+    elements.oobeNext.hidden = step === 4;
+    // 首启是「先跳过」(跳过建号引导);新建/编辑人格是「取消」(直接关掉不保存)——
+    // 之前这两种模式下这颗键整个藏了,于是新建人格没有任何退出口(用户 #164)。
+    elements.oobeSkip.hidden = step === 4;
+    elements.oobeSkip.textContent = oobeState.reason === "first" ? "先跳过" : "取消";
+    elements.oobeNextLabel.textContent = last ? (oobeState.editing ? "保存" : "开始聊天") : "下一步";
+    oobeShowError("");
+    if (step === 1) window.requestAnimationFrame(() => elements.oobeName.focus());
+    if (step === 3) window.requestAnimationFrame(() => elements.oobeProfile.focus());
+  }
+
+  function oobeSetMode(mode) {
+    oobeState.mode = mode;
+    for (const option of elements.oobe.querySelectorAll(".oobe-option")) {
+      const on = option.dataset.personaMode === mode;
+      option.classList.toggle("is-on", on);
+      option.setAttribute("aria-checked", on ? "true" : "false");
+    }
+    elements.oobePersonaForm.hidden = mode !== "private";
+  }
+
+  function oobeRenderPlugins(options, enabled) {
+    elements.oobePlugins.replaceChildren();
+    const on = new Set(enabled || options.map((option) => option.id));
+    for (const option of options) {
+      const label = document.createElement("label");
+      label.className = "oobe-plugin";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = option.id;
+      input.checked = on.has(option.id);
+      const text = document.createElement("span");
+      const title = document.createElement("b");
+      title.textContent = option.label || option.id;
+      text.appendChild(title);
+      text.append(option.hint || "");
+      label.append(input, text);
+      elements.oobePlugins.appendChild(label);
+    }
+    if (!options.length) elements.oobePlugins.innerHTML = `<p class="u-hint">没有可选的功能。</p>`;
+    bindOobeSelectAll();
+  }
+
+  // Ctrl/Cmd + A:这一页全勾 / 全不勾来回切(用户 09-14)。挂在 document 上但只在
+  // 这一步可见时才接管,不然会把页面别处的「全选文字」也抢掉。只绑一次。
+  let oobeSelectAllBound = false;
+  function bindOobeSelectAll() {
+    if (oobeSelectAllBound) return;
+    oobeSelectAllBound = true;
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "a" && event.key !== "A") return;
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+      const container = elements.oobePlugins;
+      if (!container || !container.offsetParent) return;
+      const boxes = [...container.querySelectorAll('input[type="checkbox"]')];
+      if (!boxes.length) return;
+      event.preventDefault();
+      // 有没勾的就全勾上;已经全勾了才是全取消——半勾状态下按一下的意图是「都要」。
+      const target = boxes.some((box) => !box.checked);
+      for (const box of boxes) box.checked = target;
+    });
+  }
+
+  /// 脚本/技能这类「逐个勾」的块:没有条目就整块藏起来;enabled 为 null = 全勾。
+  function oobeRenderChecklist(wrapId, containerId, items, enabled) {
+    const wrap = document.getElementById(wrapId);
+    const container = document.getElementById(containerId);
+    container.replaceChildren();
+    wrap.hidden = !items.length;
+    const on = enabled ? new Set(enabled) : null;
+    for (const item of items) {
+      const label = document.createElement("label");
+      label.className = "oobe-plugin";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = item.id;
+      input.checked = on ? on.has(item.id) : true;
+      const text = document.createElement("span");
+      const title = document.createElement("b");
+      title.textContent = item.label || item.id;
+      text.appendChild(title);
+      text.append(item.hint || "");
+      label.append(input, text);
+      container.appendChild(label);
+    }
+  }
+
+  /// 块藏着(没东西可勾)= null = 全部;摆出来了就按勾选发明细。
+  function oobeSelectedChecklist(wrapId, containerId) {
+    if (document.getElementById(wrapId).hidden) return null;
+    return [...document.querySelectorAll(`#${containerId} input:checked`)].map((input) => input.value);
+  }
+
+  function oobeRenderScripts(scripts, enabled) {
+    oobeRenderChecklist("oobeScriptsWrap", "oobeScripts", scripts, enabled);
+  }
+
+  function oobeRenderSkills(skills, enabled) {
+    oobeRenderChecklist("oobeSkillsWrap", "oobeSkills", skills, enabled);
+  }
+
+  function oobeSelectedScripts() {
+    return oobeSelectedChecklist("oobeScriptsWrap", "oobeScripts");
+  }
+
+  function oobeSelectedSkills() {
+    return oobeSelectedChecklist("oobeSkillsWrap", "oobeSkills");
+  }
+
+  function oobeSelectedPlugins() {
+    return [...elements.oobePlugins.querySelectorAll("input:checked")].map((input) => input.value);
+  }
+
+  function previewImageFile(file, image) {
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    image.onload = () => URL.revokeObjectURL(url);
+    image.src = url;
+    image.hidden = false;
+  }
+
+  /// reason: first(注册后)/create(账号页新建)/edit(改一个已有的)
+  async function openOobe({ reason = "first", persona = null } = {}) {
+    if (oobeState.open || isAdmin()) return;
+    oobeState.open = true;
+    oobeState.reason = reason;
+    oobeState.editing = persona ? persona.slug : null;
+    oobeState.avatarFile = null;
+    oobeState.boardFile = null;
+    elements.oobe.hidden = false;
+    document.body.classList.add("is-oobe");
+    elements.oobeName.value = persona?.name || "";
+    elements.oobeDesc.value = persona?.description || "";
+    elements.oobePrompt.value = "";
+    elements.oobeAvatarPreview.hidden = true;
+    elements.oobeAvatarPreview.removeAttribute("src");
+    elements.oobeProfile.value = "";
+    oobeSetMode("private");
+    elements.oobe.querySelector(".oobe-choice").hidden = reason !== "first";
+    let options = [];
+    let scripts = [];
+    let skills = [];
+    try {
+      const data = await apiRequest("/api/account/personas").then((response) => response.json());
+      options = data.plugins || [];
+      scripts = data.scripts || [];
+      skills = data.skills || [];
+      if (data.shared?.name) elements.oobeSharedName.textContent = data.shared.name;
+      elements.oobeSharedHint.textContent = data.shared?.maintainer
+        ? `${data.shared.maintainer} 维护的预置人格,不可修改`
+        : "预置人格,不可修改";
+      if (data.shared?.name) elements.oobeSharedName.textContent = data.shared.name;
+      elements.oobeSharedHint.textContent = data.shared?.maintainer
+        ? `${data.shared.maintainer} 维护的预置人格,不可修改`
+        : "预置人格,不可修改";
+      elements.oobeProfile.value = data.prompt || "";
+      if (data.member_personas === false && reason !== "first") {
+        showToast("管理员关闭了成员自建人格", "error");
+        closeOobe();
+        return;
+      }
+      if (data.member_personas === false) oobeSetMode("shared");
+      if (persona) {
+        elements.oobePrompt.value = persona.prompt || "";
+        if (persona.avatar_url) { elements.oobeAvatarPreview.src = `${persona.avatar_url}&v=${Date.now()}`; elements.oobeAvatarPreview.hidden = false; }
+      }
+    } catch (error) {
+      oobeShowError(error.message || "载入失败");
+    }
+    oobeRenderPlugins(options, persona ? persona.plugins : null);
+    oobeRenderScripts(scripts, persona ? persona.scripts : null);
+    oobeRenderSkills(skills, persona ? persona.skills : null);
+    oobeSetStep(1);
+  }
+
+  function closeOobe() {
+    oobeState.open = false;
+    elements.oobe.hidden = true;
+    document.body.classList.remove("is-oobe");
+  }
+
+  async function uploadPersonaImage(slug, file, board) {
+    if (!file) return;
+    await apiRequest(`/api/account/personas/${encodeURIComponent(slug)}/image${board ? "?board=1" : ""}`, {
+      method: "PUT",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    });
+  }
+
+  async function oobeFinish() {
+    if (oobeState.busy) return;
+    oobeState.busy = true;
+    elements.oobeNext.disabled = true;
+    elements.oobeNext.classList.add("is-loading");
+    try {
+      let slug = null;
+      let displayName = "Miyu";
+      if (oobeState.mode === "private") {
+        const name = elements.oobeName.value.trim();
+        const prompt = elements.oobePrompt.value.trim();
+        if (!name) { oobeSetStep(1); throw new Error("先起个名字"); }
+        const body = {
+          name, prompt,
+          description: elements.oobeDesc.value.trim(),
+          plugins: oobeSelectedPlugins(),
+          scripts: oobeSelectedScripts(),
+          skills: oobeSelectedSkills(),
+          activate: true,
+        };
+        let persona;
+        if (oobeState.editing) {
+          const response = await apiRequest(`/api/account/personas/${encodeURIComponent(oobeState.editing)}`, { method: "PUT", body: JSON.stringify(body) });
+          persona = (await response.json()).persona;
+        } else {
+          const response = await apiRequest("/api/account/personas", { method: "POST", body: JSON.stringify(body) });
+          persona = (await response.json()).persona;
+        }
+        slug = persona.slug;
+        displayName = persona.name;
+        await uploadPersonaImage(slug, oobeState.avatarFile, false);
+      }
+      const profile = elements.oobeProfile.value;
+      await apiRequest("/api/account", { method: "PATCH", body: JSON.stringify({ profile }) });
+      await apiRequest("/api/account/active-persona", { method: "PUT", body: JSON.stringify({ slug, oobe_done: true }) });
+      accountState.profile = profile;
+      await loadBootstrap();
+      if (oobeState.editing) {
+        // 编辑现有人格=直接保存关闭,不走 onboarding 的「已准备好」庆祝页(#146:
+        // 编辑不该重新进 OOBE 的那套开场/收尾)。
+        closeOobe();
+        if (consoleIsOpen()) loadAccountPanel();
+        showToast(`${displayName} 已更新`, "success");
+      } else {
+        elements.oobeDoneTitle.textContent = `${displayName} 准备好了`;
+        elements.oobeDoneText.textContent = oobeState.mode === "private"
+          ? "接下来的会话用这个人格。改设定、换头像在控制台的账号页。"
+          : "你用的是共享的 Miyu;想要自己的人格,随时在账号页里创建。";
+        const avatar = oobeState.avatarFile ? URL.createObjectURL(oobeState.avatarFile) : (slug ? `/api/persona/avatar?scope=${encodeURIComponent(slug)}` : "/assets/miyu-logo.png");
+        elements.oobeDoneAvatar.onerror = () => { elements.oobeDoneAvatar.hidden = true; };
+        elements.oobeDoneAvatar.src = avatar;
+        elements.oobeDoneAvatar.hidden = false;
+        oobeSetStep(4);
+        window.setTimeout(() => {
+          closeOobe();
+          if (consoleIsOpen()) loadAccountPanel();
+          else if (state.sessions.length) focusComposerIfDesktop();
+        }, 1400);
+      }
+    } catch (error) {
+      oobeShowError(error.message || "保存失败");
+    } finally {
+      oobeState.busy = false;
+      elements.oobeNext.disabled = false;
+      elements.oobeNext.classList.remove("is-loading");
+    }
+  }
+
+  function bindOobeEvents() {
+    for (const option of elements.oobe.querySelectorAll(".oobe-option")) {
+      option.addEventListener("click", () => oobeSetMode(option.dataset.personaMode));
+    }
+    elements.oobeAvatarInput.addEventListener("change", () => {
+      oobeState.avatarFile = elements.oobeAvatarInput.files?.[0] || null;
+      previewImageFile(oobeState.avatarFile, elements.oobeAvatarPreview);
+    });
+    elements.oobeBack.addEventListener("click", () => oobeSetStep(Math.max(1, oobeState.step - 1)));
+    elements.oobeNext.addEventListener("click", () => {
+      if (oobeState.step === 1 && oobeState.mode === "private") {
+        if (!elements.oobeName.value.trim()) return oobeShowError("先起个名字");
+      }
+      if (oobeState.step === 1 && oobeState.mode === "shared") return oobeSetStep(3);
+      if (oobeState.step < 3) return oobeSetStep(oobeState.step + 1);
+      oobeFinish();
+    });
+    elements.oobeSkip.addEventListener("click", async () => {
+      // 新建/编辑人格模式:这颗是「取消」,直接关掉、什么都不动(#164)。
+      if (oobeState.reason !== "first") {
+        closeOobe();
+        return;
+      }
+      try {
+        await apiRequest("/api/account/active-persona", { method: "PUT", body: JSON.stringify({ slug: null, oobe_done: true }) });
+      } catch (_) {}
+      closeOobe();
+      showToast("随时可以在账号页里创建自己的人格", "info");
+    });
+  }
+
+  async function loadPersonaCard() {
+    if (!elements.personaList) return;
+    try {
+      const data = await apiRequest("/api/account/personas").then((response) => response.json());
+      renderPersonaList(data);
+    } catch (error) {
+      elements.personaList.innerHTML = `<p class="u-hint">载入失败:${escapeText(error.message || error)}</p>`;
+    }
+  }
+
+  function escapeText(value) {
+    const span = document.createElement("span");
+    span.textContent = String(value);
+    return span.innerHTML;
+  }
+
+  /// 账号页人格卡的一行摘要:插件数,脚本/技能勾了明细才报数(null = 全开)。
+  /// 记忆对新建的人格常开,只有旧人格关着时才提一句。
+  function personaSummary(persona) {
+    const parts = [`${(persona.plugins || []).length} 个插件`];
+    if (Array.isArray(persona.scripts)) parts.push(`${persona.scripts.length} 个脚本`);
+    if (Array.isArray(persona.skills)) parts.push(`${persona.skills.length} 个技能`);
+    if (persona.memory === false) parts.unshift("记忆关");
+    return parts.join(" · ");
+  }
+
+  function renderPersonaList(data) {
+    const list = elements.personaList;
+    list.replaceChildren();
+    elements.personaCreate.hidden = data.member_personas === false;
+    const rows = [{ slug: null, name: "Miyu", description: "管理员发布的共享人格", shared: true }, ...(data.personas || [])];
+    for (const persona of rows) {
+      const row = document.createElement("div");
+      row.className = "persona-row";
+      const active = (data.active || null) === (persona.slug || null);
+      row.classList.toggle("is-active", active);
+      if (persona.avatar_url || persona.shared) {
+        const image = document.createElement("img");
+        image.src = persona.shared ? "/assets/miyu-logo.png" : `${persona.avatar_url}&v=${Date.now()}`;
+        image.alt = "";
+        row.appendChild(image);
+      } else {
+        const initial = document.createElement("div");
+        initial.className = "persona-initial";
+        initial.textContent = String(persona.name || "?").slice(0, 1);
+        row.appendChild(initial);
+      }
+      const text = document.createElement("div");
+      const title = document.createElement("b");
+      title.textContent = persona.name + (active ? "(当前)" : "");
+      const sub = document.createElement("small");
+      sub.textContent = persona.description || (persona.shared ? "" : personaSummary(persona));
+      text.append(title, sub);
+      row.appendChild(text);
+      const actions = document.createElement("div");
+      actions.className = "persona-row-actions";
+      if (!active) {
+        const use = document.createElement("button");
+        use.type = "button";
+        use.className = "secondary-button acct-row-action";
+        use.textContent = "使用";
+        use.addEventListener("click", async () => {
+          use.disabled = true;
+          try {
+            await apiRequest("/api/account/active-persona", { method: "PUT", body: JSON.stringify({ slug: persona.slug, oobe_done: true }) });
+            await loadBootstrap();
+            loadPersonaCard();
+            showToast(`新会话将使用 ${persona.name}`, "success");
+          } catch (error) {
+            showToast(error.message || "切换失败", "error");
+            use.disabled = false;
+          }
+        });
+        actions.appendChild(use);
+      }
+      if (!persona.shared) {
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.className = "secondary-button acct-row-action";
+        edit.textContent = "编辑";
+        edit.addEventListener("click", async () => {
+          try {
+            const detail = await apiRequest("/api/account/personas").then((response) => response.json());
+            const full = (detail.personas || []).find((item) => item.slug === persona.slug) || persona;
+            // 提示词不在列表里:按 slug 再取一次文件内容
+            const promptResponse = await apiRequest(`/api/account/personas/${encodeURIComponent(persona.slug)}/prompt`);
+            full.prompt = (await promptResponse.json()).prompt || "";
+            openOobe({ reason: "edit", persona: full });
+          } catch (error) {
+            showToast(error.message || "载入失败", "error");
+          }
+        });
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "secondary-button acct-row-action";
+        remove.textContent = "删除";
+        remove.addEventListener("click", async () => {
+          if (!window.confirm(`删除人格「${persona.name}」?记忆一起删,会话保留。`)) return;
+          try {
+            await apiRequest(`/api/account/personas/${encodeURIComponent(persona.slug)}`, { method: "DELETE" });
+            await loadBootstrap();
+            loadPersonaCard();
+          } catch (error) {
+            showToast(error.message || "删除失败", "error");
+          }
+        });
+        actions.append(edit, remove);
+      }
+      row.appendChild(actions);
+      list.appendChild(row);
+    }
+  }
+
   function renderUsageSources(stats) {
     const container = elements.usageSources;
     container.innerHTML = "";
@@ -9056,6 +12740,9 @@
     }
     const agent = sources.find((source) => source.src === "agent");
     const platforms = sources.filter((source) => source.src !== "agent");
+    if (isAdmin() && Array.isArray(stats.accounts) && stats.accounts.length > 1) {
+      container.appendChild(buildUsageAccountsCard(stats.accounts));
+    }
     if (agent) {
       container.appendChild(buildUsageSourceCard(
         "模型消耗明细 · 智能体",
@@ -9078,6 +12765,43 @@
         platforms,
       ));
     }
+  }
+
+  /// 总表按人拆(管理员):空账号 = 管理员自己 + 终端 + 通讯平台。名字来自
+  /// 成员表,没拉到之前先显示 id。
+  function buildUsageAccountsCard(accounts) {
+    const card = document.createElement("div");
+    card.className = "u-card";
+    card.innerHTML = `<div class="u-card-head"><h3>按人拆分</h3><span class="u-hint">成员的 WebUI 会话各记各的 · 未署名 = 管理员/终端/通讯平台</span></div>`;
+    const scroll = document.createElement("div");
+    scroll.className = "u-table-scroll";
+    const table = document.createElement("table");
+    table.className = "u-table";
+    table.innerHTML = `<thead><tr><th>账号</th><th class="num">调用</th><th class="num">输入</th><th class="num">输出</th><th class="num">合计</th><th class="num">消费</th></tr></thead>`;
+    const body = document.createElement("tbody");
+    for (const entry of accounts) {
+      const row = document.createElement("tr");
+      const cells = [
+        accountLabel(entry.acct),
+        formatInteger(entry.requests),
+        usageFmt(asFiniteNumber(entry.prompt)),
+        usageFmt(asFiniteNumber(entry.completion)),
+        usageFmt(asFiniteNumber(entry.total)),
+        usageFmtCost(asFiniteNumber(entry.cost)) || "—",
+      ];
+      cells.forEach((text, index) => {
+        const cell = document.createElement("td");
+        if (index > 0) cell.className = "num";
+        cell.textContent = text;
+        row.appendChild(cell);
+      });
+      body.appendChild(row);
+    }
+    table.appendChild(body);
+    scroll.appendChild(table);
+    card.appendChild(scroll);
+    if (!accountState.names.size && isAdmin()) loadAccountNames().then(() => renderUsageSources(usageState.stats)).catch(() => {});
+    return card;
   }
 
   function buildUsageSourceCard(title, hint, source, stats, platformTabs) {
@@ -9413,6 +13137,22 @@
     elements.sidebarSettingsButton.addEventListener("click", (event) => openSettings(event.currentTarget));
     elements.artifactToggleButton.addEventListener("click", () => setArtifactWorkspaceOpen(!state.artifactOpen));
     elements.artifactCloseButton.addEventListener("click", () => setArtifactWorkspaceOpen(false));
+    // 聊天正文选中文字的右键菜单(selectionmenu.js)。
+    window.MiyuSelectionMenu?.mount({
+      root: elements.chatScroll,
+      composer: elements.composerInput,
+      resizeComposer,
+      apiRequest,
+      renderMarkdown,
+      // 浮窗里的图标与流式思考块直接用主页这两件,别在划词那边另画一套。
+      makeIconSlot,
+      createReasoningBlock,
+      // 思考块要挂进时间线(.proc-line)才是现在的样子,不然还是旧的独立标签块。
+      procLineAttach,
+      procLineBreak,
+      getSessionId: () => state.viewSessionId || state.currentSessionId,
+      toast: showToast,
+    });
     elements.artifactPreviewButton.addEventListener("click", () => setArtifactMode("preview"));
     elements.artifactSourceButton.addEventListener("click", () => setArtifactMode("source"));
     elements.artifactImageZoomOutButton.addEventListener("click", () => changeArtifactImageZoom(-0.25));
@@ -9491,6 +13231,7 @@
     document.querySelectorAll("[data-chat-font]").forEach((button) => button.addEventListener("click", () => setChatFontSize(button.dataset.chatFont)));
     elements.reasoningExpandToggle?.addEventListener("click", () => setReasoningExpanded(!state.reasoningExpanded));
     elements.toolExpandToggle?.addEventListener("click", () => setToolExpanded(!state.toolExpanded));
+    elements.procCollapseToggle?.addEventListener("click", () => setProcCollapse(!state.procCollapse));
     elements.modelButton.addEventListener("click", (event) => {
       event.stopPropagation();
       if (elements.modelMenu.hidden) openModelMenu();
@@ -9595,6 +13336,9 @@
         return;
       }
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !state.composing && event.keyCode !== 229) {
+        // 触屏设备上回车是换行:软键盘没有 Shift+Enter,回车即发送就没法
+        // 打多行了。发送用按钮;Ctrl/Cmd+Enter 仍然发送。
+        if (isTouchComposer() && !(event.ctrlKey || event.metaKey)) return;
         event.preventDefault();
         if (!elements.sendButton.disabled) elements.composerForm.requestSubmit();
       }
@@ -9607,12 +13351,36 @@
       event.preventDefault();
       submitLogin();
     });
+    elements.setupForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitSetupAdmin();
+    });
+    elements.registerForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitRegister();
+    });
+    elements.showRegisterButton.addEventListener("click", () => showRegisterForm(true));
+    elements.showLoginButton.addEventListener("click", () => showRegisterForm(false));
+    elements.accountSave.addEventListener("click", saveAccount);
+    elements.accountLogout.addEventListener("click", logout);
+    elements.inviteCreate.addEventListener("click", createInvite);
+    elements.personaCreate.addEventListener("click", () => openOobe({ reason: "create" }));
+    bindOobeEvents();
     elements.newChatButton.addEventListener("click", requestNewConversation);
     elements.retryBootstrapButton.addEventListener("click", loadBootstrap);
     elements.resetConfirmButton.addEventListener("click", resetConversation);
     elements.chatScroll.addEventListener("scroll", () => {
+      // 程序滚动的守卫由这条事件自己解除:以前用 setTimeout(0) 清,而 scroll
+      // 事件要等到下一帧才派发,处理器等于裸跑,把一次跟随当成用户上滚关掉,
+      // 下一帧又认为到底重新打开——来回翻转就是抖动的第二半。
+      const programmatic = state.programmaticScroll;
+      // 非 smooth:这一条事件就是那次滚动的回执,吃完即解除。
+      if (programmatic && !programmaticScrollSmooth) {
+        state.programmaticScroll = false;
+        window.clearTimeout(programmaticScrollTimer);
+      }
       state.nearBottom = isNearBottom();
-      if (state.programmaticScroll) return;
+      if (programmatic) return;
       if (!state.followOutput && isAtBottom()) {
         state.followOutput = true;
         elements.jumpBottomButton.hidden = true;
@@ -9632,9 +13400,19 @@
       syncArtifactLayout();
       positionModelMenu();
     }, { passive: true });
+    // 「回到底部」的 bottom 是按 composerDock 高度写的内联值。后台任务条
+    // 出现/增行、软键盘顶起视口时 dock 会变高,但那些路径并不都经过
+    // updateJumpButtonOffset,按钮就留在旧高度、压在任务条上——手机上一点
+    // 就误触。直接盯 dock 的尺寸,谁改都跟上。
+    if (typeof ResizeObserver === "function") {
+      new ResizeObserver(() => updateJumpButtonOffset()).observe(elements.composerDock);
+    }
+    window.visualViewport?.addEventListener("resize", updateJumpButtonOffset, { passive: true });
     new ResizeObserver(syncArtifactLayout).observe(elements.mainStage);
     if (window.visualViewport) {
       window.visualViewport.addEventListener("resize", syncAppHeight, { passive: true });
+      // iOS 只把可视视口平移、不改尺寸时不发 resize,只发 scroll。
+      window.visualViewport.addEventListener("scroll", syncAppHeight, { passive: true });
       syncAppHeight();
     }
     document.addEventListener("keydown", handleGlobalKeydown);
@@ -9644,11 +13422,21 @@
     const viewport = window.visualViewport;
     if (!viewport) return;
     document.documentElement.style.setProperty("--app-height", `${Math.round(viewport.height * viewport.scale / UI_SCALE)}px`);
+    // 外壳缩到可视视口之后文档已经没得可滚,但 Safari 在键盘弹出的瞬间已经
+    // 先滚过一次了,那段偏移要收回来,否则页面停在外壳底部的空白上。捏合放大
+    // 时用户是在自己平移视口,这时不能抢方向盘。
+    if (viewport.scale <= 1.01 && (window.scrollY || window.scrollX)) window.scrollTo(0, 0);
   }
 
   function initialize() {
     renderIconSlots();
-    if (window.location.hash.includes("console")) consoleOpen();
+    // 设置子页的默认值要先落定,深链再按 hash 覆盖,否则默认值会把深链盖掉。
+    setSettingsView("interface");
+    const deepLink = parseConsoleHash();
+    if (deepLink) {
+      if (deepLink.panel === "settings" && deepLink.view) setSettingsView(deepLink.view);
+      consoleOpen(deepLink.panel);
+    }
     setTheme(safeStorageGet("miyu.web.theme") || "graphite", false);
     const storedScheme = safeStorageGet("miyu.web.colorScheme");
     if (storedScheme) setColorScheme(storedScheme, false);
@@ -9656,13 +13444,14 @@
     setChatFontSize(safeStorageGet("miyu.web.chatFontSize") || "15px", false);
     setReasoningExpanded(safeStorageGet("miyu.web.reasoningExpanded") === "true", false);
     setToolExpanded(safeStorageGet("miyu.web.toolExpanded") === "true", false);
+    // 没存过就是开(默认开),所以只认显式的 "false"
+    setProcCollapse(safeStorageGet("miyu.web.procCollapse") !== "false", false);
     const artifactRatio = Number(safeStorageGet("miyu.web.artifactWidthRatio.v2"));
     if (Number.isFinite(artifactRatio) && artifactRatio >= 0.25 && artifactRatio <= 0.9) {
       state.artifactWidthRatio = artifactRatio;
     }
     setSidebarCollapsed(safeStorageGet("miyu.web.sidebarCollapsed") === "true");
     syncArtifactLayout();
-    setSettingsView("interface");
     bindEvents();
     resizeComposer();
     updateSettingsControls();
@@ -9671,6 +13460,11 @@
     window.MiyuCommands?.load(apiRequest);
     // 灯箱自己不会画图标（图标集在这边），把工厂函数递过去。
     window.MiyuLightbox?.init({ makeIconSlot });
+    window.MiyuPreview?.init({ makeIconSlot, formatFileSize });
+    window.MiyuLinkCards?.init({ makeIconSlot, contentAdded });
+    // 高亮和链接卡片的 settle 通道会在流停下来之后才改正文高度,那时已经没有
+    // 下一条 delta 来触发滚动了,得让它们自己叫一声。
+    window.MiyuHighlight?.init({ contentAdded });
     startBrailleTicker();
     // G2:页面不可见时给 body 挂 miyu-paused,CSS 据此暂停全部装饰动画。
     // 实测(Xvfb+Chrome)不挂这个时隐藏窗口的合成负载与可见时完全一样。

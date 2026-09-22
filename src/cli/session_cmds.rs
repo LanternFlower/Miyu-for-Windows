@@ -8,15 +8,17 @@ use crate::cli::args::{ModelsArgs, SessionCommand};
 use crate::cli::exit_code::usage_error;
 use crate::cli::model_cmds::{run_models_for_session, session_model_override_snapshot};
 use crate::cli::pop_cmds::{print_pop_outcome, PopOutcome};
-use crate::cli::repl::session::{session_admin, session_admin_streaming, SessionListEntry};
+use crate::cli::repl::session::{
+    sandbox_tag, session_admin, session_admin_streaming, SessionListEntry,
+};
 use crate::cli::turn_request::{
     create_named_session, list_managed_sessions, resolve_managed_session,
 };
-use crate::i18n::text as t;
-use crate::ipc::{Command as IpcCommand, SessionRef, SessionState};
-use crate::paths::MiyuPaths;
-use crate::state::StateStore;
 use anyhow::Result;
+use miyu_base::i18n::text as t;
+use miyu_base::paths::MiyuPaths;
+use miyu_core::ipc::{Command as IpcCommand, SessionRef, SessionState};
+use miyu_core::state::StateStore;
 use serde_json::{json, Value};
 use std::io::{self, IsTerminal, Write};
 
@@ -39,18 +41,14 @@ fn print_session_table(entries: &[SessionListEntry]) {
     }
     for (index, entry) in entries.iter().enumerate() {
         let current = if entry.is_current { "*" } else { " " };
-        let workspace = entry
-            .workspace
-            .as_deref()
-            .map(|path| format!("  @{path}"))
-            .unwrap_or_default();
+        let sandbox = sandbox_tag(entry);
         println!(
             "{current}{:>3}  {:<6} {:>4}  {}{}  {}",
             index + 1,
             entry.mode,
             entry.turns,
             entry.name,
-            workspace,
+            sandbox,
             format_args!("\x1b[2m{}\x1b[0m", entry.snippet),
         );
     }
@@ -72,7 +70,7 @@ async fn session_detail(paths: &MiyuPaths, entry: &SessionListEntry) -> Result<V
         cumulative_tokens,
         cumulative_prompt_tokens,
         cumulative_cache_read_tokens,
-        workspace,
+        sandbox,
         ..
     } = state;
     let models = session_model_override_snapshot(paths, Some(&entry.id))?;
@@ -83,7 +81,8 @@ async fn session_detail(paths: &MiyuPaths, entry: &SessionListEntry) -> Result<V
         "is_current": entry.is_current,
         "turn_count": entry.turns,
         "last_user_content": entry.snippet,
-        "workspace": workspace.or_else(|| entry.workspace.clone()),
+        "sandbox": sandbox.or_else(|| entry.sandbox.clone()),
+        "sandbox_read_all": entry.sandbox_read_all,
         "context_tokens": context_tokens,
         "context_window": context_window,
         "context_window_assumed": context_window_assumed,
@@ -105,12 +104,23 @@ fn print_session_detail(detail: &Value) {
             })
             .unwrap_or_else(|| "-".to_string())
     };
+    let sandbox = match field("sandbox") {
+        root if root != "-"
+            && detail
+                .get("sandbox_read_all")
+                .and_then(Value::as_bool)
+                .unwrap_or(false) =>
+        {
+            format!("{root}  [{}]", t("writes only", "只锁写"))
+        }
+        root => root,
+    };
     let rows = [
         (t("session", "会话"), field("name")),
         ("id", field("session_id")),
         (t("mode", "模式"), field("mode")),
         (t("turns", "轮数"), field("turn_count")),
-        (t("workspace", "工作区"), field("workspace")),
+        (t("sandbox", "沙盒"), sandbox),
         (
             t("context", "上下文"),
             format!("{} / {}", field("context_tokens"), field("context_window")),
@@ -303,20 +313,26 @@ pub(in crate::cli) async fn run_session_command(
                 Some(&entry.id),
             )
             .await
+            .map(|_| ())
         }
-        SessionCommand::Workspace { target, dir, clear } => {
+        SessionCommand::Sandbox {
+            target,
+            dir,
+            clear,
+            allow_read,
+        } => {
             let entry = resolve_managed_session(paths, &target).await?;
             if !clear && dir.is_none() {
-                println!(
-                    "{}",
-                    entry
-                        .workspace
-                        .as_deref()
-                        .unwrap_or(t("(no workspace bound)", "(未绑定工作区)"))
-                );
+                match entry.sandbox.as_deref() {
+                    Some(root) if entry.sandbox_read_all => {
+                        println!("{root}  [{}]", t("writes only", "只锁写"))
+                    }
+                    Some(root) => println!("{root}"),
+                    None => println!("{}", t("(no sandbox bound)", "(未绑定沙盒)")),
+                }
                 return Ok(());
             }
-            let path = match dir {
+            let root = match dir {
                 Some(dir) => Some(std::fs::canonicalize(&dir).map_err(|error| {
                     usage_error(format!(
                         "{}: {} ({error})",
@@ -328,20 +344,26 @@ pub(in crate::cli) async fn run_session_command(
             };
             session_admin(
                 paths,
-                IpcCommand::SetWorkspace {
+                IpcCommand::SetSandbox {
                     target: session_ref(&entry),
-                    path: path.clone(),
+                    root: root.clone(),
+                    allow_read,
                 },
             )
             .await?;
-            match path {
-                Some(path) => println!(
-                    "{}: {} → {}",
-                    t("workspace bound", "已绑定工作区"),
+            match root {
+                Some(root) => println!(
+                    "{}: {} → {}{}",
+                    t("sandbox bound", "已绑定沙盒"),
                     entry.name,
-                    path.display()
+                    root.display(),
+                    if allow_read {
+                        format!("  [{}]", t("writes only", "只锁写"))
+                    } else {
+                        String::new()
+                    }
                 ),
-                None => println!("{}: {}", t("workspace cleared", "已解绑工作区"), entry.name),
+                None => println!("{}: {}", t("sandbox cleared", "已解绑沙盒"), entry.name),
             }
             Ok(())
         }

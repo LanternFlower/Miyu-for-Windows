@@ -13,7 +13,7 @@ use std::sync::Arc;
 /// 传 None——`parse_size(None)` 的语义正是「铺满整个终端」。
 #[test]
 fn every_tool_image_gets_a_size_not_just_memes() {
-    let config = crate::config::AppConfig::default();
+    let config = miyu_base::config::AppConfig::default();
     // 没有一个工具可以拿着 None 去调 print_image_file。
     for name in [
         "generate_image",
@@ -44,11 +44,17 @@ fn every_tool_image_gets_a_size_not_just_memes() {
 fn repl_history_is_capped() {
     let mut history = Vec::new();
     for i in 0..(REPL_HISTORY_LIMIT + 100) {
-        push_history_capped(&mut history, &format!("entry-{i}"));
+        push_history_capped(&mut history, ReplHistoryEntry::plain(&format!("entry-{i}")));
     }
     assert_eq!(history.len(), REPL_HISTORY_LIMIT);
-    assert_eq!(history.first().map(String::as_str), Some("entry-100"));
-    assert_eq!(history.last().map(String::as_str), Some("entry-599"));
+    assert_eq!(
+        history.first().map(|e| e.display.as_str()),
+        Some("entry-100")
+    );
+    assert_eq!(
+        history.last().map(|e| e.display.as_str()),
+        Some("entry-599")
+    );
 }
 
 #[test]
@@ -207,7 +213,7 @@ fn ctrl_arrows_jump_by_word() {
     let paths = pop_test_paths(temp.path());
     let ctrl_left = || Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
     let ctrl_right = || Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
-    let mut editor = LiveReplEditor::new(AgentMode::Normal, Vec::new());
+    let mut editor = LiveReplEditor::new(PersonaLane::Active, Vec::new());
 
     // ASCII：三个词，从行尾往回跳到每个词首。
     editor.input = "cargo test --all".to_string();
@@ -259,7 +265,7 @@ fn ctrl_arrows_treat_placeholders_as_atomic() {
     let paths = pop_test_paths(temp.path());
     let ctrl_left = || Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
     let ctrl_right = || Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
-    let mut editor = LiveReplEditor::new(AgentMode::Normal, Vec::new());
+    let mut editor = LiveReplEditor::new(PersonaLane::Active, Vec::new());
 
     let input = "看 [Pasted 1: ~3 lines] 这段";
     let placeholders = find_repl_placeholders(input);
@@ -297,7 +303,7 @@ fn live_editor_restores_clear_screen_and_double_escape_controls() {
     let temp = tempfile::tempdir().unwrap();
     let paths = pop_test_paths(temp.path());
     let escape = || Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    let mut editor = LiveReplEditor::new(AgentMode::Normal, Vec::new());
+    let mut editor = LiveReplEditor::new(PersonaLane::Active, Vec::new());
     editor.input = "draft".to_string();
     assert!(matches!(
         editor.handle_event(escape(), &paths, true).unwrap(),
@@ -355,15 +361,91 @@ fn live_editor_restores_clear_screen_and_double_escape_controls() {
         LiveEditorAction::Submit(_)
     ));
     assert!(editor.history.is_empty());
-    editor.record_history("ordinary prompt");
-    assert_eq!(editor.history, ["ordinary prompt"]);
+    editor.record_history(ReplHistoryEntry::plain("ordinary prompt"));
+    assert_eq!(editor.history, [ReplHistoryEntry::plain("ordinary prompt")]);
+}
+
+/// 上键回忆带粘贴占位符的提交:输入框里还是 `[粘贴 1: ~3 行]`,载荷跟着
+/// 回来,再提交时照常展开成全文。以前历史存的是展开全文,回来是一堆裸行。
+#[test]
+fn recalled_history_keeps_the_paste_placeholder_alive() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = pop_test_paths(temp.path());
+    let mut editor = LiveReplEditor::new(PersonaLane::Active, Vec::new());
+    editor
+        .handle_event(
+            Event::Paste("alpha\nbeta\ngamma".to_string()),
+            &paths,
+            false,
+        )
+        .unwrap();
+    let placeholder = editor.input.clone();
+    assert!(
+        placeholder.starts_with("[粘贴 1") || placeholder.starts_with("[Pasted 1"),
+        "{placeholder}"
+    );
+    let submission = editor.submit().unwrap();
+    assert_eq!(submission.content, "alpha\nbeta\ngamma");
+    assert_eq!(submission.display_content, placeholder);
+    let entry = ReplHistoryEntry::from_submission(&submission);
+    assert_eq!(
+        entry.pasted_texts,
+        vec![Some("alpha\nbeta\ngamma".to_string())]
+    );
+    editor.record_history(entry);
+    assert!(editor.input.is_empty());
+
+    editor
+        .handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+            &paths,
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        editor.input, placeholder,
+        "回忆回来的是占位符,不是三行裸文本"
+    );
+    assert_eq!(editor.raw_pasted_lines, 0);
+    let again = editor.submit().unwrap();
+    assert_eq!(again.content, "alpha\nbeta\ngamma", "载荷跟着占位符回来了");
+}
+
+/// 历史文件:带载荷的条目落成结构体行,老的裸字符串行照旧读得懂;对话
+/// 记录里的展开全文和文件里的占位符条目认作同一条,带载荷的胜出。
+#[test]
+fn history_file_round_trips_placeholder_payloads_and_reads_old_lines() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = state_only_paths(temp.path());
+    std::fs::create_dir_all(paths.state_dir.join("repl-history")).unwrap();
+    std::fs::write(
+        paths.state_dir.join("repl-history").join("sess_a.jsonl"),
+        "\"老格式的一行\"\n",
+    )
+    .unwrap();
+    let entry = ReplHistoryEntry {
+        display: "看看这个 [粘贴 1: ~3 行] 对吗".to_string(),
+        pasted_texts: vec![Some("alpha\nbeta\ngamma".to_string())],
+        images: Vec::new(),
+    };
+    persist_repl_history_entry(&paths, "sess_a", &entry);
+
+    let mut history = vec![ReplHistoryEntry::plain("看看这个 alpha\nbeta\ngamma 对吗")];
+    assert!(refresh_repl_input_history(&mut history, &paths, "sess_a"));
+    assert_eq!(
+        history,
+        vec![entry.clone(), ReplHistoryEntry::plain("老格式的一行")],
+        "展开全文那条被文件里带载荷的同一条顶替,位置不变"
+    );
+    assert_eq!(history[0].expanded(), "看看这个 alpha\nbeta\ngamma 对吗");
+    assert!(!refresh_repl_input_history(&mut history, &paths, "sess_a"));
 }
 
 #[test]
 fn live_editor_shift_enter_inserts_newline_without_submit() {
     let temp = tempfile::tempdir().unwrap();
     let paths = pop_test_paths(temp.path());
-    let mut editor = LiveReplEditor::new(AgentMode::Normal, Vec::new());
+    let mut editor = LiveReplEditor::new(PersonaLane::Active, Vec::new());
     editor.input = "hello".to_string();
     editor.cursor = 5;
     assert!(matches!(
@@ -453,7 +535,10 @@ fn wrapped_input_rows_keep_prefix_outside_content_width() {
 
 #[test]
 fn history_browsing_requires_empty_or_clean_history_input() {
-    let history = vec!["first".to_string(), "second".to_string()];
+    let history = vec![
+        ReplHistoryEntry::plain("first"),
+        ReplHistoryEntry::plain("second"),
+    ];
 
     assert!(repl_should_browse_history("", &history, None));
     assert!(repl_should_browse_history("second", &history, Some(1)));
@@ -674,6 +759,42 @@ fn short_paste_is_not_summarized() {
     assert!(!should_summarize_pasted_text("short paste"));
 }
 
+/// 括号粘贴里的换行是 `\r`:行数要按真实行数算,内容不能粘成一行。
+#[test]
+fn carriage_return_paste_counts_lines_and_keeps_them() {
+    let mut input = String::new();
+    let mut cursor = 0;
+    let mut pasted_texts = Vec::new();
+
+    insert_pasted_text_at_cursor(
+        &mut input,
+        &mut cursor,
+        "alpha\rbeta\r\ngamma".to_string(),
+        &mut pasted_texts,
+    );
+
+    assert!(
+        input == "[Pasted 1: ~3 lines]" || input == "[粘贴 1: ~3 行]",
+        "unexpected placeholder: {input}"
+    );
+    assert_eq!(
+        pasted_texts[0].as_ref().map(|p| p.text.as_str()),
+        Some("alpha\nbeta\ngamma")
+    );
+}
+
+/// 单行粘贴按输入框折行后的行数判定,不再看死的字符数。
+#[test]
+fn single_line_paste_folds_only_when_it_fills_three_input_rows() {
+    let text = "字".repeat(100);
+    // 140 列:100 个宽字符占 200 列,折成 2 行,不折叠。
+    assert!(!should_summarize_pasted_text_for_cols(&text, 140));
+    // 60 列:折成 4 行,折叠。
+    assert!(should_summarize_pasted_text_for_cols(&text, 60));
+    // 两行短文本怎么都不折叠。
+    assert!(!should_summarize_pasted_text_for_cols("a\nb", 20));
+}
+
 #[test]
 fn insert_pasted_text_summarizes_long_clipboard_text() {
     let mut input = "前后".to_string();
@@ -777,9 +898,52 @@ fn repl_history_loads_user_messages_from_state() {
     state.start_turn("turn_2", "second", 999999).unwrap();
 
     assert_eq!(
-        load_repl_input_history(&state, &paths).unwrap(),
+        history_displays(&load_repl_input_history(&state, &paths).unwrap()),
         vec!["first".to_string(), "second".to_string()]
     );
+}
+
+/// daemon 自己合成的轮（后台任务唤醒、目标续轮）不进上键历史——它们在库里也是
+/// `role == "user"`，原来一并被当成「你说过的话」捞进来（用户 09-17）。
+#[test]
+fn repl_history_skips_synthetic_turns() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = state_only_paths(temp.path());
+    let state = StateStore::new(&paths).unwrap();
+    state.start_turn("turn_1", "first", 999999).unwrap();
+    state.complete_turn("turn_1", "reply", None).unwrap();
+    state
+        .start_turn(
+            "turn_2",
+            &format!(
+                "{}子代理「跑一下」已执行完毕：\n- job_id: j1\n这是系统自动触发的跟进，不是用户消息。</background-job-report>",
+                miyu_core::state::BACKGROUND_JOB_REPORT_TAG
+            ),
+            999999,
+        )
+        .unwrap();
+    state.complete_turn("turn_2", "跟进汇报", None).unwrap();
+    state
+        .start_turn(
+            "turn_3",
+            &format!(
+                "{}\nRound 1 of 3 — your standing objective</goal_round>",
+                miyu_core::state::GOAL_ROUND_TAG
+            ),
+            999999,
+        )
+        .unwrap();
+    state.complete_turn("turn_3", "续轮", None).unwrap();
+    state.start_turn("turn_4", "second", 999999).unwrap();
+
+    assert_eq!(
+        history_displays(&load_repl_input_history(&state, &paths).unwrap()),
+        vec!["first".to_string(), "second".to_string()]
+    );
+}
+
+fn history_displays(history: &[ReplHistoryEntry]) -> Vec<String> {
+    history.iter().map(|entry| entry.display.clone()).collect()
 }
 
 /// 两个 REPL 同时开着时，后敲的内容要能被先开的那个翻出来。
@@ -793,11 +957,19 @@ fn a_second_repl_sees_what_the_first_one_just_typed() {
     let paths = state_only_paths(temp.path());
 
     // REPL#2 先开：拿到一份当时的快照。
-    let mut second_repl_history = vec!["老条目".to_string()];
+    let mut second_repl_history = vec![ReplHistoryEntry::plain("老条目")];
 
     // REPL#1 后敲了两条（提交前就落盘，与生产路径一致）。
-    persist_repl_history_entry(&paths, "sess_a", "cargo test --all");
-    persist_repl_history_entry(&paths, "sess_a", "看一下 tokio 的文档");
+    persist_repl_history_entry(
+        &paths,
+        "sess_a",
+        &ReplHistoryEntry::plain("cargo test --all"),
+    );
+    persist_repl_history_entry(
+        &paths,
+        "sess_a",
+        &ReplHistoryEntry::plain("看一下 tokio 的文档"),
+    );
 
     // REPL#2 按上键 → 现读一次。
     assert!(refresh_repl_input_history(
@@ -806,7 +978,7 @@ fn a_second_repl_sees_what_the_first_one_just_typed() {
         "sess_a"
     ));
     assert_eq!(
-        second_repl_history,
+        history_displays(&second_repl_history),
         vec![
             "老条目".to_string(),
             "cargo test --all".to_string(),
@@ -830,16 +1002,16 @@ fn repl_history_does_not_leak_across_sessions() {
     let temp = tempfile::tempdir().unwrap();
     let paths = state_only_paths(temp.path());
 
-    persist_repl_history_entry(&paths, "sess_a", "只属于 A");
-    persist_repl_history_entry(&paths, "sess_b", "只属于 B");
+    persist_repl_history_entry(&paths, "sess_a", &ReplHistoryEntry::plain("只属于 A"));
+    persist_repl_history_entry(&paths, "sess_b", &ReplHistoryEntry::plain("只属于 B"));
 
     let mut a = Vec::new();
     refresh_repl_input_history(&mut a, &paths, "sess_a");
-    assert_eq!(a, vec!["只属于 A".to_string()]);
+    assert_eq!(history_displays(&a), vec!["只属于 A".to_string()]);
 
     let mut b = Vec::new();
     refresh_repl_input_history(&mut b, &paths, "sess_b");
-    assert_eq!(b, vec!["只属于 B".to_string()]);
+    assert_eq!(history_displays(&b), vec!["只属于 B".to_string()]);
 }
 
 /// 分会话之前的全局文件仍然读得到——直接丢掉用户会觉得「历史没了」。
@@ -854,11 +1026,15 @@ fn legacy_global_history_is_still_reachable() {
         "\"分会话之前敲的\"\n",
     )
     .unwrap();
-    persist_repl_history_entry(&paths, "default", "分会话之后敲的");
+    persist_repl_history_entry(
+        &paths,
+        "default",
+        &ReplHistoryEntry::plain("分会话之后敲的"),
+    );
 
     let state = StateStore::new(&paths).unwrap();
     assert_eq!(
-        load_repl_input_history(&state, &paths).unwrap(),
+        history_displays(&load_repl_input_history(&state, &paths).unwrap()),
         vec!["分会话之前敲的".to_string(), "分会话之后敲的".to_string()]
     );
 }

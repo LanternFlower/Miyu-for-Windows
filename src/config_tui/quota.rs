@@ -5,10 +5,7 @@
 
 use crate::config_tui::*;
 
-pub(in crate::config_tui) fn edit_api_quota(
-    stdout: &mut io::Stdout,
-    config: &mut AppConfig,
-) -> Result<()> {
+pub(in crate::config_tui) fn edit_api_quota(ui: &mut Ui, config: &mut AppConfig) -> Result<()> {
     let mut selected = 0usize;
     loop {
         let options = [
@@ -22,26 +19,26 @@ pub(in crate::config_tui) fn edit_api_quota(
             ),
         ];
         draw_menu(
-            stdout,
+            ui,
             t(" LLM API QUOTA ", " 大模型额度查询 "),
             &options,
             selected,
             t("[Enter]configure [q]back", "[Enter]配置 [q]返回"),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(1),
             KeyCode::Enter | KeyCode::Char('i') => {
                 if selected == 0 {
                     edit_api_quota_accounts(
-                        stdout,
+                        ui,
                         "DeepSeek",
                         &mut config.plugins.api_quota.deepseek,
                     )?;
                 } else {
                     edit_api_quota_accounts(
-                        stdout,
+                        ui,
                         "OpenRouter",
                         &mut config.plugins.api_quota.openrouter,
                     )?;
@@ -53,7 +50,7 @@ pub(in crate::config_tui) fn edit_api_quota(
 }
 
 pub(in crate::config_tui) fn edit_api_quota_accounts(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     name: &str,
     config: &mut ApiQuotaProviderConfig,
 ) -> Result<()> {
@@ -84,7 +81,7 @@ pub(in crate::config_tui) fn edit_api_quota_accounts(
         options.push(t("New account", "新建账号").to_string());
         selected = selected.min(options.len().saturating_sub(1));
         draw_menu(
-            stdout,
+            ui,
             &format!(" {name} "),
             &options,
             selected,
@@ -100,19 +97,19 @@ pub(in crate::config_tui) fn edit_api_quota_accounts(
                 )
             },
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => {
                 selected = (selected + 1).min(options.len().saturating_sub(1))
             }
             KeyCode::Char('n') => {
-                if config.accounts.len() < 32 && add_api_quota_account(stdout, config, name)? {
+                if config.accounts.len() < 32 && add_api_quota_account(ui, config, name)? {
                     selected = config.accounts.len().saturating_sub(1);
                 }
             }
             KeyCode::Char('d') if selected < config.accounts.len() => {
-                if confirm_api_quota_delete(stdout, &config.accounts[selected].name)? {
+                if confirm_api_quota_delete(ui, &config.accounts[selected].name)? {
                     if config.accounts.len() == 1 {
                         config.accounts[0].name = "默认账号".to_string();
                         config.accounts[0].api_key.clear();
@@ -123,10 +120,10 @@ pub(in crate::config_tui) fn edit_api_quota_accounts(
                 }
             }
             KeyCode::Enter | KeyCode::Char('i') if selected < config.accounts.len() => {
-                let _ = edit_api_quota_account(stdout, name, &mut config.accounts[selected])?;
+                let _ = edit_api_quota_account(ui, name, &mut config.accounts[selected])?;
             }
             KeyCode::Enter | KeyCode::Char('i') => {
-                if config.accounts.len() < 32 && add_api_quota_account(stdout, config, name)? {
+                if config.accounts.len() < 32 && add_api_quota_account(ui, config, name)? {
                     selected = config.accounts.len().saturating_sub(1);
                 }
             }
@@ -135,10 +132,7 @@ pub(in crate::config_tui) fn edit_api_quota_accounts(
     }
 }
 
-pub(in crate::config_tui) fn confirm_api_quota_delete(
-    stdout: &mut io::Stdout,
-    account: &str,
-) -> Result<bool> {
+pub(in crate::config_tui) fn confirm_api_quota_delete(ui: &mut Ui, account: &str) -> Result<bool> {
     let options = [
         t("Cancel", "取消").to_string(),
         format!("{}: {account}", t("Delete", "删除")),
@@ -146,13 +140,13 @@ pub(in crate::config_tui) fn confirm_api_quota_delete(
     let mut selected = 0usize;
     loop {
         draw_menu(
-            stdout,
+            ui,
             t(" DELETE ACCOUNT ", " 删除账号 "),
             &options,
             selected,
             t("[Enter]confirm [q]cancel", "[Enter]确认 [q]取消"),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(false),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(1),
@@ -163,7 +157,7 @@ pub(in crate::config_tui) fn confirm_api_quota_delete(
 }
 
 pub(in crate::config_tui) fn edit_api_quota_account(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     provider: &str,
     account: &mut ApiQuotaAccountConfig,
 ) -> Result<bool> {
@@ -171,7 +165,7 @@ pub(in crate::config_tui) fn edit_api_quota_account(
         Field::new(t("Account name", "账号名称"), account.name.clone()),
         Field::new("API Key", account.api_key.clone()).sensitive(),
     ];
-    if run_form(stdout, &format!(" {provider} "), &mut fields)? {
+    if run_form(ui, &format!(" {provider} "), &mut fields)? {
         account.name = fields[0].value.trim().to_string();
         if account.name.is_empty() {
             account.name = "默认账号".to_string();
@@ -183,7 +177,7 @@ pub(in crate::config_tui) fn edit_api_quota_account(
 }
 
 pub(in crate::config_tui) fn add_api_quota_account(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     config: &mut ApiQuotaProviderConfig,
     provider: &str,
 ) -> Result<bool> {
@@ -195,7 +189,7 @@ pub(in crate::config_tui) fn add_api_quota_account(
         api_key: String::new(),
     });
     let index = config.accounts.len() - 1;
-    if edit_api_quota_account(stdout, provider, &mut config.accounts[index])? {
+    if edit_api_quota_account(ui, provider, &mut config.accounts[index])? {
         Ok(true)
     } else {
         config.accounts.pop();

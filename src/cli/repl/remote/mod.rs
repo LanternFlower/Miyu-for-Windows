@@ -4,5 +4,9 @@
 //! 单次调用与交互式 REPL 生命周期不同，分两个文件。
 mod interactive;
 mod one_shot;
+mod slash_config;
+mod slash_context;
+mod slash_session;
+mod submit;
 pub(in crate::cli) use interactive::*;
 pub(in crate::cli) use one_shot::*;

@@ -11,6 +11,9 @@ use std::path::PathBuf;
 pub struct Cli {
     #[arg(long, global = true)]
     pub debug: bool,
+    /// 只看空会话的 banner(星空 + 渐变 MIYU),按任意键退出
+    #[arg(long)]
+    pub banner: bool,
 
     /// 纯文本输出(= `--output-format text --quiet`),保留给老脚本。
     #[arg(long)]
@@ -94,10 +97,23 @@ pub enum Command {
     Voice(VoiceArgs),
     Init,
     Paths,
+    /// 家目录布局:看计划 / --apply 立刻搬 / --rollback 搬回去
+    Layout(LayoutArgs),
+    /// 包管理器:install / remove / upgrade / search / list / tap(`miyupm` 同)
+    ///
+    /// 暂不公开:帮助与补全里藏起来,显式 `miyu pm …` / `miyupm …` 行为不变。
+    #[command(hide = true)]
+    Pm(PmArgs),
+    /// 脚本查宿主信息:`miyu host <method> [params]`,令牌取自 MIYU_HOST_TOKEN
+    /// (Miyu 拉起声明了 `Capabilities:` 的脚本时注入)。给脚本用,帮助里不列。
+    #[command(hide = true)]
+    Host(HostArgs),
     Config(ConfigArgs),
     Reload,
     Models(ModelsArgs),
     ListModels,
+    /// 正名 `effort`（codex / Claude Code 的叫法），`variant`（opencode 的叫法）是别名。
+    #[command(name = "effort", alias = "variant")]
     Variant(VariantArgs),
     FishInit,
     BashInit,
@@ -119,20 +135,22 @@ pub enum Command {
     Reset(ResetArgs),
     #[command(name = "reset-memory")]
     ResetMemoryCli,
+    #[command(name = "reset-all-memory")]
+    ResetAllMemoryCli,
     Wipe(WipeArgs),
     Web(WebArgs),
     Daemon(DaemonArgs),
-    /// 进入普通模式 REPL(人格全能力)
-    Normal,
     /// 进入开发模式 REPL(极简编码形态,无人格)
     Dev,
+    /// 新手引导:人格 / 功能 / 认识你 / 终端集成 / 接模型(裸 miyu 第一次会自动进)
+    Oobe,
     /// 工具桥:以当前会话身份调用一个结构化工具(供 run_command 脚本编排)
     #[command(name = "tool-call")]
     ToolCallCmd(ToolCallArgs),
     /// MCP stdio 工具桥(claude-code 供应商内部使用,由 claude 拉起)
     #[command(name = "mcp-serve", hide = true)]
     McpServe,
-    /// 会话管理:list / new / show / delete / rename / clear / pop / compact / models / workspace
+    /// 会话管理:list / new / show / delete / rename / clear / pop / compact / models / sandbox
     Session(SessionArgs),
     /// 长驻协议模式:stdin 一行一请求(JSON),stdout 一行一事件;宿主软件把 Miyu 当后端用
     Stdio,
@@ -315,12 +333,15 @@ pub enum SessionCommand {
         target: String,
         model: Option<String>,
     },
-    /// 查看/绑定会话工作区;`--clear` 解绑
-    Workspace {
+    /// 查看/绑定会话沙盒根(Landlock);`--clear` 解绑
+    Sandbox {
         target: String,
         dir: Option<PathBuf>,
         #[arg(long, conflicts_with = "dir")]
         clear: bool,
+        /// 只锁写:读不设限(~/.ssh 与 API key 也读得到)
+        #[arg(long = "allow-read", requires = "dir", conflicts_with = "clear")]
+        allow_read: bool,
     },
 }
 

@@ -17,18 +17,20 @@
 
 pkgbase=miyu
 pkgname=('miyu' 'miyu-voice')
-pkgver=0.5.0
-pkgrel=2
+pkgver=0.6.1
+pkgrel=1
 pkgdesc='一个活在终端里的二次元少女。开箱即用的开源 AI 助手，支持接入通讯平台。'
 arch=('x86_64')
-url='https://github.com/SHORiN-KiWATA/Miyu'
+url='https://github.com/SHORiN-KiWATA/miyu-agent'
 license=('MIT' 'OFL-1.1')
 options=('!lto' '!debug')
 export LC_ALL=C.UTF-8
-depends=('alsa-lib' 'chafa' 'gcc-libs' 'glibc' 'onnxruntime' 'ripgrep')
-makedepends=('cargo' 'git' 'pkgconf')
+depends=('alsa-lib' 'chafa' 'gcc-libs' 'glibc' 'onnxruntime' 'python' 'ripgrep')
+makedepends=('cargo' 'git' 'pkgconf' 'python' 'clang' 'cmake')
 optdepends=(
   'git: update default Shorin Wiki knowledge base'
+  'libnotify: 桌面通知(kitty 以外的终端由它弹)'
+  'libcanberra: 通知提示音(没有时退到 pw-play/paplay)'
   'fish: fish shell integration support'
   'bash: bash shell integration support'
   'zsh: zsh shell integration support'
@@ -42,111 +44,72 @@ optdepends=(
 # 构建阶段无需联网。版本号必须与 Cargo.lock 里的 sherpa-onnx-sys 一致。
 _sherpa_ver=1.13.7
 _sherpa_archive="sherpa-onnx-v${_sherpa_ver}-linux-x64-static-lib.tar.bz2"
+# Ordinary releases use the version tag. A controlled patch must declare its
+# exact source commit and reason instead of silently building another branch.
+_source_ref="tag=v${pkgver}"
+_source_commit="${MIYU_RELEASE_SOURCE_COMMIT:-}"
+_wiki_commit="${MIYU_RELEASE_WIKI_COMMIT:-af99c4ac22a1be849206639807577a51b9e12061}"
+if [[ ! "${_wiki_commit}" =~ ^[0-9a-f]{40}$ ]]; then
+  printf 'MIYU_RELEASE_WIKI_COMMIT must be a full commit hash.\n' >&2
+  return 1
+fi
+if [[ -n "${_source_commit}" ]]; then
+  if [[ ! "${_source_commit}" =~ ^[0-9a-f]{40}$ || -z "${MIYU_RELEASE_PATCH_REASON:-}" ]]; then
+    printf 'A patched release requires a full source commit and explicit patch reason.\n' >&2
+    return 1
+  fi
+  _source_ref="commit=${_source_commit}"
+fi
 source=(
-  # 0.5.0-2:补丁资产从 v0.5.0 之后的 main 提交构建(claude-code 准备提示 + agy 策略文案拦截),标签不动
-  "miyu::git+${url}.git#commit=3bfcabe79fe5d8ad690bac4e26b7e917c778dc64"
-  'shorinwiki::git+https://github.com/SHORiN-KiWATA/Shorin-ArchLinux-Guide.git'
+  "miyu::git+${url}.git#${_source_ref}"
+  "shorinwiki::git+https://github.com/SHORiN-KiWATA/Shorin-ArchLinux-Guide.git#commit=${_wiki_commit}"
   "${_sherpa_archive}::https://github.com/k2-fsa/sherpa-onnx/releases/download/v${_sherpa_ver}/${_sherpa_archive}"
+  'sherpa-onnx.LICENSE::https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/917bed95c8e5c7c18aa4d69fea42e9ef8ef0a60e/LICENSE'
 )
 noextract=("${_sherpa_archive}")
 sha256sums=(
   'SKIP'
   'SKIP'
   'd1be7a69ac2b30120058d8302e624239a3064085383cfa47994a14fdc44c32d6'
+  'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30'
 )
 
 prepare() {
   cd miyu
+  local actual
+  actual="$(git rev-parse HEAD)"
+  if [[ -n "${_source_commit}" && "${actual}" != "${_source_commit}" ]]; then
+    printf 'Source checkout does not match the declared patch commit.\n' >&2
+    return 1
+  fi
+  [[ "$(git -C "${srcdir}/shorinwiki" rev-parse HEAD)" == "${_wiki_commit}" ]] || return 1
   cargo fetch --locked --target "${CARCH}-unknown-linux-gnu"
 }
 
 build() {
   cd miyu
-  SHERPA_ONNX_ARCHIVE_DIR="${srcdir}" cargo build --release --locked --features voice
+  SHERPA_ONNX_ARCHIVE_DIR="${srcdir}" cargo build --release --locked --features voice --target "${CARCH}-unknown-linux-gnu"
 }
 
 package_miyu() {
-  depends=('alsa-lib' 'chafa' 'gcc-libs' 'glibc' 'onnxruntime' 'ripgrep')
-  optdepends=(
-    'miyu-voice: voice wake word + speech recognition front end'
-    'git: update default Shorin Wiki knowledge base'
-    'fish: fish shell integration support'
-    'bash: bash shell integration support'
-    'zsh: zsh shell integration support'
-  )
+  depends=('alsa-lib' 'chafa' 'gcc-libs' 'glibc' 'onnxruntime' 'python' 'ripgrep')
+  optdepends=('miyu-voice: voice front end' 'git: update default Shorin Wiki knowledge base'
+    'libnotify: 桌面通知(kitty 以外的终端由它弹)'
+    'libcanberra: 通知提示音(没有时退到 pw-play/paplay)')
   cd miyu
-  install -Dm755 "target/release/miyu" "${pkgdir}/usr/bin/miyu"
-  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
-  install -Dm644 "assets/fonts/NotoSansCJK-Regular.ttc" "${pkgdir}/usr/share/miyu/fonts/NotoSansCJK-Regular.ttc"
-  install -Dm644 "assets/fonts/NotoColorEmoji.ttf" "${pkgdir}/usr/share/miyu/fonts/NotoColorEmoji.ttf"
-  install -Dm644 "assets/fonts/JetBrainsMono-Regular.ttf" "${pkgdir}/usr/share/miyu/fonts/JetBrainsMono-Regular.ttf"
-  install -Dm644 "assets/fonts/NotoSansCJK.LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/NotoSansCJK.LICENSE"
-  install -Dm644 "assets/fonts/NotoColorEmoji.LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/NotoColorEmoji.LICENSE"
-  install -Dm644 "assets/fonts/JetBrainsMono.LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/JetBrainsMono.LICENSE"
-
-  # 内置本地 embedding 模型（语义检索辅助；运行库来自 onnxruntime-cpu）
-  while IFS= read -r -d '' file; do
-    local rel="${file#assets/models/}"
-    install -Dm644 "${file}" "${pkgdir}/usr/share/miyu/models/${rel}"
-  done < <(find assets/models -mindepth 2 -type f -print0 | sort -z)
-  install -Dm644 "assets/models/bge-small-zh-v1.5-int8/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/bge-small-zh-v1.5.LICENSE"
-
-  if [[ -d src/memes ]]; then
-    while IFS= read -r -d '' file; do
-      local rel="${file#src/memes/}"
-      install -Dm644 "${file}" "${pkgdir}/usr/share/miyu/memes/${rel}"
-    done < <(find src/memes -type f \( -name '*.json' -o -name '*.jpg' -o -name '*.jpeg' -o -name '*.png' -o -name '*.gif' -o -name '*.webp' \) -print0 | sort -z)
-  fi
-
-  if [[ -d src/scripts ]]; then
-    while IFS= read -r -d '' file; do
-      local rel="${file#src/scripts/}"
-      install -Dm755 "${file}" "${pkgdir}/usr/share/miyu/scripts/${rel}"
-    done < <(find src/scripts -type f -print0 | sort -z)
-  fi
-
-  # Default knowledge base: kb (from miyu repo)
-  local kb_dir="${srcdir}/miyu/kb"
-  if [[ -d "${kb_dir}" ]]; then
-    while IFS= read -r -d '' file; do
-      local rel="${file#${kb_dir}/}"
-      case "/${rel}" in
-        */.git/*|*/pictures/*|*/legacy/*|*/Legacy/*|*/lagacy/*|*/Lagacy/*|*/Wikis/*) continue ;;
-      esac
-      install -Dm644 "${file}" "${pkgdir}/usr/share/miyu/default-kb/kb/${rel}"
-    done < <(find "${kb_dir}" -type f -name '*.md' -print0 | sort -z)
-  fi
-
-  # Default knowledge base: shorinwiki (from shorinwiki source, wiki/ subdir)
-  local wiki_dir="${srcdir}/shorinwiki/wiki"
-  if [[ -d "${wiki_dir}" ]]; then
-    while IFS= read -r -d '' file; do
-      local rel="${file#${wiki_dir}/}"
-      case "/${rel}" in
-        */.git/*|*/pictures/*|*/legacy/*|*/Legacy/*|*/lagacy/*|*/Lagacy/*|*/Wikis/*) continue ;;
-      esac
-      install -Dm644 "${file}" "${pkgdir}/usr/share/miyu/default-kb/shorinwiki/${rel}"
-    done < <(find "${wiki_dir}" -type f -name '*.md' -print0 | sort -z)
-  fi
-
-  # Default knowledge base: manifest
-  install -d "${pkgdir}/usr/share/miyu/default-kb/manifest"
-  cat > "${pkgdir}/usr/share/miyu/default-kb/manifest/manifest.json" <<EOF
-{
-  "name": "miyu-default-kb",
-  "generated_by": "miyu-release PKGBUILD"
-}
-EOF
-  local sw_commit
-  sw_commit="$(git -C "${srcdir}/shorinwiki" rev-parse HEAD 2>/dev/null || echo '')"
-  printf '%s\n' "${sw_commit}" > "${pkgdir}/usr/share/miyu/default-kb/manifest/shorinwiki.commit"
+  python packaging/ci/lib/arch_package.py source-install \
+    --source "${srcdir}/miyu" --wiki "${srcdir}/shorinwiki" \
+    --wiki-commit "${_wiki_commit}" --component core --destination "${pkgdir}/usr"
 }
 
 package_miyu-voice() {
-  pkgdesc='Miyu 语音前端：唤醒词 + 本地语音识别(SenseVoice / sherpa-onnx)，可选组件'
-  depends=('miyu' 'alsa-lib' 'gcc-libs' 'glibc')
+  license=('MIT' 'Apache-2.0')
+  pkgdesc='Miyu voice wake word and speech recognition front end'
+  depends=("miyu=${pkgver}-${pkgrel}" 'alsa-lib' 'bzip2' 'gcc-libs' 'glibc')
   optdepends=('libnotify: desktop notifications when Miyu hears you')
   cd miyu
-  install -Dm755 "target/release/miyu-voice" "${pkgdir}/usr/bin/miyu-voice"
-  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  python packaging/ci/lib/arch_package.py source-install \
+    --source "${srcdir}/miyu" --wiki "${srcdir}/shorinwiki" \
+    --wiki-commit "${_wiki_commit}" --component voice --destination "${pkgdir}/usr" \
+    --sherpa-license "${srcdir}/sherpa-onnx.LICENSE"
 }

@@ -23,6 +23,8 @@ DELAY_MS = int(os.environ.get("STUB_DELAY_MS", "60"))
 IMAGE = os.environ.get("STUB_IMAGE", "/tmp/blue.png")
 IMAGE_SIZE = os.environ.get("STUB_IMAGE_SIZE", "24x4")
 LOG = os.environ.get("STUB_LOG", "stub-requests.jsonl")
+# 给全屏走查用:把正文换成指定的一整段(表格、公式之类的版式样本)。
+TEXT = os.environ.get("STUB_TEXT", "")
 _lock = threading.Lock()
 
 
@@ -89,6 +91,11 @@ class Handler(BaseHTTPRequestHandler):
                 tool_call("load_tools", {"names": ["group:images"]})
             elif stage == "print_image":
                 tool_call("print_image", {"image": IMAGE, "size": IMAGE_SIZE})
+            elif stage == "text" and TEXT:
+                # 整段一次吐完:全屏那边要验的是表格/公式排版,不是流式节奏。
+                sse({**base, "choices": [{"index": 0, "delta": {"content": TEXT},
+                                          "finish_reason": None}]})
+                sse({**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
             elif stage == "text":
                 for i in range(LINES):
                     sse({

@@ -9,26 +9,45 @@
 
 mod draw;
 mod form;
+mod input;
 mod select;
+mod ui;
 pub(in crate::config_tui) use draw::*;
 pub(in crate::config_tui) use form::*;
+pub(in crate::config_tui) use input::*;
 pub(in crate::config_tui) use select::*;
+pub(in crate::config_tui) use ui::*;
 
 use crate::config_tui::*;
+use miyu_base::terminal::palette::CORAL;
 
 /// 子界面出错时的兜底提示:错误只作废当次表单输入,绝不让它穿透主循环
 /// 把 TUI 崩出(崩出会连带丢掉本次全部未保存修改)。
-pub(in crate::config_tui) fn show_tui_error(
-    stdout: &mut io::Stdout,
-    error: &anyhow::Error,
-) -> Result<()> {
-    let options = vec![
-        format!("{error:#}"),
-        t("Press any key to go back", "按任意键返回").to_string(),
-    ];
-    draw_menu(stdout, t(" ERROR ", " 错误 "), &options, 1, "")?;
-    let _ = read_key()?;
-    Ok(())
+pub(in crate::config_tui) fn show_tui_error(ui: &mut Ui, error: &anyhow::Error) -> Result<()> {
+    let text = format!("{error:#}");
+    let cx = ui.cx();
+    let theme = ui.theme();
+    wait_for_key(ui, move |ui| {
+        let mut body: Vec<ratatui::text::Line<'static>> =
+            vec![cx.txt(t("Something went wrong", "出错了"), theme.fg(CORAL))];
+        body.push(miyu_base::terminal::chrome::nil());
+        body.extend(
+            miyu_base::terminal::chrome::wrap(&text, miyu_base::terminal::chrome::body_w())
+                .into_iter()
+                .map(|line| cx.txt(line, ratatui::style::Style::new())),
+        );
+        ui.show(
+            "",
+            miyu_base::terminal::chrome::View {
+                body,
+                keys: vec![(
+                    t("any key", "任意键").to_string(),
+                    t("back", "返回").to_string(),
+                )],
+                ..Default::default()
+            },
+        )
+    })
 }
 
 pub(in crate::config_tui) fn format_text_file(content: &str) -> String {
@@ -54,7 +73,7 @@ pub(in crate::config_tui) struct FcitxState {
 }
 
 impl FcitxState {
-    pub(in crate::config_tui) fn new() -> Self {
+    pub fn new() -> Self {
         let last_state = fcitx5_state();
         run_fcitx5_remote("-c");
         Self { last_state }

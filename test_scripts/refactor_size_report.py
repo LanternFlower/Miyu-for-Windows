@@ -49,6 +49,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
+SRC_ROOTS = [SRC] + sorted((ROOT / "crates").glob("*/src"))
 # 基线跟脚本走,不认目录名(见 arch_dep_check.py 同款修法)。
 BASELINE = Path(__file__).resolve().parent / "refactor-size-baseline.json"
 
@@ -61,6 +62,9 @@ TARGET, LIMIT, RED_LINE = 800, 1500, 2000
 # 基线已在拆分合入 main 之后重设（`--write-baseline`），所以这条比的是
 # 「相对当前主线」的增长，而不再是「相对拆分前」。日常加功能会让它慢慢逼近
 # 上限，届时再重设一次基线即可——它拦的是「一次改动里凭空多出几千行」。
+# 上次重设：2026-09-20 发 0.6.1 时。09-17 那份基线（293,598 行）到发版前已经
+# 涨到 315,572（+7.5%），涨出来的是 mermaid 渲染、设置界面重画、子代理会话化
+# 这批真功能，不是复制代码——逐个文件比过，没有一个越上限或红线。
 GROWTH_TOLERANCE = 0.03
 # 超标文件允许的小额增长。解依赖时 `use crate::cli::{a, b}` 拆成两行就是 +1，
 # 卡死在 0 会把合理的机械改动也拦下来。留一点余量，但仍然拦得住「这个文件
@@ -102,7 +106,7 @@ def test_line_count(lines):
 
 def collect():
     rows = {}
-    for path in sorted(SRC.rglob("*.rs")):
+    for path in sorted(p for r in SRC_ROOTS for p in r.rglob("*.rs")):
         lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
         rel = str(path.relative_to(ROOT))
         rows[rel] = {"total": len(lines), "tests": test_line_count(lines)}

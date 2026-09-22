@@ -16,8 +16,8 @@ pub(in crate::config_tui) use emotion::*;
 pub(in crate::config_tui) use identity::*;
 pub(in crate::config_tui) use reply::*;
 
-use crate::config::{ModelPoolRef, ModelTier};
 use crate::config_tui::*;
+use miyu_base::config::{ModelPoolRef, ModelTier};
 
 pub(in crate::config_tui) fn real_context_values(
     config: &AppConfig,
@@ -47,7 +47,7 @@ pub(in crate::config_tui) fn apply_real_context_values(
 }
 
 pub(in crate::config_tui) fn edit_real_context(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     paths: &MiyuPaths,
     config: &mut AppConfig,
 ) -> Result<()> {
@@ -93,19 +93,19 @@ pub(in crate::config_tui) fn edit_real_context(
             t("Identity mappings", "识人映射").to_string(),
         ];
         draw_menu(
-            stdout,
+            ui,
             t(" GROUP REAL CONTEXT ", " 群聊真实上下文回复 "),
             &options,
             selected,
             "",
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Char('q') | KeyCode::Esc => {
                 settings.normalize();
                 let mut candidate = config.clone();
                 apply_real_context_values(&mut candidate, enabled, &settings);
                 if let Err(error) = candidate.validate() {
-                    message(stdout, &error.to_string())?;
+                    message(ui, &error.to_string())?;
                 } else {
                     apply_real_context_values(config, enabled, &settings);
                     return Ok(());
@@ -114,9 +114,9 @@ pub(in crate::config_tui) fn edit_real_context(
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter => match selected {
-                0 => enabled = select_bool(stdout, t("Plugin", "插件状态"), enabled)?,
+                0 => enabled = select_bool(ui, t("Plugin", "插件状态"), enabled)?,
                 1 => select_plugin_pool_ref(
-                    stdout,
+                    ui,
                     config,
                     t("Reply judge", "回复判定"),
                     t("inherits conversation pool", "继承会话池"),
@@ -124,7 +124,7 @@ pub(in crate::config_tui) fn edit_real_context(
                     &mut settings.text_models,
                 )?,
                 2 => select_plugin_pool_ref(
-                    stdout,
+                    ui,
                     config,
                     t("Affection", "好感度"),
                     t("inherits reply judge", "继承回复判定"),
@@ -132,28 +132,28 @@ pub(in crate::config_tui) fn edit_real_context(
                     &mut settings.affection_text_models,
                 )?,
                 3 => edit_real_context_number(
-                    stdout,
+                    ui,
                     t("Reply context window", "回复上下文消息数"),
                     settings.reply_context_window,
                     &mut settings,
                     |candidate, value| candidate.reply_context_window = value,
                 )?,
-                4 => edit_real_context_history(stdout, &mut settings)?,
+                4 => edit_real_context_history(ui, &mut settings)?,
                 5 => match StateStore::new(paths) {
-                    Ok(state) => edit_real_context_active_reply(stdout, &state, &mut settings)?,
+                    Ok(state) => edit_real_context_active_reply(ui, &state, &mut settings)?,
                     Err(error) => message(
-                        stdout,
+                        ui,
                         &format!(
                             "{}: {error}",
                             t("Unable to open persistent state", "无法打开持久状态数据库")
                         ),
                     )?,
                 },
-                6 => edit_real_context_reply_target(stdout, &mut settings)?,
-                7 => edit_real_context_moderation(stdout, &mut settings)?,
-                8 => edit_real_context_affection(stdout, config, &mut settings)?,
-                9 => edit_real_context_emotion(stdout, &mut settings)?,
-                10 => edit_real_context_identities(stdout, &mut settings)?,
+                6 => edit_real_context_reply_target(ui, &mut settings)?,
+                7 => edit_real_context_moderation(ui, &mut settings)?,
+                8 => edit_real_context_affection(ui, config, &mut settings)?,
+                9 => edit_real_context_emotion(ui, &mut settings)?,
+                10 => edit_real_context_identities(ui, &mut settings)?,
                 _ => {}
             },
             _ => {}
@@ -162,7 +162,7 @@ pub(in crate::config_tui) fn edit_real_context(
 }
 
 pub(in crate::config_tui) fn edit_real_context_history(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     settings: &mut RealContextPluginSettings,
 ) -> Result<()> {
     loop {
@@ -174,7 +174,7 @@ pub(in crate::config_tui) fn edit_real_context_history(
             settings.group_member_search_max_results.to_string(),
         )];
         if !run_form(
-            stdout,
+            ui,
             t(" GROUP MEMBER INFORMATION ", " 群成员信息查询 "),
             &mut fields,
         )? {
@@ -190,7 +190,7 @@ pub(in crate::config_tui) fn edit_real_context_history(
                 *settings = candidate;
                 return Ok(());
             }
-            Err(error) => message(stdout, &error)?,
+            Err(error) => message(ui, &error)?,
         }
     }
 }
@@ -217,7 +217,7 @@ where
 }
 
 pub(in crate::config_tui) fn edit_real_context_number<T>(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     label: &'static str,
     current: T,
     settings: &mut RealContextPluginSettings,
@@ -227,13 +227,13 @@ where
     T: Copy + ToString + std::str::FromStr,
 {
     loop {
-        let Some(raw) = edit_inline_value(stdout, label, &current.to_string(), false)? else {
+        let Some(raw) = edit_inline_value(ui, label, &current.to_string(), false)? else {
             return Ok(());
         };
         let value = match raw.trim().parse() {
             Ok(value) => value,
             Err(_) => {
-                message(stdout, t("Invalid value.", "数值无效。"))?;
+                message(ui, t("Invalid value.", "数值无效。"))?;
                 continue;
             }
         };
@@ -244,24 +244,7 @@ where
                 *settings = candidate;
                 return Ok(());
             }
-            Err(error) => message(stdout, &error.to_string())?,
+            Err(error) => message(ui, &error.to_string())?,
         }
-    }
-}
-
-pub(in crate::config_tui) fn real_context_media_mode_label(value: &str) -> &'static str {
-    match value {
-        "off" => t("Off", "不记录"),
-        "metadata" => t("Metadata", "保留元数据"),
-        _ => t("Placeholder", "仅占位"),
-    }
-}
-
-pub(in crate::config_tui) fn real_context_media_mode_value(value: &str) -> Option<&'static str> {
-    match value.trim() {
-        "off" | "Off" | "不记录" => Some("off"),
-        "placeholder" | "Placeholder" | "仅占位" => Some("placeholder"),
-        "metadata" | "Metadata" | "保留元数据" => Some("metadata"),
-        _ => None,
     }
 }

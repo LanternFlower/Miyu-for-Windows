@@ -4,27 +4,30 @@
 //! （`field_display_value`）——密钥要显示成掩码，布尔要显示成「开/关」。
 
 use crate::config_tui::*;
+use miyu_base::terminal::chrome::{ln, nil, View};
+use miyu_base::terminal::palette::{BLUE, DIM};
+use ratatui::text::{Line, Span};
 
 pub(in crate::config_tui) fn edit_u16_value(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     label: &'static str,
     current: u16,
 ) -> Result<Option<u16>> {
     let mut fields = vec![Field::new(label, current.to_string())];
-    if !run_form_editing(stdout, t(" EDIT VALUE ", " 编辑数值 "), &mut fields)? {
+    if !run_form_editing(ui, t(" EDIT VALUE ", " 编辑数值 "), &mut fields)? {
         return Ok(None);
     }
     match fields[0].value.trim().parse() {
         Ok(value) => Ok(Some(value)),
         Err(_) => {
-            message(stdout, t("Invalid number.", "数值无效。"))?;
+            message(ui, t("Invalid number.", "数值无效。"))?;
             Ok(None)
         }
     }
 }
 
 pub(in crate::config_tui) fn edit_inline_value(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     title: &str,
     current: &str,
     sensitive: bool,
@@ -34,16 +37,14 @@ pub(in crate::config_tui) fn edit_inline_value(
     let mut fcitx = FcitxState::new();
     fcitx.enter_editing();
     loop {
-        draw_inline_editor(stdout, title, &value, cursor, sensitive)?;
-        match read_key()? {
+        draw_inline_editor(ui, title, &value, cursor, sensitive)?;
+        match read_key(ui)? {
             KeyCode::Esc => {
                 fcitx.leave_editing();
-                execute!(stdout, Hide)?;
                 return Ok(None);
             }
             KeyCode::Enter => {
                 fcitx.leave_editing();
-                execute!(stdout, Hide)?;
                 return Ok(Some(value));
             }
             KeyCode::Left => cursor = cursor.saturating_sub(1),
@@ -58,60 +59,45 @@ pub(in crate::config_tui) fn edit_inline_value(
     }
 }
 
+/// 单行输入框。整屏只有这一件事，所以正文区就放它：一条输入行 + 底下一根
+/// 线（线的颜色区分「正在打字」）。
 pub(in crate::config_tui) fn draw_inline_editor(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     title: &str,
     value: &str,
     cursor: usize,
     sensitive: bool,
 ) -> Result<()> {
-    let (cols, rows) = terminal::size()?;
-    let width = 72_u16.min(cols.saturating_sub(2)).max(12);
-    let height = rows.clamp(1, 6);
-    let x = cols.saturating_sub(width) / 2;
-    let y = rows.saturating_sub(height) / 2;
-    let capacity = width.saturating_sub(4) as usize;
-    let chars = value.chars().collect::<Vec<_>>();
-    let cursor = cursor.min(chars.len());
-    let start = cursor
-        .saturating_sub(capacity.saturating_sub(1))
-        .min(chars.len().saturating_sub(capacity));
-    let end = (start + capacity).min(chars.len());
-    let visible = if sensitive {
-        "*".repeat(end.saturating_sub(start))
-    } else {
-        chars[start..end].iter().collect::<String>()
-    };
-
-    queue!(stdout, Hide, Clear(ClearType::All))?;
-    draw_box(stdout, x, y, width, height, title)?;
-    queue!(
-        stdout,
-        MoveTo(x + 2, y + 2),
-        Print(pad(&visible, capacity)),
-        MoveTo(x + 2, y + 4),
-        SetAttribute(Attribute::Dim),
-        Print(truncate(
-            t("[Enter]save  [Esc]cancel", "[Enter]保存  [Esc]取消"),
-            capacity,
-        )),
-        SetAttribute(Attribute::Reset),
-        MoveTo(
-            x + 2 + u16::try_from(cursor.saturating_sub(start)).unwrap_or(u16::MAX),
-            y + 2,
-        ),
-        Show,
-    )?;
-    stdout.flush()?;
-    Ok(())
+    let cx = ui.cx();
+    let (lines, caret_row, caret_col) = cx.field_at(value, "", true, true, sensitive, cursor);
+    let mut body = vec![nil()];
+    let base = body.len();
+    body.extend(lines);
+    ui.show(
+        title,
+        View {
+            cursor_row: base + caret_row,
+            caret: Some((base + caret_row, caret_col)),
+            body,
+            keys: vec![
+                (
+                    t("←→ Home/End", "←→ Home/End").to_string(),
+                    t("move caret", "移动光标").to_string(),
+                ),
+                ("⏎".to_string(), t("save", "保存").to_string()),
+                ("Esc".to_string(), t("cancel", "取消").to_string()),
+            ],
+            ..View::default()
+        },
+    )
 }
 
 pub(in crate::config_tui) fn run_form(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     title: &str,
     fields: &mut [Field],
 ) -> Result<bool> {
-    run_form_from(stdout, title, fields, false)
+    run_form_from(ui, title, fields, false)
 }
 
 /// `start_editing` puts the caret in the first field straight away, for forms
@@ -119,15 +105,15 @@ pub(in crate::config_tui) fn run_form(
 /// was, Enter said "change it", so a second Enter to begin typing is a keypress
 /// that asks a question nobody had.
 pub(in crate::config_tui) fn run_form_editing(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     title: &str,
     fields: &mut [Field],
 ) -> Result<bool> {
-    run_form_from(stdout, title, fields, true)
+    run_form_from(ui, title, fields, true)
 }
 
 pub(in crate::config_tui) fn run_form_from(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     title: &str,
     fields: &mut [Field],
     start_editing: bool,
@@ -153,8 +139,8 @@ pub(in crate::config_tui) fn run_form_from(
         .map(|field| field.value.chars().count())
         .collect::<Vec<_>>();
     loop {
-        draw_form(stdout, title, fields, selected, editing, &cursors, true)?;
-        match read_key()? {
+        draw_form(ui, title, fields, selected, editing, &cursors, true)?;
+        match read_key(ui)? {
             KeyCode::Esc if editing => {
                 fcitx.leave_editing();
                 editing = false;
@@ -168,7 +154,7 @@ pub(in crate::config_tui) fn run_form_from(
             KeyCode::Enter if !editing && selected == fields.len() + 1 => return Ok(false),
             KeyCode::Enter if !editing && fields[selected].boolean => {
                 let value = select_bool(
-                    stdout,
+                    ui,
                     fields[selected].label,
                     parse_bool_field(&fields[selected].value)?,
                 )?;
@@ -177,7 +163,7 @@ pub(in crate::config_tui) fn run_form_from(
             }
             KeyCode::Enter if !editing && !fields[selected].multi_choices.is_empty() => {
                 fields[selected].value = select_multi_choice(
-                    stdout,
+                    ui,
                     fields[selected].label,
                     &fields[selected].value,
                     &fields[selected].multi_choices.clone(),
@@ -186,7 +172,7 @@ pub(in crate::config_tui) fn run_form_from(
             }
             KeyCode::Enter if !editing && fields[selected].modalities => {
                 fields[selected].value = select_multi_choice(
-                    stdout,
+                    ui,
                     fields[selected].label,
                     &fields[selected].value,
                     &["text", "image", "audio", "video", "pdf"]
@@ -198,7 +184,7 @@ pub(in crate::config_tui) fn run_form_from(
             }
             KeyCode::Enter if !editing && !fields[selected].choices.is_empty() => {
                 fields[selected].value = select_choice(
-                    stdout,
+                    ui,
                     fields[selected].label,
                     &fields[selected].value,
                     &fields[selected].choices,
@@ -208,15 +194,15 @@ pub(in crate::config_tui) fn run_form_from(
                 cursors[selected] = fields[selected].value.chars().count();
             }
             KeyCode::Enter if !editing && fields[selected].dialog_list => {
-                edit_dialog_list(stdout, &mut fields[selected].value)?;
+                edit_dialog_list(ui, &mut fields[selected].value)?;
                 cursors[selected] = fields[selected].value.chars().count();
             }
             KeyCode::Enter if !editing && fields[selected].string_list => {
-                edit_string_list(stdout, fields[selected].label, &mut fields[selected].value)?;
+                edit_string_list(ui, fields[selected].label, &mut fields[selected].value)?;
                 cursors[selected] = fields[selected].value.chars().count();
             }
             KeyCode::Enter if !editing && fields[selected].textarea => {
-                edit_textarea(stdout, &mut fields[selected].value)?;
+                edit_textarea(ui, &mut fields[selected].value)?;
                 cursors[selected] = fields[selected].value.chars().count();
                 if !fields[selected].sensitive {
                     return Ok(true);
@@ -263,7 +249,7 @@ pub(in crate::config_tui) fn run_form_from(
 }
 
 pub(in crate::config_tui) fn run_form_without_buttons(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     title: &str,
     fields: &mut [Field],
 ) -> Result<()> {
@@ -275,8 +261,8 @@ pub(in crate::config_tui) fn run_form_without_buttons(
         .map(|field| field.value.chars().count())
         .collect::<Vec<_>>();
     loop {
-        draw_form(stdout, title, fields, selected, editing, &cursors, false)?;
-        match read_key()? {
+        draw_form(ui, title, fields, selected, editing, &cursors, false)?;
+        match read_key(ui)? {
             KeyCode::Esc if editing => {
                 fcitx.leave_editing();
                 editing = false;
@@ -288,7 +274,7 @@ pub(in crate::config_tui) fn run_form_without_buttons(
             }
             KeyCode::Enter if !editing && fields[selected].boolean => {
                 let value = select_bool(
-                    stdout,
+                    ui,
                     fields[selected].label,
                     parse_bool_field(&fields[selected].value)?,
                 )?;
@@ -297,7 +283,7 @@ pub(in crate::config_tui) fn run_form_without_buttons(
             }
             KeyCode::Enter if !editing && !fields[selected].multi_choices.is_empty() => {
                 fields[selected].value = select_multi_choice(
-                    stdout,
+                    ui,
                     fields[selected].label,
                     &fields[selected].value,
                     &fields[selected].multi_choices.clone(),
@@ -306,7 +292,7 @@ pub(in crate::config_tui) fn run_form_without_buttons(
             }
             KeyCode::Enter if !editing && fields[selected].modalities => {
                 fields[selected].value = select_multi_choice(
-                    stdout,
+                    ui,
                     fields[selected].label,
                     &fields[selected].value,
                     &["text", "image", "audio", "video", "pdf"]
@@ -318,7 +304,7 @@ pub(in crate::config_tui) fn run_form_without_buttons(
             }
             KeyCode::Enter if !editing && !fields[selected].choices.is_empty() => {
                 fields[selected].value = select_choice(
-                    stdout,
+                    ui,
                     fields[selected].label,
                     &fields[selected].value,
                     &fields[selected].choices,
@@ -329,15 +315,15 @@ pub(in crate::config_tui) fn run_form_without_buttons(
             }
             // 短字符串列表(唤醒词):无按钮表单此前漏了这一臂,回车落到普通文本编辑。
             KeyCode::Enter if !editing && fields[selected].string_list => {
-                edit_string_list(stdout, fields[selected].label, &mut fields[selected].value)?;
+                edit_string_list(ui, fields[selected].label, &mut fields[selected].value)?;
                 cursors[selected] = fields[selected].value.chars().count();
             }
             KeyCode::Enter if !editing && fields[selected].dialog_list => {
-                edit_dialog_list(stdout, &mut fields[selected].value)?;
+                edit_dialog_list(ui, &mut fields[selected].value)?;
                 cursors[selected] = fields[selected].value.chars().count();
             }
             KeyCode::Enter if !editing && fields[selected].textarea => {
-                edit_textarea(stdout, &mut fields[selected].value)?;
+                edit_textarea(ui, &mut fields[selected].value)?;
                 cursors[selected] = fields[selected].value.chars().count();
                 if !fields[selected].sensitive {
                     return Ok(());
@@ -379,11 +365,8 @@ pub(in crate::config_tui) fn run_form_without_buttons(
 /// 预设对话列表式编辑器(验收 #19):每行一对 user/assistant,回车编辑、
 /// [a] 新增、[d] 删除;退出时把列表写回 `user:`/`assistant:` 行格式,
 /// 与手写 dialogs 文件同构,存量文件无需迁移。
-pub(in crate::config_tui) fn edit_dialog_list(
-    stdout: &mut io::Stdout,
-    value: &mut String,
-) -> Result<()> {
-    let mut pairs = crate::persona_hint::parse_dialogs(value);
+pub(in crate::config_tui) fn edit_dialog_list(ui: &mut Ui, value: &mut String) -> Result<()> {
+    let mut pairs = miyu_core::persona_hint::parse_dialogs(value);
     let mut selected = 0usize;
     loop {
         let mut options: Vec<String> = pairs
@@ -401,7 +384,7 @@ pub(in crate::config_tui) fn edit_dialog_list(
         }
         selected = selected.min(options.len() - 1);
         draw_menu(
-            stdout,
+            ui,
             t(" PRESET DIALOGS ", " 预设对话 "),
             &options,
             selected,
@@ -410,16 +393,15 @@ pub(in crate::config_tui) fn edit_dialog_list(
                 "[Enter]编辑 [a]新增 [d]删除 [j/k]移动 [q]完成",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => {
-                *value = crate::persona_hint::format_dialogs(&pairs);
+                *value = miyu_core::persona_hint::format_dialogs(&pairs);
                 return Ok(());
             }
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Char('a') => {
-                if let Some(pair) =
-                    edit_dialog_pair(stdout, t(" NEW DIALOG ", " 新增对话 "), "", "")?
+                if let Some(pair) = edit_dialog_pair(ui, t(" NEW DIALOG ", " 新增对话 "), "", "")?
                 {
                     pairs.push(pair);
                     selected = pairs.len() - 1;
@@ -428,7 +410,7 @@ pub(in crate::config_tui) fn edit_dialog_list(
             KeyCode::Enter if !pairs.is_empty() => {
                 let (question, answer) = pairs[selected].clone();
                 if let Some(pair) =
-                    edit_dialog_pair(stdout, t(" EDIT DIALOG ", " 编辑对话 "), &question, &answer)?
+                    edit_dialog_pair(ui, t(" EDIT DIALOG ", " 编辑对话 "), &question, &answer)?
                 {
                     pairs[selected] = pair;
                 }
@@ -447,11 +429,11 @@ pub(in crate::config_tui) fn edit_dialog_list(
 /// 字符串列表式编辑器(唤醒词这类"几个短词"):回车编辑、[a] 新增、
 /// [d] 删除、[j/k] 移动;value 是逗号分隔的序列化文本。
 pub(in crate::config_tui) fn edit_string_list(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     title: &'static str,
     value: &mut String,
 ) -> Result<()> {
-    let mut items: Vec<String> = crate::config::split_wake_keywords(value);
+    let mut items: Vec<String> = miyu_base::config::split_wake_keywords(value);
     let mut selected = 0usize;
     loop {
         let mut options: Vec<String> = items.clone();
@@ -460,7 +442,7 @@ pub(in crate::config_tui) fn edit_string_list(
         }
         selected = selected.min(options.len() - 1);
         draw_menu(
-            stdout,
+            ui,
             &format!(" {title} "),
             &options,
             selected,
@@ -469,7 +451,7 @@ pub(in crate::config_tui) fn edit_string_list(
                 "[Enter]编辑 [a]新增 [d]删除 [j/k]移动 [q]完成",
             ),
         )?;
-        match read_key()? {
+        match read_key(ui)? {
             KeyCode::Esc | KeyCode::Char('q') => {
                 *value = items.join(", ");
                 return Ok(());
@@ -477,7 +459,7 @@ pub(in crate::config_tui) fn edit_string_list(
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Char('a') => {
-                if let Some(item) = edit_single_line(stdout, t(" ADD ", " 新增 "), title, "")? {
+                if let Some(item) = edit_single_line(ui, t(" ADD ", " 新增 "), title, "")? {
                     if !items.contains(&item) {
                         items.push(item);
                         selected = items.len() - 1;
@@ -486,8 +468,7 @@ pub(in crate::config_tui) fn edit_string_list(
             }
             KeyCode::Enter if !items.is_empty() => {
                 let current = items[selected].clone();
-                if let Some(item) =
-                    edit_single_line(stdout, t(" EDIT ", " 编辑 "), title, &current)?
+                if let Some(item) = edit_single_line(ui, t(" EDIT ", " 编辑 "), title, &current)?
                 {
                     items[selected] = item;
                 }
@@ -502,13 +483,13 @@ pub(in crate::config_tui) fn edit_string_list(
 
 /// 弹一个单行输入表单;取消或留空返回 None。
 pub(in crate::config_tui) fn edit_single_line(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     title: &str,
     label: &'static str,
     initial: &str,
 ) -> Result<Option<String>> {
     let mut fields = vec![Field::new(label, initial.to_string())];
-    if !run_form_editing(stdout, title, &mut fields)? {
+    if !run_form_editing(ui, title, &mut fields)? {
         return Ok(None);
     }
     let text = fields[0].value.trim().to_string();
@@ -516,7 +497,7 @@ pub(in crate::config_tui) fn edit_single_line(
 }
 
 pub(in crate::config_tui) fn edit_dialog_pair(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     title: &str,
     question: &str,
     answer: &str,
@@ -525,7 +506,7 @@ pub(in crate::config_tui) fn edit_dialog_pair(
         Field::new("user", question.to_string()),
         Field::new("assistant", answer.to_string()),
     ];
-    if !run_form_editing(stdout, title, &mut fields)? {
+    if !run_form_editing(ui, title, &mut fields)? {
         return Ok(None);
     }
     let question = fields[0].value.trim().to_string();
@@ -536,18 +517,15 @@ pub(in crate::config_tui) fn edit_dialog_pair(
     Ok(Some((question, answer)))
 }
 
-pub(in crate::config_tui) fn edit_textarea(
-    stdout: &mut io::Stdout,
-    value: &mut String,
-) -> Result<()> {
+pub(in crate::config_tui) fn edit_textarea(ui: &mut Ui, value: &mut String) -> Result<()> {
     execute!(
-        stdout,
+        io::stdout(),
         Show,
         LeaveAlternateScreen,
         Clear(ClearType::All),
         MoveTo(0, 0)
     )?;
-    stdout.flush()?;
+    io::stdout().flush()?;
     terminal::disable_raw_mode()?;
     let temp_path = textarea_temp_file(value)?;
     let path = temp_path.to_path_buf();
@@ -559,6 +537,7 @@ pub(in crate::config_tui) fn edit_textarea(
             eprintln!("Failed to open editor: {err}");
         }
     } else if cfg!(windows) {
+        let mut stdout = io::stdout();
         writeln!(
             stdout,
             "{}",
@@ -573,7 +552,14 @@ pub(in crate::config_tui) fn edit_textarea(
     }
     *value = std::fs::read_to_string(&path)?.trim().to_string();
     terminal::enable_raw_mode()?;
-    execute!(stdout, EnterAlternateScreen, Clear(ClearType::All), Hide)?;
+    execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        Clear(ClearType::All),
+        Hide
+    )?;
+    // 备用屏被 $EDITOR 翻过一遍，ratatui 手里那份「屏幕现在长什么样」已经不作数。
+    ui.invalidate();
     Ok(())
 }
 
@@ -624,8 +610,13 @@ pub(in crate::config_tui) fn textarea_temp_file(
     Ok(file.into_temp_path())
 }
 
+/// 表单：一行一个字段，左边名字、右边当前值；`show_buttons` 时末尾挂「保存 /
+/// 返回」两个动作行。
+///
+/// 编辑态那一行不走 [`Cx::row`]：插入点要落在值的第几个字上，得自己算左边占了
+/// 多宽——`row` 内部的补白是「至少两格」的弹性值，外面算不准。
 pub(in crate::config_tui) fn draw_form(
-    stdout: &mut io::Stdout,
+    ui: &mut Ui,
     title: &str,
     fields: &[Field],
     selected: usize,
@@ -633,112 +624,96 @@ pub(in crate::config_tui) fn draw_form(
     cursors: &[usize],
     show_buttons: bool,
 ) -> Result<()> {
-    let (cols, rows) = terminal::size()?;
-    let width = cols.saturating_sub(8).min(96).max(48);
-    let height = (fields.len() as u16 + 8)
-        .min(rows.saturating_sub(4))
-        .max(10);
-    let x = cols.saturating_sub(width) / 2;
-    let y = rows.saturating_sub(height) / 2;
-    queue!(stdout, Clear(ClearType::All))?;
-    draw_box(stdout, x, y, width, height, title)?;
-    queue!(
-        stdout,
-        MoveTo(x + 2, y + 1),
-        Print(if show_buttons {
-            t(
-                "[j/k]move [Enter]edit/open editor [s]confirm [q]back",
-                "[j/k]移动 [Enter]编辑/打开编辑器 [s]确认 [q]返回",
-            )
-        } else {
-            t(
-                "[j/k]move [Enter]edit/open editor [q]back",
-                "[j/k]移动 [Enter]编辑/打开编辑器 [q]返回",
-            )
-        })
-    )?;
-    let mut cursor = None;
+    let cx = ui.cx();
+    let theme = ui.theme();
+    let name_col = fields
+        .iter()
+        .map(|field| display_width(field.label) + 4)
+        .max()
+        .unwrap_or(NAME_COL_MIN)
+        .clamp(NAME_COL_MIN, NAME_COL_MAX)
+        .min(ui.body_width().saturating_sub(12).max(NAME_COL_MIN));
+
+    let mut body: Vec<Line<'static>> = Vec::with_capacity(fields.len() + 3);
+    let mut caret = None;
     for (index, field) in fields.iter().enumerate() {
-        let row_y = y + index as u16 + 3;
-        queue!(stdout, MoveTo(x + 2, row_y))?;
-        let marker = if index == selected { ">" } else { " " };
-        let value = field_display_value(field, index == selected && editing);
-        let prefix = format!("{marker} {}: ", field.label);
-        let line = truncate(
-            &format!("{prefix}{value}"),
-            width.saturating_sub(4) as usize,
-        );
-        if index == selected && !editing {
-            queue!(
-                stdout,
-                SetAttribute(Attribute::Reverse),
-                Print(pad(&line, width.saturating_sub(4) as usize)),
-                SetAttribute(Attribute::Reset)
-            )?;
+        let here = index == selected;
+        let value = field_display_value(field, here && editing);
+        if here && editing {
+            let head = format!("{}{}", theme.cursor(), field.label);
+            let head_w = display_width(&head);
+            let start = name_col.max(head_w + 2);
+            let typed = take_chars(&field.value.replace('\n', " "), cursors[index]);
+            caret = Some((body.len(), start + display_width(&typed)));
+            body.push(cx.select(ln(vec![
+                Span::styled(head, theme.fg(BLUE)),
+                Span::raw(" ".repeat(start - head_w)),
+                Span::raw(value),
+            ])));
         } else {
-            queue!(stdout, Print(pad(&line, width.saturating_sub(4) as usize)))?;
-        }
-        if index == selected && editing {
-            let cursor_text = take_chars(&field.value.replace('\n', " "), cursors[index]);
-            let cursor_x = x
-                + 2
-                + display_width(&prefix) as u16
-                + display_width(&truncate(&cursor_text, width.saturating_sub(4) as usize)) as u16;
-            cursor = Some((cursor_x.min(x + width.saturating_sub(3)), row_y));
+            body.push(cx.row(here, field.label, &value, name_col));
         }
     }
     if show_buttons {
-        let button_y = y + fields.len() as u16 + 4;
-        draw_form_button(
-            stdout,
-            x + 2,
-            button_y,
-            t(" Save ", " 保存 "),
+        body.push(nil());
+        body.push(cx.action(
             selected == fields.len() && !editing,
-        )?;
-        draw_form_button(
-            stdout,
-            x + 14,
-            button_y,
-            t(" Back ", " 返回 "),
+            t(" Save ", " 保存 ").trim(),
+        ));
+        body.push(cx.action(
             selected == fields.len() + 1 && !editing,
-        )?;
+            t(" Back ", " 返回 ").trim(),
+        ));
     }
+    // 光标行：按钮前面插了一个空行，光标跟随要把它算进去。
+    let cursor_row = if selected < fields.len() {
+        selected
+    } else {
+        selected + 1
+    };
 
-    let mode = if editing {
+    let help = if editing {
         t(
-            "Editing; Enter/Esc finishes editing",
-            "编辑中，Enter/Esc 结束编辑",
+            "[⏎]finish editing [Esc]finish editing",
+            "[⏎]结束编辑 [Esc]结束编辑",
         )
     } else if show_buttons {
         t(
-            "Navigating; Enter selects the current item",
-            "导航中，Enter 选择当前项",
+            "[↑↓ jk]move [⏎]edit / open editor [s]confirm [Esc]back",
+            "[↑↓ jk]移动 [⏎]编辑 / 打开编辑器 [s]确认 [Esc]返回",
         )
     } else {
         t(
-            "Navigating; Enter selects the current item; [q]back",
-            "导航中，Enter 选择当前项，[q]返回",
+            "[↑↓ jk]move [⏎]edit / open editor [Esc]back",
+            "[↑↓ jk]移动 [⏎]编辑 / 打开编辑器 [Esc]返回",
         )
     };
-    queue!(
-        stdout,
-        MoveTo(x + 2, y + height.saturating_sub(1)),
-        Print(truncate(mode, width.saturating_sub(4) as usize))
-    )?;
-    if let Some((x, y)) = cursor {
-        queue!(stdout, Show, MoveTo(x, y))?;
+    let (_, keys) = key_bar(&cx, help);
+    // 横线上方那行说的是「现在是什么状态」，不是按键——按键在底下那条。
+    let mode = if editing {
+        t("Editing", "编辑中")
     } else {
-        queue!(stdout, Hide)?;
-    }
-    stdout.flush()?;
-    Ok(())
+        t("Navigating", "导航中")
+    };
+    ui.show(
+        title,
+        View {
+            body,
+            cursor_row,
+            caret,
+            footer: vec![cx.txt(mode, theme.dim(DIM))],
+            counter: (!fields.is_empty())
+                .then(|| format!("{}/{}", (selected + 1).min(fields.len()), fields.len())),
+            keys,
+            ..View::default()
+        },
+    )
 }
 
 pub(in crate::config_tui) fn field_display_value(field: &Field, reveal_sensitive: bool) -> String {
     if field.dialog_list {
         // 列表式字段没有 $EDITOR;摘要成对数,原始序列化文本不上屏。
-        let pairs = crate::persona_hint::parse_dialogs(&field.value).len();
+        let pairs = miyu_core::persona_hint::parse_dialogs(&field.value).len();
         return if pairs == 0 {
             t("(empty; Enter opens the list)", "(空,回车进列表)").to_string()
         } else if is_zh() {
@@ -781,27 +756,6 @@ pub(in crate::config_tui) fn field_display_value(field: &Field, reveal_sensitive
     }
 }
 
-pub(in crate::config_tui) fn draw_form_button(
-    stdout: &mut io::Stdout,
-    x: u16,
-    y: u16,
-    label: &str,
-    selected: bool,
-) -> Result<()> {
-    queue!(stdout, MoveTo(x, y))?;
-    if selected {
-        queue!(
-            stdout,
-            SetAttribute(Attribute::Reverse),
-            Print(label),
-            SetAttribute(Attribute::Reset)
-        )?;
-    } else {
-        queue!(stdout, Print(label))?;
-    }
-    Ok(())
-}
-
 pub(in crate::config_tui) struct Field {
     pub(in crate::config_tui) label: &'static str,
     pub(in crate::config_tui) value: String,
@@ -822,7 +776,7 @@ pub(in crate::config_tui) struct Field {
 }
 
 impl Field {
-    pub(in crate::config_tui) fn new(label: &'static str, value: String) -> Self {
+    pub fn new(label: &'static str, value: String) -> Self {
         Self {
             label,
             value,

@@ -1,0 +1,153 @@
+name: Linux release (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Plan only. No builds, provider requests or publication.
+        type: boolean
+        default: true
+      tag:
+        description: Existing version tag at this workflow commit. Required for execution.
+        type: string
+        default: ''
+      revision:
+        description: Positive package revision. Published assets are never overwritten.
+        type: number
+        default: 1
+      notes-path:
+        description: Reviewed release notes inside this source commit.
+        type: string
+        default: docs/releases/0.6.1/release-notes.md
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: inputs.dry-run
+    runs-on: ${{ vars.LINUX_X64_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+      - name: Produce an explicitly unexecuted release plan
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          PACKAGE_REVISION: ${{ inputs.revision }}
+        run: python3 packaging/ci/workflow.py plan --tag "$RELEASE_TAG" --revision "$PACKAGE_REVISION" --out out/ci-plan
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unexecuted-release-plan
+          path: out/ci-plan/dry-run-plan.json
+          if-no-files-found: error
+
+  prepare:
+    if: ${{ !inputs.dry-run }}
+    runs-on: ${{ vars.LINUX_X64_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+      - name: Reject missing dedicated provider configuration before building
+        env:
+          OPENCODEGO_PROVIDER_CONFIG: ${{ secrets.OPENCODEGO_PROVIDER_CONFIG }}
+        run: python3 packaging/ci/workflow.py check-provider
+      - name: Install the locked preparation toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal
+      - name: Freeze the tagged source and prepare all locked inputs
+        env:
+          RUSTUP_TOOLCHAIN: '1.96.1'
+          RELEASE_TAG: ${{ inputs.tag }}
+          PACKAGE_REVISION: ${{ inputs.revision }}
+        run: python3 packaging/ci/workflow.py freeze --tag "$RELEASE_TAG" --revision "$PACKAGE_REVISION" --root out/ci-release
+      - name: Preserve source modes and links for both native builders
+        run: python3 packaging/ci/workflow.py bundle --kind frozen --root out/ci-release --out out/frozen-linux-inputs.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: frozen-linux-inputs
+          path: out/frozen-linux-inputs.tar.gz
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+
+  build-package-verify:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        build-id: [gnu-x86_64, arch-x86_64]
+    uses: ./.github/workflows/build-package-verify.yml
+    with:
+      build-id: ${{ matrix.build-id }}
+    secrets:
+      OPENCODEGO_PROVIDER_CONFIG: ${{ secrets.OPENCODEGO_PROVIDER_CONFIG }}
+
+  aggregate:
+    needs: build-package-verify
+    runs-on: ${{ vars.LINUX_X64_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: frozen-linux-inputs
+          path: out/downloads
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: verified-results-*
+          merge-multiple: true
+          path: out/downloads
+      - run: python3 packaging/ci/workflow.py unpack --archive out/downloads/frozen-linux-inputs.tar.gz --out out/ci-release
+      - name: Require every frozen installation check and audit the publish allowlist
+        run: python3 packaging/ci/workflow.py aggregate --root out/ci-release --downloads out/downloads
+      - run: python3 packaging/ci/workflow.py bundle --kind publish --root out/ci-release --out out/verified-publish.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verified-publish
+          path: out/verified-publish.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+
+  publish:
+    needs: aggregate
+    runs-on: ${{ vars.LINUX_X64_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: verified-publish
+          path: out/downloads
+      - run: python3 packaging/ci/workflow.py unpack --archive out/downloads/verified-publish.tar.gz --out out/ci-release
+      - name: Publish only the aggregated, hash-verified files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES_PATH: ${{ inputs.notes-path }}
+        run: python3 packaging/ci/workflow.py publish --root out/ci-release --notes "$RELEASE_NOTES_PATH"

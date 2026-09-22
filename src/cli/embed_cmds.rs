@@ -3,13 +3,13 @@
 //! `status` 一眼看出为什么语义检索没生效（没启用/没模型/没运行库/worker 起不来），
 //! `reindex` 把当前人格记忆、当前表情库、知识库缺的向量一次补齐。
 
-use crate::config::{AppConfig, EmbeddingBackend};
-use crate::embedding::{installed_local_models, runtime_library, shutdown_worker, Embedder};
-use crate::memory::MemoryStore;
-use crate::paths::MiyuPaths;
-use crate::tools;
 use anyhow::Result;
 use clap::{Args, Subcommand};
+use miyu_base::config::{AppConfig, EmbeddingBackend};
+use miyu_base::embedding::{installed_local_models, runtime_library, shutdown_worker, Embedder};
+use miyu_base::paths::MiyuPaths;
+use miyu_core::memory::MemoryStore;
+use miyu_engine::tools;
 use std::time::Instant;
 
 #[derive(Debug, Args)]
@@ -80,7 +80,7 @@ async fn status(config: &AppConfig, paths: &MiyuPaths) -> Result<()> {
             if !embedding.enabled {
                 "disabled in config".to_string()
             } else {
-                match crate::embedding::resolve_local_model(&embedding.local_model) {
+                match miyu_base::embedding::resolve_local_model(&embedding.local_model) {
                     Ok(_) => "remote provider/model not found".to_string(),
                     Err(error) => format!("{error:#}"),
                 }
@@ -137,6 +137,30 @@ async fn status(config: &AppConfig, paths: &MiyuPaths) -> Result<()> {
             "semantic disabled (plugins.knowledge_base.embedding_enabled)"
         }
     );
+    // 后台那趟重建是子进程,失败了以前谁也看不见。`embed status` 的活儿正是
+    // 「一眼看出为什么语义检索没生效」,所以把上一趟的结局也报出来。
+    if let Ok(kb) = tools::knowledge_base::KnowledgeBase::new(config.clone(), paths.clone()) {
+        if let Ok(status) = kb.dashboard_reindex_status() {
+            let phase = status["phase"].as_str().unwrap_or("idle");
+            let progress = format!(
+                "{}/{} files, {} chunks",
+                status["done"], status["total"], status["indexed"]
+            );
+            println!("last knowledge base reindex: {phase} ({progress})");
+            for (label, key) in [
+                ("  error", "last_error"),
+                ("  file error", "last_file_error"),
+            ] {
+                let message = status[key].as_str().unwrap_or("").trim();
+                if !message.is_empty() {
+                    println!("{label}: {message}");
+                }
+            }
+            if phase == "failed" {
+                println!("  log: {}", status["log_path"].as_str().unwrap_or(""));
+            }
+        }
+    }
     shutdown_worker().await;
     Ok(())
 }
@@ -146,10 +170,34 @@ async fn reindex(config: &AppConfig, paths: &MiyuPaths, quiet: bool) -> Result<(
         println!("embedding is disabled or no model is available; nothing to do");
         return Ok(());
     };
+    // 看板的「重建语义索引」按钮起的正是这个命令,并经 MIYU_KB_ROOT 指定了
+    // 某一个库(成员的 home/<user>/kb 或管理员的默认库)。那是一次**定向**重建,
+    // 只该碰那个库;顺手把记忆/表情包也重嵌等于让成员触发管理员库的嵌入,
+    // 既越权又浪费。裸 `miyu kb embed reindex`(不带这个变量)仍三样全建。
+    let kb_only = std::env::var_os("MIYU_KB_ROOT").is_some_and(|value| !value.is_empty());
+    if kb_only {
+        if config.plugins.knowledge_base.enabled && config.plugins.knowledge_base.embedding_enabled
+        {
+            let kb = tools::knowledge_base::KnowledgeBase::new(config.clone(), paths.clone())?;
+            let count = kb.reindex_embeddings(quiet).await?;
+            if !quiet {
+                println!("knowledge base: embedded {count} chunks");
+            }
+        }
+        shutdown_worker().await;
+        return Ok(());
+    }
     let store = MemoryStore::new(config, paths);
-    let count = store.backfill_embeddings(embedder.model_id()).await?;
-    if !quiet {
-        println!("memory: embedded {count} rows");
+    // 三样各建各的:记忆那步失败不该顺手把知识库那趟也带走。原来这里是 `?`,
+    // 一条记忆库报错就让整条命令提前退出,而知识库那半连开始都没开始——后台
+    // 重建正是这条命令的另一个形态,静默早退在界面上等于「什么都没发生」。
+    match store.backfill_embeddings(embedder.model_id()).await {
+        Ok(count) => {
+            if !quiet {
+                println!("memory: embedded {count} rows");
+            }
+        }
+        Err(error) => println!("memory: {error:#}"),
     }
     let library = tools::memes::current_persona_library(config);
     match tools::memes::reindex_library(config, paths, &library).await {

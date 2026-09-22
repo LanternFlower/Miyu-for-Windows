@@ -132,7 +132,7 @@ class Repl:
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 140, 0, 0))
         self.proc = subprocess.Popen(
-            [str(BIN), "normal"], stdin=slave, stdout=slave, stderr=slave,
+            [str(BIN)], stdin=slave, stdout=slave, stderr=slave,
             env=env_for(), close_fds=True, preexec_fn=os.setsid,
         )
         os.close(slave)

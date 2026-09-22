@@ -76,6 +76,12 @@ pub(in crate::cli) fn ensure_repl_space(
     input_row: &mut u16,
     needed_rows: u16,
 ) -> Result<()> {
+    // 全屏下屏幕是自己的：最后一行照样能写，而「跳到屏底打换行」会把整屏顶
+    // 上去一行——正文最上面那行被挤掉，屏幕行与缓冲行从此差一行，点选也就
+    // 跟着错位。inline 下这一笔是对的（顶上去的进 scrollback），全屏下不是。
+    if super::tail::screen::in_fullscreen() {
+        return Ok(());
+    }
     let (_, term_rows) = terminal::size().unwrap_or((80, 24));
     let term_rows = term_rows.max(1);
     if (*input_row).saturating_add(needed_rows) < term_rows {
@@ -93,7 +99,7 @@ pub(in crate::cli) fn ensure_repl_space(
 }
 
 pub(in crate::cli) fn submitted_echo_lines(
-    mode: AgentMode,
+    mode: PersonaLane,
     input: &str,
     cols: usize,
 ) -> Vec<String> {
@@ -114,19 +120,17 @@ pub(in crate::cli) fn submitted_echo_lines(
     output
 }
 
-pub(in crate::cli) fn submitted_echo_bar(mode: AgentMode) -> String {
-    match mode {
-        AgentMode::Normal => "\x1b[1m\x1b[34m┃\x1b[0m".to_string(),
-        // 与 footer 模式标签同为 tertiary(35 酒红),整条 dev 视觉一致。
-        AgentMode::Dev => "\x1b[1m\x1b[35m┃\x1b[0m".to_string(),
-    }
+pub(in crate::cli) fn submitted_echo_bar(mode: PersonaLane) -> String {
+    // 颜色走 `footer::lane_accent_style`:这根粗线、footer 左下角的模式标签、
+    // 输入框右上角那行 `/goal …` 是同一个高亮色,各写一遍迟早漂移。
+    format!("{}┃\x1b[0m", crate::cli::footer::lane_accent_style(mode))
 }
 
-pub(in crate::cli) fn input_prompt_bar(mode: AgentMode) -> String {
+pub(in crate::cli) fn input_prompt_bar(mode: PersonaLane) -> String {
     format!("{} ", submitted_echo_bar(mode))
 }
 
-pub(in crate::cli) fn repl_shortcut_hint_line(mode: AgentMode, cols: usize) -> String {
+pub(in crate::cli) fn repl_shortcut_hint_line(mode: PersonaLane, cols: usize) -> String {
     let bar = input_prompt_bar(mode);
     let text = t(
         "Shift+Enter newline; Ctrl+J newline; Ctrl+V paste clipboard",
@@ -272,10 +276,6 @@ pub(in crate::cli) fn repl_cursor_layout_positions_for_cols(
 
 pub(in crate::cli) fn repl_prompt_rows(prefix: &str, lines: &[String]) -> u16 {
     repl_prompt_rows_for_cols(prefix, lines, terminal_cols())
-}
-
-pub(in crate::cli) fn repl_cursor_position(prefix: &str, input: &str, cursor: usize) -> (u16, u16) {
-    repl_cursor_position_for_cols(prefix, input, cursor, terminal_cols())
 }
 
 pub(in crate::cli) fn repl_line_rows_for_cols(prefix: &str, line: &str, cols: usize) -> u16 {

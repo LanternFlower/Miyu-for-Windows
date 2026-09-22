@@ -5,9 +5,9 @@ pub mod turn_client;
 
 use crate::cli::args::OutputFormat;
 use crate::cli::exit_code::exit_with;
-use crate::paths::MiyuPaths;
 use anyhow::Result;
 use event::PublicEvent;
+use miyu_base::paths::MiyuPaths;
 use std::io::Write;
 use turn_client::{run_turn, QuestionPolicy, TurnOutcome, TurnRequest};
 

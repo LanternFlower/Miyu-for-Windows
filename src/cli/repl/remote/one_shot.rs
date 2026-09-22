@@ -13,11 +13,11 @@ pub(in crate::cli) async fn try_run_remote_chat(
     message: &str,
     show_reasoning: Option<bool>,
     plain: bool,
-    mode: AgentMode,
-    images: &[Option<crate::clipboard::PastedImage>],
+    mode: PersonaLane,
+    images: &[Option<miyu_base::clipboard::PastedImage>],
     session_override: Option<String>,
     jobs_feed: Option<&JobsFeed>,
-    overrides: Option<crate::ipc::TurnOverrides>,
+    overrides: Option<miyu_core::ipc::TurnOverrides>,
 ) -> Result<Option<RemoteTurnSummary>> {
     let refreshed_paths = if direct_mode_requested() {
         None
@@ -69,10 +69,44 @@ pub(in crate::cli) async fn try_run_remote_chat(
     let Some(first) = ipc::receive::<IpcFrame>(&mut stream).await? else {
         bail!("Miyu core closed the connection before accepting the turn");
     };
+    // `TurnUpdateAccepted` = 这个会话已经有一轮在跑（另一个 TUI、另一个终端），
+    // daemon 把这条消息**排进了那一轮**而不是并行起一轮。接下来推的是那一轮的
+    // 事件，照常渲染；人得知道自己是在排队，不然会以为消息发丢了。
+    let mut queued_into_running = false;
     let run_id = match first {
         IpcFrame::Accepted { run_id, .. } => run_id,
+        IpcFrame::TurnUpdateAccepted { run_id, .. } => {
+            queued_into_running = true;
+            run_id
+        }
         IpcFrame::Error { message, .. } => bail!("{message}"),
         _ => bail!("Miyu core returned an invalid response"),
+    };
+    if queued_into_running && live.is_none() {
+        // 一次性/shellhook：没有活动区可以挂排队条，直说一行。REPL 那边
+        // `queue.added` 会把它画进排队列表里，不必再打字。
+        println!(
+            "\x1b[2m{}\x1b[0m",
+            t(
+                "queued into the conversation already in progress",
+                "已排进正在进行的对话"
+            )
+        );
+    }
+    // 记下「这一轮是我起的」。回合结束到 daemon 把它从活跃表里摘掉之间有个
+    // 窗口，不记的话空闲循环会把自己刚跑完的那一轮当成「别人的」再画一遍。
+    if let Some(jobs_feed) = jobs_feed {
+        jobs_feed.mark_own_run(&run_id);
+    }
+    // 在 herdr 里跑的话，侧栏那行跟着这一轮亮起来（不在就是 no-op）。
+    // 守卫负责收口：这个函数有九条出口，Drop 保证哪条走都报回 idle。
+    // 先记下来：`live` 后面会被部分移动，那之后问不了它。
+    let interactive_repl = live.is_some();
+    let herdr_turn = if interactive_repl {
+        herdr::TurnGuard::begin(&turn_session_id)
+    } else {
+        // 一次性 / shellhook：跑完进程就没了，收尾要把 pane 还回去。
+        herdr::TurnGuard::begin_transient(&turn_session_id)
     };
     let mut turn_id: Option<String> = None;
 
@@ -80,12 +114,12 @@ pub(in crate::cli) async fn try_run_remote_chat(
     let reasoning_mode = if show_reasoning == Some(false) {
         render::ReasoningDisplayMode::Hidden
     } else {
-        render::ReasoningDisplayMode::from_config(&config.display.reasoning)
+        render::ReasoningDisplayMode::from_expand(config.display.expand_reasoning)
     };
     let tool_call_mode = if plain {
         render::ToolCallDisplayMode::Hidden
     } else {
-        render::ToolCallDisplayMode::from_config(&config.display.tool_calls)
+        render::ToolCallDisplayMode::from_expand(config.display.expand_tool_calls)
     };
     let mut renderer = render::StreamRenderer::new(
         reasoning_mode,
@@ -94,8 +128,18 @@ pub(in crate::cli) async fn try_run_remote_chat(
         config.display.readable_tool_names,
         config.display.command_output_lines,
     );
+    renderer.fold_timeline = config.display.fold_timeline;
+    renderer.thinking_scroll_lines = config.display.thinking_scroll_lines;
     let queue_state = Some(state_probe);
     if let Some(live) = live.as_deref_mut() {
+        // 后台任务面板也跟着这两个开关走。每轮交一次：它和渲染器读的是同一份
+        // 配置，节奏也该一样。
+        live.set_display_expand(
+            config.display.expand_reasoning,
+            config.display.expand_tool_calls,
+            config.display.fold_timeline,
+            config.display.command_output_lines,
+        );
         renderer.use_external_cursor_control();
         renderer.use_buffered_output();
         live.external_output_active = false;
@@ -114,12 +158,35 @@ pub(in crate::cli) async fn try_run_remote_chat(
         }),
         None => None,
     };
+
+    // 这一轮**怎么结束都**要把终端模式交给下一段，不能让守卫在半路 drop。
+    //
+    // drop 会关掉 raw、收回括号粘贴与焦点上报、并**弹出键盘增强协议**；
+    // 紧接着编辑器那边又推回去。在这一来一回之间按下的键，终端按旧协议发、
+    // crossterm 按新协议解，解不出来就当普通字符塞进输入框——用户看到的
+    // 「Ctrl+C 之后输入框里冒出代表按键的怪字符」就是它。正常收尾的那条路
+    // 一直是交接的，几条提前 return 漏了。
+    macro_rules! handoff_raw {
+        () => {
+            if let Some(raw) = raw.as_mut() {
+                if let Some(live) = live.as_deref_mut() {
+                    raw.handoff();
+                    live.raw_mode_handoff = true;
+                }
+            }
+        };
+    }
     renderer.start_waiting()?;
     if let Some(live) = live.as_deref_mut() {
         live.apply_renderer_frame(&mut renderer)?;
     }
     let mut content = String::new();
     let mut reasoning = String::new();
+    // 最后看到的事件号。回合中执行斜杠命令走「分离 → 执行 → 挂回来」，挂回来
+    // 时从它之后接着看，已经看过的那半截不会再来一遍（09-20）。
+    let mut last_event_id = 0u64;
+    // 攒着还没打的图（非全屏那条路）。见 `tool.image` / `tool.finished`。
+    let mut deferred_images: Vec<(serde_json::Value, Option<String>)> = Vec::new();
     let mut spinner_tick = tokio::time::interval(Duration::from_millis(33));
     let mut job_strip_tick: u32 = 0;
     spinner_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -144,7 +211,29 @@ pub(in crate::cli) async fn try_run_remote_chat(
                     if !event::poll(Duration::ZERO)? {
                         continue;
                     }
-                    let event = event::read()?;
+                    // 鼠标事件在这儿**一次抽干**，别排队。
+                    //
+                    // 这条泵每 16ms 只取一个事件，而拖一下鼠标一秒能发上百个：
+                    // 队列越积越长，选区落在光标后面好几百毫秒——用户原话
+                    // 「AI 输出时选文字发涩，输出一停就没事了」。一停就没事是因为
+                    // 那时走的是空闲循环，那边本来就一次把就绪事件全抽干。
+                    //
+                    // 抽干之后把**第一个非鼠标事件**交给下面那条老路，语义不变。
+                    let mut pending: Option<Event> = None;
+                    while event::poll(Duration::ZERO)? {
+                        let next = event::read()?;
+                        if matches!(next, Event::Mouse(_)) {
+                            if let Some(live_tail) = live.as_deref_mut() {
+                                live_tail.handle_screen_event(&next)?;
+                            }
+                            continue;
+                        }
+                        pending = Some(next);
+                        break;
+                    }
+                    let Some(event) = pending else {
+                        continue;
+                    };
                     let Some(live_tail) = live.as_deref_mut() else {
                         continue;
                     };
@@ -161,7 +250,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                         let line = live_tail.editor.input.trim_start().to_string();
                         match parse_repl_input(&line) {
                             ReplInput::Slash(
-                                crate::slash_commands::ReplSlashCommand::Goal,
+                                miyu_core::slash_commands::ReplSlashCommand::Goal,
                                 args,
                             ) => {
                                 let args = args.trim().to_string();
@@ -186,7 +275,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                                 let _ = super::super::session::send_ipc_admin(
                                     paths,
                                     IpcCommand::Goal {
-                                        target: crate::ipc::SessionRef::Id {
+                                        target: miyu_core::ipc::SessionRef::Id {
                                             id: turn_session_id.clone(),
                                         },
                                         input: args,
@@ -202,11 +291,98 @@ pub(in crate::cli) async fn try_run_remote_chat(
                                 }
                                 continue;
                             }
-                            // 其余命令静默吞掉回车，输入原样留着，这一轮
-                            // 结束后再回车即可。
-                            ReplInput::Slash(..) => continue,
+                            // 其余命令按「回合中能不能做」分流（用户 09-20：
+                            // 「应该区分能执行和不能执行的命令」）。原来这里
+                            // 一律**静默**吞掉，屏幕上一点反应都没有。
+                            ReplInput::Slash(command, args) => {
+                                use miyu_core::slash_commands::DuringTurn;
+                                match miyu_core::slash_commands::during_turn(command, args) {
+                                    DuringTurn::Inline => continue,
+                                    DuringTurn::Blocked { .. } => {
+                                        if let Some(reason) = miyu_core::slash_commands::during_turn(
+                                            command, args,
+                                        )
+                                        .reason()
+                                        {
+                                            // 输入原样留着：这一轮说完再回车
+                                            // 就能执行，不用重打。
+                                            //
+                                            // 走**右上角**那条通知带，不是输入
+                                            // 框旁边：命令候选面板就浮在输入框
+                                            // 上方，放那儿会被它盖掉（09-20
+                                            // 实测，屏幕上只看得到候选面板）。
+                                            live_tail.toast_note(reason);
+                                            if !live_tail.external_output_active {
+                                                synchronized_terminal_update(
+                                                    CursorAfterUpdate::Preserve,
+                                                    || live_tail.redraw(),
+                                                )?;
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                    // 面板寄宿在这个循环里跑（09-20）：不分离、
+                                    // 不换渲染器，事件在 socket 里排队，面板收掉
+                                    // 接着画——同一段思考不会被切成几行小结。
+                                    // 只有 `/session` 挑了别的会话才借暂离那条路
+                                    // 把结果带回 `RemoteRepl`。
+                                    DuringTurn::Panel if live_tail.screen.is_some() => {
+                                        live_tail.editor.clear();
+                                        use crate::cli::repl::midturn_panel::{
+                                            host_panel, HostedPanel,
+                                        };
+                                        match host_panel(
+                                            paths,
+                                            live_tail,
+                                            &mut renderer,
+                                            command,
+                                            &turn_session_id,
+                                        )
+                                        .await?
+                                        {
+                                            HostedPanel::Stayed => continue,
+                                            HostedPanel::SwitchSession(state) => {
+                                                renderer.finish()?;
+                                                live_tail.stop_footer_spinner()?;
+                                                live_tail.apply_renderer_frame(&mut renderer)?;
+                                                handoff_raw!();
+                                                return Err(anyhow::Error::new(
+                                                    RemoteTurnSuspended {
+                                                        action: SuspendedAction::SwitchSession(
+                                                            state,
+                                                        ),
+                                                        run_id: run_id.clone(),
+                                                        last_event_id,
+                                                        session_id: turn_session_id.clone(),
+                                                    },
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    // 行内 REPL 没有面板：`Panel` 退回分离那条路。
+                                    DuringTurn::Panel | DuringTurn::Detach => {
+                                        let args = args.trim().to_string();
+                                        live_tail.editor.clear();
+                                        // 和 Ctrl+D 那条路同一套收尾：渲染器
+                                        // 收口、把帧落到屏幕上、交接 raw 模式。
+                                        renderer.finish()?;
+                                        live_tail.stop_footer_spinner()?;
+                                        live_tail.apply_renderer_frame(&mut renderer)?;
+                                        handoff_raw!();
+                                        return Err(anyhow::Error::new(RemoteTurnSuspended {
+                                            action: SuspendedAction::Command { command, args },
+                                            run_id: run_id.clone(),
+                                            last_event_id,
+                                            session_id: turn_session_id.clone(),
+                                        }));
+                                    }
+                                }
+                            }
                             ReplInput::Chat => {}
                         }
+                    }
+                    if live_tail.handle_screen_event(&event)? {
+                        continue;
                     }
                     match live_tail.editor.handle_event(event, paths, true)? {
                         LiveEditorAction::None => {}
@@ -215,6 +391,13 @@ pub(in crate::cli) async fn try_run_remote_chat(
                                 live_tail.redraw()
                             })?
                         }
+                        // 回合跑着的时候不清屏。
+                        //
+                        // 全屏下清屏是"把视口顶空"，而正文还在往里写——顶完下一
+                        // 帧新内容就接着冒出来，屏幕既没干净也没保住上文。
+                        //（直连那条路在 `live_turn.rs` 里同样拦了一道；daemon 这条
+                        // 才是全屏平时走的，上一轮只改了那边等于没改。）
+                        LiveEditorAction::ClearScreen if crate::cli::in_fullscreen() => {}
                         LiveEditorAction::ClearScreen if !live_tail.external_output_active => {
                             synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
                                 live_tail.clear_screen()
@@ -242,7 +425,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                                 &submission,
                             ).await {
                                 Ok(prompt) => {
-                                    live_tail.editor.record_history(&submission.content);
+                                    live_tail.editor.record_history(ReplHistoryEntry::from_submission(&submission));
                                     if live_tail.external_output_active {
                                         live_tail.append_queued(prompt);
                                     } else {
@@ -272,12 +455,14 @@ pub(in crate::cli) async fn try_run_remote_chat(
                             )
                             .await;
                         }
+                        LiveEditorAction::ToggleMode => {}
                         LiveEditorAction::Exit => {
                             renderer.finish()?;
                             if let Some(live) = live.as_deref_mut() {
                                 live.stop_footer_spinner()?;
                                 live.apply_renderer_frame(&mut renderer)?;
                             }
+                            handoff_raw!();
                             return Err(anyhow::Error::new(RemoteTurnDetached));
                         }
                     }
@@ -305,11 +490,11 @@ pub(in crate::cli) async fn try_run_remote_chat(
                         // footer 里的运行转轮与等待动画同源推进。
                         live.tick_footer_spinner()?;
                         // The job strip is part of the live tail, so it keeps
-                        // rendering during streaming; throttle to ~every 8th
-                        // spinner frame.
+                        // rendering during streaming. 转轮按时间定帧，这里每隔一个
+                        // 转轮 tick（约 66ms）重画一次就跟得上 80ms 一帧。
                         if let Some(feed) = jobs_feed {
                             job_strip_tick = job_strip_tick.wrapping_add(1);
-                            if job_strip_tick % 8 == 0 && !live.external_output_active {
+                            if job_strip_tick % 2 == 0 && !live.external_output_active {
                                 if live.set_jobs(feed.current()) {
                                     synchronized_terminal_update(
                                         CursorAfterUpdate::Preserve,
@@ -331,6 +516,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                     if let Some(live) = live.as_deref_mut() {
                         live.apply_renderer_frame(&mut renderer)?;
                     }
+                    handoff_raw!();
                     return Err(anyhow::Error::new(RemoteTurnCancelled));
                 }
             }
@@ -340,8 +526,12 @@ pub(in crate::cli) async fn try_run_remote_chat(
             if let Some(live) = live.as_deref_mut() {
                 live.apply_renderer_frame(&mut renderer)?;
             }
+            handoff_raw!();
             bail!("Miyu core disconnected during the turn");
         };
+        if let IpcFrame::Event { id, .. } = &frame {
+            last_event_id = *id;
+        }
         let IpcFrame::Event { kind, data, .. } = frame else {
             if let IpcFrame::Error { message, .. } = frame {
                 renderer.finish()?;
@@ -365,7 +555,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                 handle_agent_event(
                     &mut renderer,
                     AgentEvent::Chunk(ChatStreamChunk {
-                        kind: crate::llm::ChatStreamKind::Content,
+                        kind: miyu_core::llm::ChatStreamKind::Content,
                         text: delta.to_string(),
                     }),
                 )?;
@@ -376,7 +566,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                 handle_agent_event(
                     &mut renderer,
                     AgentEvent::Chunk(ChatStreamChunk {
-                        kind: crate::llm::ChatStreamKind::Reasoning,
+                        kind: miyu_core::llm::ChatStreamKind::Reasoning,
                         text: delta.to_string(),
                     }),
                 )?;
@@ -412,24 +602,31 @@ pub(in crate::cli) async fn try_run_remote_chat(
                 &mut renderer,
                 AgentEvent::ReasoningTitle(ipc_text(&data, "title").to_string()),
             )?,
-            "tool.preparing" => handle_agent_event(
-                &mut renderer,
-                AgentEvent::ToolPreparing {
-                    name: ipc_text(&data, "name").to_string(),
-                    batch: data
-                        .get("batch")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false),
-                },
-            )?,
-            "tool.started" => handle_agent_event(
-                &mut renderer,
-                AgentEvent::ToolCall {
-                    call_id: ipc_text(&data, "tool_id").to_string(),
-                    name: ipc_text(&data, "name").to_string(),
-                    arguments: ipc_text(&data, "arguments").to_string(),
-                },
-            )?,
+            "tool.preparing" => {
+                miyu_hosts::runtime::learn_tool_display_name(&data);
+                handle_agent_event(
+                    &mut renderer,
+                    AgentEvent::ToolPreparing {
+                        name: ipc_text(&data, "name").to_string(),
+                        batch: data
+                            .get("batch")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false),
+                    },
+                )?
+            }
+            "tool.started" => {
+                // 脚本的显示名只有 daemon 知道，事件里带过来，先记下再画。
+                miyu_hosts::runtime::learn_tool_display_name(&data);
+                handle_agent_event(
+                    &mut renderer,
+                    AgentEvent::ToolCall {
+                        call_id: ipc_text(&data, "tool_id").to_string(),
+                        name: ipc_text(&data, "name").to_string(),
+                        arguments: ipc_text(&data, "arguments").to_string(),
+                    },
+                )?
+            }
             "tool.progress" => handle_agent_event(
                 &mut renderer,
                 AgentEvent::ToolProgress {
@@ -464,6 +661,34 @@ pub(in crate::cli) async fn try_run_remote_chat(
                         output: ipc_text(&data, "output").to_string(),
                     },
                 )?;
+                // 这一步已经落地（静态面当场写进正文，折叠面收段时进
+                // `Worked for`），现在才轮到它打出来的图。
+                let finished_tool = ipc_text(&data, "tool_id").to_string();
+                let (mine, rest): (Vec<_>, Vec<_>) = deferred_images
+                    .drain(..)
+                    .partition(|(image, _)| ipc_text(image, "tool_id") == finished_tool);
+                deferred_images = rest;
+                for (image, size) in mine {
+                    let state = queue_state
+                        .as_ref()
+                        .expect("queue state exists for a remote turn");
+                    renderer.prepare_for_external_output()?;
+                    if let Some(live) = live.as_deref_mut() {
+                        live.apply_renderer_frame(&mut renderer)?;
+                        synchronized_terminal_update(CursorAfterUpdate::Hidden, || live.suspend())?;
+                        live.external_output_active = true;
+                    }
+                    if let Err(error) = render_remote_tool_image(state, &image, size).await {
+                        renderer.write_system_message(&format!(
+                            "{}: {error}",
+                            t("Could not display tool image", "工具图片显示失败")
+                        ))?;
+                    }
+                    // 图片打完不用再单独「抬进页内」:残影的根因不在图片的位置,
+                    // 而在受限区滚动本身(见 tail/frame.rs 的 queue_lifted_frame),
+                    // 此后的帧都会改走整屏滚,活动区 resume 时自己会把光标下方的
+                    // 溢出滚掉。
+                }
                 if let Some(live) = live.as_deref_mut() {
                     if live.external_output_active {
                         live.external_output_active = false;
@@ -474,12 +699,6 @@ pub(in crate::cli) async fn try_run_remote_chat(
                 }
             }
             "tool.image" => {
-                renderer.prepare_for_external_output()?;
-                if let Some(live) = live.as_deref_mut() {
-                    live.apply_renderer_frame(&mut renderer)?;
-                    synchronized_terminal_update(CursorAfterUpdate::Hidden, || live.suspend())?;
-                    live.external_output_active = true;
-                }
                 let state = queue_state
                     .as_ref()
                     .expect("queue state exists for a remote turn");
@@ -488,87 +707,98 @@ pub(in crate::cli) async fn try_run_remote_chat(
                     ipc_text(&data, "size"),
                     &config,
                 );
-                if let Err(error) = render_remote_tool_image(state, &data, size).await {
-                    renderer.write_system_message(&format!(
-                        "{}: {error}",
-                        t("Could not display tool image", "工具图片显示失败")
-                    ))?;
+                // 全屏：图片得**进缓冲**才留得住。传输段发给终端（它要收像素），
+                // 占位格当普通文字进正文，于是重画、回翻都还在。
+                let fullscreen = live.as_deref().is_some_and(|live| live.screen.is_some());
+                if fullscreen {
+                    match remote_tool_image_parts(state, &data, size).await {
+                        Ok((transfer, placeholder)) => {
+                            // 传输段随时可以发：`U=1` 是虚拟放置，画在哪儿由
+                            // 占位格说了算，和它什么时候到终端无关。
+                            if !transfer.is_empty() {
+                                use std::io::Write as _;
+                                let mut stdout = std::io::stdout();
+                                write!(stdout, "{transfer}")?;
+                                stdout.flush()?;
+                            }
+                            // 占位格排到**时间线收完之后**：图是"这一步干出来的
+                            // 结果"，不是过程。就地写的话，发图那一步自己反而排到
+                            // 图下面去了（用户实测的表情包/搜图顺序错乱）。
+                            // 缩进两格：它是正文的一部分，得在装订边上。
+                            // 上下那两行空不在这儿补：`flush_after_timeline`
+                            // 出上面那行、收段出下面那行。这儿自己再补一个
+                            // `\n`，图下面就空两行了（用户 09-19）。
+                            renderer.queue_after_timeline(
+                                miyu_hosts::render::timeline::indent_body(&placeholder),
+                            );
+                            if let Some(live) = live.as_deref_mut() {
+                                live.apply_renderer_frame(&mut renderer)?;
+                            }
+                        }
+                        Err(error) => {
+                            renderer.write_system_message(&format!(
+                                "{}: {error}",
+                                t("Could not display tool image", "工具图片显示失败")
+                            ))?;
+                            if let Some(live) = live.as_deref_mut() {
+                                live.apply_renderer_frame(&mut renderer)?;
+                            }
+                        }
+                    }
+                    continue;
                 }
-                // 图片打完不用再单独「抬进页内」:残影的根因不在图片的位置,而在
-                // 受限区滚动本身(见 tail/frame.rs 的 queue_lifted_frame),此后的
-                // 帧都会改走整屏滚,活动区 resume 时自己会把光标下方的溢出滚掉。
+                // 非全屏：也要排到**这一步落地之后**再打。
+                //
+                // `tool.image` 是工具一开头就报的（它得先把图交出去，才谈得上
+                // 打），当场打的话「表情包 · 67ms」那一行反而排到图下面——读起
+                // 来不像「用了表情包工具，于是图出来了」（用户 09-19 截图）。
+                // 全屏那条路早就把占位格排到时间线之后了，这里把顺序对齐：攒
+                // 着，等这把工具的 `tool.finished` 到了再打。
+                let _ = state;
+                deferred_images.push((data.clone(), size));
             }
             "question.requested" => {
-                renderer.prepare_for_external_output()?;
-                if let Some(live) = live.as_deref_mut() {
-                    live.apply_renderer_frame(&mut renderer)?;
-                    synchronized_terminal_update(CursorAfterUpdate::Hidden, || live.suspend())?;
-                }
-                let request = crate::question::QuestionRequest {
-                    questions: serde_json::from_value(
-                        data.get("questions").cloned().unwrap_or_default(),
-                    )?,
-                };
-                notify_if_unfocused(
+                // 她反问了：herdr 侧栏把整条 tab / workspace 标红，人在别的
+                // pane 干活时余光就知道「这儿在等我回话」；答完报回 working。
+                // 两件事都在 `question_flow` 里做（那边有 RAII 兜住所有出口）。
+                crate::cli::repl::question_flow::handle_question_requested(
+                    paths,
                     &config,
-                    live.as_deref().map(|live| live.editor.focused),
-                    t("Miyu is waiting on you", "Miyu 在等你回答"),
-                    request
-                        .questions
-                        .first()
-                        .map(|prompt| prompt.question.as_str())
-                        .unwrap_or_default(),
-                );
-                // A panel that cannot be shown is not a reason to abort the
-                // turn: fall through to the same path a closed panel takes, so
-                // the daemon gets an answer instead of the run dying on an
-                // error the user cannot act on. The direct-mode handler has
-                // always done this; this branch used to propagate instead.
-                let asked = crate::question_tui::ask(&request).unwrap_or_else(|err| {
-                    crate::question::QuestionResponse::Unavailable(err.to_string())
-                });
-                match asked {
-                    crate::question::QuestionResponse::Answered(answers) => {
-                        send_ipc_command(
-                            paths,
-                            IpcCommand::AnswerQuestion {
-                                question_id: ipc_text(&data, "question_id").to_string(),
-                                answers,
-                            },
-                        )
-                        .await?;
-                        renderer.start_waiting()?;
-                    }
-                    // Nobody could be shown the panel — no tty, or it failed to
-                    // open. That is not the user calling the turn off, so the
-                    // question is resolved and the turn carries on; the tool
-                    // that asked finds out that nobody answered and can say so.
-                    crate::question::QuestionResponse::Unavailable(_) => {
-                        let _ = send_ipc_command(
-                            paths,
-                            IpcCommand::CloseQuestion {
-                                question_id: ipc_text(&data, "question_id").to_string(),
-                            },
-                        )
-                        .await;
-                    }
-                    // The terminal question UI maps its close gestures to
-                    // Cancelled; that one really is "stop this turn".
-                    crate::question::QuestionResponse::Closed
-                    | crate::question::QuestionResponse::Cancelled => {
-                        let _ = send_ipc_command(
-                            paths,
-                            IpcCommand::Cancel {
-                                run_id: run_id.clone(),
-                            },
-                        )
-                        .await;
-                    }
-                }
-                if let Some(live) = live.as_deref_mut() {
-                    live.external_output_active = false;
-                    live.output_cursor = cursor_position_or(live.output_cursor);
-                    live.resume_at(live.output_cursor)?;
+                    live.as_deref_mut(),
+                    &mut renderer,
+                    &data,
+                    &run_id,
+                    Some(&herdr_turn),
+                )
+                .await?;
+            }
+            // 别的端往这一轮排了一条消息：画进自己的排队列表，两边看到的队列
+            // 才是同一份（用户 09-19：「TUIA 发消息进入排队，TUIB 也能看到」）。
+            // 自己排的那条提交时已经画过了，按 prompt_id 去重。
+            "queue.added" => {
+                let Some(live) = live.as_deref_mut() else {
+                    continue;
+                };
+                let prompt = data.get("prompt").cloned().unwrap_or_default();
+                let prompt_id = ipc_text(&prompt, "id").to_string();
+                let already = live
+                    .queued
+                    .iter()
+                    .any(|queued| queued.prompt_id == prompt_id);
+                if !prompt_id.is_empty() && !already {
+                    let content = ipc_text(&prompt, "content").to_string();
+                    live.enqueue(miyu_core::state::QueuedPrompt {
+                        prompt_id,
+                        seq: data
+                            .get("seq")
+                            .and_then(serde_json::Value::as_i64)
+                            .unwrap_or(0),
+                        content: content.clone(),
+                        display_content: content,
+                        attachments: Vec::new(),
+                        uploaded_attachments: Vec::new(),
+                        submitted_at: ipc_text(&prompt, "submitted_at").to_string(),
+                    })?;
                 }
             }
             "queue.consumed" => {
@@ -583,10 +813,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                                 .collect()
                         })
                         .unwrap_or_default();
-                    let consumed_mode = match ipc_text(&data, "mode") {
-                        "dev" => AgentMode::Dev,
-                        _ => AgentMode::Normal,
-                    };
+                    let consumed_mode = PersonaLane::from_mode_word(Some(ipc_text(&data, "mode")));
                     renderer.prepare_for_external_output()?;
                     live.apply_renderer_frame(&mut renderer)?;
                     synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
@@ -620,7 +847,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
             "context.compact_delta" => handle_agent_event(
                 &mut renderer,
                 AgentEvent::CompactChunk(ChatStreamChunk {
-                    kind: crate::llm::ChatStreamKind::Content,
+                    kind: miyu_core::llm::ChatStreamKind::Content,
                     text: ipc_text(&data, "delta").to_string(),
                 }),
             )?,
@@ -651,6 +878,10 @@ pub(in crate::cli) async fn try_run_remote_chat(
                             prompt: ipc_u64(&data, "turn_prompt"),
                             cache_read: ipc_u64(&data, "turn_cache_read"),
                         },
+                        GenerationSpeed {
+                            tokens: ipc_u64(&data, "turn_generation_tokens"),
+                            millis: ipc_u64(&data, "turn_generation_ms"),
+                        },
                     )?;
                 }
             }
@@ -660,6 +891,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                 if let Some(live) = live.as_deref_mut() {
                     live.apply_renderer_frame(&mut renderer)?;
                 }
+                handoff_raw!();
                 bail!("{}", ipc_text(&data, "message"));
             }
             "run.cancelled" => {
@@ -670,6 +902,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                     live.stop_footer_spinner()?;
                     live.apply_renderer_frame(&mut renderer)?;
                 }
+                handoff_raw!();
                 return Err(anyhow::Error::new(RemoteTurnCancelled));
             }
             _ => {}
@@ -680,9 +913,35 @@ pub(in crate::cli) async fn try_run_remote_chat(
     };
     renderer.finish()?;
     let focused = live.as_deref().map(|live| live.editor.focused);
+    // 混合模型池的「本次供应商 / 模型」那行（BUG-05）：
+    // - 「是不是混合」按**会话**的池判（会话钉了两个模型、全局只挂一个是常态），
+    //   原来拿全局 config 判在这种配置下永远为假；
+    // - `interactive` 档 = 只给交互 REPL：`live` 在就是交互，原来写死 false；
+    // - 交互 REPL 走 tail 的帧通道落到正文里（全屏下裸 println 会落错位置），
+    //   一次性/shellhook 仍走 stdout。
+    let interactive = live.is_some();
+    let endpoint_config = footer_config_for_session(paths, &config, &turn_session_id);
+    let show_endpoint = show_mixed_model_endpoint(&endpoint_config, interactive);
+    let endpoint = show_endpoint.then(|| {
+        (
+            completion
+                .get("provider_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("-")
+                .to_string(),
+            completion
+                .get("model")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("-")
+                .to_string(),
+        )
+    });
     if let Some(live) = live {
         live.stop_footer_spinner()?;
         live.apply_renderer_frame(&mut renderer)?;
+        if let Some((provider, model)) = &endpoint {
+            live.apply_output_frame(mixed_model_endpoint_frame(provider, model, None).as_bytes())?;
+        }
         if let Some(raw) = raw.as_mut() {
             raw.handoff();
             live.raw_mode_handoff = true;
@@ -716,15 +975,37 @@ pub(in crate::cli) async fn try_run_remote_chat(
         last_request_usage: None,
         responses_continuation: None,
     };
+    // 会话可能刚被自动命名（首条消息之后），标题跟着刷新一次。
+    // **只在常驻 REPL 里设**：一次性 / shellhook 跑完就退出，改了标题没人改回来，
+    // 人的终端标签页会被永久改名成「Miyu · 某某」。
+    if interactive_repl {
+        herdr::set_terminal_title_for_session(paths, &turn_session_id);
+    }
+    // 侧栏那几个自定义字段：模型和上下文占用。herdr 的 rows 里写 `$model`
+    // `$ctx` 就能显示——这是 Claude Code 在 herdr 里都没有的。
+    herdr::report_metadata(&[
+        ("model", result.model.clone().unwrap_or_default()),
+        (
+            "ctx",
+            completion
+                .get("context_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .map(|tokens| format!("{}k", tokens / 1000))
+                .unwrap_or_default(),
+        ),
+    ]);
     if config.notifications.on_turn_complete {
         notify_if_unfocused(
             &config,
             focused,
             t("Miyu finished replying", "Miyu 回复完成"),
-            &result.content,
+            // 正文不往通知里放：桌面通知是给**别人也可能看见的屏幕**发的，
+            // 而且回复本身在窗口里就摆着，通知只需要说"该回来看了"。
+            t("waiting for you", "正在等待处理"),
+            miyu_base::notify::NotifySound::TurnDone,
         );
     }
-    print_mixed_model_endpoint(show_mixed_model_endpoint(&config, false), &result, None);
+    print_mixed_model_endpoint(show_endpoint && !interactive, &result, None);
     let context_tokens = completion
         .get("context_tokens")
         .and_then(serde_json::Value::as_u64)

@@ -209,11 +209,25 @@ window.MiyuCommands = (() => {
         return done(text, /^(用法|\/goal |本会话)/.test(text) ? "error" : undefined);
       }
       if (spec.name === "/reset-memory") {
-        await ctx.apiRequest("/api/memory/reset", {
+        // session_id 必须带上：WebUI 同时开着好几个会话，daemon 的全局指针
+        // 未必是发命令的这一个，不带就会清到别的会话头上。
+        const response = await ctx.apiRequest("/api/memory/reset", {
           method: "POST",
-          body: JSON.stringify({ mode: ctx.mode }),
+          body: JSON.stringify({ mode: ctx.mode, session_id: ctx.sessionId }),
         });
-        return done("已清空长期记忆");
+        // 回执文案由服务端拼（和 REPL/QQ 同一份实现），前端原样贴出。
+        const text = (await response.json())?.text || "已清空本次会话记下的记忆";
+        return done(text);
+      }
+      if (spec.name === "/reset-all-memory") {
+        // 和 /reset-memory 一样必须带 session_id:服务端据它做身份/归属校验 + 把配置
+        // 套到发命令成员的家目录/私有人格(memory 才落对库)。不带就回落全局会话指针,
+        // 成员并不拥有它 → require_local_web_session 报「session not found」(用户 #157)。
+        await ctx.apiRequest("/api/memory/reset-all", {
+          method: "POST",
+          body: JSON.stringify({ mode: ctx.mode, session_id: ctx.sessionId }),
+        });
+        return done("已清空全部长期记忆");
       }
       if (spec.name === "/pop") {
         // /pop 全程不在对话流里留任何东西（回显和回执都不留）：
@@ -253,6 +267,48 @@ window.MiyuCommands = (() => {
         await ctx.reload();
         ctx.toast?.(`已从上下文弹出最旧的 ${removed} 轮`);
         return true;
+      }
+      if (spec.name === "/sandbox") {
+        // 与 REPL 同一条 IPC(SetSandbox):校验目录、探测内核、拒绝成员都在服务端;
+        // 这里只负责把回执贴进对话流。路径是 daemon 那台机器上的路径。
+        const base = `/api/sessions/${encodeURIComponent(ctx.sessionId)}`;
+        // `--allow-read` 前后都认，剩下的整段是路径——路径里可以有空格，所以不切词
+        // （与 REPL 的 take_repl_flag 同一套规矩）。
+        const FLAG = "--allow-read";
+        let trimmed = args.trim();
+        let allowRead = false;
+        if (trimmed === FLAG || trimmed.startsWith(`${FLAG} `)) {
+          allowRead = true;
+          trimmed = trimmed.slice(FLAG.length).trim();
+        } else if (trimmed.endsWith(` ${FLAG}`)) {
+          allowRead = true;
+          trimmed = trimmed.slice(0, -FLAG.length).trim();
+        }
+        const describe = async () => {
+          const response = await ctx.apiRequest(`${base}/context`);
+          const info = await response.json();
+          if (!info?.sandbox) {
+            return "未绑定沙盒：读写不设限。用 /sandbox <路径> 把本会话关进一个目录";
+          }
+          const writable = (info.sandbox_writable || []).join("、");
+          const readable = (info.sandbox_readable || []).join("、");
+          return `沙盒根：${info.sandbox} ｜ 可写：${writable} ｜ 可读：${readable}`;
+        };
+        if (!trimmed) {
+          return done(allowRead ? "用法：/sandbox <路径> [--allow-read]" : await describe());
+        }
+        const clearing = trimmed.toLowerCase() === "clear";
+        await ctx.apiRequest(base, {
+          method: "PATCH",
+          body: JSON.stringify({
+            sandbox: clearing ? "" : trimmed,
+            sandbox_allow_read: !clearing && allowRead,
+          }),
+        });
+        if (clearing) return done("已解绑沙盒；之后的回合不设限");
+        // 读放开=把「读不到密钥」那一半关掉，回执里说明白。
+        const caveat = allowRead ? "；只锁写，读不设限（~/.ssh 与 API key 也读得到）" : "";
+        return done(`已绑定：${await describe()}（只影响之后的回合${caveat}）`);
       }
       if (spec.name === "/stop") {
         // 和点停止按钮完全一致：不留命令回显、不留回执（按钮也不留）。

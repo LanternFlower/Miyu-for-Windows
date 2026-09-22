@@ -1,0 +1,43 @@
+{
+  "builders": {
+    "arch-x86_64": {
+      "architecture": "x86_64",
+      "image": "archlinux@sha256:b944cc65c5f28665dfd5fdbf5ed2997c88f5bb4a0aefac7ee8a7ef01893e5ed9"
+    },
+    "gnu-x86_64": {
+      "architecture": "x86_64",
+      "glibc": "2.39",
+      "image": "ubuntu@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3"
+    },
+    "macos-arm64": {
+      "architecture": "arm64",
+      "deployment_target": "15.0",
+      "minimum_test_os": "15.0",
+      "runner": "macos-15",
+      "sdk": "macosx15.5",
+      "xcode": "16.4"
+    }
+  },
+  "fedora": {
+    "source": "https://fedoraproject.org/releases.json",
+    "source_sha256": "54999505865a0491b5cb5bb33709f4e4ba31c0671d3a9a25b94afbd95cff57bd",
+    "version": 44
+  },
+  "install_images": {
+    "arch-x86_64": "archlinux@sha256:b944cc65c5f28665dfd5fdbf5ed2997c88f5bb4a0aefac7ee8a7ef01893e5ed9",
+    "debian13-x86_64": "debian@sha256:f324c7ff54321e8d9c588493a20244965938ce0aa50bbd1022d38010e9ffc4b1",
+    "fedora-current-x86_64": "fedora@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80",
+    "mint22-x86_64": "linuxmintd/mint22.3-amd64@sha256:304bbf7ec2a61252962c5210467d231a141661490e8962f52fd4df7688370369",
+    "ubuntu2404-x86_64": "ubuntu@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3",
+    "ubuntu2604-x86_64": "ubuntu@sha256:513c074113a871b51a8d16ab445c88779d6452d937a164fb5cc479f32668a41d"
+  },
+  "msrv": "1.89.0",
+  "nfpm": {
+    "sha256": "0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783",
+    "url": "https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_x86_64.tar.gz",
+    "version": "2.47.0"
+  },
+  "python_minimum": "3.11",
+  "rust": "1.96.1",
+  "schema_version": 1
+}

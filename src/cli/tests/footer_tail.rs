@@ -9,7 +9,7 @@ use crate::cli::repl::tail::{
 };
 use crate::cli::repl::width::*;
 use crate::cli::*;
-use crate::llm::ChatStreamKind;
+use miyu_core::llm::ChatStreamKind;
 #[test]
 fn terminal_frame_tracks_ansi_and_wide_graphemes() {
     let layout = terminal_frame_layout("\x1b[32mAB\x1b[0m\n中👨‍👩‍👧‍👦".as_bytes(), (3, 2), 12, None);
@@ -62,30 +62,38 @@ fn live_frame_uses_the_gap_only_for_a_terminating_newline() {
 #[test]
 fn replayed_job_wake_turns_are_not_drawn_as_user_prompts() {
     let config = AppConfig::default();
-    let wake = crate::state::TurnReplay {
+    let wake = miyu_core::state::TurnReplay {
         display_content: "[后台任务完成] 子代理完成 82bea3 · 后台测试A".to_string(),
         assistant_content: "跑完了。".to_string(),
         entries: Vec::new(),
         is_synthetic: true,
+        interrupted: false,
+        assistant_reasoning: None,
+        assistant_provider_id: None,
+        assistant_model: None,
     };
-    let typed = crate::state::TurnReplay {
+    let typed = miyu_core::state::TurnReplay {
         display_content: "帮我改一下 README".to_string(),
         assistant_content: "改好了。".to_string(),
         entries: Vec::new(),
         is_synthetic: false,
+        interrupted: false,
+        assistant_reasoning: None,
+        assistant_provider_id: None,
+        assistant_model: None,
     };
 
-    let frame = session_replay_frame(&[wake], AgentMode::Normal, &config, 80).unwrap();
+    let frame = session_replay_frame(&[wake], PersonaLane::Active, &config, 80, false).unwrap();
     let frame = String::from_utf8_lossy(&frame);
     // Dim ⚙ notice with the bracketed prefix stripped, exactly like the
     // live path — never the user bubble's bar.
     assert!(frame.contains("⚙ 子代理完成 82bea3 · 后台测试A"));
     assert!(!frame.contains("[后台任务完成]"));
-    assert!(!frame.contains(&submitted_echo_bar(AgentMode::Normal)));
+    assert!(!frame.contains(&submitted_echo_bar(PersonaLane::Active)));
 
-    let frame = session_replay_frame(&[typed], AgentMode::Normal, &config, 80).unwrap();
+    let frame = session_replay_frame(&[typed], PersonaLane::Active, &config, 80, false).unwrap();
     let frame = String::from_utf8_lossy(&frame);
-    assert!(frame.contains(&submitted_echo_bar(AgentMode::Normal)));
+    assert!(frame.contains(&submitted_echo_bar(PersonaLane::Active)));
     assert!(!frame.contains('⚙'));
 }
 
@@ -111,8 +119,12 @@ fn footer_reset_clears_turn_and_cumulative_tokens() {
             ..Default::default()
         },
     );
-    footer.set_token_usage(
-        50,
+    footer.set_token_usage_with_cache(
+        TurnTokens {
+            total: 50,
+            ..Default::default()
+        },
+        miyu_core::llm::GenerationSpeed::default(),
         100,
         Some(200_000),
         TurnTokens {
@@ -169,7 +181,7 @@ fn footer_turn_completion_updates_the_rendered_token_accounting() {
     assert_eq!(footer.token_usage.session_tokens, 240);
     assert_eq!(footer.token_usage.cumulative_tokens, Some(100));
     assert_eq!(
-        strip_terminal_control_sequences(&repl_footer_line(AgentMode::Normal, &footer, 80))
+        strip_terminal_control_sequences(&repl_footer_line(PersonaLane::Active, &footer, 80))
             .split_whitespace()
             .last(),
         Some("Σ100")
@@ -199,8 +211,9 @@ fn an_idle_tick_only_redraws_when_the_cumulative_actually_moved() {
     }));
 }
 
+/// footer 宽度不够时最先丢输出速度,再丢 Σ、再丢百分比。
 #[test]
-fn the_footer_leaves_the_per_turn_figure_to_the_token_line() {
+fn the_footer_drops_the_output_speed_before_the_cumulative_total() {
     let config = AppConfig::default();
     let mut footer = ReplFooterStatus::from_config(&config, 0, TurnTokens::default());
     footer.set_token_usage_with_cache(
@@ -208,6 +221,10 @@ fn the_footer_leaves_the_per_turn_figure_to_the_token_line() {
             total: 21_224,
             prompt: 16_139,
             cache_read: 6_528,
+        },
+        GenerationSpeed {
+            tokens: 5_085,
+            millis: 14_086,
         },
         21_700,
         Some(1_000_000),
@@ -218,7 +235,40 @@ fn the_footer_leaves_the_per_turn_figure_to_the_token_line() {
         },
     );
 
-    let line = strip_terminal_control_sequences(&repl_footer_line(AgentMode::Normal, &footer, 80));
+    let wide =
+        strip_terminal_control_sequences(&repl_footer_line(PersonaLane::Active, &footer, 100));
+    assert!(
+        wide.contains("361 tok/s · 21.7k/1M(2.2%) · Σ180.1k(C24%)"),
+        "{wide}"
+    );
+    let narrow =
+        strip_terminal_control_sequences(&repl_footer_line(PersonaLane::Active, &footer, 64));
+    assert!(!narrow.contains("tok/s"), "{narrow}");
+    assert!(narrow.contains("Σ180.1k(C24%)"), "{narrow}");
+}
+
+#[test]
+fn the_footer_leaves_the_per_turn_figure_to_the_token_line() {
+    let config = AppConfig::default();
+    let mut footer = ReplFooterStatus::from_config(&config, 0, TurnTokens::default());
+    footer.set_token_usage_with_cache(
+        TurnTokens {
+            total: 21_224,
+            prompt: 16_139,
+            cache_read: 6_528,
+        },
+        GenerationSpeed::default(),
+        21_700,
+        Some(1_000_000),
+        TurnTokens {
+            total: 180_100,
+            prompt: 47_538,
+            cache_read: 11_392,
+        },
+    );
+
+    let line =
+        strip_terminal_control_sequences(&repl_footer_line(PersonaLane::Active, &footer, 80));
     // Two standing gauges only. Carrying the turn figure as well cost 14
     // columns and pushed the whole footer past 80.
     assert!(line.contains("21.7k/1M(2.2%)"), "{line}");
@@ -238,7 +288,7 @@ fn footer_variant_always_uses_the_fixed_primary_color() {
     let mut footer = ReplFooterStatus::from_config(&config, 0, TurnTokens::default());
     footer.update_thinking_variant(Some("high"));
 
-    for mode in [AgentMode::Normal, AgentMode::Dev] {
+    for mode in [PersonaLane::Active, PersonaLane::Dev] {
         let line = repl_footer_left(mode, &footer, 120);
         assert!(line.contains("\x1b[1m\x1b[34mhigh\x1b[0m"));
         assert_eq!(
@@ -278,7 +328,7 @@ fn mixed_footer_uses_dim_provider_and_hides_global_variant() {
     let mut footer = ReplFooterStatus::from_config(&config, 0, TurnTokens::default());
     footer.update_thinking_variant(Some("mixed"));
 
-    let line = repl_footer_left(AgentMode::Normal, &footer, 120);
+    let line = repl_footer_left(PersonaLane::Active, &footer, 120);
 
     assert_eq!(footer.provider, "mixed");
     assert!(footer.thinking.is_none());
@@ -286,7 +336,7 @@ fn mixed_footer_uses_dim_provider_and_hides_global_variant() {
         strip_terminal_control_sequences(&line),
         format!(
             "{} · {} mixed",
-            AgentMode::Normal.label(),
+            PersonaLane::Active.label(),
             t("Mixed", "混合")
         )
     );
@@ -296,7 +346,7 @@ fn mixed_footer_uses_dim_provider_and_hides_global_variant() {
 
 #[test]
 fn committed_user_message_keeps_one_blank_line_before_output() {
-    let output = committed_user_messages_text(&[("hello", AgentMode::Normal)], true, 80);
+    let output = committed_user_messages_text(&[("hello", PersonaLane::Active)], true, 80);
 
     assert_eq!(
         strip_terminal_control_sequences(&output),
@@ -316,18 +366,18 @@ fn queued_message_uses_full_height_bar_and_primary_status() {
         submitted_at: String::new(),
     };
 
-    let normal = queued_prompt_lines(std::slice::from_ref(&prompt), AgentMode::Normal, 80);
-    let chat = queued_prompt_lines(&[prompt], AgentMode::Dev, 80);
+    let normal = queued_prompt_lines(std::slice::from_ref(&prompt), PersonaLane::Active, 80);
+    let chat = queued_prompt_lines(&[prompt], PersonaLane::Dev, 80);
 
     assert_eq!(normal.len(), 4);
-    assert_eq!(normal[0], submitted_echo_bar(AgentMode::Normal));
-    assert_eq!(normal[2], submitted_echo_bar(AgentMode::Normal));
-    assert!(normal[3].starts_with(&submitted_echo_bar(AgentMode::Normal)));
+    assert_eq!(normal[0], submitted_echo_bar(PersonaLane::Active));
+    assert_eq!(normal[2], submitted_echo_bar(PersonaLane::Active));
+    assert!(normal[3].starts_with(&submitted_echo_bar(PersonaLane::Active)));
     assert!(normal[3].contains(&primary_footer_text(t("Queued", "排队中"))));
     assert!(chat
         .iter()
         .filter(|line| !line.is_empty())
-        .all(|line| line.starts_with(&submitted_echo_bar(AgentMode::Dev))));
+        .all(|line| line.starts_with(&submitted_echo_bar(PersonaLane::Dev))));
     assert_ne!(normal[0], chat[0]);
 }
 
@@ -431,22 +481,36 @@ fn streaming_output_never_drags_an_anchored_tail_back_up() {
 fn spinner_does_not_resume_tail_during_external_output() {
     let config = AppConfig::default();
     let mut live = LiveReplTail {
-        editor: LiveReplEditor::new(AgentMode::Normal, Vec::new()),
+        editor: LiveReplEditor::new(PersonaLane::Active, Vec::new()),
         queued: Vec::new(),
         pending_chunks: Vec::new(),
         footer: ReplFooterStatus::from_config(&config, 0, TurnTokens::default()),
         round_base_footer: None,
         footer_offset: None,
         footer_spinner_last: None,
+        goal_hint_drawn: String::new(),
         output_cursor: (0, 0),
         tail_start: 0,
         tail_rows: 0,
+        job_strip_start: 0,
+        job_strip_rows: 0,
+        job_hover: None,
+        pending_stop_job: None,
         input_cursor: (0, 0),
         rendered: false,
         external_output_active: true,
         raw_mode_handoff: false,
+        screen: None,
+        banner: None,
+        banner_rows: 0,
+        lobby_panel_rows: 0,
+        suppress_switch_note: false,
+        session_footer_stale: false,
         jobs: Vec::new(),
+        suppressed_jobs: std::collections::HashMap::new(),
+        live_turn_tokens: 0,
         job_spinner: 0,
+        job_spinner_started: std::time::Instant::now(),
     };
     let mut renderer = render::StreamRenderer::new(
         render::ReasoningDisplayMode::Hidden,
@@ -466,22 +530,36 @@ fn spinner_does_not_resume_tail_during_external_output() {
 fn live_tail_coalesces_adjacent_stream_chunks_and_can_discard_them() {
     let config = AppConfig::default();
     let mut live = LiveReplTail {
-        editor: LiveReplEditor::new(AgentMode::Normal, Vec::new()),
+        editor: LiveReplEditor::new(PersonaLane::Active, Vec::new()),
         queued: Vec::new(),
         pending_chunks: Vec::new(),
         footer: ReplFooterStatus::from_config(&config, 0, TurnTokens::default()),
         round_base_footer: None,
         footer_offset: None,
         footer_spinner_last: None,
+        goal_hint_drawn: String::new(),
         output_cursor: (0, 0),
         tail_start: 0,
         tail_rows: 0,
+        job_strip_start: 0,
+        job_strip_rows: 0,
+        job_hover: None,
+        pending_stop_job: None,
         input_cursor: (0, 0),
         rendered: false,
         external_output_active: false,
         raw_mode_handoff: false,
+        screen: None,
+        banner: None,
+        banner_rows: 0,
+        lobby_panel_rows: 0,
+        suppress_switch_note: false,
+        session_footer_stale: false,
         jobs: Vec::new(),
+        suppressed_jobs: std::collections::HashMap::new(),
+        live_turn_tokens: 0,
         job_spinner: 0,
+        job_spinner_started: std::time::Instant::now(),
     };
 
     for (kind, text) in [
@@ -652,4 +730,107 @@ fn lifted_frame_falls_back_to_the_scroll_region_on_a_one_row_page() {
         String::from_utf8(transaction).unwrap(),
         format!("\x1b[1;1r{}a\nb\x1b[r", move_to(0, 0))
     );
+}
+
+/// 回显顶到页底后光标停在最后一行:提交路径靠它推算输出光标,不再问终端。
+#[test]
+fn cursor_after_frame_clamps_to_the_last_row_when_the_echo_scrolls() {
+    use crate::cli::repl::tail::cursor_after_frame;
+    // 40 行的屏,从第 36 行开始写 5 个换行:真终端会滚 1 行,光标停在第 39 行。
+    let echo = "\n┃\n┃ hello\n┃\n\n";
+    assert_eq!(
+        cursor_after_frame(echo.as_bytes(), (0, 36), 120, 40),
+        (0, 39)
+    );
+    // 没顶到页底就照实算。
+    assert_eq!(
+        cursor_after_frame(echo.as_bytes(), (0, 5), 120, 40),
+        (0, 10)
+    );
+    // 光标不在行首时先补的那个换行也要算进去。
+    assert_eq!(cursor_after_frame(b"\nab", (7, 3), 120, 40), (2, 4));
+}
+
+/// 状态行上时间**左边**先报量。
+///
+/// 一条子代理能跑好几分钟，光有秒数看不出它是在干活还是卡住了（用户：这里时间
+/// 左侧应该有一个 token 记述）。命令类任务没有词元这个概念，那儿就只有时间。
+#[test]
+fn the_job_strip_reports_tokens_left_of_the_timer() {
+    let job = |metric: Option<&str>| miyu_engine::tools::jobs::JobOverview {
+        job_id: "82bea3".into(),
+        title: "查目录".into(),
+        command: "seq 1 5".to_string(),
+        kind: "subagent".into(),
+        dev: false,
+        session_id: None,
+        root_session_id: None,
+        status: "running".into(),
+        running: true,
+        runtime_seconds: 12,
+        log_path: None,
+        metric: metric.map(str::to_string),
+        metric_tokens: None,
+    };
+    let row = |metric: Option<&str>| {
+        let lines = crate::cli::repl::jobs::background_job_lines(&[job(metric)], 0, 60, None);
+        strip_terminal_control_sequences(&lines[1])
+            .trim_end()
+            .to_string()
+    };
+
+    let with_tokens = row(Some("≈3.1K"));
+    let without = row(None);
+    assert!(with_tokens.ends_with("≈3.1K  12s"), "{with_tokens:?}");
+    assert!(without.ends_with("12s"), "{without:?}");
+    assert!(
+        !without.contains("≈"),
+        "命令类任务不该冒出词元数: {without:?}"
+    );
+    // 两行一样宽：状态行是右对齐的，宽度一抖整条尾巴就跟着抖。
+    assert_eq!(
+        crate::cli::repl::width::visible_width(&with_tokens),
+        crate::cli::repl::width::visible_width(&without),
+        "加了量之后右边没对齐: {with_tokens:?} / {without:?}"
+    );
+}
+
+/// 后台任务面板的抬头也带着量。
+#[test]
+fn the_job_panel_title_carries_the_token_figure() {
+    use crate::cli::repl::tail::screen::job_panel_title;
+    let mut job = miyu_engine::tools::jobs::JobOverview {
+        job_id: "82bea3".into(),
+        title: "走查后台子代理".into(),
+        command: "seq 1 5".to_string(),
+        kind: "subagent".into(),
+        dev: false,
+        session_id: None,
+        root_session_id: None,
+        status: "running".into(),
+        running: true,
+        runtime_seconds: 4,
+        log_path: None,
+        metric: None,
+        metric_tokens: None,
+    };
+    assert_eq!(job_panel_title(&job), "走查后台子代理 · running");
+    job.metric = Some("≈3.1K".into());
+    assert_eq!(job_panel_title(&job), "走查后台子代理 · running · ≈3.1K");
+}
+
+/// 跑着的子代理先记在 Σ 上：它们的审计会话要跑完才落盘，而一个子代理能跑
+/// 好几分钟——那几分钟里 Σ 纹丝不动（用户问的就是这个）。
+#[test]
+fn the_sigma_meter_counts_running_subagents() {
+    let mut meter = render::TokenMeter {
+        session_tokens: 1_000,
+        context_window: Some(100_000),
+        cumulative_tokens: Some(10_000),
+        ..Default::default()
+    };
+    let line = |meter: &render::TokenMeter| render::format_token_usage_inline(meter);
+    assert!(line(&meter).contains("Σ10k"), "{}", line(&meter));
+    meter.live_extra_tokens = 2_500;
+    assert!(line(&meter).contains("Σ12.5k"), "{}", line(&meter));
 }

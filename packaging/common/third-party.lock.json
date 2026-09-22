@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "wiki": {
+    "url": "https://github.com/SHORiN-KiWATA/Shorin-ArchLinux-Guide.git",
+    "commit": "af99c4ac22a1be849206639807577a51b9e12061"
+  },
+  "archives": [
+    {
+      "id": "sherpa-linux",
+      "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.7/sherpa-onnx-v1.13.7-linux-x64-static-lib.tar.bz2",
+      "sha256": "d1be7a69ac2b30120058d8302e624239a3064085383cfa47994a14fdc44c32d6",
+      "format": "tar.bz2",
+      "targets": [
+        "gnu-x86_64",
+        "arch-x86_64"
+      ],
+      "version": "1.13.7",
+      "license": "sherpa-onnx-license"
+    },
+    {
+      "id": "sherpa-macos",
+      "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.7/sherpa-onnx-v1.13.7-osx-arm64-static-lib.tar.bz2",
+      "sha256": "126daa2e8c09a4c5d54dc985722c43bd22f598adc56445905b377454b1b27e38",
+      "format": "tar.bz2",
+      "targets": [
+        "macos-arm64"
+      ],
+      "version": "1.13.7",
+      "license": "sherpa-onnx-license"
+    },
+    {
+      "id": "ort-gnu",
+      "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz",
+      "sha256": "1fa4dcaef22f6f7d5cd81b28c2800414350c10116f5fdd46a2160082551c5f9b",
+      "format": "tar.gz",
+      "targets": [
+        "gnu-x86_64"
+      ],
+      "version": "1.23.2",
+      "license": "onnxruntime-linux-x64-1.23.2/LICENSE"
+    },
+    {
+      "id": "voice-kws",
+      "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01.tar.bz2",
+      "sha256": "b2f7c89690dc8ce4c6ed6afeab7cd800c36ad1421fb6b6302b4a4b194cf7f35f",
+      "format": "tar.bz2",
+      "targets": [
+        "gnu-x86_64",
+        "arch-x86_64",
+        "macos-arm64"
+      ],
+      "version": "2024-01-01",
+      "license": "NOASSERTION: upstream model archive contains no license"
+    },
+    {
+      "id": "voice-sense",
+      "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2",
+      "sha256": "7d1efa2138a65b0b488df37f8b89e3d91a60676e416f515b952358d83dfd347e",
+      "format": "tar.bz2",
+      "targets": [
+        "gnu-x86_64",
+        "arch-x86_64",
+        "macos-arm64"
+      ],
+      "version": "2024-07-17",
+      "license": "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/LICENSE"
+    },
+    {
+      "id": "voice-vad",
+      "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+      "sha256": "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
+      "format": "file",
+      "targets": [
+        "gnu-x86_64",
+        "arch-x86_64",
+        "macos-arm64"
+      ],
+      "version": "sha256:9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
+      "license": "silero-vad-license"
+    },
+    {
+      "id": "wiki",
+      "url": "https://codeload.github.com/SHORiN-KiWATA/Shorin-ArchLinux-Guide/tar.gz/af99c4ac22a1be849206639807577a51b9e12061",
+      "sha256": "3d705588acf19cb28c9c1307c9b696feaffaf9c9b88412c5976af3d8015141d1",
+      "format": "tar.gz",
+      "targets": [
+        "gnu-x86_64",
+        "arch-x86_64",
+        "macos-arm64"
+      ],
+      "version": "af99c4ac22a1be849206639807577a51b9e12061",
+      "license": "Shorin-ArchLinux-Guide-af99c4ac22a1be849206639807577a51b9e12061/LICENSE"
+    },
+    {
+      "id": "sherpa-onnx-license",
+      "url": "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/917bed95c8e5c7c18aa4d69fea42e9ef8ef0a60e/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "format": "file",
+      "targets": [
+        "gnu-x86_64",
+        "arch-x86_64",
+        "macos-arm64"
+      ],
+      "version": "917bed95c8e5c7c18aa4d69fea42e9ef8ef0a60e",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "silero-vad-license",
+      "url": "https://raw.githubusercontent.com/snakers4/silero-vad/867c2aa692646a1f1de3e94a15c9dd9f614c0acb/LICENSE",
+      "sha256": "2e63e9a38b6e8fc0c7bc37ce174caca1862870856c6daf5697cfb785e925520b",
+      "format": "file",
+      "targets": [
+        "gnu-x86_64",
+        "arch-x86_64",
+        "macos-arm64"
+      ],
+      "version": "867c2aa692646a1f1de3e94a15c9dd9f614c0acb",
+      "license": "MIT"
+    }
+  ],
+  "fixtures": [
+    {
+      "archive_id": "voice-kws",
+      "member": "sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+      "sha256": "dd784973fc9d2fabb3b800d6dcd20fc3b0ca84f8e2415afe54b032878e447f4d",
+      "size": 4777666,
+      "id": "voice-kws-encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx"
+    },
+    {
+      "archive_id": "voice-kws",
+      "member": "sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01/test_wavs/0.wav",
+      "sha256": "668bf8df51a10027b84d5d8816a1ce11ae93545538dc05cfe2aa6811d399c250",
+      "size": 179646,
+      "id": "voice-kws-0.wav",
+      "audio": {
+        "channels": 1,
+        "sample_rate": 16000,
+        "sample_width": 2,
+        "frames": 89784
+      }
+    },
+    {
+      "archive_id": "voice-kws",
+      "member": "sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01/joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+      "sha256": "f79760052b87239e325f0567c752ad3130b30d92effb847d4307743c20c59a24",
+      "size": 65242,
+      "id": "voice-kws-joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx"
+    },
+    {
+      "archive_id": "voice-kws",
+      "member": "sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01/tokens.txt",
+      "sha256": "72316508d9119696145abc6f1f8cdc46287535c34e5ce7e595f845cb1499cf2e",
+      "size": 1627,
+      "id": "voice-kws-tokens.txt"
+    },
+    {
+      "archive_id": "voice-kws",
+      "member": "sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01/decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+      "sha256": "ed83454004d5bd16d831eaf00adcd181ed7734886aab6ef440f3ffa5aa3cfe3b",
+      "size": 181069,
+      "id": "voice-kws-decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx"
+    },
+    {
+      "archive_id": "voice-sense",
+      "member": "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/test_wavs/zh.wav",
+      "sha256": "b77f1794fe374a0ba1ee1dc458bfaf9349496cbbfc32780c50ba3c5a7ad8e373",
+      "size": 178988,
+      "id": "voice-sense-zh.wav",
+      "audio": {
+        "channels": 1,
+        "sample_rate": 16000,
+        "sample_width": 2,
+        "frames": 89472
+      }
+    },
+    {
+      "archive_id": "voice-sense",
+      "member": "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt",
+      "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc",
+      "size": 315894,
+      "id": "voice-sense-tokens.txt"
+    },
+    {
+      "archive_id": "voice-sense",
+      "member": "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx",
+      "sha256": "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51",
+      "size": 239233841,
+      "id": "voice-sense-model.int8.onnx"
+    }
+  ]
+}

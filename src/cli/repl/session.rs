@@ -59,7 +59,7 @@ pub(in crate::cli) async fn create_ephemeral_session(
         IpcCommand::CreateSession {
             name: Some(ephemeral_session_name()),
             switch: false,
-            kind: Some(crate::state::ASK_SESSION_KIND.to_string()),
+            kind: Some(miyu_core::state::ASK_SESSION_KIND.to_string()),
             mode: mode.map(str::to_string),
         },
     )
@@ -77,7 +77,7 @@ pub(in crate::cli) async fn create_ephemeral_session(
 pub(in crate::cli) async fn discard_ephemeral_session(paths: &MiyuPaths, session_id: &str) {
     // CLI 中转(claude-code/antigravity)的联动:直连形态没有 daemon,DeleteSession
     // 那条路上的 forget 不会跑到,这里自己收——续传映射与 CLI 侧转录都在本进程。
-    crate::llm::forget_relay_sessions(session_id);
+    miyu_core::llm::forget_relay_sessions(session_id);
     let _ = send_ipc_admin(
         paths,
         IpcCommand::StopSessionJobs {
@@ -88,7 +88,7 @@ pub(in crate::cli) async fn discard_ephemeral_session(paths: &MiyuPaths, session
     let _ = send_ipc_admin(
         paths,
         IpcCommand::DeleteSession {
-            target: crate::ipc::SessionRef::Id {
+            target: miyu_core::ipc::SessionRef::Id {
                 id: session_id.to_string(),
             },
         },
@@ -105,7 +105,7 @@ pub(in crate::cli) struct EphemeralSessionGuard {
 
 impl Drop for EphemeralSessionGuard {
     fn drop(&mut self) {
-        crate::llm::forget_relay_sessions(&self.session_id);
+        miyu_core::llm::forget_relay_sessions(&self.session_id);
         let _ = self.state.delete_session(&self.session_id);
     }
 }
@@ -144,6 +144,56 @@ impl std::fmt::Display for RemoteTurnDetached {
 
 impl std::error::Error for RemoteTurnDetached {}
 
+/// 回合跑着的时候敲了一条要占屏的斜杠命令（用户 09-20：「应该区分能执行和
+/// 不能执行的命令」）。
+///
+/// 这一轮**分离到后台**（daemon 照跑），由上层执行这条命令，执行完再按
+/// `last_event_id` 挂回来接着看——已经看过的那半截不会再来一遍。
+///
+/// 走「分离」而不是就地执行，是因为命令的实现都挂在 `RemoteRepl` 上（它同时
+/// 持有活动区的可变借用），回合循环够不到；在回合循环里重写一份就是第二套
+/// 事实来源。代价是正文上会留一道接缝（渲染器收口再重开）。
+///
+/// `/models` `/session` 的面板不走这条（09-20）：它们寄宿在回合循环里跑完，
+/// 只有「人挑了另一条会话」这一件事回合循环自己做不了，才借这个错误把选好的
+/// 会话带回 `RemoteRepl`（见 [`SuspendedAction::SwitchSession`]）。
+#[derive(Debug)]
+pub(in crate::cli) struct RemoteTurnSuspended {
+    pub(in crate::cli) action: SuspendedAction,
+    pub(in crate::cli) run_id: String,
+    /// 最后看到的事件号；挂回来时从它之后接着看。0 = 一个都没看到。
+    pub(in crate::cli) last_event_id: u64,
+    pub(in crate::cli) session_id: String,
+}
+
+/// 回合循环暂离之后要上层做的事。
+#[derive(Debug, Clone)]
+pub(in crate::cli) enum SuspendedAction {
+    /// 命令还没执行：交给 `RemoteRepl::dispatch_slash`，做完按事件号挂回来。
+    Command {
+        command: miyu_core::slash_commands::ReplSlashCommand,
+        args: String,
+    },
+    /// `/session` 面板已经在回合里跑完、人挑了另一条会话（09-20）：换会话要
+    /// 动 footer / 历史 / 车道，只有 `RemoteRepl` 做得了。换走之后这一轮不再
+    /// 跟——它在 daemon 里继续跑，属于原来那条会话。
+    SwitchSession(ipc::SessionState),
+}
+
+impl std::fmt::Display for RemoteTurnSuspended {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(t("suspended for a command", "为执行命令暂离"))
+    }
+}
+
+impl std::error::Error for RemoteTurnSuspended {}
+
+pub(in crate::cli) fn take_remote_turn_suspended(
+    error: &anyhow::Error,
+) -> Option<&RemoteTurnSuspended> {
+    error.downcast_ref::<RemoteTurnSuspended>()
+}
+
 pub(in crate::cli) fn is_remote_turn_detached(error: &anyhow::Error) -> bool {
     error.downcast_ref::<RemoteTurnDetached>().is_some()
 }
@@ -158,7 +208,7 @@ pub(in crate::cli) fn is_remote_turn_cancelled(error: &anyhow::Error) -> bool {
 /// 完成后 daemon 凭这份指纹校验「shell 还活着、仍在这个 tty、空闲在提示符」,
 /// 才把跟进回复写回终端。检测不到(纯管道/重定向/cron)就不带。
 #[cfg(unix)]
-pub(in crate::cli) fn detect_origin_tty() -> Option<crate::ipc::OriginTty> {
+pub(in crate::cli) fn detect_origin_tty() -> Option<miyu_core::ipc::OriginTty> {
     let fd = [2, 1, 0]
         .into_iter()
         .find(|&fd| unsafe { libc::isatty(fd) } == 1)?;
@@ -166,14 +216,14 @@ pub(in crate::cli) fn detect_origin_tty() -> Option<crate::ipc::OriginTty> {
     if !path.starts_with("/dev/") {
         return None;
     }
-    Some(crate::ipc::OriginTty {
+    Some(miyu_core::ipc::OriginTty {
         path,
         shell_pid: std::os::unix::process::parent_id(),
     })
 }
 
 #[cfg(not(unix))]
-pub(in crate::cli) fn detect_origin_tty() -> Option<crate::ipc::OriginTty> {
+pub(in crate::cli) fn detect_origin_tty() -> Option<miyu_core::ipc::OriginTty> {
     None
 }
 
@@ -198,7 +248,38 @@ pub(in crate::cli) fn validate_ipc_command_response(frame: Option<IpcFrame>) -> 
 /// input history, queue tray, and the footer's token accounting.
 /// Writes one line of REPL feedback through the live tail so the output
 /// cursor stays in sync; never use bare `println!` inside the remote REPL.
+/// 一句话的状态提示。
+///
+/// 全屏下短提示走**通知条**（浮在输入框上方，几秒后自己消失），长的照旧进正文。
+/// 判据是行数：`/help` 那种整页清单浮起来没法看，而「已取消」写进正文只会让
+/// 回翻时满屏都是碎片。
+/// 回合失败写给人看的那一段。
+///
+/// 报错现在是多行的（一句结论 + 每个端点一行 + 一句该怎么办，见
+/// `chat::all_endpoints_failed_message`），原来那句
+/// `eprintln!("\x1b[31m错误: {err}")` 会把它糊成一大坨红字。这里给它和工具失败
+/// 同一套视觉语言：抬头带错误图标、明细压暗缩进。
+pub(in crate::cli) fn error_frame(error: &impl std::fmt::Display) -> String {
+    let text = error.to_string();
+    let mut lines = text.lines();
+    let headline = lines.next().unwrap_or_default();
+    let mut frame = format!(
+        "\x1b[31m{} {}: {headline}\x1b[0m\n",
+        miyu_hosts::render::timeline::glyph_err(),
+        t("error", "错误")
+    );
+    for line in lines {
+        // 明细压暗:它们是给排查用的,别和结论抢眼睛(暗色要 SGR2 + 灰 245,
+        // 光 SGR2 在 kitty 里看不出)。
+        frame.push_str(&format!("\x1b[2m\x1b[38;5;245m{line}\x1b[0m\n"));
+    }
+    frame
+}
+
 pub(in crate::cli) fn repl_note(live: &mut LiveReplTail, text: &str) -> Result<()> {
+    if live.toast_note(text) {
+        return Ok(());
+    }
     live.apply_output_frame(format!("{text}\n").as_bytes())
 }
 
@@ -211,12 +292,165 @@ pub(in crate::cli) fn display_session_name(name: &str) -> &str {
     }
 }
 
+/// 会话有没有可见回合。空会话挂 banner、Tab 可换车道;读不到就当非空(保守)。
+pub(in crate::cli) fn session_is_empty(paths: &MiyuPaths, session_id: &str) -> bool {
+    StateStore::new(paths)
+        .ok()
+        .and_then(|store| store.pinned(session_id).load_visible_turns().ok())
+        .is_some_and(|turns| turns.is_empty())
+}
+
+/// 空会话里按 Tab:换到另一条车道(普通 ↔ 开发)。
+///
+/// 那条车道当前的会话要是已经有回合,就新开一条空的——banner 和 Tab 只在
+/// 空会话上有意义,不能一按掉进一个 200 轮的老会话还回不来。
+#[allow(clippy::too_many_arguments)]
+pub(in crate::cli) async fn switch_repl_lane(
+    paths: &MiyuPaths,
+    config: &AppConfig,
+    mode: PersonaLane,
+    active_session_id: &mut String,
+    history: &mut Vec<ReplHistoryEntry>,
+    live_repl: &mut LiveReplTail,
+    footer: &mut ReplFooterStatus,
+    cumulative_tokens: &mut TurnTokens,
+) -> Result<()> {
+    let lane = mode.is_dev().then(|| "dev".to_string());
+    let (state, _) = send_ipc_admin(
+        paths,
+        IpcCommand::GetReplSession {
+            mode: lane.clone(),
+            // 空会话里按 Tab 换车道:要的是那条车道**当前**的会话(下面自己
+            // 判空、非空才新开),不是每次都新建。
+            fresh: false,
+        },
+    )
+    .await?;
+    let state = if session_is_empty(paths, &state.session_id) {
+        state
+    } else {
+        let (_, data) = send_ipc_admin(
+            paths,
+            IpcCommand::CreateSession {
+                name: None,
+                switch: false,
+                kind: None,
+                mode: lane,
+            },
+        )
+        .await?;
+        let id = data
+            .get("session")
+            .and_then(|session| session.get("session_id"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                anyhow::anyhow!("{}", t("created session has no id", "新会话缺少 ID"))
+            })?;
+        let (state, _) = send_ipc_admin(
+            paths,
+            IpcCommand::GetSessionState {
+                target: miyu_core::ipc::SessionRef::Id { id },
+            },
+        )
+        .await?;
+        state
+    };
+    // 先换色再切:切换的回执行和输入框竖条都按新模式画。
+    live_repl.set_mode(mode);
+    // 换车道不打「已切换到会话」——用户按的是模式切换,不是换会话。
+    live_repl.suppress_switch_note = true;
+    apply_repl_session_switch(
+        paths,
+        config,
+        mode,
+        &state,
+        active_session_id,
+        history,
+        live_repl,
+        footer,
+        cumulative_tokens,
+    )
+    .await
+}
+
+/// 全屏：把这条会话最近几轮（`display.repl_replay_turns`）按当前宽度重画到正文
+/// 顶上。换会话、撤销之后都走它——画布已经擦过了，屏上只该有库里现在还有的东西。
+pub(in crate::cli) fn replay_recent_turns(
+    config: &AppConfig,
+    mode: PersonaLane,
+    store: &StateStore,
+    live_repl: &mut LiveReplTail,
+) -> Result<()> {
+    if config.display.repl_replay_turns == 0 {
+        return Ok(());
+    }
+    match store.session_replay(config.display.repl_replay_turns) {
+        Ok(replays) if !replays.is_empty() => {
+            let (cols, _) = terminal::size().unwrap_or((80, 24));
+            let cols = crate::cli::content_viewport()
+                .map(|(cols, _)| cols)
+                .unwrap_or(cols);
+            let endpoint_line = crate::cli::model_cmds::show_mixed_model_endpoint(
+                &crate::cli::model_cmds::session_scoped_config(store, config),
+                true,
+            );
+            let frame = session_replay_frame(
+                &replays,
+                mode,
+                config,
+                usize::from(cols.max(1)),
+                endpoint_line,
+            )?;
+            live_repl.apply_output_frame(&frame)?;
+        }
+        Ok(_) => {}
+        Err(error) => tracing::debug!(error = %error, "session replay unavailable"),
+    }
+    Ok(())
+}
+
+/// 撤销之后把撤掉的那一轮从屏上拿掉（用户 09-18：「/undo 并没有去掉那条消息已经
+/// 渲染出来的内容」）。
+///
+/// 全屏：正文缓冲截回这一轮开头的标记处——**只截这一轮**，前面的滚动历史原样
+/// 留着，往上翻还在（用户：整段回放会把历史丢掉，不行）。缓冲里找不到标记
+///（这一屏不是本进程画的）才退回换画布 + 回放最近几轮。撤成空会话就回大厅。
+/// inline 擦不掉已经打出去的，只留那行「已撤销」。
+pub(in crate::cli) fn redraw_after_undo(
+    paths: &MiyuPaths,
+    config: &AppConfig,
+    mode: PersonaLane,
+    session_id: &str,
+    live_repl: &mut LiveReplTail,
+) -> Result<()> {
+    if !crate::cli::in_fullscreen() {
+        return Ok(());
+    }
+    let empty = session_is_empty(paths, session_id);
+    if empty {
+        // 回大厅（`set_session_empty` 里顺手丢画布）。
+        live_repl.set_session_empty(config, paths, true);
+        return Ok(());
+    }
+    let truncated = synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
+        live_repl.truncate_last_turn()
+    })?;
+    if truncated {
+        return Ok(());
+    }
+    synchronized_terminal_update(CursorAfterUpdate::Preserve, || live_repl.wipe_transcript())?;
+    let store = StateStore::new(paths)?.pinned(session_id);
+    replay_recent_turns(config, mode, &store, live_repl)
+}
+
 pub(in crate::cli) async fn apply_repl_session_switch(
     paths: &MiyuPaths,
     config: &AppConfig,
+    mode: PersonaLane,
     state: &ipc::SessionState,
     active_session_id: &mut String,
-    history: &mut Vec<String>,
+    history: &mut Vec<ReplHistoryEntry>,
     live_repl: &mut LiveReplTail,
     footer: &mut ReplFooterStatus,
     cumulative_tokens: &mut TurnTokens,
@@ -232,14 +466,31 @@ pub(in crate::cli) async fn apply_repl_session_switch(
     live_repl.editor.history_clean_index = None;
     live_repl.editor.input.clear();
     live_repl.editor.cursor = 0;
-    repl_note(
-        live_repl,
-        &format!(
-            "\x1b[2m{}: {}\x1b[0m\n",
-            t("switched to session", "已切换到会话"),
-            display_session_name(&state.session_name)
-        ),
-    )?;
+    // 每一次换会话都经过这里:空会话挂 banner、Tab 可换车道,非空就钉死。
+    let empty = session_is_empty(paths, &state.session_id);
+    live_repl.set_session_empty(config, paths, empty);
+    // 全屏：换会话就换画布。上一个会话的正文整个丢掉，目标会话最近几轮回放到
+    // 屏顶——新会话就是一张空画布（大厅），切回旧会话能看到它的对话（用户实测：
+    // /new 不清屏，看着还是旧会话）。正文顶部对齐之后不能再用「顶出视口」：
+    // 回放会缩在屏底、上面一大截空白。空会话的画布在 set_session_empty 里已经
+    // 丢过了。inline 照旧只打一行提示。
+    let fullscreen = crate::cli::in_fullscreen();
+    if fullscreen && !empty {
+        synchronized_terminal_update(CursorAfterUpdate::Preserve, || live_repl.wipe_transcript())?;
+    }
+    if !std::mem::take(&mut live_repl.suppress_switch_note) {
+        repl_note(
+            live_repl,
+            &format!(
+                "\x1b[2m{}: {}\x1b[0m\n",
+                t("switched to session", "已切换到会话"),
+                display_session_name(&state.session_name)
+            ),
+        )?;
+    }
+    if fullscreen && !empty {
+        replay_recent_turns(config, mode, &store, live_repl)?;
+    }
     synchronized_terminal_update(CursorAfterUpdate::Shown, || live_repl.reload_queue(&store))?;
     // Rebuild rather than reset: the target session may pin its own model
     // pool, so provider/model/thinking have to be re-derived alongside the
@@ -257,13 +508,16 @@ pub(in crate::cli) async fn apply_repl_session_switch(
     // Every REPL session change funnels through here, so this is the one place
     // the REPL lane needs to be remembered. Best effort: losing the write only
     // means the next REPL starts on the terminal session.
-    let _ = send_ipc_admin(
-        paths,
-        IpcCommand::SetReplSession {
-            target: crate::ipc::SessionRef::Id {
-                id: state.session_id.clone(),
+    let _ = await_in_lobby(
+        live_repl,
+        send_ipc_admin(
+            paths,
+            IpcCommand::SetReplSession {
+                target: miyu_core::ipc::SessionRef::Id {
+                    id: state.session_id.clone(),
+                },
             },
-        },
+        ),
     )
     .await;
     Ok(())
@@ -277,9 +531,14 @@ pub(in crate::cli) struct SessionListEntry {
     pub(in crate::cli) is_current: bool,
     pub(in crate::cli) turns: u64,
     pub(in crate::cli) snippet: String,
-    pub(in crate::cli) workspace: Option<String>,
+    /// `/sandbox` 绑的根;None = 没绑。
+    pub(in crate::cli) sandbox: Option<String>,
+    /// 绑的时候给了 `--allow-read`:只锁写,读不设限。
+    pub(in crate::cli) sandbox_read_all: bool,
     /// "dev" | "normal",由 daemon 按会话人格推导。
     pub(in crate::cli) mode: String,
+    /// 当前上下文(词元):当前会话是活数,其余是库里最近一轮记的;还没跑过回合为 None。
+    pub(in crate::cli) context_tokens: Option<u64>,
 }
 
 pub(in crate::cli) fn session_list_entries(data: &serde_json::Value) -> Vec<SessionListEntry> {
@@ -318,8 +577,15 @@ pub(in crate::cli) fn session_list_entry(session: &serde_json::Value) -> Session
                 }
             })
             .unwrap_or_default(),
-        workspace: text("workspace"),
+        sandbox: text("sandbox"),
+        sandbox_read_all: session
+            .get("sandbox_read_all")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
         mode: text("mode").unwrap_or_else(|| "normal".to_string()),
+        context_tokens: session
+            .get("context_tokens")
+            .and_then(serde_json::Value::as_u64),
     }
 }
 
@@ -327,11 +593,11 @@ pub(in crate::cli) fn session_list_entry(session: &serde_json::Value) -> Session
 pub(in crate::cli) fn session_ref_from_index(
     entries: &[SessionListEntry],
     index: usize,
-) -> Option<crate::ipc::SessionRef> {
+) -> Option<miyu_core::ipc::SessionRef> {
     index
         .checked_sub(1)
         .and_then(|index| entries.get(index))
-        .map(|entry| crate::ipc::SessionRef::Id {
+        .map(|entry| miyu_core::ipc::SessionRef::Id {
             id: entry.id.clone(),
         })
 }
@@ -352,20 +618,31 @@ pub(in crate::cli) fn session_select_line(
     } else {
         "  "
     };
-    // 验收三轮定版:「模式：名称 · 摘要」,轮数删掉。
+    // 09-18 定版:「模式 · 当前上下文 · 标题」(用户:上下文只要当前的数,不要模型
+    // 窗口;摘要不进行,搜索仍认它)。此前是「模式:名称 · 摘要」。
     let mut line = format!(
-        "{marker}{}：{}",
+        "{marker}{} · {} · {}",
         session_mode_label(&entry.mode),
+        session_context_label(entry),
         display_session_name(&entry.name),
     );
-    if !entry.snippet.is_empty() {
-        line.push_str(" · ");
-        line.push_str(&entry.snippet);
-    }
-    if let Some(workspace) = &entry.workspace {
-        line.push_str(&format!("  [{workspace}]"));
-    }
+    line.push_str(&sandbox_tag(entry));
     line
+}
+
+/// 列表行里的「当前上下文」:12k 这种短写;还没跑过回合的会话给 0。
+pub(in crate::cli) fn session_context_label(entry: &SessionListEntry) -> String {
+    render::format_compact_count(entry.context_tokens.unwrap_or(0))
+}
+
+/// 列表行尾的沙盒标。读放开的会话要看得出来——否则「关进去了」和「只关了写」
+/// 在列表里长得一模一样。
+pub(in crate::cli) fn sandbox_tag(entry: &SessionListEntry) -> String {
+    match (&entry.sandbox, entry.sandbox_read_all) {
+        (Some(root), true) => format!("  [sandbox {root}, {}]", t("writes only", "只锁写")),
+        (Some(root), false) => format!("  [sandbox {root}]"),
+        (None, _) => String::new(),
+    }
 }
 
 pub(in crate::cli) fn session_select_search(entry: &SessionListEntry) -> String {
@@ -374,7 +651,7 @@ pub(in crate::cli) fn session_select_search(entry: &SessionListEntry) -> String 
         display_session_name(&entry.name),
         session_mode_label(&entry.mode),
         entry.snippet,
-        entry.workspace.as_deref().unwrap_or_default()
+        entry.sandbox.as_deref().unwrap_or_default()
     )
 }
 
@@ -400,7 +677,7 @@ pub(in crate::cli) fn session_initial_selection(
 /// What the interactive session picker came back with.
 pub(in crate::cli) enum SessionPick {
     Cancelled,
-    Switch(crate::ipc::SessionRef),
+    Switch(miyu_core::ipc::SessionRef),
     /// Deletion confirmed inside the picker. `index` is where the cursor sat,
     /// so the caller can reopen the refreshed list at the same spot.
     Delete {
@@ -438,9 +715,11 @@ pub(in crate::cli) fn select_session_target(
             Some(&labels),
         )? {
             InlineSelectOutcome::Cancelled => SessionPick::Cancelled,
-            InlineSelectOutcome::Chosen(index) => SessionPick::Switch(crate::ipc::SessionRef::Id {
-                id: entries[index].id.clone(),
-            }),
+            InlineSelectOutcome::Chosen(index) => {
+                SessionPick::Switch(miyu_core::ipc::SessionRef::Id {
+                    id: entries[index].id.clone(),
+                })
+            }
             InlineSelectOutcome::Deleted(index) => SessionPick::Delete {
                 session_id: entries[index].id.clone(),
                 index,
@@ -451,57 +730,84 @@ pub(in crate::cli) fn select_session_target(
 
 /// Resolves a user-typed `/session` / `/delete` argument into a session ref:
 /// a number picks from the visible session list, anything else is a name.
-/// REPL 会话列表的作用域:dev REPL 只看/只解析 dev 人格名下的会话。
-pub(in crate::cli) fn repl_list_mode(mode: AgentMode) -> Option<String> {
-    (mode == AgentMode::Dev).then(|| "dev".to_string())
+/// REPL 会话列表的作用域：普通 + 开发两侧合并（daemon 的 `all` 档，管理面
+/// `miyu session list`、WebUI 侧栏、模型的 session 工具早就这么列）。原来这儿只可能
+/// 给 `None`/`"dev"`，普通模式看不见开发会话、反之亦然（用户 09-17）。每行本来
+/// 就带「普通/开发」标签；选中另一侧的会话时车道跟着切（`switch_to_session`）。
+pub(in crate::cli) fn repl_list_mode(_mode: PersonaLane) -> Option<String> {
+    Some("all".to_string())
+}
+
+/// `/session` 列表的次序：当前车道的会话排前面，另一侧的排后面（各自仍按 daemon
+/// 给的更新时间序）。两侧合并之后按时间混排，开发/普通交错着看着乱（用户 09-18
+/// 截图）。菜单和 `/session <序号>` 都按这个顺序编号。
+pub(in crate::cli) fn order_entries_for_lane(
+    entries: Vec<SessionListEntry>,
+    mode: PersonaLane,
+) -> Vec<SessionListEntry> {
+    let mine = if mode.is_dev() { "dev" } else { "normal" };
+    let (first, rest): (Vec<_>, Vec<_>) = entries.into_iter().partition(|entry| entry.mode == mine);
+    first.into_iter().chain(rest).collect()
+}
+
+/// REPL 的 `/session` 看得见的那些会话：**不含「终端集成会话」**。
+///
+/// 用户 09-20：「终端集成会话不应该出现在 /session 里」。它是 shell 无缝对话
+/// 那条路的会话（`default`），REPL 压根不会停在它上面——`ensure_repl_session`
+/// 把指到它的指针视同缺失、就地自举一条新的。既然进不去，列出来只会让人误选，
+/// 还会在「当前会话被删掉」时被兜底逻辑挑中（用户实测：回车跳进了终端集成会话）。
+/// 要用它还是走 shell 那条路或 `miyu session`。
+pub(in crate::cli) fn repl_visible_entries(
+    data: &serde_json::Value,
+    mode: PersonaLane,
+) -> Vec<SessionListEntry> {
+    let entries = session_list_entries(data)
+        .into_iter()
+        .filter(|entry| entry.id != miyu_core::state::DEFAULT_SESSION_ID)
+        .collect();
+    order_entries_for_lane(entries, mode)
 }
 
 pub(in crate::cli) async fn resolve_repl_session_target(
     paths: &MiyuPaths,
     live: &mut LiveReplTail,
-    mode: AgentMode,
+    mode: PersonaLane,
     arg: &str,
-) -> Result<Option<crate::ipc::SessionRef>> {
+) -> Result<Option<miyu_core::ipc::SessionRef>> {
     let index = arg.parse::<usize>().ok();
-    // 名字寻址在 daemon 侧按"当前人格"检索,够不着 dev 会话;dev REPL
-    // 统一走列表在客户端配对,再降成不可猜的 id 显式寻址。
-    if index.is_some() || mode == AgentMode::Dev {
-        let Some((_, data)) = repl_ipc_admin(
-            paths,
+    // 名字寻址在 daemon 侧按"当前人格"检索,够不着另一侧的会话;统一走列表
+    // （两侧合并）在客户端配对,再降成不可猜的 id 显式寻址。
+    let Some((_, data)) = repl_ipc_admin(
+        paths,
+        live,
+        IpcCommand::ListSessions {
+            mode: repl_list_mode(mode),
+        },
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let entries = repl_visible_entries(&data, mode);
+    let target = match index {
+        Some(index) => session_ref_from_index(&entries, index),
+        None => entries.iter().find(|entry| entry.name == arg).map(|entry| {
+            miyu_core::ipc::SessionRef::Id {
+                id: entry.id.clone(),
+            }
+        }),
+    };
+    let Some(target) = target else {
+        repl_note(
             live,
-            IpcCommand::ListSessions {
-                mode: repl_list_mode(mode),
-            },
-        )
-        .await?
-        else {
-            return Ok(None);
-        };
-        let entries = session_list_entries(&data);
-        let target = match index {
-            Some(index) => session_ref_from_index(&entries, index),
-            None => entries.iter().find(|entry| entry.name == arg).map(|entry| {
-                crate::ipc::SessionRef::Id {
-                    id: entry.id.clone(),
-                }
-            }),
-        };
-        let Some(target) = target else {
-            repl_note(
-                live,
-                &format!(
-                    "\x1b[2m{}: {arg}\x1b[0m\n",
-                    t("no such session", "没有这个会话")
-                ),
-            )?;
-            return Ok(None);
-        };
-        Ok(Some(target))
-    } else {
-        Ok(Some(crate::ipc::SessionRef::Name {
-            name: arg.to_string(),
-        }))
-    }
+            &format!(
+                "\x1b[2m{}: {arg}\x1b[0m\n",
+                t("no such session", "没有这个会话")
+            ),
+        )?;
+        return Ok(None);
+    };
+    Ok(Some(target))
 }
 
 pub(in crate::cli) fn reload_repl_queue(
@@ -528,6 +834,33 @@ pub(in crate::cli) fn confirm_stdin(prompt: &str) -> Result<bool> {
     Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES"))
 }
 
+/// 在大厅里等一个 future(多半是 daemon 的应答)时,每 40ms 推一帧 banner——
+/// 星空与扫光不因为「命令在等 daemon」而定格。没有 banner(会话视图、inline)
+/// 就是普通的 await。
+///
+/// 09-17 用户报的「/config 退出后重载配置那几秒动画停了」就是这段:大厅先画
+/// 回来,然后 REPL 等 ReloadConfig(真机上要重载 MCP 等,几秒),泵没在跑,
+/// 画面定格。
+pub(in crate::cli) async fn await_in_lobby<T>(
+    live: &mut LiveReplTail,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    if live.banner.is_none() {
+        return future.await;
+    }
+    tokio::pin!(future);
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(40));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            result = &mut future => return result,
+            _ = ticker.tick() => {
+                let _ = live.tick_banner();
+            }
+        }
+    }
+}
+
 /// Sends an admin command from inside the REPL loop, printing failures (core
 /// busy, core restarting, …) through the live tail instead of propagating
 /// them so the REPL survives.
@@ -536,13 +869,10 @@ pub(in crate::cli) async fn repl_ipc_admin(
     live: &mut LiveReplTail,
     command: IpcCommand,
 ) -> Result<Option<(ipc::SessionState, serde_json::Value)>> {
-    match send_ipc_admin(paths, command).await {
+    match await_in_lobby(live, send_ipc_admin(paths, command)).await {
         Ok(result) => Ok(Some(result)),
         Err(err) => {
-            repl_note(
-                live,
-                &format!("\x1b[31m{}: {err}\x1b[0m\n", t("error", "错误")),
-            )?;
+            repl_note(live, &error_frame(&err))?;
             Ok(None)
         }
     }
@@ -551,7 +881,7 @@ pub(in crate::cli) async fn repl_ipc_admin(
 pub(in crate::cli) async fn repl_get_session_state(
     paths: &MiyuPaths,
     live: &mut LiveReplTail,
-    target: crate::ipc::SessionRef,
+    target: miyu_core::ipc::SessionRef,
 ) -> Result<Option<ipc::SessionState>> {
     Ok(
         repl_ipc_admin(paths, live, IpcCommand::GetSessionState { target })
@@ -560,45 +890,45 @@ pub(in crate::cli) async fn repl_get_session_state(
     )
 }
 
+/// Resolve a user-requested switch without replaying the session already on
+/// screen. Other state refreshes still use `repl_get_session_state` directly.
+pub(in crate::cli) async fn repl_get_session_switch(
+    paths: &MiyuPaths,
+    live: &mut LiveReplTail,
+    target: miyu_core::ipc::SessionRef,
+    active_session_id: &str,
+) -> Result<Option<ipc::SessionState>> {
+    if matches!(&target, miyu_core::ipc::SessionRef::Id { id } if id == active_session_id) {
+        return Ok(None);
+    }
+    Ok(repl_get_session_state(paths, live, target)
+        .await?
+        .filter(|state| state.session_id != active_session_id))
+}
+
 pub(in crate::cli) async fn repl_fallback_session_state(
     paths: &MiyuPaths,
     live: &mut LiveReplTail,
-    mode: AgentMode,
+    mode: PersonaLane,
 ) -> Result<Option<ipc::SessionState>> {
-    // dev 无普通人格的"终端会话"可退:GetReplSession 会治愈指针并在
-    // 没有 dev 会话时就地自举一个,绝不落回普通人格的会话。
-    if mode == AgentMode::Dev {
-        return Ok(repl_ipc_admin(
-            paths,
-            live,
-            IpcCommand::GetReplSession {
-                mode: Some("dev".to_string()),
-            },
-        )
-        .await?
-        .map(|(state, _)| state));
-    }
-    let Some((_, data)) =
-        repl_ipc_admin(paths, live, IpcCommand::ListSessions { mode: None }).await?
-    else {
-        return Ok(None);
-    };
-    let entries = session_list_entries(&data);
-    let Some(entry) = entries
-        .iter()
-        .find(|entry| entry.is_current)
-        .or_else(|| entries.first())
-    else {
-        return Ok(None);
-    };
-    repl_get_session_state(
+    // 两条车道都走 `GetReplSession`：它会治愈死掉的指针（刚被删的那条），
+    // 没有可用的就地自举一条新的，而且**绝不会给出终端集成会话**
+    // （`ensure_repl_session` 把指到它的指针视同缺失）。
+    //
+    // 普通车道原来是「列会话 → 挑 `is_current` 或第一条」。`is_current` 说的是
+    // **daemon 的当前会话**，那通常正是终端集成会话——于是删掉当前会话之后
+    // 一回车就跳了进去（用户 09-20 实测）。
+    Ok(repl_ipc_admin(
         paths,
         live,
-        crate::ipc::SessionRef::Id {
-            id: entry.id.clone(),
+        IpcCommand::GetReplSession {
+            mode: mode.is_dev().then(|| "dev".to_string()),
+            // 兜底取回一条能用的会话，不是启动。
+            fresh: false,
         },
     )
-    .await
+    .await?
+    .map(|(state, _)| state))
 }
 
 /// Runs the interactive session picker inside the REPL, servicing Ctrl+D
@@ -608,11 +938,13 @@ pub(in crate::cli) async fn repl_fallback_session_state(
 pub(in crate::cli) async fn repl_pick_session(
     paths: &MiyuPaths,
     live: &mut LiveReplTail,
-    mode: AgentMode,
+    mode: PersonaLane,
     active_session_id: &str,
 ) -> Result<Option<ipc::SessionState>> {
     let mut cursor = None;
-    let mut lost_active = false;
+    // 09-20 起「删掉自己待着的那条」当场就返回兜底会话（见下面的 Delete
+    // 分支），所以循环里不再有「我的会话已经没了但还在挑」这个状态——原来
+    // 那个 `lost_active` 标记随之消失。
     loop {
         let Some((_, data)) = repl_ipc_admin(
             paths,
@@ -625,29 +957,26 @@ pub(in crate::cli) async fn repl_pick_session(
         else {
             return Ok(None);
         };
-        let entries = session_list_entries(&data);
+        let entries = repl_visible_entries(&data, mode);
         if entries.is_empty() {
             repl_note(
                 live,
                 &format!("\x1b[2m{}\x1b[0m\n", t("no sessions", "没有会话")),
             )?;
-            // Deleting the last session leaves the daemon to mint a fresh one.
-            return if lost_active {
-                repl_fallback_session_state(paths, live, mode).await
-            } else {
-                Ok(None)
-            };
+            return Ok(None);
         }
-        match select_session_target(&entries, Some(active_session_id), cursor)? {
-            SessionPick::Cancelled => {
-                return if lost_active {
-                    repl_fallback_session_state(paths, live, mode).await
-                } else {
-                    Ok(None)
-                };
-            }
+        let picked = if live.screen.is_some() {
+            super::session_picker::pick(live, &entries, active_session_id, cursor)
+        } else {
+            synchronized_terminal_update(CursorAfterUpdate::Hidden, || live.suspend())?;
+            let picked = select_session_target(&entries, Some(active_session_id), cursor);
+            synchronized_terminal_update(CursorAfterUpdate::Shown, || live.resume())?;
+            picked
+        };
+        match picked? {
+            SessionPick::Cancelled => return Ok(None),
             SessionPick::Switch(target) => {
-                return repl_get_session_state(paths, live, target).await;
+                return repl_get_session_switch(paths, live, target, active_session_id).await;
             }
             SessionPick::Delete { session_id, index } => {
                 let was_active = session_id == active_session_id;
@@ -655,18 +984,20 @@ pub(in crate::cli) async fn repl_pick_session(
                     paths,
                     live,
                     IpcCommand::DeleteSession {
-                        target: crate::ipc::SessionRef::Id { id: session_id },
+                        target: miyu_core::ipc::SessionRef::Id { id: session_id },
                     },
                 )
                 .await?;
                 if deleted.is_none() {
-                    return if lost_active {
-                        repl_fallback_session_state(paths, live, mode).await
-                    } else {
-                        Ok(None)
-                    };
+                    return Ok(None);
                 }
-                lost_active |= was_active;
+                // 删掉的是**自己正待着**的那条：当场离开，别继续挂在一条已经
+                // 不存在的会话的画面上接着挑（用户 09-20 实测：删完还看得见被
+                // 删会话的正文）。落到本车道的一条可用会话上，没有就自举一条
+                // 新的空会话——`repl_fallback_session_state` 管这件事。
+                if was_active {
+                    return repl_fallback_session_state(paths, live, mode).await;
+                }
                 // The rows below shift up, so holding the index parks the
                 // cursor on the next session instead of jumping to the top.
                 cursor = Some(index);
@@ -682,7 +1013,7 @@ pub(in crate::cli) async fn repl_active_or_default_state(
     match send_ipc_admin(
         paths,
         IpcCommand::GetSessionState {
-            target: crate::ipc::SessionRef::Id {
+            target: miyu_core::ipc::SessionRef::Id {
                 id: active_session_id.to_string(),
             },
         },
@@ -696,6 +1027,29 @@ pub(in crate::cli) async fn repl_active_or_default_state(
             Ok((state, changed))
         }
     }
+}
+
+/// 按**会话作用域**重算一份 footer：模型标签、思考档位、上下文窗口、累计
+/// 词元都从会话钉的模型池推导（验收 #23 的同源约束）。返回 (footer, 累计)。
+///
+/// `/models` 改完会话模型要它；回合中寄宿的 `/models` 面板（09-20）也要它
+/// ——两处各写一遍迟早分叉。取会话状态那一趟 IPC 套 `await_in_lobby`：大厅
+/// 里开 `/models` 时星空不能定格（09-17）。
+pub(in crate::cli) async fn session_footer_status(
+    paths: &MiyuPaths,
+    config: &AppConfig,
+    live: &mut LiveReplTail,
+    session_id: &str,
+) -> Result<(ReplFooterStatus, TurnTokens)> {
+    let session_config = footer_config_for_session(paths, config, session_id);
+    let (state, _) = await_in_lobby(live, repl_active_or_default_state(paths, session_id)).await?;
+    let cumulative = state_cumulative(&state);
+    let mut footer =
+        ReplFooterStatus::from_config(&session_config, state.context_tokens, cumulative);
+    let client = OpenAiCompatibleClient::from_config(&session_config, paths)?;
+    footer.update_thinking_variant(client.thinking_variant_summary().as_deref());
+    footer.update_context_window(state.context_window, state.context_window_assumed);
+    Ok((footer, cumulative))
 }
 
 /// Ensures the daemon is running, then sends one admin command; used by the
@@ -780,40 +1134,89 @@ where
     }
 }
 
-pub(in crate::cli) fn ipc_text<'a>(data: &'a serde_json::Value, key: &str) -> &'a str {
-    data.get(key)
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
+/// 同 [`send_ipc_admin_streaming`],但等结果期间每隔 `tick_every` 调一次 `on_tick`
+/// (footer 转轮要有人喂)。收帧放在单独的任务里经通道转过来:`ipc::receive`
+/// 是按长度前缀分帧的,直接在 `select!` 里和定时器抢会把读到一半的帧丢掉。
+pub(in crate::cli) async fn send_ipc_admin_streaming_ticked<F, T>(
+    paths: &MiyuPaths,
+    command: IpcCommand,
+    mut on_event: F,
+    tick_every: Duration,
+    mut on_tick: T,
+) -> Result<(ipc::SessionState, serde_json::Value)>
+where
+    F: FnMut(&str, &serde_json::Value) -> Result<()>,
+    T: FnMut() -> Result<()>,
+{
+    let mut stream = ipc::connect(&paths.ipc_socket()).await?;
+    ipc::send(&mut stream, &IpcRequest::new(command)).await?;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<Option<IpcFrame>>>();
+    let reader = tokio::spawn(async move {
+        loop {
+            let frame = ipc::receive::<IpcFrame>(&mut stream).await;
+            let terminal = !matches!(frame, Ok(Some(IpcFrame::Event { .. })));
+            if tx.send(frame).is_err() || terminal {
+                break;
+            }
+        }
+    });
+    let mut tick = tokio::time::interval(tick_every);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tick.tick().await;
+    let outcome = loop {
+        tokio::select! {
+            frame = rx.recv() => match frame {
+                Some(Ok(Some(IpcFrame::Event { kind, data, .. }))) => {
+                    if let Err(error) = on_event(&kind, &data) {
+                        break Err(error);
+                    }
+                }
+                Some(Ok(Some(IpcFrame::AdminResult { state, data }))) => break Ok((state, data)),
+                Some(Ok(Some(IpcFrame::Error { message, .. }))) => {
+                    break Err(anyhow::anyhow!("{message}"))
+                }
+                Some(Ok(Some(_))) => {
+                    break Err(anyhow::anyhow!("Miyu core returned an invalid admin response"))
+                }
+                Some(Ok(None)) | None => {
+                    break Err(anyhow::anyhow!("Miyu core closed the connection"))
+                }
+                Some(Err(error)) => break Err(error),
+            },
+            _ = tick.tick() => {
+                if let Err(error) = on_tick() {
+                    break Err(error);
+                }
+            }
+        }
+    };
+    reader.abort();
+    outcome
 }
 
-pub(in crate::cli) fn ipc_u64(data: &serde_json::Value, key: &str) -> u64 {
-    data.get(key)
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or_default()
-}
+// `ipc_text` / `ipc_u64` 随解码表一起住到 `runtime::ipc_events`(09-16),
+// 这里只转一手,cli 内几十处调用不动。
+pub(in crate::cli) use miyu_hosts::runtime::{ipc_text, ipc_u64};
 
-pub(in crate::cli) fn ipc_mode_name(mode: AgentMode) -> &'static str {
-    match mode {
-        AgentMode::Normal => "normal",
-        AgentMode::Dev => "dev",
-    }
+pub(in crate::cli) fn ipc_mode_name(mode: PersonaLane) -> &'static str {
+    mode.mode_word()
 }
 
 pub(in crate::cli) fn ipc_images(
-    images: &[Option<crate::clipboard::PastedImage>],
-) -> Vec<Option<crate::ipc::ImageAttachment>> {
+    images: &[Option<miyu_base::clipboard::PastedImage>],
+) -> Vec<Option<miyu_core::ipc::ImageAttachment>> {
     images
         .iter()
         .map(|image| {
             image.as_ref().map(|image| match image {
-                crate::clipboard::PastedImage::Binary(image) => {
-                    crate::ipc::ImageAttachment::Binary {
+                miyu_base::clipboard::PastedImage::Binary(image) => {
+                    miyu_core::ipc::ImageAttachment::Binary {
                         mime: image.mime.clone(),
                         data: image.data.clone(),
                     }
                 }
-                crate::clipboard::PastedImage::Path(path) => {
-                    crate::ipc::ImageAttachment::Path { path: path.clone() }
+                miyu_base::clipboard::PastedImage::Path(path) => {
+                    miyu_core::ipc::ImageAttachment::Path { path: path.clone() }
                 }
             })
         })

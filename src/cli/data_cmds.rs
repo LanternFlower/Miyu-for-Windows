@@ -30,6 +30,9 @@ pub enum MemoryCommand {
 pub struct MemoryResetArgs {
     #[arg(long)]
     pub include_skills: bool,
+    /// 只清这个会话记下的记忆(默认清当前人格的全部)
+    #[arg(long, value_name = "ID", conflicts_with = "include_skills")]
+    pub session: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -183,7 +186,7 @@ pub(in crate::cli) async fn run_kb(paths: &MiyuPaths, args: KbArgs) -> Result<()
         KbCommand::Stats => {
             let mut stats = kb.stats()?;
             if let Some(object) = stats.as_object_mut() {
-                if let Ok(status) = crate::default_kb::status(paths) {
+                if let Ok(status) = miyu_engine::default_kb::status(paths) {
                     object.insert(
                         "default_kb_update_available".to_string(),
                         serde_json::json!(status.has_update_notice),
@@ -203,7 +206,7 @@ pub(in crate::cli) async fn run_kb(paths: &MiyuPaths, args: KbArgs) -> Result<()
 
 pub(in crate::cli) async fn run_update_default_kb(paths: &MiyuPaths) -> Result<()> {
     let config = AppConfig::load_or_default(paths)?;
-    let state = crate::default_kb::update(paths, &config, |stage| {
+    let state = miyu_engine::default_kb::update(paths, &config, |stage| {
         let mut stderr = io::stderr().lock();
         let _ = write_default_kb_update_progress(&mut stderr, stage);
     })?;
@@ -217,7 +220,7 @@ pub(in crate::cli) async fn run_update_default_kb(paths: &MiyuPaths) -> Result<(
 
 pub(in crate::cli) fn write_default_kb_update_progress(
     output: &mut impl Write,
-    stage: crate::default_kb::UpdateStage,
+    stage: miyu_engine::default_kb::UpdateStage,
 ) -> io::Result<()> {
     writeln!(output, "[default-kb] {}", stage.message())?;
     output.flush()
@@ -228,10 +231,18 @@ pub(in crate::cli) fn run_memory(paths: &MiyuPaths, args: MemoryArgs) -> Result<
     let store = MemoryStore::new(&config, paths);
     match args.command {
         MemoryCommand::Stats => println!("{}", store.stats()?),
-        MemoryCommand::Reset(args) => {
-            store.reset_all(args.include_skills)?;
-            println!("{}", t("cleared assistant memory", "已清空助手记忆"));
-        }
+        MemoryCommand::Reset(args) => match args.session.as_deref() {
+            Some(session_id) => println!("{}", store.reset_session(session_id)?.describe()),
+            None => {
+                store.reset_all()?;
+                if args.include_skills {
+                    miyu_core::skills::purge_generated_skills(
+                        &config.active_persona_skills_dir(paths),
+                    )?;
+                }
+                println!("{}", t("cleared assistant memory", "已清空助手记忆"));
+            }
+        },
         MemoryCommand::Search(args) => {
             let query = join_message(args.query);
             let limit = args.limit.unwrap_or(10);
@@ -306,7 +317,7 @@ pub(in crate::cli) fn run_skills(paths: &MiyuPaths, args: SkillsArgs) -> Result<
             for name in skill_names(paths)? {
                 let dir = paths.skills_dir.join(&name);
                 let raw = std::fs::read_to_string(dir.join("SKILL.md")).unwrap_or_default();
-                if crate::skills::is_generated_skill(&raw) && dir.join(".disabled").exists() {
+                if miyu_core::skills::is_generated_skill(&raw) && dir.join(".disabled").exists() {
                     std::fs::remove_dir_all(dir)?;
                     removed += 1;
                 }

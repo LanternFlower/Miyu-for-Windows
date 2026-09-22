@@ -1,15 +1,15 @@
 //! 插件设置的默认值与校验。
 
-use crate::config::{
-    AppConfig, PlatformPluginInstanceConfig, QqGroupJoinApprovalGroupConfig,
-    RealContextPluginSettings, REAL_CONTEXT_PLUGIN_ID,
-};
 use crate::config_tui::{
     apply_real_context_values, apply_reply_processor_values, group_join_approval_group_label,
     group_join_approval_values, parse_real_context_identity_lines, parse_real_context_string_lines,
     real_context_values, reply_processor_mode_label, reply_processor_mode_value,
     reply_processor_values, t, upsert_group_join_approval_group, validate_reply_processor_settings,
     ReplyProcessorSettingsForm, REPLY_PROCESSOR_PLUGIN_ID,
+};
+use miyu_base::config::{
+    AppConfig, PlatformPluginInstanceConfig, QqGroupJoinApprovalGroupConfig,
+    RealContextPluginSettings, REAL_CONTEXT_PLUGIN_ID,
 };
 
 #[test]
@@ -22,7 +22,7 @@ fn group_join_approval_defaults_to_enabled_with_empty_groups() {
     assert_eq!(settings.max_retries, 1);
     assert_eq!(
         settings.text_models.tier_ref(),
-        Some(crate::config::ModelTier::Lite)
+        Some(miyu_base::config::ModelTier::Lite)
     );
 }
 

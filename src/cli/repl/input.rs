@@ -15,20 +15,57 @@ pub(in crate::cli) fn read_live_repl_input(
     // 这个 REPL 的会话：唤醒回合按它认领，输入历史也按它刷新。
     repl_session: Option<&str>,
 ) -> Result<LiveReplOutcome> {
-    let mut raw = if std::mem::take(&mut live.raw_mode_handoff) {
+    let _raw_mode = if std::mem::take(&mut live.raw_mode_handoff) {
         LiveRawMode::adopt()
     } else {
-        LiveRawMode::start()?
+        let guard = LiveRawMode::start()?;
+        // 全屏：raw 模式断过一段（斜杠命令等 daemon 的那几秒终端在回显模式），
+        // 屏上可能落了回显进来的字符，整屏按缓冲重画一遍把它们盖掉。
+        if crate::cli::repl::tail::screen::in_fullscreen() {
+            live.rendered = false;
+        }
+        guard
     };
     if !live.rendered {
         synchronized_terminal_update(CursorAfterUpdate::Shown, || live.resume())?;
     }
     let mut last_key_at = Instant::now();
+    // 大厅动画的下一拍。**按时刻推**，不按「这一轮没有输入」推。
+    //
+    // 原来只有空闲分支（`!has_input`）里才 `tick_banner()`：按键比 40ms 一拍还
+    // 密时，`poll` 每次都立刻报就绪，那条分支一次都进不去，星空和扫光就定格了
+    // （用户 09-20 实测「空会话按住退格键时动画会暂停」，真机验证本修复有效）。
+    // 09-17 修面板动画时踩的是同一个坑，当时只改了面板那条路。
+    //
+    // **沙箱走查复现不出来**（`testkit/tui/lobby_anim.py` 的 holding-* 三场改前
+    // 改后都是 6/6）：pty 里灌按键和真实终端的按键重复不是一回事。所以这条修复
+    // 的证据是用户真机，不是走查——走查只负责守住「按住键时还在动」这条线。
+    const BANNER_TICK: Duration = Duration::from_millis(40);
+    let mut next_banner_at = Instant::now() + BANNER_TICK;
+    /// 到点就推一帧大厅动画。放在**每一处会长时间不回到循环顶端的地方**。
+    macro_rules! tick_banner_if_due {
+        () => {
+            if live.banner.is_some() && Instant::now() >= next_banner_at {
+                live.tick_banner()?;
+                next_banner_at = Instant::now() + BANNER_TICK;
+            }
+        };
+    }
     loop {
+        tick_banner_if_due!();
         // 等待权自持:PTY 死亡后 crossterm 的 poll 会在内部对 HUP fd
         // 无限自旋、永不返回(实测),所以不能把"等 80ms"交给它——用裸
         // poll 等待并率先识别挂断,有输入就绪时才让 crossterm 取事件。
-        if crate::sys::wait_stdin(Duration::from_millis(80)) == crate::sys::StdinWait::HungUp {
+        // 开着面板时轮询放快一倍：面板里的转轮 80ms 一帧，轮询也是 80ms 的话
+        // 差一毫秒就漏一帧，看着一顿一顿。大厅 banner 挂着时同理（星空、扫光）。
+        let wait_ms = if live.overlay_open() || live.banner.is_some() {
+            40
+        } else {
+            80
+        };
+        if miyu_base::sys::wait_stdin(Duration::from_millis(wait_ms))
+            == miyu_base::sys::StdinWait::HungUp
+        {
             return Ok(LiveReplOutcome::Exit);
         }
         // 就绪判定必须问 crossterm(它的内部缓冲对裸 poll 不可见):
@@ -53,15 +90,15 @@ pub(in crate::cli) fn read_live_repl_input(
                         live.editor.cursor = live.editor.input.chars().count();
                         if let Some(submission) = live.editor.submit() {
                             let mode = live.mode();
-                            synchronized_terminal_update(CursorAfterUpdate::Hidden, || {
-                                live.commit_submission_render(&submission)
+                            synchronized_terminal_update(CursorAfterUpdate::Shown, || {
+                                live.commit_submission(&submission)
                             })?;
-                            live.commit_submission_finalize();
-                            raw.keep_cursor_hidden();
+                            let entry = ReplHistoryEntry::from_submission(&submission);
                             return Ok(LiveReplOutcome::Submit(
                                 mode,
                                 submission.content,
                                 submission.images,
+                                entry,
                             ));
                         }
                     }
@@ -94,27 +131,59 @@ pub(in crate::cli) fn read_live_repl_input(
                     }
                 }
             }
-            let typing = last_key_at.elapsed() < Duration::from_millis(350);
+            // 打字期间暂停动画，是 inline 的历史包袱：那边状态条和活动区是
+            // 两处各自往终端打，叠在一起会写坏帧。全屏下整屏由一个画笔按 diff
+            // 重画，没有这个冲突——再暂停就只剩「一交互进度条就卡住」的坏处。
+            let typing = !crate::cli::repl::tail::screen::in_fullscreen()
+                && last_key_at.elapsed() < Duration::from_millis(350);
             if typing {
                 continue;
             }
             if let Some(session) = repl_session {
                 if let Some((run_id, label)) = jobs_feed.claim_wake_run(session) {
-                    return Ok(LiveReplOutcome::FollowWake { run_id, label });
+                    return Ok(LiveReplOutcome::FollowWake {
+                        run_id,
+                        label,
+                        from_start: false,
+                    });
+                }
+                // 同一个会话里**别人**起的轮（第二个 TUI、另一个终端的
+                // shellhook）：挂上去，从这一轮开头补一遍。
+                if let Some((run_id, label)) = jobs_feed.claim_peer_run(session) {
+                    return Ok(LiveReplOutcome::FollowWake {
+                        run_id,
+                        label,
+                        from_start: true,
+                    });
                 }
             }
+            // 输入框右上角那行 `/goal …`：目标跑着的时候屏幕上只有正文，
+            // 这行提示是唯一还在动的东西（用户 09-19）。一秒一拍。
+            live.tick_goal_hint(jobs_feed.goal())?;
             let cumulative_changed = jobs_feed
                 .cumulative()
                 .is_some_and(|totals| live.footer.update_cumulative_tokens(totals));
+            live.expire_toast()?;
+            live.tick_overlay()?;
+            if let Some(job_id) = live.pending_stop_job.take() {
+                return Ok(LiveReplOutcome::StopJob { job_id });
+            }
             if live.set_jobs(jobs_feed.current()) || cumulative_changed {
                 synchronized_terminal_update(CursorAfterUpdate::Preserve, || live.redraw())?;
             } else {
                 live.tick_job_strip()?;
+                // banner 的帧不在这儿推了：循环顶上按时刻推，打字期间也照走
+                // （见 `next_banner_at`）。留在这里会变成一拍推两帧。
             }
             continue;
         }
         // 抽干本轮就绪的全部事件再回到等待,粘贴/快速输入不积压。
+        //
+        // **这条循环出不来时也要推帧**：按住键时按键来得比处理得快（每下都要
+        // 重画一次活动区），`poll(ZERO)` 一直报就绪，这里能连转很久都回不到
+        // 循环顶端。只在循环顶端放一处挡不住这种情形。
         while event::poll(Duration::ZERO)? {
+            tick_banner_if_due!();
             // read 前再验挂断:HUP 的 fd 会让 poll 报就绪却读不出事件,
             // 直接 read 就掉进 crossterm 的自旋。
             if terminal_hangup() {
@@ -164,6 +233,15 @@ pub(in crate::cli) fn read_live_repl_input(
                     }
                 }
             }
+            // 全屏下先给视口一次机会（回翻、滚轮）；inline 下这里是空操作。
+            if live.handle_screen_event(&event)? {
+                continue;
+            }
+            // 又打字了：候选面板可以重新弹出来（Esc 只关「当时那一串」）。
+            if matches!(&event, Event::Key(KeyEvent { kind, .. }) if *kind != KeyEventKind::Release)
+            {
+                live.allow_command_hint();
+            }
             match live.editor.handle_event(event, paths, false)? {
                 LiveEditorAction::None => {}
                 LiveEditorAction::Redraw => {
@@ -197,18 +275,25 @@ pub(in crate::cli) fn read_live_repl_input(
                         continue;
                     }
                     let mode = live.mode();
-                    synchronized_terminal_update(CursorAfterUpdate::Hidden, || {
-                        live.commit_submission_render(&submission)
+                    // 回显和活动区重画在一个同步块里完成:光标不在左下角
+                    // 落脚,kitty 的 cursor_trail 就没有东西可画(见 commit_submission)。
+                    synchronized_terminal_update(CursorAfterUpdate::Shown, || {
+                        live.commit_submission(&submission)
                     })?;
-                    // 光标位置查询在同步块外做:块内等终端应答会撑破 kitty
-                    // 的同步超时,半成品帧(光标在屏幕底部)被提前提交。
-                    live.commit_submission_finalize();
-                    raw.keep_cursor_hidden();
+                    let entry = ReplHistoryEntry::from_submission(&submission);
                     return Ok(LiveReplOutcome::Submit(
                         mode,
                         submission.content,
                         submission.images,
+                        entry,
                     ));
+                }
+                LiveEditorAction::ToggleMode => {
+                    let next = match live.mode() {
+                        PersonaLane::Active => PersonaLane::Dev,
+                        PersonaLane::Dev => PersonaLane::Active,
+                    };
+                    return Ok(LiveReplOutcome::SwitchMode(next));
                 }
                 // Ctrl+C rung 3: the draft was empty and no reply is running, but
                 // this session still has background work — stop that before the
@@ -217,6 +302,16 @@ pub(in crate::cli) fn read_live_repl_input(
                 // (`Exit`) always quits outright.
                 LiveEditorAction::Interrupt if !live.jobs.is_empty() => {
                     return Ok(LiveReplOutcome::StopJobs);
+                }
+                // Ctrl+C 的最后一级在全屏下不退出。
+                //
+                // inline 下退出无所谓——scrollback 还在，往上翻就都看得到。
+                // 全屏是一块自己的画布，退出等于整屏一起没，为了一次误触付这个
+                // 代价太贵。阶梯照旧（清草稿 → 中断回复 → 停后台任务），只是
+                // 最后一级改成提示走 Ctrl+D。
+                LiveEditorAction::Interrupt if crate::cli::repl::tail::screen::in_fullscreen() => {
+                    live.toast_note_at(t("press Ctrl+D to exit", "要退出请按 Ctrl+D"), true);
+                    continue;
                 }
                 LiveEditorAction::Interrupt | LiveEditorAction::Exit => {
                     synchronized_terminal_update(CursorAfterUpdate::Hidden, || live.suspend())?;
@@ -229,16 +324,16 @@ pub(in crate::cli) fn read_live_repl_input(
 
 pub(in crate::cli) fn read_repl_input(
     paths: &MiyuPaths,
-    mode: AgentMode,
+    mode: PersonaLane,
     prefill: Option<String>,
-    history: &[String],
+    history: &[ReplHistoryEntry],
     footer: &ReplFooterStatus,
     show_shortcut_hint: bool,
 ) -> Result<
     Option<(
-        AgentMode,
+        PersonaLane,
         String,
-        Vec<Option<crate::clipboard::PastedImage>>,
+        Vec<Option<miyu_base::clipboard::PastedImage>>,
     )>,
 > {
     let mut stdout = io::stdout();
@@ -259,7 +354,7 @@ pub(in crate::cli) fn read_repl_input(
     let mut input_row = cursor_row_or(0);
     let mut rendered_rows = 0u16;
     let mut raw_pasted_lines = 0usize;
-    let mut pasted_images: Vec<Option<crate::clipboard::PastedImage>> = Vec::new();
+    let mut pasted_images: Vec<Option<miyu_base::clipboard::PastedImage>> = Vec::new();
     let mut pasted_texts: Vec<Option<PastedText>> = Vec::new();
     // 1. 局部退出时统一恢复终端协议
     // 2. 避免多处 return 漏 Pop 键盘增强
@@ -274,7 +369,7 @@ pub(in crate::cli) fn read_repl_input(
     let render_repl_input = |stdout: &mut io::Stdout,
                              input_row: &mut u16,
                              rendered_rows: &mut u16,
-                             mode: AgentMode,
+                             mode: PersonaLane,
                              input: &str,
                              cursor: usize,
                              raw_pasted_lines: usize| {
@@ -282,12 +377,14 @@ pub(in crate::cli) fn read_repl_input(
             stdout,
             input_row,
             rendered_rows,
+            &mut Vec::new(),
             mode,
             input,
             cursor,
             raw_pasted_lines,
             footer,
             show_shortcut_hint,
+            None,
         )
     };
     render_repl_input(
@@ -301,6 +398,11 @@ pub(in crate::cli) fn read_repl_input(
     )?;
     loop {
         match event::read()? {
+            // Windows 上 crossterm 连松键一起报（Unix 不报）；吞掉，否则一次按键算两下。
+            Event::Key(KeyEvent {
+                kind: KeyEventKind::Release,
+                ..
+            }) => {}
             Event::Paste(text) => {
                 let raw_lines =
                     insert_pasted_text_at_cursor(&mut input, &mut cursor, text, &mut pasted_texts);
@@ -421,12 +523,15 @@ pub(in crate::cli) fn read_repl_input(
                             history_index = history.len();
                         }
                         history_index = history_index.saturating_sub(1);
-                        input = history.get(history_index).cloned().unwrap_or_default();
-                        cursor = input.chars().count();
+                        restore_history_entry(
+                            &history.get(history_index).cloned().unwrap_or_default(),
+                            &mut input,
+                            &mut cursor,
+                            &mut pasted_images,
+                            &mut pasted_texts,
+                            &mut raw_pasted_lines,
+                        );
                         history_clean_index = Some(history_index);
-                        raw_pasted_lines = 0;
-                        pasted_images.clear();
-                        pasted_texts.clear();
                     } else {
                         cursor = repl_move_cursor_vertical(&plain_prefix, &input, cursor, -1);
                     }
@@ -444,18 +549,24 @@ pub(in crate::cli) fn read_repl_input(
                     if repl_history_is_clean(&input, history, history_clean_index) {
                         if history_index + 1 < history.len() {
                             history_index += 1;
-                            input = history.get(history_index).cloned().unwrap_or_default();
-                            cursor = input.chars().count();
+                            restore_history_entry(
+                                &history.get(history_index).cloned().unwrap_or_default(),
+                                &mut input,
+                                &mut cursor,
+                                &mut pasted_images,
+                                &mut pasted_texts,
+                                &mut raw_pasted_lines,
+                            );
                             history_clean_index = Some(history_index);
                         } else {
                             history_index = history.len();
                             input.clear();
                             cursor = 0;
                             history_clean_index = None;
+                            raw_pasted_lines = 0;
+                            pasted_images.clear();
+                            pasted_texts.clear();
                         }
-                        raw_pasted_lines = 0;
-                        pasted_images.clear();
-                        pasted_texts.clear();
                     } else {
                         cursor = repl_move_cursor_vertical(&plain_prefix, &input, cursor, 1);
                     }
@@ -639,12 +750,12 @@ pub(in crate::cli) fn read_repl_input(
                     if let Some(selected) =
                         placeholder_text_near_cursor(&input, cursor, &pasted_texts)
                     {
-                        let _ = crate::clipboard::write_clipboard_text(&selected)?;
+                        let _ = miyu_base::clipboard::write_clipboard_text(&selected)?;
                     }
                 }
                 KeyCode::Char('v') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    match crate::clipboard::read_clipboard() {
-                        Ok(crate::clipboard::ClipboardContent::Image(img)) => {
+                    match miyu_base::clipboard::read_clipboard() {
+                        Ok(miyu_base::clipboard::ClipboardContent::Image(img)) => {
                             let index = pasted_images.len() + 1;
                             // 占位符只认序号,文件名纯属显示噪音(模型侧路径
                             // 由 rewrite_image_placeholders_with_paths 另拼)。
@@ -652,7 +763,8 @@ pub(in crate::cli) fn read_repl_input(
                             let placeholder = format!("[Image {}]", index);
                             insert_str_at_cursor(&mut input, &mut cursor, &placeholder);
                             history_clean_index = None;
-                            pasted_images.push(Some(crate::clipboard::PastedImage::Binary(img)));
+                            pasted_images
+                                .push(Some(miyu_base::clipboard::PastedImage::Binary(img)));
                             raw_pasted_lines = 0;
                             render_repl_input(
                                 &mut stdout,
@@ -664,13 +776,13 @@ pub(in crate::cli) fn read_repl_input(
                                 raw_pasted_lines,
                             )?;
                         }
-                        Ok(crate::clipboard::ClipboardContent::MediaPath(path)) => {
+                        Ok(miyu_base::clipboard::ClipboardContent::MediaPath(path)) => {
                             let index = pasted_images.len() + 1;
                             let label = media_placeholder_label(&path);
                             let placeholder = format!("[{label} {index}]");
                             insert_str_at_cursor(&mut input, &mut cursor, &placeholder);
                             history_clean_index = None;
-                            pasted_images.push(Some(crate::clipboard::PastedImage::Path(path)));
+                            pasted_images.push(Some(miyu_base::clipboard::PastedImage::Path(path)));
                             raw_pasted_lines = 0;
                             render_repl_input(
                                 &mut stdout,
@@ -682,7 +794,7 @@ pub(in crate::cli) fn read_repl_input(
                                 raw_pasted_lines,
                             )?;
                         }
-                        Ok(crate::clipboard::ClipboardContent::TextPath(path)) => {
+                        Ok(miyu_base::clipboard::ClipboardContent::TextPath(path)) => {
                             insert_str_at_cursor(&mut input, &mut cursor, &path);
                             history_clean_index = None;
                             raw_pasted_lines = 0;
@@ -697,7 +809,7 @@ pub(in crate::cli) fn read_repl_input(
                             )?;
                         }
                         _ => {
-                            if let Ok(Some(text)) = crate::clipboard::read_clipboard_text() {
+                            if let Ok(Some(text)) = miyu_base::clipboard::read_clipboard_text() {
                                 let raw_lines = insert_pasted_text_at_cursor(
                                     &mut input,
                                     &mut cursor,
@@ -749,18 +861,29 @@ pub(in crate::cli) fn render_repl_input_with_footer(
     stdout: &mut io::Stdout,
     input_row: &mut u16,
     rendered_rows: &mut u16,
-    mode: AgentMode,
+    // `drawn`：画出去的输入行（屏幕行号 + 这一行的文字）。全屏下拿它做选区——
+    // 输入区不在正文缓冲里，不记下来就没法知道某一格上是什么字。
+    drawn: &mut Vec<(u16, String)>,
+    mode: PersonaLane,
     input: &str,
     cursor: usize,
     raw_pasted_lines: usize,
     footer: &ReplFooterStatus,
     show_shortcut_hint: bool,
+    // 全屏空会话的大厅:输入框不在屏底、也不全宽,而是嵌在 banner 下面的一个
+    // 窄框里。None = 老样子,从第 0 列画到终端右边。
+    layout: Option<EditorBox>,
 ) -> Result<Option<u16>> {
     let suggestions = repl_command_suggestions(input);
     let lines = repl_input_lines(input);
     let prompt_prefix = input_prompt_bar(mode);
     let plain_prefix = "  ";
-    let cols = terminal_cols();
+    // 这一处的 `cols` 是**框的宽度**,不是终端宽度:折行、光标、footer 截断
+    // 全都按它算。大厅窄框里两者差着几十列,混用就是「字折了行、光标还留在
+    // 屏幕右边」。
+    let cols = box_cols(layout, terminal_cols());
+    let x0 = box_left(layout);
+    let blank = layout.map(|area| " ".repeat(area.width));
     let display_lines = repl_visible_input_lines(
         &plain_prefix,
         &lines,
@@ -778,33 +901,59 @@ pub(in crate::cli) fn render_repl_input_with_footer(
     let rows_to_clear = (*rendered_rows).max(current_rows).max(1);
     ensure_repl_space(stdout, input_row, rows_to_clear)?;
     for row_offset in 0..rows_to_clear {
-        queue!(
-            stdout,
-            MoveTo(0, (*input_row).saturating_add(row_offset)),
-            Clear(ClearType::CurrentLine)
-        )?;
+        queue!(stdout, MoveTo(x0, (*input_row).saturating_add(row_offset)))?;
+        // 窄框只擦自己那一段:两侧是 banner 的星空,不能整行清掉。
+        match &blank {
+            Some(blank) => queue!(stdout, Print(blank))?,
+            None => queue!(stdout, Clear(ClearType::CurrentLine))?,
+        }
     }
     let mut row_offset = 0u16;
     let footer_row;
-    queue!(stdout, MoveTo(0, *input_row), Print(&prompt_prefix))?;
+    queue!(stdout, MoveTo(x0, *input_row), Print(&prompt_prefix))?;
+    // 输入框顶那一行右端：长任务跑起来之后屏幕上只有正文，看不出「它还在自己
+    // 往前跑吗、第几轮了」（用户 09-19）。这行常驻提示只说这一件事，不进
+    // footer——那儿已经挤着模型名和用量了。
+    let goal_hint = crate::cli::footer::goal_hint_text(footer.goal.as_ref());
+    if !goal_hint.is_empty() {
+        let hint_width = visible_width(&goal_hint);
+        let prefix_width = visible_width(&prompt_prefix);
+        // 放不下就整条不画：截断出来的 `/goal runn` 比没有更糟。
+        if cols > prefix_width.saturating_add(hint_width).saturating_add(2) {
+            let column = u16::try_from(cols.saturating_sub(hint_width))
+                .unwrap_or(u16::MAX)
+                .saturating_add(x0);
+            // 和左侧那根粗线、左下角的模式标签同一个高亮色（用户 09-19）。
+            let style = crate::cli::footer::goal_hint_style(mode);
+            queue!(
+                stdout,
+                MoveTo(column, *input_row),
+                Print(format!("{style}{goal_hint}\x1b[0m"))
+            )?;
+        }
+    }
     row_offset = row_offset.saturating_add(1);
+    let pad = " ".repeat(usize::from(x0));
     for line in &display_rows {
         let row = (*input_row).saturating_add(row_offset);
-        queue!(stdout, MoveTo(0, row))?;
+        queue!(stdout, MoveTo(x0, row))?;
         queue!(stdout, Print(&prompt_prefix), Print(line))?;
+        drawn.push((row, format!("{pad}{prompt_prefix}{line}")));
         row_offset = row_offset.saturating_add(1);
     }
     queue!(
         stdout,
-        MoveTo(0, (*input_row).saturating_add(row_offset)),
+        MoveTo(x0, (*input_row).saturating_add(row_offset)),
         Print(&prompt_prefix)
     )?;
     row_offset = row_offset.saturating_add(1);
-    if !suggestions.is_empty() {
+    // 全屏下候选走输入框上方的浮层（`command_hint_lines`），footer 留着——
+    // 挤掉 footer 的话打命令时连模型名和用量都看不见了。
+    if !suggestions.is_empty() && !crate::cli::in_fullscreen() {
         let suggestion_width = cols.saturating_sub(visible_width(&prompt_prefix)).max(1);
         queue!(
             stdout,
-            MoveTo(0, (*input_row).saturating_add(row_offset)),
+            MoveTo(x0, (*input_row).saturating_add(row_offset)),
             Print(&prompt_prefix),
             Print(format!(
                 "\x1b[2m{}\x1b[0m",
@@ -816,37 +965,37 @@ pub(in crate::cli) fn render_repl_input_with_footer(
         footer_row = Some((*input_row).saturating_add(row_offset));
         queue!(
             stdout,
-            MoveTo(0, (*input_row).saturating_add(row_offset)),
+            MoveTo(x0, (*input_row).saturating_add(row_offset)),
             Print(repl_footer_line(mode, footer, cols))
         )?;
         if show_hint {
             row_offset = row_offset.saturating_add(1);
             queue!(
                 stdout,
-                MoveTo(0, (*input_row).saturating_add(row_offset)),
+                MoveTo(x0, (*input_row).saturating_add(row_offset)),
                 Print(repl_shortcut_hint_line(mode, cols))
             )?;
         }
     }
     let (cursor_col, cursor_row_offset) = if display_lines.len() == lines.len() {
-        repl_cursor_position(&plain_prefix, input, cursor)
+        repl_cursor_position_for_cols(&plain_prefix, input, cursor, cols)
     } else {
         let last_line = display_lines.last().map(String::as_str).unwrap_or_default();
         let (col, _) = repl_cursor_position_for_line_for_cols(
             &plain_prefix,
             last_line,
             last_line.chars().count(),
-            terminal_cols(),
+            cols,
         );
         (
             col,
-            repl_prompt_rows(&plain_prefix, &display_lines).saturating_sub(1),
+            repl_prompt_rows_for_cols(&plain_prefix, &display_lines, cols).saturating_sub(1),
         )
     };
     queue!(
         stdout,
         MoveTo(
-            cursor_col,
+            cursor_col.saturating_add(x0),
             (*input_row)
                 .saturating_add(1)
                 .saturating_add(cursor_row_offset)
@@ -874,7 +1023,7 @@ pub(in crate::cli) fn replace_repl_input_with_user_echo(
     stdout: &mut io::Stdout,
     input_row: u16,
     rendered_rows: u16,
-    mode: AgentMode,
+    mode: PersonaLane,
     input: &str,
 ) -> Result<()> {
     let cols = terminal_cols();

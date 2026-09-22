@@ -5,9 +5,22 @@
 mod cli_args;
 mod daemon_log;
 mod footer_tail;
+mod footer_width;
+mod golden_panel;
+#[cfg(unix)]
+mod hangup;
 mod input_editing;
+mod lobby_anim;
+mod lobby_layout;
 mod pop_menu;
 mod shared;
 mod slash_commands;
+mod static_timeline;
+mod tui_ansi;
+mod tui_blocks;
+mod tui_perf;
+mod tui_reflow;
+mod tui_scroll;
+mod tui_undo;
 mod variant_menu;
 mod wait_spinner_cursor;

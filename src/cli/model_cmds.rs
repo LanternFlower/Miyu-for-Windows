@@ -5,7 +5,6 @@
 //! 那份。菜单渲染也在这里——终端里要在有限宽度内把 provider、模型名、变体三
 //! 列排整齐。
 
-use crate::cli::repl::width::*;
 use crate::cli::*;
 
 pub(in crate::cli) fn short_model_name(model: &str, provider: &str) -> String {
@@ -20,7 +19,7 @@ pub(in crate::cli) fn short_model_name(model: &str, provider: &str) -> String {
 
 pub(in crate::cli) fn print_mixed_model_endpoint(
     show: bool,
-    result: &crate::llm::ChatResult,
+    result: &miyu_core::llm::ChatResult,
     variant: Option<&str>,
 ) {
     if !show {
@@ -46,6 +45,44 @@ pub(in crate::cli) fn mixed_model_endpoint_label(
     format!("{provider} / {model}{variant}")
 }
 
+/// 交互 REPL 里挂在回复末尾的那一行「本次供应商 / 模型」：暗色，和回复之间空一行
+/// （渲染器收尾本来就留一个空行，这里不再多加，否则是两行）。全屏下按时间线正文
+/// 的缩进对齐（和「已中断」那类提示一个位置）。
+pub(in crate::cli) fn mixed_model_endpoint_frame(
+    provider: &str,
+    model: &str,
+    variant: Option<&str>,
+) -> String {
+    // 光 SGR 2 在 kitty 里只淡一点点,用户看着「不是暗色」;配一个中灰(245)才
+    // 是肉眼分得出的暗色,亮暗两种底色都看得清。尾巴留一个空行:正文块的规矩是
+    // 每块自带尾空行(「已中断」那类提示也是),不留的话紧跟着的 `/compact` 提示
+    // 会贴上来(用户 09-18 截图)。
+    let line = format!(
+        "\x1b[2m\x1b[38;5;245m{}\x1b[0m\n\n",
+        mixed_model_endpoint_label(provider, model, variant)
+    );
+    if render::blocks::enabled() {
+        render::timeline::indent_body(&line)
+    } else {
+        line
+    }
+}
+
+/// 会话钉了模型池就按会话的算（`footer_config_for_session` 同一道守卫），这里
+/// 拿的是已经钉到会话上的 store。「是不是混合」要看会话池，不是全局池：
+/// 用户全局只挂一个模型、会话里钉两个的情形，按全局判永远不显示（BUG-05）。
+pub(in crate::cli) fn session_scoped_config(store: &StateStore, config: &AppConfig) -> AppConfig {
+    let mut config = config.clone();
+    let session_id = store.session_id();
+    if let Ok(Some(models)) = store.session_model_override(&session_id) {
+        match config.usable_model_override(models) {
+            Some(usable) => config.active_provider_models = Some(usable),
+            None => drop_stale_model_override(store, &session_id),
+        }
+    }
+    config
+}
+
 pub(in crate::cli) fn show_mixed_model_endpoint(config: &AppConfig, interactive: bool) -> bool {
     config.active_provider_model_choices().len() > 1
         && match config.display.mixed_model_endpoint_display.as_str() {
@@ -56,15 +93,15 @@ pub(in crate::cli) fn show_mixed_model_endpoint(config: &AppConfig, interactive:
 }
 
 pub(in crate::cli) fn initialize_models_cache(paths: &MiyuPaths) {
-    crate::models_cache::try_load(paths);
-    crate::models_cache::spawn_background_refresh(paths.clone());
+    miyu_base::models_cache::try_load(paths);
+    miyu_base::models_cache::spawn_background_refresh(paths.clone());
     if let Ok(config) = AppConfig::load_or_default(paths) {
-        crate::models_cache::spawn_provider_api_refresh(config.providers);
+        miyu_base::models_cache::spawn_provider_api_refresh(config.providers);
     }
 }
 
 pub(in crate::cli) async fn run_models(paths: &MiyuPaths, args: ModelsArgs) -> Result<()> {
-    run_models_for_session(paths, args, None).await
+    run_models_for_session(paths, args, None).await.map(|_| ())
 }
 
 /// REPL 的 `/models` 收的是一整串自由文本,这里把 `--global` / `-g` 从中
@@ -99,10 +136,13 @@ pub(in crate::cli) fn parse_models_argument(argument: &str) -> ModelsArgs {
 ///
 /// 与会话覆盖的两点不同:池不能清空(至少留一个端点,`set_active_provider_models`
 /// 自己会拦),以及 `default` 没有意义——全局池本身就是那个"默认"。
+/// 返回真表示**真的改了**。假是"什么都没发生"：Esc 退出、勾选没变、或者
+/// 不在终端里（只打了个清单）。调用方靠它决定要不要说"已更新"——不看这个
+/// 的话，Esc 取消也会收到一句"会话模型已更新"（用户实测）。
 pub(in crate::cli) async fn run_models_global(
     paths: &MiyuPaths,
     target: Option<&str>,
-) -> Result<()> {
+) -> Result<bool> {
     let mut config = AppConfig::load(paths)?;
     let choices = config.text_provider_model_choices();
     if choices.is_empty() {
@@ -124,7 +164,7 @@ pub(in crate::cli) async fn run_models_global(
                 )
             );
         }
-        let choice = crate::config::resolve_provider_model_argument(&choices, target)
+        let choice = miyu_base::config::resolve_provider_model_argument(&choices, target)
             .map_err(anyhow::Error::msg)?;
         vec![ActiveProviderModelConfig {
             provider_id: choice.provider_id.clone(),
@@ -133,7 +173,7 @@ pub(in crate::cli) async fn run_models_global(
     } else {
         if !(io::stdout().is_terminal() && io::stdin().is_terminal()) {
             print_model_choices(&config, &choices, None);
-            return Ok(());
+            return Ok(false);
         }
         let initial = choices
             .iter()
@@ -147,7 +187,7 @@ pub(in crate::cli) async fn run_models_global(
             initial.clone(),
         )?
         else {
-            return Ok(());
+            return Ok(false);
         };
         if active == initial {
             println!(
@@ -157,7 +197,7 @@ pub(in crate::cli) async fn run_models_global(
                     "未做修改（回车=选定高亮模型,Tab=多选勾选）"
                 )
             );
-            return Ok(());
+            return Ok(false);
         }
         choices
             .iter()
@@ -195,17 +235,18 @@ pub(in crate::cli) async fn run_models_global(
         })
         .await?;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Switches the model pool of one session (the current session when
 /// `session_id` is None). The override persists on the session, so reopening
 /// it restores the model; the global pool is managed in `miyu config`.
+/// 返回真表示**真的改了**；见 [`run_models_global`]。
 pub(in crate::cli) async fn run_models_for_session(
     paths: &MiyuPaths,
     args: ModelsArgs,
     session_id: Option<&str>,
-) -> Result<()> {
+) -> Result<bool> {
     if args.global {
         return run_models_global(paths, args.target.as_deref()).await;
     }
@@ -231,9 +272,9 @@ pub(in crate::cli) async fn run_models_for_session(
                     "当前会话已恢复跟随全局激活模型池"
                 )
             );
-            return Ok(());
+            return Ok(true);
         }
-        let choice = crate::config::resolve_provider_model_argument(&choices, target)
+        let choice = miyu_base::config::resolve_provider_model_argument(&choices, target)
             .map_err(anyhow::Error::msg)?;
         let label = choice.label();
         let models = vec![ActiveProviderModelConfig {
@@ -242,13 +283,124 @@ pub(in crate::cli) async fn run_models_for_session(
         }];
         set_session_models(paths, session_id, models).await?;
         println!("{}: {label}", t("session model", "当前会话模型"));
-        return Ok(());
+        return Ok(true);
     }
     if io::stdout().is_terminal() && io::stdin().is_terminal() {
+        let menu = SessionModelMenu::new(&config, choices, paths, session_id)?;
+        let Some(active) = inline_fuzzy_select_with(
+            &menu.labels,
+            menu.initial.clone(),
+            Some(&menu.toggle_rule()),
+        )?
+        else {
+            // 选择器里按了 Ctrl+C：什么都没发生，别让调用方去报"已更新"。
+            return Ok(false);
+        };
+        let (changed, message) = menu.apply(paths, session_id, active).await?;
+        println!("{message}");
+        return Ok(changed);
+    }
+    print_model_choices(&config, &choices, None);
+    Ok(false)
+}
+
+/// /models 交互菜单的数据。第一项是「继承全局模型池」，与 config TUI 的会话/QQ
+/// 模型菜单同款：会话没有自己的覆盖时它就是当前状态。此前想恢复继承只能记住
+/// `miyu models default` 这个隐藏写法，菜单里根本看不到这条路。
+///
+/// 行内（`inline_fuzzy_select`）与全屏面板（`pick_multi_with`）共用：菜单项、入场勾选
+/// 在这里算，选完交回 `apply` 落盘——两条路一个规矩。
+pub(in crate::cli) struct SessionModelMenu {
+    choices: Vec<miyu_base::config::ProviderModelChoice>,
+    pub(in crate::cli) labels: Vec<String>,
+    pub(in crate::cli) initial: Vec<bool>,
+    /// 各行「因继承而勾上」吗——全局激活池里的那几个（第 0 行恒为假）。Tab 的
+    /// 连带规矩靠它：取消继承时把这些一并取消。
+    pub(in crate::cli) derived: Vec<bool>,
+}
+
+/// `/models` 菜单里 Tab 的连带规矩（行内与全屏两个选择器共用）。第 0 行是「继承
+/// 全局模型池」，`derived[i]` 标着因继承而勾上的模型行。
+///
+/// - 取消继承：派生勾选一并取消（用户 09-17：「取消激活继承全局模型的时候，那些
+///   被激活的全局模型应该跟着一起被取消激活」），之后自己挑；
+/// - 勾回继承：模型行回到派生态——全局池那几个勾上、别的清掉；
+/// - 继承着时翻某个模型行：那就是要自己钉一批了，继承取消、派生勾选留作起点，
+///   再翻转这一行。
+///
+/// 原来 Tab 是纯单行翻转：继承与各模型在存储层本是一对互斥形态（`None` = 继承、
+/// `Some(list)` = 覆盖），菜单把它拍平成一排互不相干的布尔，派生关系只在入场算过
+/// 一次、之后没人维护（初诊 BUG-10）。
+pub(in crate::cli) fn toggle_model_row(active: &mut [bool], derived: &[bool], index: usize) {
+    if active.is_empty() || index >= active.len() {
+        return;
+    }
+    if index == 0 {
+        let inherit = !active[0];
+        active[0] = inherit;
+        for (slot, is_derived) in active.iter_mut().zip(derived.iter()).skip(1) {
+            *slot = inherit && *is_derived;
+        }
+        return;
+    }
+    if active[0] {
+        active[0] = false;
+    }
+    active[index] = !active[index];
+}
+
+/// 菜单结果落盘前的裁决（纯函数，好测）。
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::cli) enum ModelMenuDecision {
+    /// 什么都没改。
+    NoChange,
+    /// 回到继承全局池。
+    Inherit,
+    /// 取消了继承却一个模型都没勾：存储层没有这个状态（空 = 继承），得说清楚。
+    NeedOne,
+    /// 自己钉一批：勾上的模型行下标（不含第 0 行）。
+    Override(Vec<usize>),
+}
+
+pub(in crate::cli) fn decide_model_menu(initial: &[bool], active: &[bool]) -> ModelMenuDecision {
+    let was_inherit = initial.first().copied().unwrap_or(false);
+    let inherit = active.first().copied().unwrap_or(false);
+    if inherit {
+        return if was_inherit {
+            ModelMenuDecision::NoChange
+        } else {
+            ModelMenuDecision::Inherit
+        };
+    }
+    let picked = active
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter_map(|(index, on)| on.then_some(index - 1))
+        .collect::<Vec<_>>();
+    if picked.is_empty() {
+        // 本来就是覆盖、现在全清了 = 回到继承（老规矩）；本来在继承、取消继承后
+        // 一个没勾 = 没法落盘，提示一句。
+        return if was_inherit {
+            ModelMenuDecision::NeedOne
+        } else {
+            ModelMenuDecision::Inherit
+        };
+    }
+    if !was_inherit && initial.iter().skip(1).eq(active.iter().skip(1)) {
+        return ModelMenuDecision::NoChange;
+    }
+    ModelMenuDecision::Override(picked)
+}
+
+impl SessionModelMenu {
+    pub(in crate::cli) fn new(
+        config: &AppConfig,
+        choices: Vec<miyu_base::config::ProviderModelChoice>,
+        paths: &MiyuPaths,
+        session_id: Option<&str>,
+    ) -> Result<Self> {
         let override_pool = session_model_override_snapshot(paths, session_id)?;
-        // 第一项是「继承全局模型池」,与 config TUI 的会话/QQ 模型菜单同款:
-        // 会话没有自己的覆盖时它就是当前状态。此前想恢复继承只能记住
-        // `miyu models default` 这个隐藏写法,菜单里根本看不到这条路。
         let inherit_label = t("Inherit global model pool", "继承全局模型池").to_string();
         let mut labels = vec![inherit_label];
         labels.extend(choices.iter().map(|choice| choice.label()));
@@ -259,60 +411,78 @@ pub(in crate::cli) async fn run_models_for_session(
             }),
             None => config.is_active_provider_model(&choice.provider_id, &choice.model),
         }));
-        if let Some(active) = inline_fuzzy_select(&labels, initial.clone())? {
-            // 勾了「继承」就是继承:继承与覆盖天然互斥,同时勾选时以继承为准
-            // (标签本身也这么说)。
-            if active.first().copied().unwrap_or(false) && !initial[0] {
-                set_session_models(paths, session_id, Vec::new()).await?;
-                println!(
-                    "{}",
-                    t(
-                        "this session now follows the global active pool",
-                        "当前会话已恢复跟随全局激活模型池"
-                    )
-                );
-                return Ok(());
-            }
-            let active = active.into_iter().skip(1).collect::<Vec<_>>();
-            let initial = initial.into_iter().skip(1).collect::<Vec<_>>();
-            if active == initial {
-                println!(
-                    "{}",
+        let mut derived = vec![false];
+        derived.extend(
+            choices
+                .iter()
+                .map(|choice| config.is_active_provider_model(&choice.provider_id, &choice.model)),
+        );
+        Ok(Self {
+            choices,
+            labels,
+            initial,
+            derived,
+        })
+    }
+
+    /// 给选择器的 Tab 规矩。
+    pub(in crate::cli) fn toggle_rule(&self) -> impl Fn(&mut [bool], usize) + '_ {
+        move |active, index| toggle_model_row(active, &self.derived, index)
+    }
+
+    /// 把菜单结果落成会话覆盖。返回（真的改了没, 给用户的一句话）。
+    pub(in crate::cli) async fn apply(
+        &self,
+        paths: &MiyuPaths,
+        session_id: Option<&str>,
+        active: Vec<bool>,
+    ) -> Result<(bool, String)> {
+        let follows_global = t(
+            "this session now follows the global active pool",
+            "当前会话已恢复跟随全局激活模型池",
+        )
+        .to_string();
+        let picked = match decide_model_menu(&self.initial, &active) {
+            ModelMenuDecision::NoChange => {
+                return Ok((
+                    false,
                     t(
                         "no changes (Enter picks the highlighted model; Tab multi-selects)",
-                        "未做修改（回车=选定高亮模型,Tab=多选勾选）"
+                        "未做修改（回车=选定高亮模型,Tab=多选勾选）",
                     )
-                );
-                return Ok(());
+                    .to_string(),
+                ));
             }
-            let models = choices
-                .iter()
-                .zip(active)
-                .filter_map(|(choice, active)| {
-                    active.then(|| ActiveProviderModelConfig {
-                        provider_id: choice.provider_id.clone(),
-                        model: choice.model.clone(),
-                    })
-                })
-                .collect::<Vec<_>>();
-            let cleared = models.is_empty();
-            set_session_models(paths, session_id, models).await?;
-            if cleared {
-                println!(
-                    "{}",
+            ModelMenuDecision::NeedOne => {
+                return Ok((
+                    false,
                     t(
-                        "this session now follows the global active pool",
-                        "当前会话已恢复跟随全局激活模型池"
+                        "inheritance was unticked but no model is ticked; still inheriting the global pool (tick at least one model to pin your own)",
+                        "取消了继承但一个模型都没勾，仍继承全局模型池（要自己钉一批就至少勾一个）",
                     )
-                );
-            } else {
-                println!("{}", t("session models updated", "已更新当前会话模型"));
+                    .to_string(),
+                ));
             }
-        }
-        return Ok(());
+            ModelMenuDecision::Inherit => {
+                set_session_models(paths, session_id, Vec::new()).await?;
+                return Ok((true, follows_global));
+            }
+            ModelMenuDecision::Override(picked) => picked,
+        };
+        let models = picked
+            .into_iter()
+            .filter_map(|index| self.choices.get(index))
+            .map(|choice| ActiveProviderModelConfig {
+                provider_id: choice.provider_id.clone(),
+                model: choice.model.clone(),
+            })
+            .collect::<Vec<_>>();
+        set_session_models(paths, session_id, models).await?;
+        Ok((
+            true,
+            t("session models updated", "已更新当前会话模型").to_string(),
+        ))
     }
-    print_model_choices(&config, &choices, None);
-    Ok(())
 }
 
 pub(in crate::cli) fn run_list_models(paths: &MiyuPaths) -> Result<()> {
@@ -341,7 +511,7 @@ pub(in crate::cli) fn run_list_models(paths: &MiyuPaths) -> Result<()> {
 
 pub(in crate::cli) fn print_model_choices(
     config: &AppConfig,
-    choices: &[crate::config::ProviderModelChoice],
+    choices: &[miyu_base::config::ProviderModelChoice],
     override_pool: Option<&[ActiveProviderModelConfig]>,
 ) {
     for (index, choice) in choices.iter().enumerate() {
@@ -442,13 +612,13 @@ pub(in crate::cli) fn run_variant(paths: &MiyuPaths, args: VariantArgs) -> Resul
         bail!(
             "{}",
             t(
-                "interactive variant selection requires a terminal; use `miyu variant <name>`",
-                "交互 variant 选择需要终端；请使用 `miyu variant <名称>`",
+                "interactive thinking-level selection requires a terminal; use `miyu effort <name>`",
+                "交互选择思考档位需要终端；请使用 `miyu effort <名称>`",
             )
         );
     }
-    if !crate::models_cache::is_loaded() {
-        crate::models_cache::refresh_blocking(paths).map_err(|error| {
+    if !miyu_base::models_cache::is_loaded() {
+        miyu_base::models_cache::refresh_blocking(paths).map_err(|error| {
             anyhow::anyhow!(
                 "{}: {error:#}",
                 t("failed to load model metadata", "无法加载模型元数据")
@@ -456,9 +626,19 @@ pub(in crate::cli) fn run_variant(paths: &MiyuPaths, args: VariantArgs) -> Resul
         })?;
     }
 
-    let config = AppConfig::load_or_default(paths)?;
+    let mut config = AppConfig::load_or_default(paths)?;
+    // 与 `miyu models` 同一个作用域：终端集成会话钉了自己的模型时，档位列的
+    // 是那个模型的，不是全局文本模型的。
+    let store = StateStore::new(paths)?;
+    apply_session_model_override(&store, &mut config);
     let mut client = OpenAiCompatibleClient::from_config(&config, paths)?;
-    match execute_variant(paths, &mut client, selected, "miyu variant")? {
+    match execute_variant(
+        paths,
+        &mut client,
+        selected,
+        "miyu effort",
+        inline_variant_select,
+    )? {
         VariantOutcome::Updated => print_variant_updated(),
         VariantOutcome::Cancelled => {}
         VariantOutcome::Rejected(message) => bail!("{message}"),
@@ -466,11 +646,14 @@ pub(in crate::cli) fn run_variant(paths: &MiyuPaths, args: VariantArgs) -> Resul
     Ok(())
 }
 
+/// `pick`：不带参数时的交互菜单——行内 `inline_variant_select`，全屏 TUI 用
+/// `pick_effort`（面板贴在大厅提示下方 / 会话正文底部）。
 pub(in crate::cli) fn execute_variant(
     paths: &MiyuPaths,
     client: &mut OpenAiCompatibleClient,
     selected: Option<&str>,
     selector_command: &str,
+    pick: impl FnOnce(&[ThinkingVariantOptions]) -> Result<Option<VariantSelections>>,
 ) -> Result<VariantOutcome> {
     if let Some(selected) = selected {
         if client.thinking_variant_options().len() != 1 {
@@ -491,7 +674,7 @@ pub(in crate::cli) fn execute_variant(
         client.set_thinking_variant(variant)?;
     } else {
         let options = client.thinking_variant_options();
-        let Some(selections) = inline_variant_select(&options)? else {
+        let Some(selections) = pick(&options)? else {
             return Ok(VariantOutcome::Cancelled);
         };
         client.set_thinking_variants(&selections)?;
@@ -565,452 +748,5 @@ pub(in crate::cli) fn apply_session_model_override(state: &StateStore, config: &
                 "读取会话模型覆盖失败"
             )
         ),
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::cli) struct VariantMenuItem {
-    pub(in crate::cli) provider_id: String,
-    pub(in crate::cli) model: String,
-    pub(in crate::cli) options: Vec<VariantMenuOption>,
-    pub(in crate::cli) selected: usize,
-    pub(in crate::cli) cursor: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::cli) struct VariantMenuOption {
-    pub(in crate::cli) label: String,
-    pub(in crate::cli) value: Option<String>,
-}
-
-impl VariantMenuItem {
-    pub(in crate::cli) fn from_options(options: &ThinkingVariantOptions) -> Self {
-        let mut variants = vec![VariantMenuOption {
-            label: "default".to_string(),
-            value: None,
-        }];
-        variants.extend(options.variants.iter().map(|variant| VariantMenuOption {
-            label: if variant == "default" {
-                "default (variant)".to_string()
-            } else {
-                variant.clone()
-            },
-            value: Some(variant.clone()),
-        }));
-        let selected = options
-            .selected
-            .as_ref()
-            .and_then(|selected| {
-                variants
-                    .iter()
-                    .position(|variant| variant.value.as_ref() == Some(selected))
-            })
-            .unwrap_or(0);
-        Self {
-            provider_id: options.provider_id.clone(),
-            model: options.model.clone(),
-            options: variants,
-            selected,
-            cursor: selected,
-        }
-    }
-
-    pub(in crate::cli) fn selection(&self) -> (String, String, Option<String>) {
-        (
-            self.provider_id.clone(),
-            self.model.clone(),
-            self.options[self.selected].value.clone(),
-        )
-    }
-
-    pub(in crate::cli) fn check_cursor(&mut self) {
-        self.selected = self.cursor;
-    }
-}
-
-pub(in crate::cli) fn inline_variant_select(
-    options: &[ThinkingVariantOptions],
-) -> Result<Option<Vec<(String, String, Option<String>)>>> {
-    let mut items = options
-        .iter()
-        .map(VariantMenuItem::from_options)
-        .collect::<Vec<_>>();
-    if items.is_empty() {
-        return Ok(None);
-    }
-    if items.len() == 1 {
-        return inline_single_variant_select(items.remove(0));
-    }
-    let max_options = items
-        .iter()
-        .map(|item| item.options.len())
-        .max()
-        .unwrap_or(1);
-    let menu_lines = inline_fuzzy_lines(items.len().max(max_options));
-    reserve_inline_fuzzy_space(menu_lines)?;
-    let mut session = InlineRawMode::start()?;
-    let mut active_column = 0usize;
-    let mut model_index = 0usize;
-    let mut model_scroll = 0usize;
-    let mut variant_scroll = 0usize;
-    let (_, cursor_y) = cursor::position().unwrap_or((0, menu_lines.saturating_sub(1)));
-    let anchor_y = cursor_y.saturating_sub(menu_lines.saturating_sub(1));
-    loop {
-        let visible = menu_lines.saturating_sub(2) as usize;
-        model_scroll = inline_fuzzy_scroll(model_index, model_scroll, visible.min(items.len()));
-        let item = &items[model_index];
-        variant_scroll =
-            inline_fuzzy_scroll(item.cursor, variant_scroll, visible.min(item.options.len()));
-        draw_inline_variant(
-            &mut session.stdout,
-            anchor_y,
-            menu_lines,
-            &items,
-            active_column,
-            model_index,
-            model_scroll,
-            variant_scroll,
-        )?;
-        if let Event::Key(KeyEvent {
-            code, modifiers, ..
-        }) = event::read()?
-        {
-            match code {
-                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
-                    return Ok(None);
-                }
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
-                    return Ok(None);
-                }
-                KeyCode::Enter => {
-                    clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
-                    return Ok(Some(items.iter().map(VariantMenuItem::selection).collect()));
-                }
-                KeyCode::Left | KeyCode::Char('h') => active_column = 0,
-                KeyCode::Right | KeyCode::Char('l') => active_column = 1,
-                KeyCode::Up | KeyCode::Char('k') if active_column == 0 => {
-                    model_index = model_index.saturating_sub(1);
-                    variant_scroll = 0;
-                }
-                KeyCode::Down | KeyCode::Char('j') if active_column == 0 => {
-                    model_index = (model_index + 1).min(items.len() - 1);
-                    variant_scroll = 0;
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    items[model_index].cursor = items[model_index].cursor.saturating_sub(1);
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    let last = items[model_index].options.len() - 1;
-                    items[model_index].cursor = (items[model_index].cursor + 1).min(last);
-                }
-                KeyCode::Tab if active_column == 1 => {
-                    items[model_index].check_cursor();
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-pub(in crate::cli) fn inline_single_variant_select(
-    mut item: VariantMenuItem,
-) -> Result<Option<Vec<(String, String, Option<String>)>>> {
-    let menu_lines = inline_fuzzy_lines(item.options.len());
-    reserve_inline_fuzzy_space(menu_lines)?;
-    let mut session = InlineRawMode::start()?;
-    let mut scroll = 0usize;
-    let (_, cursor_y) = cursor::position().unwrap_or((0, menu_lines.saturating_sub(1)));
-    let anchor_y = cursor_y.saturating_sub(menu_lines.saturating_sub(1));
-    loop {
-        let visible = menu_lines.saturating_sub(2) as usize;
-        scroll = inline_fuzzy_scroll(item.cursor, scroll, visible.min(item.options.len()));
-        draw_inline_single_variant(&mut session.stdout, anchor_y, menu_lines, &item, scroll)?;
-        if let Event::Key(KeyEvent {
-            code, modifiers, ..
-        }) = event::read()?
-        {
-            match code {
-                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
-                    return Ok(None);
-                }
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
-                    return Ok(None);
-                }
-                KeyCode::Enter => {
-                    clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
-                    return Ok(Some(vec![item.selection()]));
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    item.cursor = item.cursor.saturating_sub(1);
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    item.cursor = (item.cursor + 1).min(item.options.len() - 1);
-                }
-                KeyCode::Tab => item.check_cursor(),
-                _ => {}
-            }
-        }
-    }
-}
-
-pub(in crate::cli) fn draw_inline_single_variant(
-    stdout: &mut io::Stdout,
-    anchor_y: u16,
-    menu_lines: u16,
-    item: &VariantMenuItem,
-    scroll: usize,
-) -> Result<()> {
-    let (cols, _) = terminal::size().unwrap_or((80, 24));
-    let bar = inline_fuzzy_bar();
-    let available = (cols as usize).saturating_sub(visible_width(&bar)).max(1);
-    let width = single_variant_content_width(item).min(available);
-    let visible = menu_lines.saturating_sub(2) as usize;
-    queue!(stdout, Hide)?;
-    for row in 0..menu_lines {
-        queue!(
-            stdout,
-            MoveTo(0, anchor_y + row),
-            Clear(ClearType::CurrentLine)
-        )?;
-    }
-    queue!(
-        stdout,
-        MoveTo(0, anchor_y),
-        Print(&bar),
-        Print(variant_menu_header(
-            t("Thinking variant", "思考档位"),
-            true,
-            width,
-        )),
-    )?;
-    for row in 0..visible {
-        let index = scroll + row;
-        let line = item.options.get(index).map_or_else(
-            || " ".repeat(width),
-            |variant| {
-                variant_menu_cell(
-                    &variant.label,
-                    index == item.cursor,
-                    index == item.cursor,
-                    Some(index == item.selected),
-                    width,
-                )
-            },
-        );
-        queue!(
-            stdout,
-            MoveTo(0, anchor_y + row as u16 + 1),
-            Print(&bar),
-            Print(line),
-        )?;
-    }
-    queue!(
-        stdout,
-        MoveTo(0, anchor_y + menu_lines.saturating_sub(1)),
-        Print(&bar),
-        Print(format!(
-            "\x1b[2m{}\x1b[0m",
-            truncate_visible_width(
-                t(
-                    "j/k move · Tab select · Enter confirm · Esc/q cancel",
-                    "j/k 移动 · Tab 勾选 · Enter 确认 · Esc/q 取消"
-                ),
-                available,
-            )
-        ))
-    )?;
-    stdout.flush()?;
-    Ok(())
-}
-
-pub(in crate::cli) fn single_variant_content_width(item: &VariantMenuItem) -> usize {
-    item.options
-        .iter()
-        .map(|option| visible_width(&option.label).saturating_add(6))
-        .chain(std::iter::once(visible_width(t(
-            "Thinking variant",
-            "思考档位",
-        ))))
-        .max()
-        .unwrap_or(1)
-}
-
-pub(in crate::cli) fn draw_inline_variant(
-    stdout: &mut io::Stdout,
-    anchor_y: u16,
-    menu_lines: u16,
-    items: &[VariantMenuItem],
-    active_column: usize,
-    model_index: usize,
-    model_scroll: usize,
-    variant_scroll: usize,
-) -> Result<()> {
-    let (cols, _) = terminal::size().unwrap_or((80, 24));
-    let bar = inline_fuzzy_bar();
-    let width = (cols as usize).saturating_sub(visible_width(&bar)).max(1);
-    let separator = if width >= 3 { " │ " } else { "" };
-    let available = width.saturating_sub(visible_width(separator));
-    let (left_width, right_width) = variant_menu_column_widths(items, available);
-    let visible = menu_lines.saturating_sub(2) as usize;
-    queue!(stdout, Hide)?;
-    for row in 0..menu_lines {
-        queue!(
-            stdout,
-            MoveTo(0, anchor_y + row),
-            Clear(ClearType::CurrentLine)
-        )?;
-    }
-    queue!(
-        stdout,
-        MoveTo(0, anchor_y),
-        Print(&bar),
-        Print(variant_menu_header(
-            t("Provider / Model", "Provider / 模型"),
-            active_column == 0,
-            left_width,
-        )),
-        Print(format!("\x1b[2m{separator}\x1b[0m")),
-        Print(variant_menu_header(
-            t("Thinking variant", "思考档位"),
-            active_column == 1,
-            right_width,
-        )),
-    )?;
-    let variants = &items[model_index];
-    for row in 0..visible {
-        let left_index = model_scroll + row;
-        let right_index = variant_scroll + row;
-        let left = items.get(left_index).map_or_else(
-            || " ".repeat(left_width),
-            |item| {
-                variant_menu_cell(
-                    &format!("{} / {}", item.provider_id, item.model),
-                    active_column == 0 && left_index == model_index,
-                    left_index == model_index,
-                    None,
-                    left_width,
-                )
-            },
-        );
-        let right = variants.options.get(right_index).map_or_else(
-            || " ".repeat(right_width),
-            |variant| {
-                variant_menu_cell(
-                    &variant.label,
-                    active_column == 1 && right_index == variants.cursor,
-                    right_index == variants.cursor,
-                    Some(right_index == variants.selected),
-                    right_width,
-                )
-            },
-        );
-        queue!(
-            stdout,
-            MoveTo(0, anchor_y + row as u16 + 1),
-            Print(&bar),
-            Print(left),
-            Print(format!("\x1b[2m{separator}\x1b[0m")),
-            Print(right),
-        )?;
-    }
-    queue!(
-        stdout,
-        MoveTo(0, anchor_y + menu_lines.saturating_sub(1)),
-        Print(&bar),
-        Print(format!(
-            "\x1b[2m{}\x1b[0m",
-            truncate_visible_width(
-                t(
-                    "h/l switch · j/k move · Tab select · Enter confirm · Esc/q cancel",
-                    "h/l 切栏 · j/k 移动 · Tab 勾选 · Enter 确认 · Esc/q 取消"
-                ),
-                width,
-            )
-        ))
-    )?;
-    stdout.flush()?;
-    Ok(())
-}
-
-pub(in crate::cli) fn variant_menu_column_widths(
-    items: &[VariantMenuItem],
-    available: usize,
-) -> (usize, usize) {
-    if available == 0 {
-        return (0, 0);
-    }
-    if available == 1 {
-        return (1, 0);
-    }
-    let left_needed = items
-        .iter()
-        .map(|item| {
-            visible_width(&format!("{} / {}", item.provider_id, item.model)).saturating_add(2)
-        })
-        .chain(std::iter::once(visible_width(t(
-            "Provider / Model",
-            "Provider / 模型",
-        ))))
-        .max()
-        .unwrap_or(1);
-    let right_needed = items
-        .iter()
-        .flat_map(|item| item.options.iter())
-        .map(|option| visible_width(&option.label).saturating_add(6))
-        .chain(std::iter::once(visible_width(t(
-            "Thinking variant",
-            "思考档位",
-        ))))
-        .max()
-        .unwrap_or(1);
-    if left_needed.saturating_add(right_needed) <= available {
-        return (left_needed, right_needed);
-    }
-    let total_needed = left_needed.saturating_add(right_needed).max(1);
-    let left = available
-        .saturating_mul(left_needed)
-        .saturating_div(total_needed)
-        .clamp(1, available - 1);
-    (left, available - left)
-}
-
-pub(in crate::cli) fn variant_menu_header(label: &str, active: bool, width: usize) -> String {
-    let label = pad_visible_width(&truncate_visible_width(label, width), width);
-    if active {
-        format!("\x1b[1m\x1b[35m{label}\x1b[0m")
-    } else {
-        format!("\x1b[1m{label}\x1b[0m")
-    }
-}
-
-pub(in crate::cli) fn variant_menu_cell(
-    label: &str,
-    focused: bool,
-    highlighted: bool,
-    checked: Option<bool>,
-    width: usize,
-) -> String {
-    let marker = if highlighted { "›" } else { " " };
-    let check = match checked {
-        Some(true) => "[*] ",
-        Some(false) => "[ ] ",
-        None => "",
-    };
-    let line = pad_visible_width(
-        &truncate_visible_width(&format!("{marker} {check}{label}"), width),
-        width,
-    );
-    if focused {
-        format!("\x1b[1m\x1b[35m{line}\x1b[0m")
-    } else if checked == Some(true) {
-        format!("\x1b[1m\x1b[32m{line}\x1b[0m")
-    } else if highlighted {
-        format!("\x1b[1m{line}\x1b[0m")
-    } else {
-        format!("\x1b[2m{line}\x1b[0m")
     }
 }

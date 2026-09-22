@@ -33,7 +33,7 @@ class Repl:
                    TERM="xterm-256color", LANG="zh_CN.UTF-8")
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 140, 0, 0))
-        self.proc = subprocess.Popen([str(MIYU), "normal"], stdin=slave, stdout=slave, stderr=slave,
+        self.proc = subprocess.Popen([str(MIYU)], stdin=slave, stdout=slave, stderr=slave,
                                      env=env, preexec_fn=os.setsid, close_fds=True)
         os.close(slave)
         self.buf = bytearray()

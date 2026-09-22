@@ -44,33 +44,71 @@ impl LiveReplTail {
         self.pending_chunks.clear();
     }
 
-    /// 提交回显的绘制半程:同步块内只做本地写。ESC[6n 位置查询要等终端
-    /// 应答,放在同步块里会把块的存活时间拉到毫秒级——kitty 的同步输出有
-    /// 超时保护,超了就提前提交半成品帧,用户看到的就是光标闪到屏幕底部
-    /// 再跳回输入框(08-20 点名)。查询挪到块外的 finalize,此时光标已隐藏,
-    /// 查询期间无可见状态。
-    pub(in crate::cli) fn commit_submission_render(
-        &mut self,
-        submission: &LiveSubmission,
-    ) -> Result<()> {
+    /// 提交回显与活动区重画放在同一个同步块里。
+    ///
+    /// 回显把屏幕顶满时,光标会被推到最后一行左端。以前这里只写回显,输入
+    /// 框要等 daemon 接受回合之后才画回去,隐藏着的光标在左下角停一百多
+    /// 毫秒——kitty 的 cursor_trail 不看光标隐不隐藏,照样把拖尾画到左下角
+    /// 再飞回输入框(09-09 无头 kitty 逐帧截图坐实,pyte 回放看不见是因为
+    /// 光标本体确实隐藏着)。现在回显写完立刻把活动区画回去,光标从不在
+    /// 左下角落脚;写完后的输出光标按帧追踪器推算,同步块内零 ESC[6n。
+    pub(in crate::cli) fn commit_submission(&mut self, submission: &LiveSubmission) -> Result<()> {
+        let (cols, rows) = terminal::size().unwrap_or((80, 24));
+        // 全屏：正文归缓冲。直接打 stdout 的话这句话进不了历史，回翻就
+        // 找不到自己刚说了什么。
+        if self.screen.is_some() {
+            // 全屏下**斜杠命令不回显**：它不是一句话，是一次操作。inline 那边
+            // 回显是因为命令结果直接打在下面、不回显就看不出这一行是谁触发的；
+            // 全屏有菜单也有历史，回显只会在正文里堆一堆 `/models`。
+            if matches!(
+                parse_repl_input(submission.content.trim_start()),
+                ReplInput::Slash(..)
+            ) {
+                self.editor.clear();
+                let cursor = self.output_cursor;
+                return self.resume_at(cursor);
+            }
+            // 发出去就回到底部：翻着历史打字然后回车，结果自己刚说的话看不见，
+            // 是最容易让人以为「没发出去」的一种。
+            if let Some(screen) = &mut self.screen {
+                screen.follow_bottom();
+            }
+            let frame = committed_user_messages_frame(
+                &[(submission.display_content.as_str(), self.editor.mode)],
+                true,
+                0,
+                usize::from(cols),
+            );
+            // 这一轮从这儿开始：`/undo` 截回到这个标记处。
+            let frame = format!("{}{frame}", miyu_hosts::render::blocks::TURN_START_MARKER);
+            return self.apply_output_frame(frame.as_bytes());
+        }
         self.suspend()?;
-        // suspend 已把光标 MoveTo(output_cursor):列已知,块内零查询。
-        write_committed_user_messages_from(
+        // suspend 已把光标 MoveTo(output_cursor):列已知。
+        let frame = committed_user_messages_frame(
             &[(submission.display_content.as_str(), self.editor.mode)],
             true,
-            Some(self.output_cursor.0),
-        )?;
-        Ok(())
-    }
-
-    /// 提交回显的收尾半程:同步块外、光标隐藏状态下校准输出光标。
-    pub(in crate::cli) fn commit_submission_finalize(&mut self) {
-        self.output_cursor = cursor_position_or(self.output_cursor);
+            self.output_cursor.0,
+            usize::from(cols),
+        );
+        let mut stdout = io::stdout();
+        write!(stdout, "{frame}")?;
+        stdout.flush()?;
+        let output_cursor = cursor_after_frame(frame.as_bytes(), self.output_cursor, cols, rows);
+        self.output_cursor = output_cursor;
+        self.resume_at(output_cursor)
     }
 
     pub(in crate::cli) fn commit_empty_submission(&mut self) -> Result<()> {
         let mode = self.editor.mode;
         self.editor.clear();
+        if self.screen.is_some() {
+            // 全屏下空回车什么都不留。inline 那边回显一条空竖条是"按下去了"的
+            // 反馈，反正会随正文滚走；全屏是一块固定的画布，敲几次就攒几段空
+            // 气泡，看着像发出去了几条空消息。
+            let cursor = self.output_cursor;
+            return self.resume_at(cursor);
+        }
         self.suspend()?;
         write_committed_user_messages(&[("", mode)], true)?;
         let output_cursor = cursor_position_or(self.output_cursor);
@@ -84,22 +122,40 @@ impl LiveReplTail {
         &mut self,
         report: &BackgroundReport,
     ) -> Result<()> {
-        self.suspend()?;
-        let mut stdout = io::stdout();
-        queue!(
-            stdout,
-            Print(format!(
-                "\x1b[2m⚙ {}\x1b[0m\r\n\r\n",
-                job_wake_headline(&report.headline)
-            ))
-        )?;
-        for line in report.reply.lines() {
-            queue!(
-                stdout,
-                Print(format!("{}\r\n", render::render_markdown_line(line)))
-            )?;
+        let fullscreen = render::blocks::enabled();
+        // 全屏下**不让屏**。
+        //
+        // `suspend` 是把活动区擦掉、把终端让给外部输出用的；而这段汇报本来就该
+        // 进缓冲。让一次屏的代价是活动区（输入框 + 后台状态行）整块擦掉再画
+        // 回来——屏幕上就是闪一下（用户原话「状态行还是在闪动一次」）。
+        if !fullscreen {
+            self.suspend()?;
         }
-        queue!(stdout, Print("\r\n"))?;
+        let mut stdout = io::stdout();
+        let glyph = if fullscreen {
+            render::timeline::glyph_notice()
+        } else {
+            "⚙"
+        };
+        let mut text = format!(
+            "\x1b[2m{glyph} {}\x1b[0m\r\n\r\n",
+            job_wake_headline(&report.headline)
+        );
+        for line in report.reply.lines() {
+            text.push_str(&render::render_markdown_line(line));
+            text.push_str("\r\n");
+        }
+        text.push_str("\r\n");
+        // 全屏：这段也是正文，一样缩进、一样自己折行。不然后台任务的汇报
+        // 贴着第 0 列，整屏只有它不在装订边上。
+        if fullscreen {
+            let text = render::timeline::indent_body(&text);
+            // 走缓冲：直接打屏的话下一帧按缓冲重画就把它抹了。
+            self.apply_output_frame(text.as_bytes())?;
+            let cursor = self.output_cursor;
+            return self.resume_at_own(cursor);
+        }
+        queue!(stdout, Print(text))?;
         stdout.flush()?;
         self.output_cursor = cursor_position_or(self.output_cursor);
         let output_cursor = self.output_cursor;
@@ -128,10 +184,29 @@ impl LiveReplTail {
     pub(in crate::cli) fn consume_queued(
         &mut self,
         prompt_ids: &[String],
-        mode: AgentMode,
+        mode: PersonaLane,
     ) -> Result<()> {
-        self.suspend()?;
         let ids = prompt_ids.iter().collect::<std::collections::HashSet<_>>();
+        // 全屏这条路要先把文本拷出来再动队列——借着 `self.queued` 的切片
+        // 和随后的 `retain` 不能同时存在。
+        if self.screen.is_some() {
+            let (cols, _) = terminal::size().unwrap_or((80, 24));
+            let owned = self
+                .queued
+                .iter()
+                .filter(|prompt| ids.contains(&prompt.prompt_id))
+                .map(|prompt| prompt.display_content.clone())
+                .collect::<Vec<_>>();
+            let borrowed = owned
+                .iter()
+                .map(|text| (text.as_str(), mode))
+                .collect::<Vec<_>>();
+            let frame = committed_user_messages_frame(&borrowed, true, 0, usize::from(cols));
+            self.queued
+                .retain(|prompt| !ids.contains(&prompt.prompt_id));
+            return self.apply_output_frame(frame.as_bytes());
+        }
+        self.suspend()?;
         let consumed = self
             .queued
             .iter()

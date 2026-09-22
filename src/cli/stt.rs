@@ -9,7 +9,7 @@ use crate::cli::*;
 pub(in crate::cli) async fn run_stt_once(
     paths: &MiyuPaths,
     plain: bool,
-    mode: AgentMode,
+    mode: PersonaLane,
     session: TurnSession,
 ) -> Result<()> {
     let text = dictate_one_sentence(paths).await?;
@@ -100,8 +100,10 @@ pub(in crate::cli) async fn run_voice_command(
                     turn.user_timestamp,
                     user.trim()
                 );
-                let assistant =
-                    crate::agent::prompt_strip_tagged(turn.assistant_content.clone(), "speak");
+                let assistant = miyu_engine::agent::prompt_strip_tagged(
+                    turn.assistant_content.clone(),
+                    "speak",
+                );
                 println!(
                     "\x1b[1m{} assistant\x1b[0m\n{}\n",
                     turn.assistant_timestamp.as_deref().unwrap_or("-"),

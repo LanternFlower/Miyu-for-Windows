@@ -20,7 +20,7 @@
 
 ```
 #!/usr/bin/env python3
-# Display name: 番组日历
+# 显示名称：番组日历
 # Description: Query the Bangumi airing calendar. Use for "what airs today" questions.
 # Timeout: 60
 # Group: research
@@ -38,12 +38,19 @@
 | 键 | 别名 | 说明 |
 |---|---|---|
 | `Description` | `描述`、`功能介绍` | 模型看的描述。**英文**，首句 ≤60 字符（stub 加载模式下只显示首句）。先说做什么、何时用，再说注意事项 |
-| `Display name` | `显示名称`、`工具名称` | 人看的名字，可中文 |
+| `显示名称` | `工具名称` | 人看的名字，写中文。**必填**——不写，中文界面只能端出工具 id |
+| `Display name` | | 英文界面的名字，**可选**：工具 id 本来就是英文，不写就按 id 折一个（`xhs_search` → `Xhs search`）。它与 `显示名称` 是两个槽而不是别名，所以别把中文写在这里——那样英文界面反倒会露出中文 |
 | `Id` | | 工具名，`^[a-zA-Z][a-zA-Z0-9_]*$`。不写则用文件名 stem，非字母数字折成 `_`（`battery-care.py` → `battery_care`） |
 | `Parameters` | `params`、`schema`、`参数` | JSON Schema 对象，可单行或多行块；每个属性写 `description`。不写=接受任意 JSON 对象 |
 | `Timeout` | `timeout_seconds`、`超时` | 秒，默认 120，上限 300 |
 | `Group` | `groups`、`分组` | `load_tools` 分组，逗号分隔 |
 | `Argv` | | `none`（默认）或 `flags`，见下 |
+| `Trust` | `信任`、`可见范围` | `owner`（默认）只给属主类入口（终端、本机 WebUI、语音）；`external` 也给不可信入口（QQ 群、远端 WebUI 成员）。注册位置不再是脚本唯一的权限边界，清单自己说能不能出去 |
+| `Permission` | `权限` | `writes`（默认，脚本会跑命令）、`read-only`、`presentation` |
+| `Example` | `stub_example`、`示例` | stub 加载模式下附在桩上的一行调用示例，如 `{"city":"Tokyo"}`。只给「容易猜错、契约又短」的脚本写 |
+| `Hint` | `cross_hint`、`指路`、`指路句` | `Hint: <工具>: <句子>`。被指的工具在同一注册表里时，句子追加到本脚本描述末尾；不在场一个字不加。可写多行 |
+| `Requires` | `requires_prior`、`需先调用`、`前置工具` | 逗号分隔。本回合先调用过其中之一才放行，否则以 tool error 拒（数据驱动的跨工具闸） |
+| `Capabilities` | `capability`、`能力`、`宿主能力` | 逗号分隔，脚本要向宿主查的信息：`host.info`、`providers.read`、`subsystems.read`。只有 `Trust: owner`（缺省）的脚本在 daemon 里跑时才拿到令牌；不认识的 id 记 warn 并忽略。见下「查宿主信息」 |
 
 ## 运行时契约
 
@@ -54,6 +61,19 @@
 - **上限**：单流 8MiB 硬截断，展示 20000 字符软截断。列表类结果要给 `limit` 参数。
 - **缓存目录**：`MIYU_SCRIPT_CACHE_DIR` 指向 Miyu 的缓存目录，登录态、cookie、中间产物放这里；变量不存在（终端直接跑）时退回 XDG 默认。
 - **输出格式**：默认紧凑可读，提供 `format=json` 供逐字段处理。
+- **图片回传**：stdout 里一行 `MIYU-IMAGE: <路径> | <说明>`（说明可省）会被整行摘掉，图片交给投递层（终端内联、WebUI、QQ 各自渲染）。相对路径按 `MIYU_SCRIPT_CACHE_DIR` 解析；文件不存在只记警告。
+- **查宿主信息**（头部写了 `Capabilities:` 才有）：Miyu 拉起脚本时注入一次性令牌 `MIYU_HOST_TOKEN`、授权集 `MIYU_HOST_CAPABILITIES`（逗号分隔）和自身路径 `MIYU_HOST_BIN`；脚本跑 `$MIYU_HOST_BIN host <method> ['{json}']`，stdout 是一行 JSON：成功 `{"ok":true,"data":…}`，失败 `{"ok":false,"error":{"code":"permission_denied|unknown_method|invalid_argument|not_found|unavailable","message":"…"}}`，退出码 1。令牌只在这一次运行内有效，脚本退出即作废。方法：`host.info`（版本、契约版本、授权集、当前人格）、`providers.list`（供应商摘要 + 当前激活选择；**没有** api key、地址、超时）、`providers.get {"provider_id":…}`（加上下文窗口与模态）、`subsystems.enabled`（当前人格的记忆/技能/提醒/语音/情绪开关）。变量不存在（终端直接跑、非 daemon、`Trust: external`）时按「宿主不可用」处理，脚本仍要能工作。
+
+```python
+import json, os, subprocess
+def host(method, params=None):
+    binary, token = os.environ.get("MIYU_HOST_BIN"), os.environ.get("MIYU_HOST_TOKEN")
+    if not binary or not token:
+        return None  # 宿主不可用:退回默认行为
+    out = subprocess.run([binary, "host", method, json.dumps(params or {})], capture_output=True, text=True)
+    reply = json.loads(out.stdout or "{}")
+    return reply["data"] if reply.get("ok") else None
+```
 
 ## 用 manage_script 注册
 
@@ -71,7 +91,7 @@ Python（stdin JSON）：
 
 ```python
 #!/usr/bin/env python3
-# Display name: Example
+# 显示名称：示例
 # Description: One sentence under 60 characters. Then when to use it.
 # Parameters: {"type":"object","properties":{"query":{"type":"string","description":"what to look up"}},"required":["query"]}
 import json, os, sys
@@ -94,7 +114,7 @@ Bash（argv flags）：
 
 ```bash
 #!/usr/bin/env bash
-# Display name: Example
+# 显示名称：示例
 # Description: One sentence under 60 characters.
 # Argv: flags
 # Parameters: {"type":"object","properties":{"query":{"type":"string","description":"what to look up"}},"required":["query"]}

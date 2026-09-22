@@ -1,0 +1,252 @@
+//! 头部元数据解析:键识别、多行 Parameters 块、跳过无关注释行、id 归一化。
+
+use crate::tools::scripts::*;
+use miyu_base::i18n::Locale;
+
+#[test]
+fn extracts_description_from_shebang_script() {
+    let raw = "#!/bin/bash\n# description: Check system status\n\necho ok";
+    assert_eq!(
+        extract_description(raw),
+        Some("Check system status".to_string())
+    );
+}
+
+#[test]
+fn extracts_chinese_description() {
+    let raw = "#!/usr/bin/env python3\n# 功能介绍: 检查系统状态\n\nprint('ok')";
+    assert_eq!(extract_description(raw), Some("检查系统状态".to_string()));
+}
+
+#[test]
+fn extracts_bilingual_script_descriptions() {
+    let raw = "#!/bin/bash\n# 描述：管理电池\n# Description: Manage the battery\n\necho ok";
+    let metadata = extract_metadata(raw);
+    assert_eq!(metadata.descriptions.zh, Some("管理电池".to_string()));
+    assert_eq!(
+        metadata.descriptions.en,
+        Some("Manage the battery".to_string())
+    );
+    // 模型面恒英文:两种都有时选英文。
+    assert_eq!(
+        extract_description(raw),
+        Some("Manage the battery".to_string())
+    );
+}
+
+#[test]
+fn returns_none_when_no_description() {
+    let raw = "#!/bin/bash\necho hello";
+    assert_eq!(extract_description(raw), None);
+}
+
+/// 内置五个 python 脚本第二行都是 coding 声明,老解析器在那一行就断了。
+#[test]
+fn unknown_comment_lines_do_not_end_the_header() {
+    let raw = "#!/usr/bin/env python3\n# -*- coding: utf-8 -*-\n# Copyright: nobody\n# 显示名称：小红书搜索\n# Description: Search notes\n\nimport sys";
+    let metadata = extract_metadata(raw);
+    assert_eq!(metadata.display_names.zh, Some("小红书搜索".to_string()));
+    assert_eq!(metadata.descriptions.en, Some("Search notes".to_string()));
+}
+
+/// 英文界面只认英文槽:回退中文会让英文 UI 里蹦出「小红书搜索」,而缺英文名
+/// 时调用方要走 `humanize_script_id` 兜底,不是把中文端上去。
+#[test]
+fn english_display_name_never_falls_back_to_chinese() {
+    let metadata = extract_metadata("#!/bin/bash\n# 显示名称：小红书搜索\n\necho ok");
+    assert_eq!(
+        select_display_name_for(Locale::Zh, &metadata.display_names),
+        Some("小红书搜索".to_string())
+    );
+    assert_eq!(
+        select_display_name_for(Locale::En, &metadata.display_names),
+        None
+    );
+}
+
+/// 反向则仍回退:中文界面上一个英文名远好过一个裸 id。
+#[test]
+fn chinese_display_name_falls_back_to_english() {
+    let metadata = extract_metadata("#!/bin/bash\n# Display name: Lookup\n\necho ok");
+    assert_eq!(
+        select_display_name_for(Locale::Zh, &metadata.display_names),
+        Some("Lookup".to_string())
+    );
+    assert_eq!(
+        select_display_name_for(Locale::En, &metadata.display_names),
+        Some("Lookup".to_string())
+    );
+}
+
+#[test]
+fn humanizes_ids_for_scripts_without_an_english_name() {
+    assert_eq!(humanize_script_id("xhs_search"), "Xhs search");
+    assert_eq!(
+        humanize_script_id("bilibili_live_stream"),
+        "Bilibili live stream"
+    );
+    assert_eq!(humanize_script_id("codec"), "Codec");
+    // id 归一化保证首字符是字母,但兜底函数自己也不能被怪 id 噎住。
+    assert_eq!(humanize_script_id("_leading"), "Leading");
+    assert_eq!(humanize_script_id("__"), "__");
+}
+
+#[test]
+fn header_ends_at_first_code_line() {
+    let raw = "#!/bin/bash\n# Description: Real\nset -e\n# Description: Not header\n";
+    assert_eq!(extract_description(raw), Some("Real".to_string()));
+}
+
+#[test]
+fn parses_multiline_parameters_block_and_scalars() {
+    let raw = "#!/usr/bin/env python3\n\
+# Description: Lookup tool\n\
+# Timeout: 60s\n\
+# Group: research, shopping\n\
+# Argv: flags\n\
+# Parameters:\n\
+# {\n\
+#   \"type\": \"object\",\n\
+#   \"properties\": {\"query\": {\"type\": \"string\"}},\n\
+#   \"required\": [\"query\"]\n\
+# }\n\
+# Display name: Lookup\n\
+import sys\n";
+    let metadata = extract_metadata(raw);
+    assert_eq!(metadata.timeout_seconds, Some(60));
+    assert_eq!(metadata.groups, vec!["research", "shopping"]);
+    assert_eq!(metadata.argv, Some(ArgvMode::Flags));
+    let parameters = metadata.parameters.expect("parameters block parsed");
+    assert_eq!(parameters["properties"]["query"]["type"], "string");
+    assert_eq!(parameters["required"][0], "query");
+    // 块结束后头部继续解析。
+    assert_eq!(metadata.display_names.en, Some("Lookup".to_string()));
+}
+
+#[test]
+fn parses_inline_parameters() {
+    let raw = "#!/bin/sh\n# Description: Inline\n# Parameters: {\"type\":\"object\",\"properties\":{\"n\":{\"type\":\"integer\"}}}\necho\n";
+    let metadata = extract_metadata(raw);
+    assert_eq!(
+        metadata.parameters.unwrap()["properties"]["n"]["type"],
+        "integer"
+    );
+}
+
+#[test]
+fn accepts_double_slash_comments() {
+    let raw = "#!/usr/bin/env node\n// Description: Node tool\n// Timeout: 30\nconsole.log(1)\n";
+    let metadata = extract_metadata(raw);
+    assert_eq!(metadata.descriptions.en, Some("Node tool".to_string()));
+    assert_eq!(metadata.timeout_seconds, Some(30));
+}
+
+/// 全角键 + 值里带半角冒号:必须在最先出现的冒号处切,不然键变成「描述：走 stdin」。
+#[test]
+fn full_width_colon_key_with_half_width_colon_in_value() {
+    let raw = "#!/bin/bash\n# 描述：走 stdin: 喂 JSON\necho\n";
+    let metadata = extract_metadata(raw);
+    assert_eq!(
+        metadata.descriptions.zh,
+        Some("走 stdin: 喂 JSON".to_string())
+    );
+}
+
+#[test]
+fn normalizes_file_stems_into_tool_ids() {
+    assert_eq!(
+        normalize_script_id("battery-care"),
+        Some("battery_care".to_string())
+    );
+    assert_eq!(
+        normalize_script_id("xhs.search v2"),
+        Some("xhs_search_v2".to_string())
+    );
+    assert_eq!(normalize_script_id("2048"), Some("script_2048".to_string()));
+    assert_eq!(normalize_script_id("hello"), Some("hello".to_string()));
+    assert_eq!(normalize_script_id("查天气"), None);
+}
+
+#[test]
+fn header_id_overrides_file_stem_when_valid() {
+    let temp = tempfile::tempdir().unwrap();
+    let good = temp.path().join("weird-name.sh");
+    std::fs::write(&good, "#!/bin/bash\n# Id: nice_name\n# Description: x\n").unwrap();
+    assert_eq!(
+        inspect_script(&good).unwrap().id,
+        Some("nice_name".to_string())
+    );
+
+    let bad = temp.path().join("other-name.sh");
+    std::fs::write(&bad, "#!/bin/bash\n# Id: bad-name\n# Description: x\n").unwrap();
+    assert_eq!(
+        inspect_script(&bad).unwrap().id,
+        Some("other_name".to_string())
+    );
+}
+
+#[test]
+fn read_header_only_takes_the_first_32kb() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("big.sh");
+    let mut body = String::from("#!/bin/bash\n# Description: Big\n");
+    body.push_str(&"x".repeat(HEADER_READ_LIMIT * 2));
+    std::fs::write(&path, body).unwrap();
+    let raw = read_header(&path).unwrap();
+    assert_eq!(raw.len(), HEADER_READ_LIMIT);
+    assert_eq!(description_from_script(&path), Some("Big".to_string()));
+}
+
+/// 扩展清单五字段(09-10 分层架构阶段 1):信任位、权限、桩示例、指路句、前置工具。
+#[test]
+fn extracts_manifest_fields_for_trust_permission_example_hint_and_requires() {
+    let raw = "#!/usr/bin/env python3\n\
+# Description: Weather lookup\n\
+# Trust: external\n\
+# Permission: read-only\n\
+# Example: {\"city\":\"Tokyo\"}\n\
+# Hint: read: Prefix a path with kb: to read the knowledge base.\n\
+# 指路：web_fetch：Fetch the source page with web_fetch.\n\
+# Requires: review_aur_package, check_issue\n\
+import sys";
+    let metadata = extract_metadata(raw);
+    assert_eq!(metadata.trust, Some(crate::tools::ToolTrust::External));
+    assert_eq!(
+        metadata.permission,
+        Some(crate::tools::ToolPermission::ReadOnly)
+    );
+    assert_eq!(
+        metadata.stub_example.as_deref(),
+        Some("{\"city\":\"Tokyo\"}")
+    );
+    assert_eq!(
+        metadata.hints,
+        vec![
+            (
+                "read".to_string(),
+                " Prefix a path with kb: to read the knowledge base.".to_string()
+            ),
+            (
+                "web_fetch".to_string(),
+                " Fetch the source page with web_fetch.".to_string()
+            ),
+        ]
+    );
+    assert_eq!(
+        metadata.requires,
+        vec!["review_aur_package".to_string(), "check_issue".to_string()]
+    );
+}
+
+#[test]
+fn manifest_fields_default_to_owner_and_unset() {
+    let metadata = extract_metadata("#!/bin/sh\n# Description: plain\necho ok");
+    assert_eq!(metadata.trust, None);
+    assert_eq!(metadata.permission, None);
+    assert!(metadata.stub_example.is_none());
+    assert!(metadata.hints.is_empty());
+    assert!(metadata.requires.is_empty());
+    // 认不出的值不当成外部可见:写错了宁可保守。
+    let metadata = extract_metadata("#!/bin/sh\n# Trust: everyone-and-their-dog\necho ok");
+    assert_eq!(metadata.trust, None);
+}
