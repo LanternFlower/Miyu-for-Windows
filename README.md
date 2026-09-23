@@ -65,7 +65,24 @@ miyu config
 
 - Windows（MSVC）
 
-  安装 [Rust](https://rustup.rs/) 后克隆 Windows 移植仓库并构建：
+  到 [Releases](https://github.com/LanternFlower/Miyu-for-Windows/releases) 页下载：
+
+  - **`MiyuSetup-<版本>-x64.exe`**（推荐）：装到 `%LOCALAPPDATA%\Programs\Miyu`，
+    自动把 `miyu` 加进用户级 PATH，带卸载器，免管理员。安装时可勾选「一并装好
+    PowerShell 终端集成」。
+  - **`Miyu-<版本>-windows-x64.zip`**（便携）：解压后把里面的 `bin\` 加进 PATH 即可用。
+
+  装完新开一个终端跑 `miyu` 走一遍新手引导。配置与数据默认位于
+  `%USERPROFILE%\.miyu`，也可用 `MIYU_HOME` 覆盖；**卸载不会删它**。
+
+  发行包里已经带上中文字体、表情库与 `rg`（文件搜索用），新机器开箱即用；
+  **图片与 mermaid 渲染还需要 `chafa`**（缺了只是不画图，不影响其它功能），
+  本地嵌入模型用 `miyu embed` 按需下载。
+
+  <details>
+  <summary>从源码构建</summary>
+
+  安装 [Rust](https://rustup.rs/) 后：
 
   ```powershell
   git clone https://github.com/LanternFlower/Miyu-for-Windows.git
@@ -74,12 +91,13 @@ miyu config
   .\target\release\miyu.exe init
   ```
 
-  二进制位于 `target\release\miyu.exe`。将该目录加入 `PATH` 后，可运行
-  `miyu powershell-init` 安装 PowerShell 7.2+ 终端集成。配置与数据默认位于
-  `%USERPROFILE%\.miyu`，也可通过 `MIYU_HOME` 覆盖。
+  二进制位于 `target\release\miyu.exe`；从源码跑时资源（字体、表情、脚本）直接读仓库里的
+  `assets\` 与 `src\`，不必另行布置。要自己打发行包见
+  [`packaging/windows/README.md`](packaging/windows/README.md)。
 
-  搜索文件所需的 `rg` 可从 [ripgrep](https://github.com/BurntSushi/ripgrep)
-  安装。语音组件目前没有 Windows 发行包。
+  </details>
+
+  语音组件目前没有 Windows 发行包。
 
 - Arch Linux
 

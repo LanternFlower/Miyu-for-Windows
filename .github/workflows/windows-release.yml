@@ -1,0 +1,128 @@
+name: Windows package
+
+# 打包 Windows 分发件：便携 zip + Inno Setup 安装器。
+#
+# 刻意与上游的 release.yml（Linux，人工 dispatch + nfpm + 容器）分开：
+# 上游那套的 targets.json 里没有 windows，混进去会让下次同步上游时冲突。
+#
+# 触发：
+#   - 推 v* 标签：按标签版本打包（产物作为 workflow artifact，不自动发布）
+#   - 手动 dispatch：可指定版本；勾 publish 才挂到对应 tag 的 Release
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 版本号（不带 v），留空则从标签推
+        type: string
+        default: ''
+      ripgrep-version:
+        description: 随包捆绑的 ripgrep 版本
+        type: string
+        default: '14.1.1'
+      publish:
+        description: 打到 GitHub Release（没有对应 tag 时创建一个草稿）
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: ${{ vars.WINDOWS_X64_RUNNER || 'windows-2022' }}
+    timeout-minutes: 120
+    # 只有发布那一步需要写权限，且只在 publish 勾上时才会走到。
+    # 本工作流不会在 PR 上触发，checkout 也关了 persist-credentials。
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # 工具链的真相源是 packaging/common/toolchain.lock.json，不在这里另写版本号。
+      - name: Read the locked toolchain
+        id: lock
+        shell: pwsh
+        run: |
+          $lock = Get-Content packaging/common/toolchain.lock.json -Raw | ConvertFrom-Json
+          "rust=$($lock.rust)" >> $env:GITHUB_OUTPUT
+
+      # 标签触发时没有输入，用标签名；两种触发都认不出来就报错停下。
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          $version = '${{ github.event.inputs.version }}'
+          if (-not $version) { $version = '${{ github.ref_name }}' -replace '^v', '' }
+          if ($version -notmatch '^\d+\.\d+\.\d+') {
+            throw "认不出要打的版本号（拿到 '$version'）：非标签触发时请填 version 输入"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Install the locked Rust toolchain
+        shell: pwsh
+        run: rustup toolchain install ${{ steps.lock.outputs.rust }} --profile minimal
+
+      - name: Build the release binary
+        shell: pwsh
+        env:
+          CARGO_BUILD_JOBS: '4'
+        run: cargo +${{ steps.lock.outputs.rust }} build --release
+
+      # runner 镜像自带 Inno Setup 6；万一哪天没了就用 choco 补上，别再静默
+      # 只出 zip——安装器是这条链的交付物之一。
+      - name: Ensure Inno Setup is available
+        shell: pwsh
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) {
+            Write-Host '::warning::镜像里没有 Inno Setup，改用 chocolatey 装'
+            choco install innosetup -y --no-progress
+          }
+          if (-not (Test-Path $iscc)) { throw "仍然找不到 $iscc" }
+          Write-Host "using $iscc"
+          & $iscc /? | Select-Object -First 2
+
+      # 打包逻辑全在 packaging/windows/package.ps1 里，本地与 CI 共用同一份。
+      - name: Package
+        shell: pwsh
+        env:
+          RIPGREP_VERSION: ${{ github.event.inputs.ripgrep-version }}
+        run: |
+          $rg = $env:RIPGREP_VERSION
+          if (-not $rg) { $rg = '14.1.1' }
+          pwsh -File packaging/windows/package.ps1 `
+            -Version '${{ steps.version.outputs.version }}' `
+            -OutDir '${{ github.workspace }}\out\windows' `
+            -RipgrepVersion $rg
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: miyu-windows-${{ steps.version.outputs.version }}
+          path: |
+            out/windows/*.zip
+            out/windows/*.exe
+          if-no-files-found: error
+
+      - name: Attach to the GitHub release
+        if: ${{ github.event.inputs.publish == 'true' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v${{ steps.version.outputs.version }}"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --draft `
+              --title "Miyu ${{ steps.version.outputs.version }}" `
+              --notes "Windows 分发件（便携 zip + 安装器）。"
+          }
+          gh release upload $tag out/windows/*.zip out/windows/*.exe --clobber

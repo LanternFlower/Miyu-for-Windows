@@ -2,6 +2,8 @@
 # `/target/` 只匹配目录，那个链接会漏进索引。
 /target
 /out/distribution/
+# Windows 打包产物（packaging/windows/package.ps1 的输出）
+/out/windows/
 /.idea/
 /.vscode/
 .DS_Store
