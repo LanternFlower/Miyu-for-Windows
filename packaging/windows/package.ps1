@@ -127,11 +127,19 @@ if ($SkipRipgrep) {
     }
     # 同一次 release 里发布的 .sha256；对不上就停，别把来源不明的东西打进包里。
     # 拿不到校验文件同样停：宁可让人显式换版本，也不默默跳过校验。
+    #
+    # 走 -OutFile 再读文件，别直接取 .Content：PowerShell 7 的 Invoke-WebRequest 对
+    # 非文本 Content-Type（.sha256 这类）返回的是 byte[]，`.Content.Trim()` 会变成
+    # 逐字节调用 Trim，报「[System.Byte] does not contain a method named 'Trim'」——
+    # CI 上就是这么挂的（2026-09-23 首次跑 Windows package）。
+    $shaFile = Join-Path $tmp "$asset.sha256"
     try {
-        $expected = (Invoke-WebRequest -Uri "$base/$asset.sha256").Content.Trim().Split(' ')[0]
+        Invoke-WebRequest -Uri "$base/$asset.sha256" -OutFile $shaFile
     } catch {
         throw "拿不到 $asset.sha256（这个版本可能没发校验文件）：$($_.Exception.Message)`n换个 -RipgrepVersion，或用 -RipgrepPath 指本地 rg.exe。"
     }
+    # 去掉可能的 BOM：.NET 的 Trim() 不认 U+FEFF，留着会被下面的形状检查拦下。
+    $expected = ((Get-Content $shaFile -Raw) -replace "^\uFEFF", "").Trim().Split(' ')[0]
     if ($expected -notmatch '^[0-9a-fA-F]{64}$') { throw "校验文件内容不像 sha256：$expected" }
     $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
     if ($actual -ne $expected.ToLower()) {
