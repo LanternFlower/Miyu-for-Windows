@@ -24,6 +24,7 @@ param(
     [string] $OutDir = '',
     [string] $RipgrepVersion = '14.1.1',
     [string] $RipgrepPath = '',
+    [string] $Iscc = '',
     [switch] $SkipRipgrep,
     [switch] $SkipInstaller
 )
