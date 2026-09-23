@@ -64,7 +64,9 @@ pwsh -File packaging/windows/package.ps1 -Version 0.6.1
 ## 安装/升级/卸载会动什么
 
 - **装之前先停 daemon**：先调 `miyu daemon stop`，再 `taskkill /IM miyu.exe /F` 兜底——Windows 上运行中的 exe 覆盖不了（本地 `cargo build` 也被这个坑过一次）。
-- **只写用户级 PATH**（`HKCU\Environment`），`ChangesEnvironment=yes` 让新开的终端立刻认得；卸载时把这一项摘掉。
+- **只写用户级 PATH**（`HKCU\Environment`），并且放在**最前面**——后装的版本优先，不会再被
+  PATH 里已有的旧副本（典型是从源码构建后手动加进去的 `target\release`）盖住。
+  `ChangesEnvironment=yes` 让新开的终端立刻认得；卸载时把这一项摘掉。
 - **卸载保留 `%USERPROFILE%\.miyu`**：配置、会话库、记忆、人格都在里面。
 - 可选项（默认不勾）：装 PowerShell 终端集成（`miyu powershell-init`，写 `$PROFILE`，可用 `miyu remove-shell-hook` 撤销）、桌面快捷方式。
 
@@ -82,17 +84,19 @@ pwsh -File packaging/windows/package.ps1 -Version 0.6.1
 ## 验收（改完打包件后照这个走）
 
 ```powershell
-# 1. 打出来
+# 1. 打出来（版本号必须与二进制自报的一致，脚本会拦）
 cargo build --release
-pwsh -File packaging/windows/package.ps1 -Version 0.6.1
+pwsh -File packaging/windows/package.ps1 -Version <版本>
 
 # 2. 便携包：解到干净目录，从那儿跑
-Expand-Archive out/windows/Miyu-0.6.1-windows-x64.zip -DestinationPath $env:TEMP\miyu-portable -Force
-& "$env:TEMP\miyu-portable\bin\miyu.exe" --version        # 期望 miyu 0.6.1
+Expand-Archive out/windows/Miyu-<版本>-windows-x64.zip -DestinationPath $env:TEMP\miyu-portable -Force
+& "$env:TEMP\miyu-portable\bin\miyu.exe" --version        # 期望与 <版本> 一致
 #   再把 $env:TEMP\miyu-portable\bin 加进 PATH，起 daemon、说一轮
 
-# 3. 安装器：装 → 验收 → 卸载，重点看三件事
+# 3. 安装器：装 → 验收 → 卸载，重点看四件事
 #    a) 装完新开一个终端，`miyu` 能直接跑（PATH 生效）
-#    b) 升级安装时旧 daemon 被自动停掉（不再出现文件占用失败）
-#    c) 卸载后 %USERPROFILE%\.miyu 还在、PATH 里的那一段没了
+#    b) `miyu --version` 就是刚装的那一版——即使 PATH 里本来还有别的 miyu
+#       （安装目录被放在最前面；2026-09-23 就是因为追加写入而输给旧副本，才改成前置）
+#    c) 升级安装时旧 daemon 被自动停掉（不再出现文件占用失败）
+#    d) 卸载后 %USERPROFILE%\.miyu 还在、PATH 里的那一段没了
 ```

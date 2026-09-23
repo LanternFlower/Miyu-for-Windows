@@ -62,7 +62,12 @@ Name: "{autodesktop}\Miyu"; Filename: "{app}\bin\miyu.exe"; WorkingDir: "{app}";
 
 [Registry]
 ; 只加用户级 PATH，交给 ChangesEnvironment 去广播 WM_SETTINGCHANGE。
-Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}\bin"; Check: NeedsAddPath('{app}\bin')
+;
+; **前置**而不是追加：装了哪个版本就该跑哪个版本。追加的话，机器上已有的旧副本
+; （典型是从源码构建后手动加进 PATH 的 target\release）会一直盖住刚装进来的这份
+; ——2026-09-23 实测过：装完 0.6.2，`miyu --version` 仍是 PATH 里那份 0.6.1。
+; NeedsAddPath 会拦住重复项，所以反复安装不会把这一项越堆越长。
+Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{app}\bin;{olddata}"; Check: NeedsAddPath('{app}\bin')
 
 [Run]
 ; 勾了任务就在安装收尾时静默装 hook（会写 $PROFILE，所以默认不勾）。
