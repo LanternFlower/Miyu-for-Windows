@@ -162,6 +162,36 @@ impl LiveReplTail {
         self.resume_at(output_cursor)
     }
 
+    /// 后台任务完成的那一行：暗色铃铛 + 抬头，末尾留一个空行。
+    ///
+    /// 位置是**收尾行之后**：这一轮先收成 `Worked for …`，再报「这件事完成了」，
+    /// 然后空一行接着说（用户 09-21 看过实际效果后定的版式）。和 REPL 空闲时
+    /// 那条报告（`show_background_report`）长相一致，只是不带正文。
+    pub(in crate::cli) fn show_job_wake_notice(&mut self, headline: &str) -> Result<()> {
+        let fullscreen = render::blocks::enabled();
+        let glyph = if fullscreen {
+            render::timeline::glyph_notice()
+        } else {
+            "⚙"
+        };
+        let text = format!("\x1b[2m{glyph} {headline}\x1b[0m\r\n\r\n");
+        if fullscreen {
+            let text = render::timeline::indent_body(&text);
+            // 全屏下 `apply_output_frame` 自己就把画面接回去了，再跟一次
+            // `resume_at_own` 是白多一次整屏重画。这一行是在**回合流着的时候**
+            // 打的（后台任务完成），那一下闪看得见——走查 item13「流式输出期间
+            // 不整屏擦」就是被它顶红的。
+            return self.apply_output_frame(text.as_bytes());
+        }
+        self.suspend()?;
+        let mut stdout = io::stdout();
+        queue!(stdout, Print(text))?;
+        stdout.flush()?;
+        self.output_cursor = cursor_position_or(self.output_cursor);
+        let output_cursor = self.output_cursor;
+        self.resume_at(output_cursor)
+    }
+
     /// Remove queued bubbles without committing them as sent messages —
     /// the daemon dropped these prompts (explicit cancel), they were never
     /// answered and never entered the conversation.
@@ -179,6 +209,30 @@ impl LiveReplTail {
         self.queued
             .retain(|prompt| !ids.contains(&prompt.prompt_id));
         self.resume_at(output_cursor)
+    }
+
+    /// 这批排队消息里，哪几条是 daemon 合成的后台任务报告。把它们从队列里摘
+    /// 走并返回抬头——它们不是谁敲的话，要走时间线上的通知那条路，而不是画成
+    /// 用户气泡、顺带把这一轮收尾（用户 09-21）。
+    pub(in crate::cli) fn take_queued_notices(&mut self, prompt_ids: &[String]) -> Vec<String> {
+        let ids = prompt_ids.iter().collect::<std::collections::HashSet<_>>();
+        let mut notices = Vec::new();
+        self.queued.retain(|prompt| {
+            if !ids.contains(&prompt.prompt_id) || !is_job_wake_headline(&prompt.display_content) {
+                return true;
+            }
+            notices.push(job_wake_headline(&prompt.display_content));
+            false
+        });
+        notices
+    }
+
+    /// 这批里还有要画成气泡的吗。没有的话就别为它收尾时间线。
+    pub(in crate::cli) fn has_queued(&self, prompt_ids: &[String]) -> bool {
+        let ids = prompt_ids.iter().collect::<std::collections::HashSet<_>>();
+        self.queued
+            .iter()
+            .any(|prompt| ids.contains(&prompt.prompt_id))
     }
 
     pub(in crate::cli) fn consume_queued(

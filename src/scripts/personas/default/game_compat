@@ -2,7 +2,8 @@
 # Id: game_compat
 # Display name: Game compatibility
 # 显示名称: 游戏兼容性
-# Description: Check a game's Linux/Proton compatibility and anti-cheat. Query a game's Linux compatibility from three sources: ProtonDB ratings and player reports, AreWeAntiCheatYet anti-cheat status, and the caniplayonlinux snapshot. Accepts a Steam App ID (number) or a game name. Content is parsed live from third-party sites; a missing source is not a negative verdict.
+# Description: Check a game's Linux compatibility. Three sources: ProtonDB ratings and player reports, AreWeAntiCheatYet anti-cheat status, and the caniplayonlinux snapshot. Takes a Steam App ID or a game name. Parsed live from third-party sites, so a missing source is not a negative verdict.
+# 描述：查一款游戏在 Linux 下的兼容性与反作弊状态（ProtonDB、AreWeAntiCheatYet、caniplayonlinux 三个来源）。
 # Timeout: 60
 # Group: gaming
 # Trust: external
@@ -18,7 +19,7 @@
 #     },
 #     "max_reports": {
 #       "type": "integer",
-#       "description": "Number of ProtonDB reports, default 8, max 40. Use 0 for the verdict only, without reports."
+#       "description": "ProtonDB reports, default 8, max 40. 0 gives the verdict alone."
 #     }
 #   },
 #   "required": [

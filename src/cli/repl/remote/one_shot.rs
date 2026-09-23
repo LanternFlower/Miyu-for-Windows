@@ -7,7 +7,46 @@ use crate::cli::repl::editor::*;
 use crate::cli::repl::tail::*;
 use crate::cli::*;
 
+/// 收口:这一轮不管怎么结束,footer 的声波都得熄。
+///
+/// 各个出口里那几处 `stop_footer_spinner()` 不能删——它们要在 `handoff_raw!()`
+/// **之前**就把屏幕改对。这里是兜底,补的是「`?` 直接把错误抛出去」那一类:
+/// 帧通道断了、IPC 写失败、终端尺寸读不到,都会跳过所有收尾代码,最后一帧
+/// 波浪就冻在 footer 上(用户 09-21 报的是模型报错那条,机制是同一个)。
+/// 幂等:已经熄过的直接返回,不会重画,也不会在交接之后往屏幕上乱写。
 pub(in crate::cli) async fn try_run_remote_chat(
+    paths: &MiyuPaths,
+    mut live: Option<&mut LiveReplTail>,
+    message: &str,
+    show_reasoning: Option<bool>,
+    plain: bool,
+    mode: PersonaLane,
+    images: &[Option<miyu_base::clipboard::PastedImage>],
+    session_override: Option<String>,
+    jobs_feed: Option<&JobsFeed>,
+    overrides: Option<miyu_core::ipc::TurnOverrides>,
+) -> Result<Option<RemoteTurnSummary>> {
+    let outcome = run_remote_chat_inner(
+        paths,
+        live.as_deref_mut(),
+        message,
+        show_reasoning,
+        plain,
+        mode,
+        images,
+        session_override,
+        jobs_feed,
+        overrides,
+    )
+    .await;
+    if let Some(live) = live.as_deref_mut() {
+        let _ = live.stop_footer_spinner();
+    }
+    outcome
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_remote_chat_inner(
     paths: &MiyuPaths,
     mut live: Option<&mut LiveReplTail>,
     message: &str,
@@ -494,6 +533,8 @@ pub(in crate::cli) async fn try_run_remote_chat(
                         // 转轮 tick（约 66ms）重画一次就跟得上 80ms 一帧。
                         if let Some(feed) = jobs_feed {
                             job_strip_tick = job_strip_tick.wrapping_add(1);
+                            // 指针出了窗口就熄掉提亮——回合跑着的时候也得管。
+                            live.expire_hover()?;
                             if job_strip_tick % 2 == 0 && !live.external_output_active {
                                 if live.set_jobs(feed.current()) {
                                     synchronized_terminal_update(
@@ -814,12 +855,25 @@ pub(in crate::cli) async fn try_run_remote_chat(
                         })
                         .unwrap_or_default();
                     let consumed_mode = PersonaLane::from_mode_word(Some(ipc_text(&data, "mode")));
-                    renderer.prepare_for_external_output()?;
-                    live.apply_renderer_frame(&mut renderer)?;
-                    synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
-                        live.suspend()?;
-                        live.consume_queued(&prompt_ids, consumed_mode)
-                    })?;
+                    // 后台任务的报告不是「谁说了句话」：这一轮先收成
+                    // `Worked for …`，底下报一行「命令完成 …」，再空一行接着
+                    // 说（用户 09-21 看过实际效果定的版式）。原来它被画成粉色
+                    // 用户气泡、还带着内部抬头 `[后台任务完成]`。
+                    let notices = live.take_queued_notices(&prompt_ids);
+                    let visible = live.has_queued(&prompt_ids);
+                    if !notices.is_empty() || visible {
+                        renderer.prepare_for_external_output()?;
+                        live.apply_renderer_frame(&mut renderer)?;
+                    }
+                    for notice in &notices {
+                        live.show_job_wake_notice(notice)?;
+                    }
+                    if visible {
+                        synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
+                            live.suspend()?;
+                            live.consume_queued(&prompt_ids, consumed_mode)
+                        })?;
+                    }
                 }
             }
             "queue.removed" => {
@@ -889,6 +943,10 @@ pub(in crate::cli) async fn try_run_remote_chat(
             "run.failed" => {
                 renderer.finish()?;
                 if let Some(live) = live.as_deref_mut() {
+                    // 和下面取消那支同一个理由:提前 return 的路都得自己熄波浪。
+                    // 08-20 为取消补过一次,报错这支漏了——用户 09-21 实录:回合
+                    // 以报错收场时最后一帧波浪冻在 footer 上,按任意键才消失。
+                    live.stop_footer_spinner()?;
                     live.apply_renderer_frame(&mut renderer)?;
                 }
                 handoff_raw!();

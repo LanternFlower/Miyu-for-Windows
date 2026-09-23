@@ -1,25 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # 显示名称：酒店比价
-# Description: Compare hotel prices for a location and dates. A search needs three arguments: location (required), checkin and checkout. It returns the cheapest offers with nightly price, total, rating and cross-platform price gaps. action=sweep scans the next N days and tells you the cheapest check-in date and the weekend premium. Dates accept '+7' (7 days ahead), '10-15' and '2026-10-15'. nights defaults to 1 so every price in the table is per night and search and sweep results compare directly. The Google source has zero dependencies and always works; the Booking source needs playwright and gets rate-limited, and on failure the script degrades to Google only. Two kinds of trend: sweep answers 'which check-in date is cheapest' (one run), trend answers 'are prices rising or falling' (needs a few days of history and says so when there is none). Important: CJK location names drift. Google runs on the English site and only fuzzy-matches Chinese place names; a test for '苏州金鸡湖' returned a cheapest hotel at Kunshan South station, 30 km away, with no error and normal-looking output. Whenever the location is CJK text the output carries a warning: do not report the lowest price as-is. Rerun with an English place name such as 'Jinji Lake Suzhou', or run both and take the intersection. Likewise check sources_failed before concluding: with one source missing the table looks fine but the minimum may be too high. Output defaults to Markdown with warnings and failed sources in a closing 'Notes' section. format=json returns an object {query, sources_ok, sources_failed, warnings, returned, total, offers[]}: offers live under the offers key, not at the top level.
+# Description: Hotel price comparison. action=search (default) prices a stay; sweep scans the next N days for the cheapest check-in; trend is price history; places lists known locations; doctor self-checks. Dates take '+7', '10-15' or '2026-10-15'. Use English place names: a CJK name only fuzzy-matches and can silently return a hotel 30 km off, so the output carries a warning when it happens. Check warnings and sources_failed before quoting a minimum. format=json returns {query, sources_ok, sources_failed, warnings, returned, total, offers[]}.
+# 描述：酒店比价：给定日期查最低价，或扫未来 N 天找最便宜的入住日；带价格历史。
+# Expose: skill
 # Timeout: 300
 # Group: research
 # Parameters:
 # {
 #   "type": "object",
 #   "properties": {
-#     "location": {
-#       "type": "string",
-#       "description": "Place name such as 'Tokyo', 'Jinji Lake Suzhou', '东京'. Required except for action=places/doctor. Prefer English names: CJK names drift, see the tool description"
-#     },
-#     "checkin": {
-#       "type": "string",
-#       "description": "Check-in date: '+7' (7 days ahead), '10-15', '2026-10-15'. search defaults to 7 days ahead; for action=sweep the first day to scan, default tomorrow"
-#     },
-#     "checkout": {
-#       "type": "string",
-#       "description": "Check-out date, same formats. Default the day after check-in. action=search only"
-#     },
 #     "action": {
 #       "type": "string",
 #       "enum": [
@@ -28,32 +18,43 @@
 #         "trend",
 #         "places",
 #         "doctor"
-#       ],
-#       "description": "search=lowest price for given dates (default); sweep=scan the next N days for the cheapest check-in; trend=price history; places=locations in the history db; doctor=environment self-check"
+#       ]
+#     },
+#     "location": {
+#       "type": "string",
+#       "description": "Place name, English preferred. Required except for places/doctor."
+#     },
+#     "checkin": {
+#       "type": "string",
+#       "description": "search: default +7. sweep: first day to scan, default tomorrow."
+#     },
+#     "checkout": {
+#       "type": "string",
+#       "description": "search only. Default the day after check-in."
 #     },
 #     "nights": {
 #       "type": "integer",
-#       "description": "Nights to stay, default 1 (keeps nightly prices comparable)"
+#       "description": "Default 1, which keeps nightly prices comparable."
 #     },
 #     "days": {
 #       "type": "integer",
-#       "description": "action=sweep: how many days to scan, default 30"
+#       "description": "sweep: days to scan, default 30."
 #     },
 #     "adults": {
 #       "type": "integer",
-#       "description": "Guests, default 2"
+#       "description": "Default 2."
 #     },
 #     "rooms": {
 #       "type": "integer",
-#       "description": "Rooms, default 1"
+#       "description": "Default 1."
 #     },
 #     "currency": {
 #       "type": "string",
-#       "description": "Currency, default CNY"
+#       "description": "Default CNY."
 #     },
 #     "region": {
 #       "type": "string",
-#       "description": "Google region code, default jp. Change for places outside Japan, e.g. kr/th/us"
+#       "description": "Google region code, default jp."
 #     },
 #     "sources": {
 #       "type": "array",
@@ -64,23 +65,22 @@
 #           "booking"
 #         ]
 #       },
-#       "description": "Data sources, default both; pass ['google'] for speed (no browser, zero dependencies)"
+#       "description": "Default both. ['google'] is fast and needs no browser."
 #     },
 #     "top": {
 #       "type": "integer",
-#       "description": "Rows to show, default 20"
+#       "description": "Rows, default 20."
 #     },
 #     "format": {
 #       "type": "string",
 #       "enum": [
 #         "md",
 #         "json"
-#       ],
-#       "description": "Output format, default md (compact and readable); json for field-by-field processing"
+#       ]
 #     },
 #     "no_record": {
 #       "type": "boolean",
-#       "description": "Do not write this result into the price history. Pass true for a one-off lookup; leave unset so trend has data later"
+#       "description": "Skip writing this result into the price history."
 #     }
 #   },
 #   "additionalProperties": false

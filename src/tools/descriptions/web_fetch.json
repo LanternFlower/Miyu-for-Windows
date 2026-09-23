@@ -2,13 +2,13 @@
   "name": "web_fetch",
   "trust": "external",
   "display_name": "读取网页",
-  "description": "Fetch a URL and return markdown, text, or html. When your reply draws on the page, end it with the source, as `title (url)`.",
+  "description": "Fetch a url and return markdown, text or html. When your reply draws on the page, end it with the source as `title (url)`.",
   "parameters": {
     "type": "object",
     "properties": {
       "url": {
         "type": "string",
-        "description": "Fully-qualified http or https URL."
+        "description": "Fully-qualified http or https."
       },
       "format": {
         "type": "string",
@@ -20,7 +20,7 @@
       },
       "max_chars": {
         "type": "integer",
-        "description": "Maximum characters to return. Defaults to 40000, max 200000."
+        "description": "Default 40000, max 200000."
       }
     },
     "required": [

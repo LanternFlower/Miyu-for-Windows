@@ -97,6 +97,23 @@ pub struct ResponseTarget {
 }
 
 impl ResponseTarget {
+    /// 「这条消息谁也不引用、谁也不艾特」。
+    ///
+    /// 不是 `None`：`None` 的意思是「还没定，去把本回合预留的那个取走」
+    /// (`turn_context` 的 `reserved_target`)，而这里要表达的是**已经定了，就是
+    /// 不带**。表情包那条消息就走这个——它跟在正文后面(或前面)，再挂一次引用
+    /// 会让群里看着像回了两遍(09-21 用户拍板：表情包永远不带引用和艾特)。
+    pub fn silent() -> Self {
+        Self {
+            message_id: String::new(),
+            message_seq: None,
+            user_id: String::new(),
+            quote: false,
+            mention: false,
+            explicit_mention_user_ids: Vec::new(),
+        }
+    }
+
     pub fn is_effective(&self) -> bool {
         (self.quote && !self.message_id.is_empty())
             || (self.mention && !self.user_id.is_empty())

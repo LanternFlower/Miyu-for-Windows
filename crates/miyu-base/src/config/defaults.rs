@@ -280,10 +280,6 @@ pub(crate) fn default_web_images_max_download_mb() -> f64 {
     4.0
 }
 
-pub(crate) fn default_web_images_preview_count() -> usize {
-    1
-}
-
 pub(crate) fn default_web_images_timeout() -> u64 {
     20
 }

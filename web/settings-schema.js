@@ -1147,7 +1147,7 @@
         {
           path: "accounts.member_plugins",
           label: "成员人格可启用的插件",
-          hint: "留空 = 全部。可选 id:files, usage_query, alarm, exchange_rate, archlinux, api_quota, print_image, memes, platform_outreach, web_images, image_generation, knowledge_base, ledger, scripts, mcp",
+          hint: "留空 = 全部。可选 id:files, usage_query, alarm, exchange_rate, archlinux, print_image, memes, platform_outreach, web_images, image_generation, knowledge_base, ledger, scripts, mcp",
           kind: "string-list",
           nullable: true,
           default: null,
@@ -1256,17 +1256,6 @@
           default: 5,
         },
         { key: "safe_search", label: "安全搜索", kind: "toggle", default: true },
-        { key: "auto_preview", label: "自动预览", kind: "toggle", hidden: true, default: true },
-        {
-          key: "preview_count",
-          label: "默认预览数量",
-          kind: "number",
-          integer: true,
-          min: 0,
-          max: 5,
-          hidden: true,
-          default: 1,
-        },
         {
           key: "max_download_mb",
           label: "最大下载 MB",
@@ -1688,13 +1677,6 @@
           default: true,
         },
       ],
-    },
-    api_quota: {
-      title: "大模型额度查询",
-      group: "联网",
-      description: "查询 DeepSeek 与 OpenRouter API 额度",
-      custom: "api_quota_accounts",
-      fields: [enabledField(true)],
     },
     claude_code: {
       title: "Claude Code 中转",
@@ -2218,7 +2200,7 @@
         },
         {
           key: "probability_reply",
-          label: "概率主动回复",
+          label: "开关概率主动回复",
           hint: "只管主动回复判断里的概率抽样;@、关键词、引用、接话、覆盖顶替和群管审核不受影响",
           kind: "select",
           choices: [
@@ -2228,6 +2210,17 @@
           ],
           default: "",
           nullable: true,
+        },
+        {
+          key: "probability_reply_rate",
+          label: "概率主动回复抽样概率",
+          hint: "0–1;留空 = 用插件设置里的那个概率。上面的开关关掉时这一项不起作用",
+          kind: "number",
+          min: 0,
+          max: 1,
+          step: 0.01,
+          nullable: true,
+          default: null,
         },
         {
           key: "ignore_sleep_hours",

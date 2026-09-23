@@ -11,11 +11,16 @@ pub(in crate::platforms::plugins::renderer) const MAX_INPUT_CHARS: usize = 20_00
 pub(in crate::platforms::plugins::renderer) enum BlockKind {
     Paragraph,
     Heading(u8),
-    ListItem { depth: u8 },
+    ListItem {
+        depth: u8,
+    },
     Quote,
     Code,
     Table,
     Rule,
+    /// 已经光栅化好的图（现在只有 mermaid 围栏会产出）。位图挂在
+    /// `Block::image` 上，排版只量高、绘制只贴像素。
+    Image,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -172,6 +177,8 @@ pub(in crate::platforms::plugins::renderer) struct MarkdownCollector {
     pub(in crate::platforms::plugins::renderer) quote_depth: usize,
     pub(in crate::platforms::plugins::renderer) heading: Option<u8>,
     pub(in crate::platforms::plugins::renderer) code_block: bool,
+    /// 当前围栏是 mermaid（收尾时就地出图）。
+    pub(in crate::platforms::plugins::renderer) mermaid_fence: bool,
     pub(in crate::platforms::plugins::renderer) table: Option<TableBuilder>,
     pub(in crate::platforms::plugins::renderer) table_header: bool,
     pub(in crate::platforms::plugins::renderer) strong_depth: usize,
@@ -276,9 +283,16 @@ impl MarkdownCollector {
                 self.finish_current();
                 self.quote_depth = self.quote_depth.saturating_add(1);
             }
-            Tag::CodeBlock(_) => {
+            Tag::CodeBlock(kind) => {
                 self.finish_current();
                 self.code_block = true;
+                // 语言标识沿用终端那边的判据,免得两处对「什么算 mermaid」各有一套。
+                self.mermaid_fence = match &kind {
+                    pulldown_cmark::CodeBlockKind::Fenced(lang) => {
+                        crate::render::mermaid::is_mermaid_lang(lang)
+                    }
+                    pulldown_cmark::CodeBlockKind::Indented => false,
+                };
                 self.current = Some(Block::new(BlockKind::Code));
             }
             Tag::List(start) => {
@@ -352,6 +366,9 @@ impl MarkdownCollector {
                 self.quote_depth = self.quote_depth.saturating_sub(1);
             }
             TagEnd::CodeBlock => {
+                if std::mem::take(&mut self.mermaid_fence) {
+                    self.mark_current_fence_as_diagram();
+                }
                 self.finish_current();
                 self.code_block = false;
             }
@@ -490,6 +507,21 @@ impl MarkdownCollector {
             link: self.link_depth > 0,
             muted: self.strike_depth > 0,
         }
+    }
+
+    /// 把当前这个围栏标成「图」。
+    ///
+    /// 只改 kind,源码照旧留在 spans 里——真正的光栅化在排版阶段(那儿才拿得到
+    /// 调色盘,图的底色要跟页面主题一致)。渲不出来时排版会把它当回普通代码块,
+    /// 所以这里不必提前判断行不行。
+    fn mark_current_fence_as_diagram(&mut self) {
+        let Some(block) = self.current.as_mut() else {
+            return;
+        };
+        if block.spans.iter().all(|span| span.text.trim().is_empty()) {
+            return;
+        }
+        block.kind = BlockKind::Image;
     }
 
     pub(in crate::platforms::plugins::renderer) fn finish_current(&mut self) {

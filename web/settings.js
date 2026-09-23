@@ -2276,78 +2276,9 @@ window.MiyuSettings = (() => {
       }
       if (top.length) body.append(card(top));
       if (fields.length) body.append(card(fieldRows(fields, bindingFor)));
-      if (definition.custom === "api_quota_accounts") body.append(apiQuotaAccountsCard("deepseek"), apiQuotaAccountsCard("openrouter"));
       if (!fields.length && !top.length && !definition.custom) body.append(empty("这个插件没有可调参数。"));
     };
     openDrawer({ title: definition.title || pluginKey, subtitle: `plugins.${pluginKey}`, width: "560px", body: render, footer: [el("span.st-foot-spacer"), button("完成", { kind: "primary", onClick: () => closeDrawer() })], onClose: () => { pruneModelReferences(); rerender("plugins"); } });
-  }
-
-  /* 额度查询插件的多账号密钥:索引会随增删移动,密钥状态跟着账号 id 走。 */
-  function apiQuotaAccountsCard(providerKey) {
-    const plugin = pluginObject("api_quota");
-    if (!plugin[providerKey] || typeof plugin[providerKey] !== "object") plugin[providerKey] = { accounts: [] };
-    const provider = plugin[providerKey];
-    provider.accounts = Array.isArray(provider.accounts) && provider.accounts.length ? provider.accounts : [{ id: "account-1", name: "默认账号", api_key: "" }];
-    const prefix = `plugins.api_quota.${providerKey}.accounts.`;
-    const reindex = (previous) => {
-      const saved = new Map(previous.map((account, index) => [account.id || account.name, { configured: Boolean(S().secretStates[`${prefix}${index}.api_key`]), change: S().secretChanges[`${prefix}${index}.api_key`] }]));
-      for (const key of Object.keys(S().secretChanges)) if (key.startsWith(prefix)) delete S().secretChanges[key];
-      for (const key of Object.keys(S().secretStates)) if (key.startsWith(prefix)) delete S().secretStates[key];
-      provider.accounts.forEach((account, index) => {
-        const prior = saved.get(account.id || account.name);
-        S().secretStates[`${prefix}${index}.api_key`] = Boolean(prior?.configured);
-        if (prior?.change) S().secretChanges[`${prefix}${index}.api_key`] = prior.change;
-      });
-    };
-    const body = el("div.st-accounts");
-    const paint = () => {
-      body.replaceChildren();
-      provider.accounts.forEach((account, index) => {
-        const item = el("div.st-account");
-        item.append(
-          el("div.st-account-head", null,
-            textInput(account.name || `账号 ${index + 1}`, (value) => { account.name = value; dirty(); }, { placeholder: "账号名称", ariaLabel: "账号名称" }),
-            iconButton("trash-2", "删除账号", async () => {
-              if (!(await confirmAction(`删除账号“${account.name || index + 1}”？`, "删除"))) return;
-              const previous = provider.accounts.map((entry) => ({ ...entry }));
-              if (provider.accounts.length === 1) provider.accounts[0] = { id: provider.accounts[0].id || "account-1", name: "默认账号", api_key: "" };
-              else provider.accounts.splice(index, 1);
-              reindex(previous);
-              if (previous.length === 1) { S().secretStates[`${prefix}0.api_key`] = false; S().secretChanges[`${prefix}0.api_key`] = { action: "clear" }; }
-              dirty();
-              paint();
-            }, "is-danger")),
-          secretControl(`${prefix}${index}.api_key`));
-        body.append(item);
-      });
-    };
-    paint();
-    const add = button("新建账号", { iconName: "plus", small: true, onClick: () => {
-      if (provider.accounts.length >= 32) return toast("每个平台最多配置 32 个账号", "error");
-      const previous = provider.accounts.map((entry) => ({ ...entry }));
-      let number = 2;
-      while (provider.accounts.some((account) => account.name === `账号 ${number}`)) number += 1;
-      provider.accounts.push({ id: `account-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`, name: `账号 ${number}`, api_key: "" });
-      reindex(previous);
-      dirty();
-      paint();
-    } });
-    return card([body, add], { title: providerKey === "deepseek" ? "DeepSeek 账号" : "OpenRouter 账号", description: providerKey === "deepseek" ? "余额按 CNY 与 USD 分成两个池，分别显示。" : "每个账号对应一个 OpenRouter API Key。" });
-  }
-
-  function remapApiQuotaSecrets(previousConfig, nextConfig) {
-    for (const providerKey of ["deepseek", "openrouter"]) {
-      const prefix = `plugins.api_quota.${providerKey}.accounts.`;
-      const previousAccounts = previousConfig?.plugins?.api_quota?.[providerKey]?.accounts || [];
-      const saved = new Map(previousAccounts.map((account, index) => [account.id, { configured: Boolean(S().secretStates[`${prefix}${index}.api_key`]), change: S().secretChanges[`${prefix}${index}.api_key`] }]).filter(([id]) => id));
-      for (const key of Object.keys(S().secretStates)) if (key.startsWith(prefix)) delete S().secretStates[key];
-      for (const key of Object.keys(S().secretChanges)) if (key.startsWith(prefix)) delete S().secretChanges[key];
-      (nextConfig?.plugins?.api_quota?.[providerKey]?.accounts || []).forEach((account, index) => {
-        const prior = saved.get(account.id);
-        S().secretStates[`${prefix}${index}.api_key`] = Boolean(prior?.configured);
-        if (prior?.change) S().secretChanges[`${prefix}${index}.api_key`] = prior.change;
-      });
-    }
   }
 
   /* ───────────────────────── QQ 平台 ───────────────────────── */
@@ -2409,6 +2340,7 @@ window.MiyuSettings = (() => {
     if (route.session_limits) chips.push(chip(`并行 ${route.session_limits.running}`, "is-soft"));
     if (route.probability_reply === false) chips.push(chip("概率主动回复：关", "is-soft"));
     else if (route.probability_reply === true) chips.push(chip("概率主动回复：开", "is-soft"));
+    if (typeof route.probability_reply_rate === "number") chips.push(chip(`抽样概率 ${route.probability_reply_rate}`, "is-soft"));
     if (route.ignore_sleep_hours === true) chips.push(chip("忽略睡眠时间", "is-soft"));
     return chips;
   }
@@ -2459,6 +2391,17 @@ window.MiyuSettings = (() => {
             if (value === "on") route.probability_reply = true;
             else if (value === "off") route.probability_reply = false;
             else delete route.probability_reply;
+            dirty();
+          }
+        };
+      }
+      // 抽样概率:留空 = 撤掉覆盖回到继承,把键删干净别留 null 在配置里。
+      if (key === "probability_reply_rate") {
+        return {
+          get: () => (typeof route.probability_reply_rate === "number" ? route.probability_reply_rate : ""),
+          set: (value) => {
+            if (typeof value === "number" && Number.isFinite(value)) route.probability_reply_rate = value;
+            else delete route.probability_reply_rate;
             dirty();
           }
         };
@@ -2686,5 +2629,5 @@ window.MiyuSettings = (() => {
   /* 导航切到某页:放开入场动画(hidden→显示会让 CSS 动画重新开始)。 */
   function onShow(name) { pages.get(name)?.root.classList.remove("is-settled"); }
 
-  return { init, render, renderPage, onShow, remapApiQuotaSecrets, closeOverlays: () => { closeDrawer(); closeMenu(); closePopover(); } };
+  return { init, render, renderPage, onShow, closeOverlays: () => { closeDrawer(); closeMenu(); closePopover(); } };
 })();

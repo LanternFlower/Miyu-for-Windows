@@ -362,3 +362,35 @@ fn old_config_with_default_mode_and_retired_plugin_blocks_still_loads() {
     assert!(!json.contains("deep_research"));
     assert!(!json.contains("package_advisor"));
 }
+
+/// v4 迁移：非 Arch 宿主上把老配置里写死的 `archlinux.enabled` 刷成 false。
+///
+/// 「默认值」只对没写过这一项的配置起作用，而 Miyu 存配置是整份序列化——任何
+/// 存过一次配置的机器都把 true 写死了。不迁移的话，这个修复对现存的所有非 Arch
+/// 用户都不生效，而那正是要解决的人群（用户 09-22 拍板）。
+#[test]
+fn the_v4_migration_turns_arch_tools_off_on_a_non_arch_host() {
+    let mut config = AppConfig::default();
+    config.config_version = 3;
+    config.plugins.archlinux.enabled = true;
+    config.migrate().expect("migration runs");
+    assert_eq!(
+        config.plugins.archlinux.enabled,
+        crate::config::tool_plugins::arch_host(),
+        "Arch 上该留着，别处该关掉"
+    );
+    assert_eq!(config.config_version, crate::config::CURRENT_CONFIG_VERSION);
+}
+
+/// **只刷一次**。用户在那之后自己去菜单开了的，不能第二次被关掉。
+#[test]
+fn a_config_already_at_v4_is_never_touched_again() {
+    let mut config = AppConfig::default();
+    config.config_version = crate::config::CURRENT_CONFIG_VERSION;
+    config.plugins.archlinux.enabled = true;
+    config.migrate().expect("migration runs");
+    assert!(
+        config.plugins.archlinux.enabled,
+        "已经是 v4 的配置不该再被刷"
+    );
+}

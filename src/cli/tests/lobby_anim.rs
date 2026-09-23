@@ -21,6 +21,7 @@ fn lobby_tail(banner: Option<BannerScene>) -> LiveReplTail {
         job_strip_start: 0,
         job_strip_rows: 0,
         job_hover: None,
+        last_mouse_move: None,
         pending_stop_job: None,
         input_cursor: (0, 0),
         // 画过了才会推帧;`banner_rows == 0` 让 inline 路径推完帧就返回,不往

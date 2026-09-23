@@ -260,7 +260,18 @@ async fn command_output_with_timeout(
     timeout_seconds: u64,
 ) -> Result<std::process::Output> {
     match timeout(Duration::from_secs(timeout_seconds), output).await {
-        Ok(output) => Ok(output?),
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(error)) => {
+            // 这套工具在非 Arch 机器上照样会被注册（判据是配置开关，不看发行版），
+            // 于是 macOS 上调它收到的是一句 `os error 2`——连缺的是哪个程序都没说。
+            // 09-22 真机实测。`missing_program` 对 pacman / makepkg 不给安装建议，
+            // 那是对的：macOS 上本来就装不了，编一条假的安装命令比不说更糟。
+            let program = command.split_whitespace().next().unwrap_or(command);
+            Err(match miyu_base::process::missing_program(program, &error) {
+                Some(hint) => anyhow::anyhow!("{hint}"),
+                None => anyhow::Error::from(error),
+            })
+        }
         Err(_) => bail!("{command} timed out after {timeout_seconds}s"),
     }
 }

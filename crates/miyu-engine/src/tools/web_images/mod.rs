@@ -33,11 +33,51 @@ static IMAGE_DECODE_PERMITS: LazyLock<std::sync::Arc<Semaphore>> =
     LazyLock::new(|| std::sync::Arc::new(Semaphore::new(4)));
 static CACHE_PUBLISH_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
 
+/// 平台回合的收尾指令:图不自动投递,由模型 `send_message_to_user` 发,而且
+/// 发完再写正文就是**第二条消息**(用户 09-21 实录:搜完图她发了图,又补了一条
+/// 「图片发出来了，就长这样」)。原来两套指令都是照本地终端写的,QQ 里她收到的
+/// 是「In your final response, include useful local_path…」——既让她贴一条对面
+/// 打不开的本地路径,又硬性要求她再写一段。与 `generate_image` 的平台版同源。
+const PLATFORM_INSTRUCTION: &str = "The images are on this host, not delivered. Send the ones worth showing in one send_message_to_user call: images takes the whole list, and the caption belongs in that same call's text so it arrives with them. The reader cannot open a local_path, so keep paths out of message text. Your final reply is delivered as a separate message after that send, so leave it empty.";
+
+const LOCAL_INSTRUCTION: &str = "The images are downloaded at local_path; nothing is shown yet. Print the ones worth looking at with print_image, which takes a list of paths. Keep raw paths out of your prose unless the user wants the files.";
+
+/// 收尾指令按宿主选:两边都是「图在本地,要给人看得自己发/自己打」,区别只是
+/// 用哪件工具。
+fn assistant_instruction(platform: bool) -> &'static str {
+    if platform {
+        PLATFORM_INSTRUCTION
+    } else {
+        LOCAL_INSTRUCTION
+    }
+}
+
 pub fn register(
     registry: &mut ToolRegistry,
     config: AppConfig,
     paths: MiyuPaths,
     allow_download: bool,
+) {
+    register_for_host(registry, config, paths, allow_download, false);
+}
+
+/// 平台回合用这个覆盖上面那份:工具面本身一个字节不变(描述与参数同一份),
+/// 只换结果里的收尾指令,所以不掰缓存前缀(§1.1)。
+pub fn register_platform(
+    registry: &mut ToolRegistry,
+    config: AppConfig,
+    paths: MiyuPaths,
+    allow_download: bool,
+) {
+    register_for_host(registry, config, paths, allow_download, true);
+}
+
+fn register_for_host(
+    registry: &mut ToolRegistry,
+    config: AppConfig,
+    paths: MiyuPaths,
+    allow_download: bool,
+    platform: bool,
 ) {
     registry.register(ToolSpec::new_with_progress(
         "search_web_images",
@@ -47,8 +87,6 @@ pub fn register(
             "properties": {
                 "query": { "type": "string", "description": "Image search query." },
                 "count": { "type": "integer", "description": "Required. Exact number of images to return. Match the user's requested quantity: one/a/an/一张/一幅 means 1; a few/几张 means 3; several/多张 means 5 unless the user gives another number. Do not use the configured maximum as the default." },
-                "preview": { "type": "boolean", "description": "Download and preview images with chafa when terminal image printing is enabled." },
-                "preview_count": { "type": "integer", "description": "Maximum images to preview with chafa." },
                 "safe_search": { "type": "boolean", "description": "Enable safe image search. Defaults to plugin config." }
             },
             "required": ["query", "count"],
@@ -57,7 +95,9 @@ pub fn register(
         move |args, progress| {
             let config = config.clone();
             let paths = paths.clone();
-            async move { search_web_images(args, config, paths, allow_download, progress).await }
+            async move {
+                search_web_images(args, config, paths, allow_download, platform, progress).await
+            }
         },
     ));
 }
@@ -67,6 +107,7 @@ async fn search_web_images(
     config: AppConfig,
     paths: MiyuPaths,
     allow_download: bool,
+    platform: bool,
     progress: ToolProgress,
 ) -> Result<String> {
     let plugin = &config.plugins.web_images;
@@ -90,16 +131,6 @@ async fn search_web_images(
         .and_then(Value::as_bool)
         .unwrap_or(plugin.safe_search)
         || plugin.safe_search;
-    let preview = allow_download
-        && args
-            .get("preview")
-            .and_then(Value::as_bool)
-            .unwrap_or(plugin.auto_preview);
-    let preview_count = args
-        .get("preview_count")
-        .and_then(Value::as_u64)
-        .unwrap_or(count as u64)
-        .clamp(0, count.min(5) as u64) as usize;
     let client = Client::builder()
         .timeout(Duration::from_secs(plugin.timeout_seconds.max(5)))
         .redirect(reqwest::redirect::Policy::limited(8))
@@ -144,27 +175,17 @@ async fn search_web_images(
         progress.clone(),
     )
     .await?;
+    // 这件工具只负责搜到、下到本地、把路径交回去(用户 09-22 拍板)。
+    //
+    // 原来它自己还兼两条显示通道:一条无条件的 `report_image`(平台上被当成
+    // 本轮产图**自动投递**,终端上自动贴图),一条工具内的 chafa 打印。前者
+    // 绕过了 preview / preview_count / auto_preview 全部控制项——用户那一轮
+    // 模型明明传了 `preview: false`,搜来的 3 张照样发进了 QQ,连她自己在正文
+    // 里判定"一堆假透明"弃用的那几张也发了。
+    //
+    // 现在两条都撤:平台上由她挑了用 send_message_to_user 发,终端上由她调
+    // print_image(已支持批量)。与生图 08-20 的裁定同一口径。
     let stored = download_result.images;
-    for item in &stored {
-        progress.report_image(item.local_path.clone(), item.candidate.title.clone());
-    }
-    let mut print_errors = Vec::new();
-    let should_print = preview
-        && config.plugins.print_image.enabled
-        && preview_count > 0
-        && progress.prepare_for_external_output().await;
-    if should_print {
-        for item in stored.iter().take(preview_count) {
-            if let Err(err) = vision::print_image_file(
-                &item.local_path,
-                vision::configured_print_size(&config.plugins.print_image),
-            )
-            .await
-            {
-                print_errors.push(format!("{}: {err}", item.local_path.display()));
-            }
-        }
-    }
     Ok(json!({
         "success": !stored.is_empty(),
         "query": query,
@@ -175,14 +196,8 @@ async fn search_web_images(
         "rejected_by_vision": download_result.rejected_by_vision,
         "providers": search.diagnostics,
         "cache_dir": cache_dir,
-        "printed": should_print && print_errors.is_empty() && !stored.is_empty(),
-        "print_errors": print_errors,
         "images": stored.into_iter().map(stored_json).collect::<Vec<_>>(),
-        "assistant_instruction": if should_print {
-            "The searched images have been downloaded and previewed in the terminal when possible. In your final response, include the local_path values for reusable images. Do not call print_image again for already printed images unless the user asks."
-        } else {
-            "The searched images have been downloaded to local_path. In your final response, include useful local_path and page_url values. Call print_image only if the user explicitly asks to render or preview them."
-        }
+        "assistant_instruction": assistant_instruction(platform)
     })
     .to_string())
 }
@@ -691,6 +706,104 @@ mod tests {
         assert_eq!(
             detect_image_mime(&bytes, &mime, ""),
             Some("image/png".to_string())
+        );
+    }
+}
+
+#[cfg(test)]
+mod host_instruction_tests {
+    use super::*;
+
+    /// 两边的收尾指令都不许要求她再写一段最终回复,也不许让她把本地路径塞进
+    /// 正文。用户 09-21 实录:QQ 里搜完图她先发了图文,又补一条「图片发出来了，
+    /// 就长这样」——那一句就是本地版指令里「In your final response, include
+    /// useful local_path and page_url values」催出来的。
+    #[test]
+    fn neither_instruction_demands_a_final_response() {
+        for (label, text) in [
+            ("平台", assistant_instruction(true)),
+            ("终端", assistant_instruction(false)),
+        ] {
+            assert!(
+                !text.contains("In your final response"),
+                "{label}版还在要求她再写一段最终回复:{text}"
+            );
+            assert!(
+                !text.contains("include useful local_path"),
+                "{label}版还在让她把本地路径写进回复:{text}"
+            );
+        }
+    }
+
+    /// 两边各自指向正确的那件工具:平台发消息、终端打印。
+    #[test]
+    fn each_host_points_at_its_own_delivery_tool() {
+        let platform = assistant_instruction(true);
+        assert!(platform.contains("send_message_to_user"), "{platform}");
+        assert!(
+            platform.contains("separate message"),
+            "平台版没说清最终回复会是另一条消息:{platform}"
+        );
+        assert!(
+            !platform.contains("print_image"),
+            "QQ 里没有终端可打:{platform}"
+        );
+
+        let local = assistant_instruction(false);
+        assert!(local.contains("print_image"), "{local}");
+        assert!(
+            !local.contains("send_message_to_user"),
+            "终端会话里没有平台可发:{local}"
+        );
+    }
+
+    /// 平台版必须说清「一次调用发完整批」。
+    ///
+    /// 09-22 我第一版写的是 `images=[{...}], once per image`,她读成「一张调
+    /// 一次」——真模型 A/B 里 3 张图发成了 3 条独立消息,再加一条「发出来了」,
+    /// 一共 4 条。`send_message_to_user.images` 本来就收数组,配文也该放同一次
+    /// 调用的 text 里,那样才是一条消息。
+    #[test]
+    fn the_platform_instruction_asks_for_a_single_call() {
+        let text = assistant_instruction(true);
+        assert!(
+            !text.contains("once per image"),
+            "这句会被读成「一张调一次」:{text}"
+        );
+        assert!(
+            text.contains("in one send_message_to_user call"),
+            "没说清一次调用发完整批:{text}"
+        );
+        assert!(
+            text.contains("images takes the whole list"),
+            "没说清 images 收的是整个清单:{text}"
+        );
+        assert!(
+            text.contains("caption"),
+            "没说清配文该放同一次调用里:{text}"
+        );
+    }
+
+    /// 搜图不再自己显示任何东西:声明里不该还留着 preview 那一套。
+    #[test]
+    fn the_schema_no_longer_carries_preview_knobs() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = crate::tools::tests::test_paths(temp.path());
+        let mut registry = ToolRegistry::new();
+        let mut config = AppConfig::default();
+        config.plugins.web_images.enabled = true;
+        register(&mut registry, config, paths, true);
+        let schema = registry
+            .get("search_web_images")
+            .expect("搜图工具该注册")
+            .parameters
+            .to_string();
+        for gone in ["preview", "preview_count"] {
+            assert!(!schema.contains(gone), "schema 里还留着 {gone}:{schema}");
+        }
+        assert!(
+            schema.contains("query") && schema.contains("count"),
+            "{schema}"
         );
     }
 }

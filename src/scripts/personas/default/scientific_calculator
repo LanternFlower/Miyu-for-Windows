@@ -3,6 +3,7 @@
 # Display name: Scientific calculation
 # 显示名称: 科学计算
 # Description: Scientific calculator. Evaluates one numeric expression with + - * / % ^, parentheses, functions sin cos tan asin acos atan sqrt abs ln log log10 exp floor ceil round and constants pi e tau. No symbolic calculus.
+# 描述：科学计算器：四则、乘方、三角、对数、取整，带 pi/e/tau 常数。
 # Timeout: 30
 # Group: utility
 # Trust: external

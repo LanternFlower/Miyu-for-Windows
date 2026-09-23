@@ -1,6 +1,8 @@
 ---
 name: linux-game-compatibility
-description: 调查某款游戏在 Linux 下的兼容性（Proton/反作弊/多人联机/性能），产出红绿灯结论与可执行的游玩步骤。Use when the user asks whether a game runs on Linux, Steam Deck, Proton, Wine, Lutris, Heroic, or anti-cheat support.
+display_name: Linux 游戏兼容性
+summary: 查一款游戏在 Linux 下能不能玩，产出红绿灯结论与游玩步骤
+description: Investigate whether a game runs on Linux (Proton, anti-cheat, multiplayer, performance) and produce a traffic-light verdict with concrete steps. Use when the user asks about Linux, Steam Deck, Proton, Wine, Lutris, Heroic or anti-cheat support — 这游戏 Linux 能玩吗、反作弊、能不能联机。
 compatibility: Miyu built-in research workflow
 ---
 

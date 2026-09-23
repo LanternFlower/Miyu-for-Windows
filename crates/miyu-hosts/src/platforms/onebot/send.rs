@@ -106,9 +106,15 @@ impl OneBotAdapter {
         message: OutboundMessage,
     ) -> Result<SendReceipt> {
         let response_target = message.response_target;
+        let sticker = message
+            .metadata
+            .get(STICKER_METADATA_KEY)
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         match message.body {
             OutboundBody::Segments(segments) => {
-                self.send_segments(segments, response_target.as_ref()).await
+                self.send_segments(segments, response_target.as_ref(), sticker)
+                    .await
             }
             OutboundBody::Forward(nodes) => {
                 let mut receipt = self.send_forward(nodes).await?;
@@ -146,6 +152,7 @@ impl OneBotAdapter {
         &self,
         segments: Vec<OutboundSegment>,
         response_target: Option<&ResponseTarget>,
+        sticker: bool,
     ) -> Result<SendReceipt> {
         let mut frames = Vec::new();
         let mut current = Vec::new();
@@ -178,7 +185,7 @@ impl OneBotAdapter {
                         bail!("outbound image exceeds the 20 MiB limit");
                     }
                     current_image_digests.push(blake3::hash(&data));
-                    current.push(image_segment(&data));
+                    current.push(image_segment(&data, sticker));
                 }
                 OutboundSegment::ImagePath { path, .. } => {
                     let bytes = read_file_capped(&path, MAX_OUTBOUND_IMAGE_BYTES).await?;
@@ -186,7 +193,7 @@ impl OneBotAdapter {
                     // to the adapter, matching WebUI image safety expectations.
                     let bytes = validate_outbound_image(bytes, path).await?;
                     current_image_digests.push(blake3::hash(&bytes));
-                    current.push(image_segment(&bytes));
+                    current.push(image_segment(&bytes, sticker));
                 }
                 OutboundSegment::FilePath { path, name } => {
                     push_message_frame(&mut frames, &mut current, &mut current_image_digests);
@@ -298,13 +305,13 @@ impl OneBotAdapter {
                             bail!("outbound image exceeds the 20 MiB limit");
                         }
                         image_digests.push(blake3::hash(&data));
-                        content.push(image_segment(&data));
+                        content.push(image_segment(&data, false));
                     }
                     OutboundSegment::ImagePath { path, .. } => {
                         let bytes = read_file_capped(&path, MAX_OUTBOUND_IMAGE_BYTES).await?;
                         let bytes = validate_outbound_image(bytes, path).await?;
                         image_digests.push(blake3::hash(&bytes));
-                        content.push(image_segment(&bytes));
+                        content.push(image_segment(&bytes, false));
                     }
                     OutboundSegment::FilePath { .. } => {
                         bail!("files cannot be embedded in a OneBot forward node")

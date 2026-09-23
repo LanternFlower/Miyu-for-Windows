@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # 显示名称：闲鱼搜索
-# Description: Search Goofish (闲鱼) second-hand listings without login. Returns title, price in CNY, region and link. action=search (default) drives a real browser, takes 10-40 s and supports pages (30 items per page). monitor-init issues a monitoring ticket for a keyword (one browser run); monitor-query then answers in seconds over plain HTTP for repeated monitoring (init the same keyword first). Needs playwright and a Chromium-based browser; when missing it returns an error with a fix guide and an environment self-check. Relay the error text to the user, who will handle it.
+# Description: Search Goofish (闲鱼) second-hand listings, no login. Returns title, CNY price, region and link. search (default) drives a real browser, takes 10-40 s and pages 30 items at a time. monitor-init issues a watching ticket for a keyword (one browser run) and monitor-query then answers in seconds over plain HTTP; init the same keyword first. Needs playwright and a Chromium browser — when missing the error carries a fix guide and a self-check; relay it to the user.
+# 描述：免登录搜闲鱼二手：标题、价格、地区和链接；也能给关键词开长期监控。
 # Timeout: 300
 # Group: shopping
 # Parameters:
@@ -10,7 +11,7 @@
 #   "properties": {
 #     "keyword": {
 #       "type": "string",
-#       "description": "Search keyword, e.g. 'RTX 4060', 'switch oled'"
+#       "description": "e.g. 'RTX 4060'."
 #     },
 #     "action": {
 #       "type": "string",
@@ -19,11 +20,11 @@
 #         "monitor-init",
 #         "monitor-query"
 #       ],
-#       "description": "Default search"
+#       "description": "Default search."
 #     },
 #     "pages": {
 #       "type": "integer",
-#       "description": "Pages to fetch (1-10, default 1, search only; each extra page adds about 10 s)"
+#       "description": "search: 1-10, default 1; each extra page adds ~10 s."
 #     }
 #   },
 #   "required": [
@@ -97,12 +98,26 @@ SEARCH_API = "mtop.taobao.idlemtopsearch.pc.search"
 
 # ---------------------------------------------------------------- 环境
 
+# macOS 上浏览器装在 app 包里,不在 PATH 上。只查 PATH 的话,那台机器明明装着
+# Chrome 也会被判成「没有可用浏览器」(09-22 真机实测)。路径是 app 包的固定布局。
+MACOS_BROWSERS = (
+    ("google-chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+    ("chromium", "/Applications/Chromium.app/Contents/MacOS/Chromium"),
+    ("microsoft-edge", "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+    ("brave", "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+)
+
+
 def find_system_chromium():
     for name in ("google-chrome", "google-chrome-stable", "chromium",
                  "chromium-browser", "microsoft-edge", "microsoft-edge-stable"):
         p = shutil.which(name)
         if p:
             return name, p
+    if sys.platform == "darwin":
+        for name, path in MACOS_BROWSERS:
+            if os.path.exists(path):
+                return name, path
     return None, None
 
 
@@ -470,9 +485,9 @@ def preflight():
     """依赖/环境预检, 返回 (ok, 问题列表)"""
     problems = []
     if not playwright_available():
-        problems.append("playwright 未安装 → 运行: goofish setup (或 sudo pacman -S python-playwright)")
+        problems.append("playwright 未安装 → 运行: goofish setup (Arch 上也可以 sudo pacman -S python-playwright)")
     if not chromium_bundled() and not find_system_chromium()[0]:
-        problems.append("没有可用浏览器(需 Chromium 系) → 运行: goofish setup (或 sudo pacman -S chromium)")
+        problems.append("没有可用浏览器(需 Chromium 系) → 运行: goofish setup (Arch 上也可以 sudo pacman -S chromium)")
     if problems:
         return False, problems
     return True, []

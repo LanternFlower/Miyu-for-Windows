@@ -11,7 +11,7 @@ pub use openai_compatible::{
 pub use openai_compatible::{OpenAiCompatibleClient, ThinkingVariantOptions};
 pub use openai_compatible::{
     ANTIGRAVITY_BRIDGE_DUPLICATE_TOOLS, CLAUDE_CODE_BRIDGE_DUPLICATE_TOOLS,
-    CODEX_BRIDGE_DUPLICATE_TOOLS,
+    CODEX_BRIDGE_DUPLICATE_TOOLS, ZEN_WIRE_ALIASES,
 };
 // 跨 crate 测试夹具：工具面（miyu-engine）要跟供应商方言整形一起验。
 #[cfg(any(test, feature = "testkit"))]

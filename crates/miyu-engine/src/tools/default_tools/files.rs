@@ -203,6 +203,20 @@ pub(in crate::tools) fn paths_arg(args: &Value) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+/// `rg` 跑不起来时，把 `os error 2` 换成说得清的话。
+///
+/// 09-22 在 macOS 上实测：那台机器没有 ripgrep，模型调 `grep` / `glob` 收到的
+/// 整句话就是 `No such file or directory (os error 2)`——连缺的是哪个程序都没说。
+/// Linux 上看不见是因为 Arch 包把 `ripgrep` 写进了依赖。
+fn ripgrep_output(result: std::io::Result<std::process::Output>) -> Result<std::process::Output> {
+    result.map_err(
+        |error| match miyu_base::process::missing_program("rg", &error) {
+            Some(hint) => anyhow::anyhow!("{hint}"),
+            None => anyhow::Error::from(error),
+        },
+    )
+}
+
 pub(in crate::tools) async fn glob_files(args: Value) -> Result<String> {
     let path = optional_path(&args).unwrap_or_else(miyu_base::workspace::effective_workdir);
     miyu_base::sandbox::guard_read(&path)?;
@@ -223,11 +237,13 @@ pub(in crate::tools) async fn glob_files(args: Value) -> Result<String> {
         // 超时丢弃 future 时同步回收 rg,否则孤儿进程继续扫整盘。
         .kill_on_drop(true);
     miyu_base::sandbox::confine(&mut command);
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(SEARCH_TIMEOUT_SECONDS),
-        command.output(),
-    )
-    .await??;
+    let output = ripgrep_output(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(SEARCH_TIMEOUT_SECONDS),
+            command.output(),
+        )
+        .await?,
+    )?;
     search_output_limited(output, max_results)
 }
 
@@ -268,14 +284,16 @@ pub(in crate::tools) async fn grep_text(args: Value) -> Result<String> {
     } else {
         command.arg(".");
     }
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(SEARCH_TIMEOUT_SECONDS),
-        command
-            .current_dir(search_root)
-            .stdin(Stdio::null())
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await??;
+    let output = ripgrep_output(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(SEARCH_TIMEOUT_SECONDS),
+            command
+                .current_dir(search_root)
+                .stdin(Stdio::null())
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await?,
+    )?;
     search_output_limited(output, max_results)
 }

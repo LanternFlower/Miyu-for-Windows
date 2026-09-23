@@ -148,7 +148,11 @@ pub(in crate::cli) async fn follow_wake_run(
                 biased;
                 _ = input_tick.tick() => {
                     if terminal_hangup() {
-                        let _ = send_ipc_command(paths, IpcCommand::Cancel { run_id: run_id.to_string() }).await;
+                        // 终端没了但回合是 daemon 的:观众离席,戏照演——和自己
+                        // 起的回合那条路(`one_shot.rs`)同一个语义。原先这儿先
+                        // 发一条 Cancel 再退,于是「关掉 TUI」就把正跑着的回合
+                        // 掐了,重开只剩一句「已中断」(用户 09-21 实测,拍板:
+                        // 仅退出 TUI 不该取消)。
                         std::process::exit(0);
                     }
                     if !event::poll(Duration::ZERO)? {
@@ -387,6 +391,8 @@ pub(in crate::cli) async fn follow_wake_run(
                         // 目标续轮就是在这条路上跑的：右上角那行 `/goal running
                         // · 第 N 轮 · 12s` 得跟着一起走，不然一附着就冻住了。
                         live.tick_goal_hint(jobs_feed.goal())?;
+                        // 同 `one_shot.rs`：指针出了窗口就熄掉提亮。
+                        live.expire_hover()?;
                         if live.set_jobs(jobs_feed.current()) {
                             synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
                                 live.redraw()
@@ -612,12 +618,22 @@ pub(in crate::cli) async fn follow_wake_run(
                     })
                     .unwrap_or_default();
                 let consumed_mode = PersonaLane::from_mode_word(Some(ipc_text(&data, "mode")));
-                renderer.prepare_for_external_output()?;
-                live.apply_renderer_frame(&mut renderer)?;
-                synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
-                    live.suspend()?;
-                    live.consume_queued(&prompt_ids, consumed_mode)
-                })?;
+                // 同 `one_shot.rs`：收尾 → 通知行 → 空行。
+                let notices = live.take_queued_notices(&prompt_ids);
+                let visible = live.has_queued(&prompt_ids);
+                if !notices.is_empty() || visible {
+                    renderer.prepare_for_external_output()?;
+                    live.apply_renderer_frame(&mut renderer)?;
+                }
+                for notice in &notices {
+                    live.show_job_wake_notice(notice)?;
+                }
+                if visible {
+                    synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
+                        live.suspend()?;
+                        live.consume_queued(&prompt_ids, consumed_mode)
+                    })?;
+                }
             }
             // daemon 一直在发这个事件,可这里没有对应分支,于是逐请求的
             // 计量在 IPC 这一段就掉地上了——WebUI 有(它自己解 SSE),终端

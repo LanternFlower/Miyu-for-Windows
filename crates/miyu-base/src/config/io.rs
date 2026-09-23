@@ -48,7 +48,6 @@ impl AppConfig {
             .with_context(|| format!("invalid JSONC in {}", paths.config_file.display()))?;
         config.migrate()?;
         config.normalize_builtin_providers();
-        config.normalize_api_quota_accounts();
         config.normalize_managed_output_paths(paths);
         config.normalize_platform_model_routes();
         config.validate()?;
@@ -82,7 +81,6 @@ impl AppConfig {
     pub fn save(&self, paths: &MiyuPaths) -> Result<()> {
         let mut config = self.clone();
         config.migrate()?;
-        config.normalize_api_quota_accounts();
         config.normalize_platform_model_routes();
         // Also on save, not just on load: a value healed only in memory is
         // rewritten stale on the next write, so the file never recovers.
@@ -142,6 +140,18 @@ impl AppConfig {
         // 别让老用户升级后被引导拦一道。
         if self.config_version < 3 {
             self.oobe_done = true;
+        }
+        // v4：Arch 那套工具的默认开关改成跟着宿主走。但「默认值」只对**没写过
+        // 这一项**的配置起作用，而 Miyu 存配置是整份序列化——任何存过一次配置
+        // 的机器都把 `enabled: true` 写死了，新默认根本碰不到它们，而那正是要
+        // 解决的人群（用户 09-22 拍板做这次迁移）。
+        //
+        // 非 Arch 宿主上刷一次 false。配置里区分不出「当初是默认写进去的」还是
+        // 「用户真的想要」——两者长得一模一样——所以这是一次有损的选择：在非
+        // Arch 机器上主动要 AUR 工具的人会被关掉一次，去「人格和功能」里再开
+        // 即可，而那之后配置版本已是 v4，不会被刷第二次。
+        if self.config_version < 4 && !crate::config::tool_plugins::arch_host() {
+            self.plugins.archlinux.enabled = false;
         }
         if self.config_version < 1 {
             for provider in &mut self.providers {
@@ -227,11 +237,6 @@ impl AppConfig {
                 model: OPENCODE_DEFAULT_CHAT_MODEL.to_string(),
             }]);
         }
-    }
-
-    pub(crate) fn normalize_api_quota_accounts(&mut self) {
-        normalize_api_quota_provider(&mut self.plugins.api_quota.deepseek);
-        normalize_api_quota_provider(&mut self.plugins.api_quota.openrouter);
     }
 
     pub(crate) fn normalize_managed_output_paths(&mut self, paths: &MiyuPaths) {
@@ -469,8 +474,6 @@ impl AppConfig {
         if !(0.0..=1.0).contains(&self.plugins.knowledge_base.semantic_min_score) {
             bail!("plugins.knowledge_base.semantic_min_score must be between 0.0 and 1.0");
         }
-        validate_api_quota_accounts("deepseek", &self.plugins.api_quota.deepseek)?;
-        validate_api_quota_accounts("openrouter", &self.plugins.api_quota.openrouter)?;
         self.validate_model_references()?;
         self.validate_global_multimodal_config()?;
         self.validate_platforms()?;

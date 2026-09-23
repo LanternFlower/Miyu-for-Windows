@@ -21,10 +21,6 @@ pub(in crate::config_tui) fn edit_plugin_detail(
     id: &str,
     display_name: &str,
 ) -> Result<()> {
-    // API 额度有专门的账号管理界面,不走通用表单。
-    if id == "api_quota" {
-        return edit_api_quota(ui, config);
-    }
     let mut fields = plugin_fields(config, id);
     if fields.is_empty() {
         return Ok(());
@@ -166,14 +162,6 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, id: &str) -> Vec<
             Field::boolean(
                 t("Safe search", "安全搜索"),
                 config.plugins.web_images.safe_search,
-            ),
-            Field::boolean(
-                t("Automatic preview", "自动预览"),
-                config.plugins.web_images.auto_preview,
-            ),
-            Field::new(
-                t("Default preview count", "默认预览数量"),
-                config.plugins.web_images.preview_count.to_string(),
             ),
             Field::new(
                 t("Maximum download (MB)", "最大下载 MB"),
@@ -396,10 +384,6 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, id: &str) -> Vec<
                 ),
             ]
         }
-        "api_quota" => vec![Field::boolean(
-            t("Enabled", "启用"),
-            config.plugins.api_quota.enabled,
-        )],
         // 没有专属设置页的（闹钟、汇率、记账、脚本、MCP…）。功能表上它们那行
         // 不摆齿轮，正常走不到这里。
         _ => Vec::new(),
@@ -467,13 +451,12 @@ pub(in crate::config_tui) fn apply_plugin_fields(
             config.plugins.web_images.max_results =
                 fields[3].value.trim().parse::<usize>()?.clamp(1, 10);
             config.plugins.web_images.safe_search = parse_bool_field(&fields[4].value)?;
-            config.plugins.web_images.auto_preview = parse_bool_field(&fields[5].value)?;
-            config.plugins.web_images.preview_count =
-                fields[6].value.trim().parse::<usize>()?.min(5);
+            // 删掉「自动预览 / 默认预览数量」两项之后下标整体前移两位
+            // (09-22:搜图不再自己显示,那两项没有作用点了)。
             config.plugins.web_images.max_download_mb =
-                fields[7].value.trim().parse::<f64>()?.clamp(0.1, 50.0);
+                fields[5].value.trim().parse::<f64>()?.clamp(0.1, 50.0);
             config.plugins.web_images.timeout_seconds =
-                fields[8].value.trim().parse::<u64>()?.clamp(5, 120);
+                fields[6].value.trim().parse::<u64>()?.clamp(5, 120);
         }
         "print_image" => {
             config.plugins.print_image.enabled = parse_bool_field(&fields[0].value)?;
@@ -552,9 +535,6 @@ pub(in crate::config_tui) fn apply_plugin_fields(
             config.plugins.memory.forgetting_review_boost =
                 fields[15].value.trim().parse::<f64>()?;
             config.plugins.memory.association_dedup = parse_bool_field(&fields[16].value)?;
-        }
-        "api_quota" => {
-            config.plugins.api_quota.enabled = parse_bool_field(&fields[0].value)?;
         }
         _ => {}
     }

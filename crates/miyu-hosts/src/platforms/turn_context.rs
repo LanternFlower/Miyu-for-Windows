@@ -103,6 +103,9 @@ impl miyu_engine::agent::PlatformTurn for PlatformTurnContext {
         registry: &mut miyu_engine::tools::ToolRegistry,
         files: Vec<PlatformContextFileRef>,
     ) {
+        // 出图工具和读文件工具同一批:`render_image` 的 `file` 参数走的就是
+        // `read_platform_file` 那套解析,得拿到本回合的文件清单。
+        super::render_tool::register(registry, self.clone(), files.clone());
         super::file_reader::register(registry, self, files);
     }
 }

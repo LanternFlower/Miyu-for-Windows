@@ -108,3 +108,57 @@ jobs:
           path: rust-evidence.tar.gz
           compression-level: 0
           if-no-files-found: error
+
+  macos:
+    needs: format-and-python
+    # 版本跟 packaging/common/toolchain.lock.json 的 macos-arm64 走（runner: macos-15，
+    # deployment_target 15.0）。发布侧早就声明了这个目标，但在这个 job 之前，
+    # 从来没有任何东西在 macOS 上编译或跑过测试——所有 macOS 判断都是纸上推断。
+    runs-on: ${{ vars.MACOS_ARM64_RUNNER || 'macos-15' }}
+    timeout-minutes: 90
+    env:
+      # 只跑一个工具链。MSRV 那一位由 Linux 侧的 1.89.0 矩阵把守，这里要验的是
+      # 平台而不是版本，跑两遍只是把 macOS 的额度花掉两份。
+      RUSTUP_TOOLCHAIN: '1.96.1'
+      CARGO_BUILD_JOBS: '3'
+      # 和 Linux 侧同一个理由：一批用例断言的是中文那份文案。
+      MIYU_LANG: zh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+      - name: Install the selected Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - name: Install test runtime dependencies
+        # 搜索用例会真的调 rg，缺了就是 ENOENT。cmake / pkg-config 是 sherpa 那条
+        # 构建链要的；TLS 走 rustls，所以不需要 OpenSSL。CoreAudio 随系统，
+        # 不像 Linux 那样要单独装 ALSA 头。
+        run: brew install ripgrep cmake pkg-config
+      - name: Test packaging contracts
+        # 这一套在 Linux 侧由 format-and-python 跑。macOS 上也要跑：里面那两条
+        # 「已退出但未被回收」的守卫测试压的正是平台差异最大的那段（Darwin 的
+        # waitid 语义），在 Linux 上全绿说明不了 macOS。放在编译前面，它只要 1 秒。
+        run: python3 -m unittest discover -s packaging/ci/tests -v
+      - name: Compile the whole workspace including test targets
+        run: cargo check --workspace --all-targets
+      - name: Compile the voice feature surface that default builds never touch
+        # Linux 侧 0.6.1 发版当天才发现 src/bin/voice.rs 编不过（默认 feature 是空的，
+        # 平时一行都不编）。macOS 这一面同理，而且 cpal 换的是 CoreAudio 后端。
+        run: cargo check --features voice --all-targets
+      - name: Run isolated source unit tests
+        run: python3 packaging/ci/run_tests.py --suite source-unit --report-dir out/ci/source-unit --timeout 3600
+      - name: Preserve check evidence in a mode-preserving archive
+        if: always()
+        run: |
+          mkdir -p out/ci
+          tar -czf macos-evidence.tar.gz -C out/ci .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: macos-evidence
+          path: macos-evidence.tar.gz
+          compression-level: 0
+          if-no-files-found: error

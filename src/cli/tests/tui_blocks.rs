@@ -1125,7 +1125,7 @@ fn the_overlay_highlights_the_row_under_the_mouse() {
             .position(|row| row.contains("一步"))
             .expect("没有那一步");
         assert!(screen.overlay_hover_index(Some(row)), "悬浮没认出来");
-        assert_eq!(screen.overlay_hovered(), Some(step), "认错了块");
+        assert_eq!(screen.hovered_overlay_block(), Some(step), "认错了块");
         // 同一块上不动：不该每次移动都重画。
         assert!(
             !screen.overlay_hover_index(Some(row)),
@@ -1133,7 +1133,7 @@ fn the_overlay_highlights_the_row_under_the_mouse() {
         );
         // 移到不能点的行上：提亮撤掉。
         assert!(screen.overlay_hover_index(None), "离开没撤提亮");
-        assert_eq!(screen.overlay_hovered(), None);
+        assert_eq!(screen.hovered_overlay_block(), None);
     });
 }
 

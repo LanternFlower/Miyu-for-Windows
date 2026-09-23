@@ -13,17 +13,16 @@
           "delete",
           "publish",
           "list_drafts"
-        ],
-        "description": "Authoring step to perform."
+        ]
       },
       "name": {
         "type": "string",
         "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
-        "description": "Skill name, required for create/update/delete."
+        "description": "Required for create/update/delete."
       },
       "description": {
         "type": "string",
-        "description": "action=create: what the skill does and when it should be used."
+        "description": "create: what the skill does and when to use it."
       },
       "scope": {
         "type": "string",
@@ -31,12 +30,12 @@
           "global",
           "persona"
         ],
-        "description": "global is available to all personas; persona only to the current persona. Required for update/delete; create defaults to global.",
-        "default": "global"
+        "default": "global",
+        "description": "persona limits it to the current persona. Required for update/delete."
       },
       "draft_id": {
         "type": "string",
-        "description": "action=publish: draft ID returned by create or update."
+        "description": "publish: the draft id from create or update."
       }
     },
     "required": [

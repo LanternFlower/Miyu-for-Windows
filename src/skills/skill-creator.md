@@ -1,12 +1,29 @@
 ---
 name: skill-creator
-description: Create or safely update Miyu skills. Use when the user asks to create, author, improve, or modify a reusable skill, SKILL.md workflow, or skill resources.
+display_name: 技能创作
+summary: 写一份新技能，或安全地改已有的那份
+description: Create or safely update Miyu skills. Use when the user asks to create, author, improve or modify a reusable skill, a SKILL.md workflow or skill resources — 写技能、改技能、做一个技能。
 compatibility: Miyu built-in skill authoring workflow
 ---
 
 # Skill Creator
 
 Create focused, reusable Agent Skills that follow the Agent Skills specification.
+
+## Calling manage_skill
+
+`manage_skill` is not on the always-loaded tool list: authoring a skill is a
+once-in-a-while action, so it lives behind this skill. Call it through the tool
+bridge with `run_command`:
+
+```bash
+miyu tool-call manage_skill --stdin <<'JSON'
+{"action": "create", "name": "my-skill", "description": "what it does and when to use it"}
+JSON
+```
+
+`miyu tool-call manage_skill --describe` prints the full parameter contract.
+Everything below that says "call `manage_skill`" means this.
 
 ## Workflow
 

@@ -1,4 +1,4 @@
-//! ```mermaid 围栏的渲染:终端出图,WebUI 出 SVG。
+//! mermaid 围栏的渲染:终端出图,WebUI 出 SVG。
 //!
 //! 两端共用一个纯 Rust 渲染器(`mermaid-rs-renderer`,MIT)出 SVG。选它而不是在
 //! WebUI 里 vendor 一份 mermaid.js,理由有三:
@@ -359,6 +359,132 @@ fn prune(dir: &Path) {
 /// 自己调 resvg 而不用 `mermaid_rs_renderer::write_output_png`,为的是两件事:
 /// 一是那个函数只会按自然尺寸出图(于是必然要再重采样一次,字就糊了);二是它
 /// **每次调用都 `load_system_fonts()`**,而字体库在这儿只加载一次。
+/// 把 mermaid 源码渲成 PNG，等比缩放塞进给定的框里。
+///
+/// 终端那条(`rasterize`)按格子定尺；成图渲染器按像素，而且**高度也要有上限**：
+/// 一张不能分页的图比整页还高的话，分页器只能把它整块丢到下一页，无限循环。
+/// 等比只缩不放：放大不会凭空长出细节。
+///
+/// 把 SVG 那块**整幅底色矩形**改成给定的颜色。
+///
+/// mermaid 渲染器输出的第一个元素永远是
+/// `<rect x="0" y="0" width=… height=… fill="#FFFFFF"/>`。光靠 `pixmap.fill`
+/// 盖不住它——实测一张三节点的小图渲完仍有 94 万个纯白像素,全是这块。
+///
+/// **只动这一块**:节点自己的浅色填充(`#F8FAFC` 一类)是图的一部分,改了图就不是
+/// 原来那张了。判据是「紧跟在 `<svg …>` 后面、且 x/y 都是 0」——不满足就原样返回,
+/// 宁可保持白底也不要乱改别人的图元。
+pub(crate) fn recolour_backdrop(svg: &str, replacement: &str) -> String {
+    let Some(start) = svg.find("<rect") else {
+        return svg.to_string();
+    };
+    // `<svg …>` 与它之间只允许有空白:再往后的 rect 就是图元了。
+    let Some(head_end) = svg.find('>') else {
+        return svg.to_string();
+    };
+    if !svg[head_end + 1..start].trim().is_empty() {
+        return svg.to_string();
+    }
+    let Some(len) = svg[start..].find("/>") else {
+        return svg.to_string();
+    };
+    let end = start + len + 2;
+    let rect = &svg[start..end];
+    if !rect.contains("x=\"0\"") || !rect.contains("y=\"0\"") {
+        return svg.to_string();
+    }
+    let Some(fill_at) = rect.find("fill=\"") else {
+        return svg.to_string();
+    };
+    let value_at = fill_at + "fill=\"".len();
+    let Some(value_len) = rect[value_at..].find('"') else {
+        return svg.to_string();
+    };
+    let mut out = String::with_capacity(svg.len() + replacement.len());
+    out.push_str(&svg[..start + value_at]);
+    out.push_str(replacement);
+    out.push_str(&svg[start + value_at + value_len..]);
+    out
+}
+
+/// 渲染器用的那几个色，按用途列出来。
+///
+/// 实测整张图只有 5 个色（一张五节点的流程图数出来的）：底 `#FFFFFF`、节点填充
+/// `#F8FAFC`、节点描边 `#94A3B8`、连线与标签 `#64748B`、节点内文字 `#0F172A`。
+/// 底那一个由 [`recolour_backdrop`] 单独处理（只动整幅那块），这里是其余四个。
+pub(crate) const NODE_FILL: &str = "#F8FAFC";
+pub(crate) const NODE_STROKE: &str = "#94A3B8";
+pub(crate) const CONNECTOR: &str = "#64748B";
+pub(crate) const NODE_TEXT: &str = "#0F172A";
+
+/// 按一张「源色 → 目标」的表换色。
+///
+/// 只换列在表里的那几个：渲染器以后加了新色，不会被我们改花。目标值可以是任何
+/// SVG 认的颜色写法——WebUI 那边填的是 `var(--md-sys-color-…)`，靠 CSS 变量
+/// 穿透进内联 SVG，这样切主题零成本、也不用把主题塞进前端那份缓存的键。
+pub(crate) fn repaint(svg: &str, pairs: &[(&str, &str)]) -> String {
+    let mut out = svg.to_string();
+    for (from, to) in pairs {
+        out = out.replace(&format!("\"{from}\""), &format!("\"{to}\""));
+    }
+    out
+}
+
+/// 底色由调用方给：成图渲染器要跟页面主题一致(用户 09-22:正文是米色纸面,
+/// 图却是纯白方块,一眼看出是贴上去的)。透明底不行——渲染器给的是浅色主题,
+/// 线条落在深色纸面上会被吃掉。
+pub(crate) fn render_png_in_box(
+    source: &str,
+    max_width: u32,
+    max_height: u32,
+    background: [u8; 4],
+) -> Option<Vec<u8>> {
+    use resvg::tiny_skia;
+    use resvg::usvg;
+
+    if max_width == 0 || max_height == 0 {
+        return None;
+    }
+    let backdrop = format!(
+        "#{:02X}{:02X}{:02X}",
+        background[0], background[1], background[2]
+    );
+    let svg = recolour_backdrop(&render_svg(source).ok()?, &backdrop);
+    let options = usvg::Options {
+        font_family: default_font_family(),
+        fontdb: fonts(),
+        ..usvg::Options::default()
+    };
+    let tree = usvg::Tree::from_str(&svg, &options).ok()?;
+    let natural = tree.size();
+    if natural.width() <= 0.0 || natural.height() <= 0.0 {
+        return None;
+    }
+    let scale = (max_width as f32 / natural.width()).min(max_height as f32 / natural.height());
+    let width = (natural.width() * scale).round().max(1.0) as u32;
+    let height = (natural.height() * scale).round().max(1.0) as u32;
+    let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
+    pixmap.fill(tiny_skia::Color::from_rgba8(
+        background[0],
+        background[1],
+        background[2],
+        background[3],
+    ));
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    pixmap.encode_png().ok()
+}
+
+/// 终端里图的底色。
+///
+/// 不是纯白:深色终端里一块 `#FFFFFF` 太刺眼（用户 09-22）。但也别太灰——第一版
+/// 取 `#E4E4E7`，用户实测「有点太灰了」。现在贴着白往下挪一档：眼睛不扎，又比
+/// 节点填充 `#F8FAFC` 低 6 阶，节点仍浮得出来。
+const TERMINAL_BACKDROP: [u8; 3] = [0xF0, 0xF0, 0xF2];
+
 fn rasterize(svg: &str, cell_w: usize, cell_h: usize, max_cols: usize) -> Option<Vec<u8>> {
     use resvg::tiny_skia;
     use resvg::usvg;
@@ -368,16 +494,27 @@ fn rasterize(svg: &str, cell_w: usize, cell_h: usize, max_cols: usize) -> Option
         fontdb: fonts(),
         ..usvg::Options::default()
     };
-    let tree = usvg::Tree::from_str(svg, &options).ok()?;
+    let backdrop = format!(
+        "#{:02X}{:02X}{:02X}",
+        TERMINAL_BACKDROP[0], TERMINAL_BACKDROP[1], TERMINAL_BACKDROP[2]
+    );
+    let svg = recolour_backdrop(svg, &backdrop);
+    let tree = usvg::Tree::from_str(&svg, &options).ok()?;
     let natural = tree.size();
     let (cols, rows) = fit_cells(natural.width(), natural.height(), cell_w, cell_h, max_cols);
     let width = u32::try_from(cols * cell_w).ok()?;
     let height = u32::try_from(rows * cell_h).ok()?;
     let scale = (width as f32 / natural.width()).min(height as f32 / natural.height());
     let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
-    // 底色铺白:渲染器给的是浅色主题,终端的深色背景会把浅色线条吃掉;等比缩放
-    // 留下的边也得有底,不然那几列是透明的。
-    pixmap.fill(tiny_skia::Color::WHITE);
+    // 底色不能透:渲染器给的是浅色主题,深色终端会把浅色线条吃掉。但纯白在深色
+    // 终端里是一块刺眼的板子(用户 09-22),换成中性灰——比节点填充(`#F8FAFC`)
+    // 深一点点,节点因此还能浮出来。等比缩放留下的边也得有底,不然那几列是透明的。
+    pixmap.fill(tiny_skia::Color::from_rgba8(
+        TERMINAL_BACKDROP[0],
+        TERMINAL_BACKDROP[1],
+        TERMINAL_BACKDROP[2],
+        255,
+    ));
     resvg::render(
         &tree,
         tiny_skia::Transform::from_scale(scale, scale),
@@ -770,5 +907,105 @@ mod tests {
                 sequence.len()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod backdrop_tests {
+    use super::*;
+
+    const PAPER: &str = "#F4EFE5";
+
+    /// 只改整幅底色那一块，节点自己的填充一个都不许动。
+    #[test]
+    fn only_the_full_size_backdrop_is_recoloured() {
+        let svg = render_svg("graph TD; A-->B;").expect("该渲得出 SVG");
+        assert!(svg.contains("fill=\"#FFFFFF\""), "样本变了:{}", &svg[..200]);
+        let painted = recolour_backdrop(&svg, PAPER);
+        assert!(painted.contains("fill=\"#F4EFE5\""), "底色没换上");
+        assert_eq!(painted.matches("#F4EFE5").count(), 1, "只该换那一块");
+        // 节点的浅色填充照旧。
+        assert_eq!(
+            svg.matches("#F8FAFC").count(),
+            painted.matches("#F8FAFC").count()
+        );
+    }
+
+    /// 认不出那块底就原样返回——宁可留白底,也不要乱改别人的图元。
+    #[test]
+    fn anything_unexpected_is_left_alone() {
+        // 第一个 rect 不在原点:是图元,不是底。
+        let svg = r##"<svg width="10" height="10"><rect x="3" y="4" fill="#FFFFFF"/></svg>"##;
+        assert_eq!(recolour_backdrop(svg, PAPER), svg);
+        // `<svg>` 和 rect 之间隔着别的元素。
+        let svg = r##"<svg width="10" height="10"><g/><rect x="0" y="0" fill="#FFFFFF"/></svg>"##;
+        assert_eq!(recolour_backdrop(svg, PAPER), svg);
+        // 压根没有 rect。
+        let svg = r##"<svg width="10" height="10"><circle r="1"/></svg>"##;
+        assert_eq!(recolour_backdrop(svg, PAPER), svg);
+    }
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+
+    /// 换成 CSS 变量：WebUI 靠这个跟主题走（用户 09-22）。
+    ///
+    /// 只换列在表里的那几个色，别的一个不动——渲染器以后加新色不会被改花。
+    #[test]
+    fn only_listed_colours_are_repainted() {
+        let svg = render_svg("graph TD; A-->B;").expect("该渲得出 SVG");
+        let painted = repaint(&svg, &[(NODE_FILL, "var(--a)"), (CONNECTOR, "var(--b)")]);
+        assert_eq!(
+            painted.matches("var(--a)").count(),
+            svg.matches(NODE_FILL).count()
+        );
+        assert_eq!(
+            painted.matches("var(--b)").count(),
+            svg.matches(CONNECTOR).count()
+        );
+        assert!(!painted.contains(NODE_FILL) && !painted.contains(CONNECTOR));
+        // 没列进表的色原样保留。
+        assert_eq!(
+            painted.matches(NODE_STROKE).count(),
+            svg.matches(NODE_STROKE).count()
+        );
+        assert_eq!(
+            painted.matches(NODE_TEXT).count(),
+            svg.matches(NODE_TEXT).count()
+        );
+    }
+
+    /// 底可以换成任何 SVG 认的写法，包括 `transparent`。
+    #[test]
+    fn the_backdrop_accepts_a_keyword() {
+        let svg = render_svg("graph TD; A-->B;").expect("该渲得出 SVG");
+        let painted = recolour_backdrop(&svg, "transparent");
+        assert!(painted.contains("fill=\"transparent\""), "底没换成透明");
+        assert_eq!(painted.matches("transparent").count(), 1, "只该换那一块");
+    }
+}
+
+#[cfg(test)]
+mod terminal_backdrop_tests {
+    use super::*;
+
+    /// 终端底色得是中性的柔和灰（用户 09-22：纯白在深色终端里太刺眼），
+    /// 而且要比节点填充深一档——不然节点浮不出来，整张图糊成一块。
+    #[test]
+    fn the_terminal_backdrop_is_a_soft_neutral_grey() {
+        let [r, g, b] = TERMINAL_BACKDROP;
+        assert_ne!([r, g, b], [255, 255, 255], "又变回纯白了");
+        // 中性:三个分量彼此不差超过一点点,否则会偏色。
+        let (lo, hi) = (r.min(g).min(b), r.max(g).max(b));
+        assert!(hi - lo <= 8, "偏色了:{r:02X}{g:02X}{b:02X}");
+        // 柔和:还是浅底(深色文字要看得清),但不到纯白,也别灰到扎眼
+        // (用户 09-22 打回过一版 `#E4E4E7`:「有点太灰了」)。
+        assert!((0xE8..0xF8).contains(&hi), "太深或太亮:{hi:02X}");
+
+        // 比节点填充深:`#F8FAFC` 的最亮分量是 0xFC。
+        let fill = u8::from_str_radix(&NODE_FILL[1..3], 16).unwrap();
+        assert!(hi < fill, "底比节点还亮,节点浮不出来");
     }
 }

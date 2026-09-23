@@ -24,10 +24,8 @@ pub struct PluginsConfig {
     pub memes: MemesPluginConfig,
     #[serde(default)]
     pub knowledge_base: KnowledgeBasePluginConfig,
-    #[serde(default)]
+    #[serde(default = "default_archlinux_plugin")]
     pub archlinux: PluginEnabledConfig,
-    #[serde(default)]
-    pub api_quota: ApiQuotaPluginConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
     #[serde(default)]
@@ -244,6 +242,44 @@ impl Default for FileSharingPluginConfig {
     }
 }
 
+/// 这台机器是不是 Arch 系。
+///
+/// `/etc/arch-release` 是 Arch 自己放的；EndeavourOS 一类衍生版也有。Manjaro
+/// 没有那个文件但有 `pacman`，所以两条判据取并集。非 Linux 直接 false——macOS
+/// 上再怎么找也不会有 pacman。
+///
+/// 只算一次:配置每次加载都要问它,而这事在进程生命周期内不会变。
+pub(crate) fn arch_host() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        if !cfg!(target_os = "linux") {
+            return false;
+        }
+        if std::path::Path::new("/etc/arch-release").exists() {
+            return true;
+        }
+        std::env::var_os("PATH")
+            .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join("pacman").is_file()))
+            .unwrap_or(false)
+    })
+}
+
+/// Arch 那套工具的默认开关**跟着宿主走**。
+///
+/// 09-22 真机实测:macOS 上 `archlinux_news` / `archlinux_official_package_query`
+/// / `archwiki_query` / `aur` / `crack_search` 五件全在工具清单里,而 `aur` 那件
+/// 要 pacman / makepkg,在那台机器上必然失败。原来的判据是纯配置开关
+/// (`PluginEnabledConfig` 默认 true),完全不看发行版——而 `installed` 这个字段
+/// 的注释写的就是「机器级开关:本机装了 / 开了没有」。
+///
+/// 用户在「人格和功能」里主动勾上时写的是显式 `true`,读回来照样注册——默认关
+/// 不等于不让开(用户 09-22 拍板)。
+fn default_archlinux_plugin() -> PluginEnabledConfig {
+    PluginEnabledConfig {
+        enabled: arch_host(),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginEnabledConfig {
     #[serde(default = "default_true")]
@@ -283,10 +319,6 @@ pub struct WebImagesPluginConfig {
     pub safe_search: bool,
     #[serde(default = "default_true")]
     pub vision_screening_enabled: bool,
-    #[serde(default = "default_true")]
-    pub auto_preview: bool,
-    #[serde(default = "default_web_images_preview_count")]
-    pub preview_count: usize,
     #[serde(default = "default_web_images_timeout")]
     pub timeout_seconds: u64,
 }
@@ -454,106 +486,6 @@ pub struct KnowledgeBasePluginConfig {
     pub embedding_timeout_seconds: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApiQuotaPluginConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub deepseek: ApiQuotaProviderConfig,
-    #[serde(default)]
-    pub openrouter: ApiQuotaProviderConfig,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApiQuotaProviderConfig {
-    #[serde(default)]
-    pub api_key: String,
-    #[serde(default)]
-    pub accounts: Vec<ApiQuotaAccountConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApiQuotaAccountConfig {
-    #[serde(default)]
-    pub id: String,
-    #[serde(default = "default_api_quota_account_name")]
-    pub name: String,
-    #[serde(default)]
-    pub api_key: String,
-}
-
-pub(crate) fn default_api_quota_account_name() -> String {
-    "默认账号".to_string()
-}
-
-pub(crate) fn normalize_api_quota_provider(config: &mut ApiQuotaProviderConfig) {
-    let legacy_key = config.api_key.trim().to_string();
-    if config.accounts.is_empty() {
-        config.accounts.push(ApiQuotaAccountConfig {
-            id: "account-1".to_string(),
-            name: default_api_quota_account_name(),
-            api_key: legacy_key.clone(),
-        });
-    } else if !legacy_key.is_empty()
-        && config
-            .accounts
-            .iter()
-            .all(|account| account.api_key.trim() != legacy_key)
-    {
-        if config.accounts[0].api_key.trim().is_empty() {
-            config.accounts[0].api_key = legacy_key.clone();
-        } else if config.accounts.len() < 32 {
-            let mut number = 2usize;
-            let name = loop {
-                let candidate = format!("账号 {number}");
-                if config
-                    .accounts
-                    .iter()
-                    .all(|account| account.name != candidate)
-                {
-                    break candidate;
-                }
-                number += 1;
-            };
-            config.accounts.push(ApiQuotaAccountConfig {
-                id: String::new(),
-                name,
-                api_key: legacy_key.clone(),
-            });
-        }
-    }
-    if legacy_key.is_empty()
-        || config
-            .accounts
-            .iter()
-            .any(|account| account.api_key.trim() == legacy_key)
-    {
-        config.api_key.clear();
-    }
-    let mut used_ids = HashSet::with_capacity(config.accounts.len());
-    for (index, account) in config.accounts.iter_mut().enumerate() {
-        account.name = account.name.trim().to_string();
-        if account.name.is_empty() {
-            account.name = if index == 0 {
-                default_api_quota_account_name()
-            } else {
-                format!("账号 {}", index + 1)
-            };
-        }
-        if account.id.trim().is_empty() || !used_ids.insert(account.id.clone()) {
-            let mut number = index + 1;
-            loop {
-                let id = format!("account-{number}");
-                if used_ids.insert(id.clone()) {
-                    account.id = id;
-                    break;
-                }
-                number += 1;
-            }
-        }
-    }
-}
-
 impl Default for PluginsConfig {
     fn default() -> Self {
         Self {
@@ -566,36 +498,12 @@ impl Default for PluginsConfig {
             print_image: PrintImagePluginConfig::default(),
             memes: MemesPluginConfig::default(),
             knowledge_base: KnowledgeBasePluginConfig::default(),
-            archlinux: PluginEnabledConfig::default(),
-            api_quota: ApiQuotaPluginConfig::default(),
+            archlinux: default_archlinux_plugin(),
             memory: MemoryConfig::default(),
             claude_code: ClaudeCodePluginConfig::default(),
             antigravity: AntigravityPluginConfig::default(),
             codex: CodexPluginConfig::default(),
             codebuddy: CodeBuddyPluginConfig::default(),
-        }
-    }
-}
-
-impl Default for ApiQuotaPluginConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_true(),
-            deepseek: ApiQuotaProviderConfig::default(),
-            openrouter: ApiQuotaProviderConfig::default(),
-        }
-    }
-}
-
-impl Default for ApiQuotaProviderConfig {
-    fn default() -> Self {
-        Self {
-            api_key: String::new(),
-            accounts: vec![ApiQuotaAccountConfig {
-                id: "account-1".to_string(),
-                name: default_api_quota_account_name(),
-                api_key: String::new(),
-            }],
         }
     }
 }
@@ -631,8 +539,6 @@ impl Default for WebImagesPluginConfig {
             max_download_mb: default_web_images_max_download_mb(),
             safe_search: default_true(),
             vision_screening_enabled: default_true(),
-            auto_preview: default_true(),
-            preview_count: default_web_images_preview_count(),
             timeout_seconds: default_web_images_timeout(),
         }
     }
@@ -752,37 +658,6 @@ impl Default for KnowledgeBasePluginConfig {
     }
 }
 
-pub(crate) fn validate_api_quota_accounts(
-    provider: &str,
-    config: &ApiQuotaProviderConfig,
-) -> Result<()> {
-    if !config.api_key.trim().is_empty() && !config.accounts.is_empty() {
-        bail!("plugins.api_quota.{provider} legacy api_key could not be migrated");
-    }
-    if config.accounts.len() > 32 {
-        bail!("plugins.api_quota.{provider} supports at most 32 accounts");
-    }
-    let mut names = HashSet::with_capacity(config.accounts.len());
-    let mut ids = HashSet::with_capacity(config.accounts.len());
-    for account in &config.accounts {
-        let name = account.name.trim();
-        if name.is_empty() {
-            bail!("plugins.api_quota.{provider} account name cannot be empty");
-        }
-        if name.chars().count() > 64 {
-            bail!("plugins.api_quota.{provider} account name exceeds 64 characters");
-        }
-        if !names.insert(name) {
-            bail!("duplicate plugins.api_quota.{provider} account name: {name}");
-        }
-        let id = account.id.trim();
-        if !id.is_empty() && !ids.insert(id) {
-            bail!("duplicate plugins.api_quota.{provider} account id: {id}");
-        }
-    }
-    Ok(())
-}
-
 /// Returns the old absolute directory when the value was rewritten, so the
 /// caller can carry any files across; `None` when nothing matched.
 pub(crate) fn remap_managed_output_dir(
@@ -843,5 +718,42 @@ pub(crate) fn relocate_managed_output(from: &Path, to: &Path) {
                 "已把过时输出目录里的文件搬到新位置",
             )
         );
+    }
+}
+
+#[cfg(test)]
+mod arch_plugin_tests {
+    use super::*;
+
+    /// 没写过这一项时跟着宿主走：Arch 上开，别处关。
+    #[test]
+    fn an_absent_key_follows_the_host() {
+        let plugins: PluginsConfig = serde_json::from_str("{}").expect("empty object parses");
+        assert_eq!(plugins.archlinux.enabled, arch_host());
+    }
+
+    /// **用户主动勾上就得算数**，哪怕这台机器不是 Arch（用户 09-22 拍板：
+    /// 「除非用户自己在『人格和功能』菜单里主动开了」）。
+    #[test]
+    fn an_explicit_opt_in_wins_over_the_host_default() {
+        let plugins: PluginsConfig =
+            serde_json::from_str(r#"{"archlinux":{"enabled":true}}"#).expect("parses");
+        assert!(plugins.archlinux.enabled);
+    }
+
+    /// 反过来也要算数：Arch 上主动关掉的不能被默认值顶回来。
+    #[test]
+    fn an_explicit_opt_out_is_kept() {
+        let plugins: PluginsConfig =
+            serde_json::from_str(r#"{"archlinux":{"enabled":false}}"#).expect("parses");
+        assert!(!plugins.archlinux.enabled);
+    }
+
+    /// 非 Linux 上不去翻 PATH 找 pacman——那儿根本不会有。
+    #[test]
+    fn a_non_linux_host_is_never_arch() {
+        if !cfg!(target_os = "linux") {
+            assert!(!arch_host());
+        }
     }
 }

@@ -21,6 +21,11 @@ pub fn register(
         register_mention(registry, context.clone());
     }
     register_usage_query(registry, context.clone());
+    // 主动出图(用户 09-22)。这里先装一份**不带附件清单**的:常规工具面每轮都
+    // 过这儿,工具必须恒在。带清单的那份由 `register_file_reader` 覆盖上来
+    // (同名后注册覆盖前一个)——只挂在那儿的话,agy 的 MCP 桥某些回合根本看不见
+    // 这件工具,她只能瞎猜名字然后撞上 unknown tool(09-22 真机实录)。
+    super::render_tool::register(registry, context.clone(), Vec::new());
     // 赞助记账。写限管理员(软拒绝),看开放;懒加载,full 模式照样全量给出。
     super::sponsor_tool::register(registry, context.clone());
     if crate::runtime::voice_port().is_some_and(|port| port.tts_available()) {
@@ -32,6 +37,17 @@ pub fn register(
         miyu_engine::tools::platform_outreach::qq_connected(),
         lane,
     );
+    // 搜图的收尾指令分宿主:平台回合里图要由模型显式发,而且发完再写正文就是
+    // 第二条消息(用户 09-21)。和 generate_image 一样,平台面换一份结果指令;
+    // 工具声明本身一个字节不变,不掰缓存前缀。
+    if registry.contains("search_web_images") {
+        miyu_engine::tools::web_images::register_platform(
+            registry,
+            context.config.clone(),
+            context.paths.clone(),
+            true,
+        );
+    }
     let host_tools_allowed = context.host_tools_allowed();
     let parameters = if host_tools_allowed {
         json!({
@@ -328,12 +344,16 @@ async fn send(arguments: Value, context: Arc<PlatformTurnContext>) -> Result<Str
         // 08-22:get_avatar 改为"只下载不投递",发送权交还模型——头像缓存
         // 目录与生图目录同为 Miyu 自产内容,一并豁免。
         let avatar_dir = context.paths.cache_dir.join("qq-avatars");
+        // 09-22:`render_image` 出的图同样是 Miyu 自产内容,一并豁免——否则非
+        // 管理员触发的「画张图」渲得出来却发不出去。
+        let rendered_dir = super::render_tool::rendered_dir_for(&context.paths, &context.config);
         let exempt = files.is_empty()
             && !image_paths.is_empty()
             && (all_within_generated_dir(
                 &context.config.plugins.image_generation.output_dir,
                 &image_paths,
-            ) || all_within_root(&avatar_dir, &image_paths));
+            ) || all_within_root(&avatar_dir, &image_paths)
+                || all_within_root(&rendered_dir, &image_paths));
         if !exempt {
             bail!("local attachments require an authorized platform administrator");
         }
@@ -395,6 +415,11 @@ async fn send(arguments: Value, context: Arc<PlatformTurnContext>) -> Result<Str
         }
         bail!("text, images, or files is required");
     }
+    // 这一条里她到底说没说话。只发图/发文件时最终回复是配文,该留着;
+    // 带了文字就说明这条已经是她要说的话了。
+    let delivered_text = segments
+        .iter()
+        .any(|segment| matches!(segment, OutboundSegment::Markdown(_)));
     let receipt = context
         .send(OutboundMessage::segments(OutboundOrigin::Tool, segments))
         .await?;
@@ -402,6 +427,18 @@ async fn send(arguments: Value, context: Arc<PlatformTurnContext>) -> Result<Str
         if !deduplicated_text {
             context.record_delivered_reply_text(text);
         }
+    }
+    // 用这件工具带着文字发完之后,回合末尾的正文就是**另一条消息**——用户
+    // 09-21 实录:搜完图她发了图文,又补一条「图片发出来了，就长这样」。
+    // 与 send_voice_message 同一条闸(09-06「发了语音就没必要再发文字」):
+    // tool.finished 时截掉此后的正文,此前已经流出去的中间正文不受影响。
+    //
+    // 先试过只改工具结果里的收尾指令(不再要求她写最终回复),真模型 A/B
+    // 里两组都照样补第二条——光靠措辞按不住,所以这里用结构闸。
+    if delivered_text {
+        context
+            .pending_final_reply_suppression
+            .store(true, std::sync::atomic::Ordering::Release);
     }
     Ok(json!({
         "ok": true,
@@ -492,7 +529,7 @@ fn required_path(value: &Value, key: &str) -> Result<PathBuf> {
 fn register_usage_query(registry: &mut ToolRegistry, context: Arc<PlatformTurnContext>) {
     registry.register(
         ToolSpec::new(
-            "query_token_usage",
+            "query_system_token_usage",
             miyu_engine::tools::usage_query::DESCRIPTION,
             miyu_engine::tools::usage_query::parameters(),
             move |arguments| {

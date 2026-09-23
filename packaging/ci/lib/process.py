@@ -6,7 +6,19 @@ import subprocess
 import shutil
 import threading
 import time
-from .reaper import OwnedReaper
+from .reaper import OwnedReaper, exited_without_reaping
+
+
+def _alive(pid):
+    """只做诊断：这个 PID 还在不在（僵尸也算在）。"""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # 存在，但不是我们能发信号的——PID 被复用成别人的进程时就是这个样子。
+        return 'exists-but-not-ours'
 
 
 class ProcessSupervisor:
@@ -36,7 +48,7 @@ class ProcessSupervisor:
             # A live unreaped child pins its PID; it cannot be reused during cleanup.
             try:
                 deadline = time.monotonic() + timeout
-                while os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+                while not exited_without_reaping(child.pid):
                     self.reaper.reap_exited([entry.pid for entry in self.children])
                     if time.monotonic() >= deadline:
                         result['timed_out'] = True
@@ -64,11 +76,46 @@ class ProcessSupervisor:
 
     @staticmethod
     def _stop(child):
+        # 出错时要说清是哪一步：2026-09-22 macOS CI 只报了「[Errno 1] Operation
+        # not permitted」，光这一句分不出是 killpg 还是 wait，也看不出当时这个
+        # 子进程是死是活。诊断信息比省几行代码值钱。
         try:
             os.killpg(child.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        child.wait(timeout=5)
+        except PermissionError as error:
+            # Darwin：进程组里只剩僵尸（已退出、还没回收）时 killpg 返回 EPERM，
+            # Linux 返回 0 或 ESRCH。2026-09-22 macOS CI 实测：
+            #     killpg(pid=15855) failed: Operation not permitted;
+            #     returncode=None, alive=True
+            # alive=True 说明 PID 没被复用、进程还是我们的，它只是已经退出了。
+            #
+            # 放过它是安全的，理由在 POSIX 那条规则上：给进程组发信号时，只有
+            # 「一个都发不出去」才返回 EPERM。组里但凡还有一个我们自己的活进程，
+            # 那一个就发得出去，也就不会是 EPERM。所以 EPERM 等价于「组里没有
+            # 我们能杀的活进程」——没有漏网的后代。
+            #
+            # 但只在**确实已经退出**时才放过。超时那条路上子进程还活着，那时候
+            # 被拒绝就是真出事了,必须炸出来。
+            if not exited_without_reaping(child.pid):
+                raise OSError(
+                    error.errno,
+                    f'killpg(pid={child.pid}, SIGKILL) failed while the child was '
+                    f'still running: {error.strerror}; returncode={child.returncode}',
+                ) from error
+        except OSError as error:
+            raise OSError(
+                error.errno,
+                f'killpg(pid={child.pid}, SIGKILL) failed: {error.strerror}; '
+                f'returncode={child.returncode}, alive={_alive(child.pid)}',
+            ) from error
+        try:
+            child.wait(timeout=5)
+        except OSError as error:
+            raise OSError(
+                error.errno,
+                f'wait(pid={child.pid}) failed: {error.strerror}',
+            ) from error
 
     def __enter__(self):
         return self

@@ -2,30 +2,21 @@
 # Id: read_clipboard
 # Display name: Read clipboard
 # 显示名称: 读取剪贴板
-# Description: Read the current clipboard.
+# Description: Read the current clipboard. Text, image and file-path content are detected automatically.
+# 描述：读当前剪贴板，文字、图片和文件路径都能认。
 # Timeout: 30
 # Group: systeminfo
 # Permission: read-only
 # Parameters:
 # {
 #   "type": "object",
-#   "properties": {
-#     "preferred_type": {
-#       "type": "string",
-#       "enum": [
-#         "auto",
-#         "text",
-#         "image"
-#       ],
-#       "default": "auto",
-#       "description": "Legacy preference hint; image and file-path content is still detected first. Defaults to auto"
-#     }
-#   }
+#   "properties": {}
 # }
 # Example: {}
 """
 Port of the built-in Rust tool `read_clipboard` (src/tools/clipboard.rs +
-src/clipboard.rs). Linux only; backends in this order: wl-paste, xclip, xsel.
+src/clipboard.rs). Linux backends in this order: wl-paste, xclip, xsel;
+macOS goes through osascript (see `list_clipboard_targets`).
 
 Detection (same as the Rust `clipboard::read_clipboard`):
   1. list targets (`wl-paste -l`, else `xclip -selection clipboard -t TARGETS -o`)

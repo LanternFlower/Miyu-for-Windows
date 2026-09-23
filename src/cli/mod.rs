@@ -654,8 +654,14 @@ struct LiveAgentInput<'a> {
 
 fn queued_prompt_lines(prompts: &[QueuedPrompt], mode: PersonaLane, cols: usize) -> Vec<String> {
     let mut lines = Vec::new();
-    for (index, prompt) in prompts.iter().enumerate() {
-        if index > 0 {
+    for prompt in prompts {
+        // 后台任务的报告不是「有人排着队等说话」：它排在队里不该占一条气泡
+        // 加一行「排队中」。这一轮吃进它的时候，它会作为时间线上的一条通知
+        // 出现（用户 09-21 截图）。
+        if repl::jobs::is_job_wake_headline(&prompt.display_content) {
+            continue;
+        }
+        if !lines.is_empty() {
             lines.push(String::new());
         }
         lines.extend(submitted_echo_lines(mode, &prompt.display_content, cols));

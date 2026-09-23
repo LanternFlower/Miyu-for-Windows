@@ -8,6 +8,7 @@ mod assets;
 mod compact;
 mod context_anchor;
 mod goals;
+mod interrupted_replay;
 mod platform;
 mod queue;
 mod redo;

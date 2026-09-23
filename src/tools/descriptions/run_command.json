@@ -1,25 +1,25 @@
 {
   "name": "run_command",
   "display_name": "运行命令",
-  "description": "Run a shell command or a complex shell script. Use background=true with a short title for long work: it returns a job_id immediately; check progress with job(action=status), stop with job(action=stop), and you are notified automatically when it finishes. Inside scripts, `miyu tool-call <name> --stdin` calls structured tools as this session. Internal calls execute in the daemon-side session workspace: they do not inherit the script's environment or working directory, so pass data between tools via argument JSON or files.",
+  "description": "Run a shell command or a multi-line shell script. Use background=true with a short title for long work: it returns a job_id at once, job(action=status) checks it, job(action=stop) kills it, and you are notified when it finishes. Inside a script, `miyu tool-call <name> --stdin` calls structured tools as this session; those run in the daemon-side session workspace and inherit neither the script's environment nor its working directory, so pass data through argument JSON or files.",
   "parameters": {
     "type": "object",
     "properties": {
       "command": {
         "type": "string",
-        "description": "The shell command or script to run. May contain complex multi-line commands; prefer edit for file edits."
+        "description": "The command or script. Prefer edit for file edits."
       },
       "timeout_seconds": {
         "type": "integer",
-        "description": "Optional timeout in seconds (1-600, default 120). Ignored when background=true."
+        "description": "1-600, default 120. Ignored when background=true."
       },
       "background": {
         "type": "boolean",
-        "description": "Run detached in the background and return a short job_id immediately. Suitable for commands expected to take longer than about 30 seconds."
+        "description": "Detach and return a job_id. Use it above roughly 30 seconds."
       },
       "title": {
         "type": "string",
-        "description": "What this command is for, at most 16 characters (e.g. \"release build\"). Required. The UI shows it in place of the command text, so a reader who cannot read shell still knows what the command does."
+        "description": "Required. What the command is for, at most 16 characters (e.g. \"release build\"). The UI shows it instead of the command text, so a reader who cannot read shell still knows what is happening."
       }
     },
     "required": [

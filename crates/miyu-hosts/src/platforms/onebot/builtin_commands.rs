@@ -357,6 +357,7 @@ pub(in crate::platforms::onebot) fn execute_models_command(
             extra_prompt: String::new(),
             session_limits: None,
             probability_reply: None,
+            probability_reply_rate: None,
             ignore_sleep_hours: None,
         });
     route.text_models = Some(vec![miyu_base::config::ActiveProviderModelConfig {

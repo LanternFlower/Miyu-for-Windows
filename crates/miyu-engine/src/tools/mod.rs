@@ -1,5 +1,4 @@
 mod alarm;
-mod api_quota;
 mod apply_patch;
 mod archlinux;
 mod artifact;
@@ -44,6 +43,7 @@ pub mod subagent;
 /// 渲染层要认它:认不出的子代理标记不能原样打到屏幕上(hosts 那边的兜底分支)。
 pub use subagent::{is_subagent_marker, SUBAGENT_SESSION_EXCLUDED, SUBAGENT_SESSION_MARKER};
 pub(crate) use subagent::{peek_subagent_trace, record_subagent_trace, take_subagent_trace};
+pub use voice_chat::TOOL_NAME as END_VOICE_CHAT_TOOL;
 pub mod subagent_runner;
 mod todowrite;
 pub(crate) mod voice_chat;
@@ -56,7 +56,9 @@ pub use tool_display::*;
 pub mod usage_query;
 pub mod vision;
 mod web;
-mod web_images;
+// 平台回合要换一份结果指令(register_platform),所以和 vision/platform_outreach
+// 一样对场所层开放。
+pub mod web_images;
 
 use miyu_base::config::{AppConfig, PersonaManifest};
 use miyu_base::paths::MiyuPaths;

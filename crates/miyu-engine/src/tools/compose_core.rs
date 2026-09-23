@@ -10,7 +10,7 @@ pub fn register(
     let plugin = |id: &str| manifest.plugin_enabled(id);
     // ── core ──
     if plugin("files") {
-        // 读检索(read/glob/grep)、check_os_info、trash_path 一整套。
+        // 读检索(read/glob/grep)、trash_path 一整套。
         default_tools::register(
             registry,
             config.skills.allow_command_execution,

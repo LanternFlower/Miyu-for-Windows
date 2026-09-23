@@ -88,16 +88,38 @@ pub(crate) fn marker_exists_at(path: &Path, label: &str) -> Result<bool> {
     }
 }
 
+/// 「锁被占着」要观察够久才算数。
+///
+/// 一次 `LOCK_NB` 分不清两种持有者:真 daemon 会把锁攥一辈子,而
+/// [`runtime_lock_is_held`] 这类**会改状态的探针**只攥几微秒(它自己就要先
+/// `LOCK_EX` 才能知道能不能拿到,再 `LOCK_UN` 放掉)。撞上后者那一瞬就判
+/// 「daemon 在跑」,会让搬家/回滚静默地什么都不做——09-21 这条在
+/// `home_layout_rollback_restores_the_legacy_tree` 上表现为并行跑测试时
+/// 间歇性失败(实测:失败后隔 2ms 重试必成)。
+///
+/// 所以连续观察一小段时间:期间只要有一刻拿得到,就不是 daemon。拿得到的
+/// 常路一次就返回,不付任何代价;真被 daemon 占着才会多花这 50ms,而那条路
+/// 本来就要走「让位/报错」的慢流程。
+const RUNTIME_LOCK_SETTLE: std::time::Duration = std::time::Duration::from_millis(10);
+const RUNTIME_LOCK_ATTEMPTS: usize = 6;
+
 pub(crate) fn try_acquire_runtime_lock(path: &Path) -> Result<Option<File>> {
     let mut options = OpenOptions::new();
     options.create(true).truncate(false).read(true).write(true);
     sys::apply_mode(&mut options, 0o600);
     let file = options.open(path)?;
-    Ok(if sys::try_lock_exclusive(&file)? {
-        Some(file)
-    } else {
-        None
-    })
+    // 上游 v0.6.2 的「连看几次」：对方可能正处在放锁的路上，一次抢不到就等
+    // 10ms 再看，最多六次（见上面的 RUNTIME_LOCK_SETTLE 注释）。锁的后端仍走
+    // sys 垫片——Unix 是 flock、Windows 是 LockFileEx。
+    for attempt in 0..RUNTIME_LOCK_ATTEMPTS {
+        if sys::try_lock_exclusive(&file)? {
+            return Ok(Some(file));
+        }
+        if attempt + 1 < RUNTIME_LOCK_ATTEMPTS {
+            std::thread::sleep(RUNTIME_LOCK_SETTLE);
+        }
+    }
+    Ok(None)
 }
 
 #[derive(Clone, Debug)]

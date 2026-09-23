@@ -37,6 +37,23 @@ impl super::super::LiveReplTail {
         use crossterm::event::{
             Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
         };
+        // 切到别的窗口：提亮立刻熄掉。这条只覆盖「焦点真的变了」，而焦点跟随
+        // 鼠标没开的桌面上（用户就是这种）指针飘出去焦点是不变的——那条靠
+        // `expire_hover`。事件不吞掉：编辑器还要靠它更新「窗口有没有焦点」。
+        if matches!(event, Event::FocusLost) {
+            self.last_mouse_move = None;
+            if self
+                .screen
+                .as_mut()
+                .is_some_and(super::super::screen::Screen::clear_hover)
+            {
+                self.repaint_screen()?;
+            }
+            if self.job_hover.take().is_some() {
+                self.tick_job_strip()?;
+            }
+            return Ok(false);
+        }
         let Some(screen) = &self.screen else {
             return Ok(false);
         };
@@ -47,6 +64,9 @@ impl super::super::LiveReplTail {
 
         if let Event::Mouse(mouse) = event {
             let (column, row) = (mouse.column, mouse.row);
+            if matches!(mouse.kind, crossterm::event::MouseEventKind::Moved) {
+                self.last_mouse_move = Some(((column, row), std::time::Instant::now()));
+            }
             if std::env::var_os("MIYU_SCREEN_TRACE").is_some() {
                 use std::io::Write as _;
                 if let Ok(mut f) = std::fs::OpenOptions::new()

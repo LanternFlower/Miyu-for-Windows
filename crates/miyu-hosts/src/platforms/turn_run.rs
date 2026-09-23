@@ -14,6 +14,10 @@ pub(crate) struct TurnOutcome {
     /// Image asset ids published during the turn (`tool.image` events);
     /// bridges load the bytes and re-send them platform-natively.
     pub(crate) image_assets: Vec<String>,
+    /// `image_assets` 里由表情包工具产出的那些(09-21 用户要求)。真人不会把
+    /// 一句话和一个表情塞进同一条消息,所以投递时表情单独成一条——这里只标
+    /// 出身,拆不拆由 `onebot::outbound` 决定。
+    pub(crate) meme_assets: std::collections::BTreeSet<String>,
     /// Byte ranges produced after confirmed direct long-image tool sends.
     /// Direct-send acknowledgements are removed from the final fallback text.
     pub(crate) suppressed_reply_ranges: Vec<(usize, usize)>,
@@ -138,7 +142,12 @@ pub(crate) async fn run_platform_turn(
     let deadline = tokio::time::Instant::now() + PLATFORM_TURN_TIMEOUT;
     let mut text = String::new();
     let mut image_assets = Vec::new();
+    let mut meme_assets = std::collections::BTreeSet::new();
     let mut reply_suppression = ReplySuppression::default();
+    // 这次 use_meme 调用声明了「表情就是全部回复」(用户 09-22:表情够表达时
+    // 真人只发表情、一个字不说)。在 started 记下、finished 成功时才落闸——
+    // 失败也落的话,她连「表情没发出去」这句解释都发不了。
+    let mut meme_is_the_whole_reply = false;
     let mut last_id = after;
     let dispatch = loop {
         let record = if let Some(record) = subscription.pending.pop_front() {
@@ -216,10 +225,12 @@ pub(crate) async fn run_platform_turn(
             "tool.started" => {
                 let readable = format_platform_tool_started_log(&run_id, &data);
                 tracing::info!(target: "miyu::qq", "\n{readable}");
-                let host_authored = data
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .is_some_and(crate::platforms::plugins::tool_authors_host_reply);
+                let tool_name = data.get("name").and_then(Value::as_str);
+                if tool_name == Some("use_meme") {
+                    meme_is_the_whole_reply = meme_alone_requested(&data);
+                }
+                let host_authored =
+                    tool_name.is_some_and(crate::platforms::plugins::tool_authors_host_reply);
                 if intermediate_replies && !host_authored {
                     if let Some(context) = platform_context.as_ref() {
                         flush_intermediate_reply(context, &text, &reply_suppression).await;
@@ -234,6 +245,12 @@ pub(crate) async fn run_platform_turn(
                     .and_then(|asset| asset.get("id"))
                     .and_then(Value::as_str)
                 {
+                    // 事件里的 name 是真工具名(event_map 的 real_tool_name 已经
+                    // 把 "use_meme:show" 剥成 "use_meme")。资产表的 tool_id 存的
+                    // 是调用 id(call_00_…),认不出工具,所以认这里。
+                    if data.get("name").and_then(Value::as_str) == Some("use_meme") {
+                        meme_assets.insert(id.to_string());
+                    }
                     image_assets.push(id.to_string());
                 } else {
                     // 无 asset 的 tool.image 是资产落库失败/turn 未知的错误
@@ -259,6 +276,10 @@ pub(crate) async fn run_platform_turn(
                     .and_then(|context| context.take_final_reply_suppression_start(text.len()));
                 if let Some(start) = suppression_start {
                     reply_suppression.direct_send_succeeded(start);
+                }
+                // alone 那一路:发成了就把此后的正文整段截掉,只留表情那一条。
+                if std::mem::take(&mut meme_is_the_whole_reply) && tool_call_succeeded(&data) {
+                    reply_suppression.direct_send_succeeded(text.len());
                 }
             }
             "queue.consumed" => {
@@ -289,6 +310,7 @@ pub(crate) async fn run_platform_turn(
                         .and_then(Value::as_str)
                         .map(str::to_string),
                     image_assets,
+                    meme_assets,
                     suppressed_reply_ranges,
                     final_reply_already_sent,
                 });
@@ -310,4 +332,75 @@ pub(crate) async fn run_platform_turn(
         }
     };
     Ok(dispatch)
+}
+
+/// 这次 `use_meme` 调用声明了「表情就是全部回复」吗。
+///
+/// 读的是 `tool.started` 事件里的 `arguments`,而**它是一段 JSON 字符串**,
+/// 不是对象(日志那侧一直是 `Value::as_str`)。09-22 第一版当对象取,于是
+/// `alone` 永远读不到——真模型三轮都传了 `alone: true`,闸一次没落,而单测喂的
+/// 是对象所以跟着一起绿。用例现在按事件的真形态写。
+fn meme_alone_requested(data: &Value) -> bool {
+    let Some(raw) = data.get("arguments") else {
+        return false;
+    };
+    let parsed;
+    let arguments = match raw {
+        Value::String(text) => {
+            parsed = serde_json::from_str::<Value>(text).unwrap_or(Value::Null);
+            &parsed
+        }
+        other => other,
+    };
+    arguments
+        .get("alone")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// `tool.finished` 说这次调用成功了吗。失败不落闸:否则她连「表情没发出去」
+/// 这句解释都发不了。
+fn tool_call_succeeded(data: &Value) -> bool {
+    data.get("ok").and_then(Value::as_bool) == Some(true)
+}
+
+#[cfg(test)]
+mod meme_alone_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 用户 09-22:表情够表达意思时真人只发表情、一个字不说。这条钉住事件里
+    /// 读的字段——名字写错只会静默失效。
+    /// **事件里的 `arguments` 是一段 JSON 字符串**,用例必须按这个形态写。
+    /// 第一版按对象写,于是代码里那个「当对象取」的 bug 跟着一起绿了,直到真
+    /// 模型三轮都传了 `alone: true` 而闸一次没落才暴露。
+    #[test]
+    fn alone_is_read_from_the_started_arguments() {
+        let event = |arguments: &str| json!({ "name": "use_meme", "arguments": arguments });
+        assert!(meme_alone_requested(&event(
+            r#"{"action":"show","alone":true,"id":"5e6d70f"}"#
+        )));
+        assert!(!meme_alone_requested(&event(
+            r#"{"action":"show","alone":false}"#
+        )));
+        // 没传就是不声明:老行为(配字照发)不变。
+        assert!(!meme_alone_requested(&event(r#"{"action":"show"}"#)));
+        assert!(!meme_alone_requested(&event("")));
+        assert!(!meme_alone_requested(&event("not json")));
+        assert!(!meme_alone_requested(&json!({ "name": "use_meme" })));
+        // 字符串 "true" 不算:宁可不落闸,也不要把她的话吃掉。
+        assert!(!meme_alone_requested(&event(r#"{"alone":"true"}"#)));
+        // 万一哪天事件改成直接给对象,也照样认。
+        assert!(meme_alone_requested(
+            &json!({ "name": "use_meme", "arguments": { "alone": true } })
+        ));
+    }
+
+    /// 只有成功才落闸。
+    #[test]
+    fn only_a_successful_call_arms_the_latch() {
+        assert!(tool_call_succeeded(&json!({ "ok": true })));
+        assert!(!tool_call_succeeded(&json!({ "ok": false })));
+        assert!(!tool_call_succeeded(&json!({})));
+    }
 }

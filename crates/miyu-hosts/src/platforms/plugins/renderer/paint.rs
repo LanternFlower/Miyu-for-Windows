@@ -163,6 +163,18 @@ pub(in crate::platforms::plugins::renderer) fn render_pages(
                 .get(placement.block_index)
                 .ok_or_else(|| anyhow!("renderer placement references a missing block"))?;
             let destination_y = config.padding.saturating_add(placement.y);
+            if let Some(diagram) = block.image.as_ref() {
+                // 图片块不可切,所以 placement 一定覆盖整块,直接整张贴。
+                // 窄于栏宽就居中——流程图常常比栏窄,靠左看着像没对齐。
+                let offset = COLUMN_WIDTH.saturating_sub(diagram.width()) / 2;
+                blit(
+                    &mut image,
+                    diagram,
+                    column_x.saturating_add(offset),
+                    destination_y,
+                );
+                continue;
+            }
             if block.table.is_some() {
                 draw_table_fragment(
                     &mut image,
@@ -755,4 +767,18 @@ pub(in crate::platforms::plugins::renderer) fn fill_rect(
 
 pub(in crate::platforms::plugins::renderer) fn color(rgba: [u8; 4]) -> Color {
     Color::rgba(rgba[0], rgba[1], rgba[2], rgba[3])
+}
+
+/// 把一张位图贴到画布上（超出画布的部分丢掉）。
+///
+/// 源图是 mermaid 渲染器铺过白底的不透明位图，所以直接覆盖，不做 alpha 混合。
+fn blit(canvas: &mut RgbaImage, source: &RgbaImage, x: u32, y: u32) {
+    let (canvas_width, canvas_height) = (canvas.width(), canvas.height());
+    for (source_x, source_y, pixel) in source.enumerate_pixels() {
+        let (target_x, target_y) = (x.saturating_add(source_x), y.saturating_add(source_y));
+        if target_x >= canvas_width || target_y >= canvas_height {
+            continue;
+        }
+        canvas.put_pixel(target_x, target_y, *pixel);
+    }
 }

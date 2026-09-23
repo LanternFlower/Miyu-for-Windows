@@ -2460,7 +2460,8 @@ a.path-link {
   font-size: 12px;
 }
 
-/* 渲染器给的是浅底图：暗色主题下衬一层白，免得深色线条糊进背景。
+/* 图的配色由服务端换成主题变量（09-22），底是透明的，卡片自己的底透上来——
+   所以这里不再衬白。
    限高：聊天流里一张几千像素高的图会把整段对话挤没，而这里**点一下就能在
    灯箱里看原图**（终端那边没有灯箱，所以那边反过来不限高）。SVG 是矢量，
    缩着看不掉精度。 */
@@ -2469,7 +2470,6 @@ a.path-link {
   max-height: min(60vh, 520px);
   height: auto;
   border-radius: calc(var(--radius) - 4px);
-  background: #fff;
 }
 
 .mermaid-figure.is-zoomable {

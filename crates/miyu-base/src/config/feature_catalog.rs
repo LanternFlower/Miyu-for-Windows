@@ -163,7 +163,9 @@ pub struct FeatureSources {
     /// 情绪与好感度只在通讯平台层生效,QQ 没开就不摆。
     pub emotion_available: bool,
     pub scripts: Vec<(String, String, String, bool)>,
-    pub skills: Vec<(String, String, bool)>,
+    /// 技能 (id, 界面名, 界面说明, 是否内置)。界面名/说明走人槽,模型槽
+    /// (`description`)是英文触发词,摆进设置页会中英混杂(AGENTS §1.5.1)。
+    pub skills: Vec<(String, String, String, bool)>,
     /// MCP 服务器 (id, 显示名, 一句话说明):调用方只列机器级 `mcp.enabled` 开着、
     /// 且 `servers[].enabled` 的;机器级关着就传空,整格不摆、清单里的白名单也不动。
     pub mcp_servers: Vec<(String, String, String)>,
@@ -271,13 +273,13 @@ pub fn catalog(
             machine_on: None,
         });
     }
-    for (name, hint, builtin) in &sources.skills {
+    for (id, name, hint, builtin) in &sources.skills {
         items.push(FeatureItem {
             kind: FeatureKind::Skill,
-            id: name.clone(),
+            id: id.clone(),
             name: name.clone(),
             hint: hint.clone(),
-            on: extension_on(&manifest.plugins.skills, name, *builtin, default_persona),
+            on: extension_on(&manifest.plugins.skills, id, *builtin, default_persona),
             builtin: *builtin,
             settings: false,
             machine_on: None,
@@ -412,8 +414,8 @@ mod tests {
                 ("b1".into(), "内置一".into(), String::new(), true),
             ],
             skills: vec![
-                ("k1".into(), "技能一".into(), false),
-                ("bk".into(), "内置技能".into(), true),
+                ("k1".into(), "技能一".into(), "说明一".into(), false),
+                ("bk".into(), "内置技能".into(), "内置说明".into(), true),
             ],
             mcp_servers: vec![
                 ("m1".into(), "服务器一".into(), "npx server-one".into()),

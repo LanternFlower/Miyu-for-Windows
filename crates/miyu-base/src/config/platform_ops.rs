@@ -160,6 +160,13 @@ impl AppConfig {
         if route.extra_prompt.chars().count() > 200_000 || route.extra_prompt.contains('\0') {
             bail!("QQ conversation extra_prompt is invalid or exceeds 200000 characters");
         }
+        // normalize() 会把范围收拢,但手改 config.jsonc 进来的没走那一步。
+        if route
+            .probability_reply_rate
+            .is_some_and(|rate| !(0.0..=1.0).contains(&rate))
+        {
+            bail!("QQ conversation probability_reply_rate must be between 0 and 1");
+        }
         if let PlatformPersonaOverride::Custom { name } = &route.persona {
             let path = Path::new(name);
             if name.is_empty()

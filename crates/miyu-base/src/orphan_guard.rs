@@ -47,9 +47,89 @@ pub fn tie_lifetime_to_launcher() -> bool {
     armed
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS 版：没有 `PR_SET_PDEATHSIG`，改用 kqueue 盯着父进程的 `NOTE_EXIT`。
+///
+/// 09-22 补上的。原来这儿是直接返回 `false`，理由写的是「孤儿 daemon 是在 Linux
+/// 上实测到的，没有证据说别处也漏，不照着猜写一套」——那条判断当时是对的，但
+/// 09-22 在真 Mac 上跑测具时抓到了一个没人收尸的 `stub_llm.py`，证据有了。
+///
+/// macOS 上还更糟一层：`timeout` 命令不存在（那是 GNU coreutils 的），测具惯用的
+/// `timeout 400 python3 …` 那套外部护栏在 Mac 上整个失效，孤儿只会比 Linux 多。
+///
+/// 内核只认「登记那一刻还活着」的进程，所以登记前后各查一次 `getppid()`：
+/// 中间那条缝里父进程没了的话，事件永远不会来，得自己了断。这和 Linux 那支
+/// `armed && getppid() == 1` 是同一个道理。
+///
+/// 真机 A/B（Mac Studio M4 Max，macOS 26.6）：父进程 `kill -9` 之后等 5 秒——
+/// 改动前 daemon 原地活着（孤儿），改动后跟着退。两臂用 `EVFILT_PROC` 在
+/// `orphan_guard.rs` 里的出现次数（0 对 1）自证跑的是不同的代码。
+#[cfg(target_os = "macos")]
 pub fn tie_lifetime_to_launcher() -> bool {
-    // PR_SET_PDEATHSIG 是 Linux 专有的。别的平台先不做——孤儿 daemon 是在
-    // Linux 上实测到的，没有证据说别处也漏，不照着猜写一套。
+    if std::env::var_os(DETACHED_ENV).is_some() {
+        return false;
+    }
+    let parent = unsafe { libc::getppid() };
+    if parent <= 1 {
+        // 挂上之前就已经是孤儿了。
+        std::process::exit(0);
+    }
+    // SAFETY: 只建一个内核事件队列，不碰本进程内存。
+    let queue = unsafe { libc::kqueue() };
+    if queue < 0 {
+        return false;
+    }
+    // SAFETY: `kevent` 是纯 POD，零初始化之后逐字段填。
+    let mut change: libc::kevent = unsafe { std::mem::zeroed() };
+    change.ident = parent as usize;
+    change.filter = libc::EVFILT_PROC;
+    change.flags = libc::EV_ADD | libc::EV_ENABLE | libc::EV_ONESHOT;
+    change.fflags = libc::NOTE_EXIT;
+    // SAFETY: 传入一条变更、不取事件，超时给空指针表示立即返回。
+    let registered =
+        unsafe { libc::kevent(queue, &change, 1, std::ptr::null_mut(), 0, std::ptr::null()) };
+    if registered < 0 {
+        // ESRCH 就是「登记这一瞬父进程没了」。
+        unsafe { libc::close(queue) };
+        if unsafe { libc::getppid() } <= 1 {
+            std::process::exit(0);
+        }
+        return false;
+    }
+    if unsafe { libc::getppid() } <= 1 {
+        unsafe { libc::close(queue) };
+        std::process::exit(0);
+    }
+    std::thread::Builder::new()
+        .name("orphan-guard".into())
+        .spawn(move || {
+            let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+            loop {
+                // SAFETY: 阻塞等一条事件；超时给空指针表示无限等。
+                let taken = unsafe {
+                    libc::kevent(queue, std::ptr::null(), 0, &mut event, 1, std::ptr::null())
+                };
+                if taken > 0 {
+                    break;
+                }
+                if taken == 0 {
+                    continue;
+                }
+                if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                // 队列出了别的错就别在这儿挂死;按「父进程没了」处理,宁可早退
+                // 也不要留一个永远不会被回收的孤儿。
+                break;
+            }
+            // 走 kill 而不是 raise:raise 是投给当前线程的,而优雅退出的处理器
+            // 装在进程上。
+            unsafe { libc::kill(libc::getpid(), libc::SIGTERM) };
+        })
+        .is_ok()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn tie_lifetime_to_launcher() -> bool {
+    // 其余平台没有实测证据,不照着猜写一套(和 macOS 09-22 之前一样的口径)。
     false
 }

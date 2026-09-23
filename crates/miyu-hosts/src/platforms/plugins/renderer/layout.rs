@@ -21,6 +21,8 @@ pub(in crate::platforms::plugins::renderer) struct LayoutBlock {
     pub(in crate::platforms::plugins::renderer) buffer: Option<Buffer>,
     pub(in crate::platforms::plugins::renderer) table: Option<LayoutTable>,
     pub(in crate::platforms::plugins::renderer) task: Option<TaskBox>,
+    /// 已解码的块内位图（`BlockKind::Image`）。
+    pub(in crate::platforms::plugins::renderer) image: Option<image::RgbaImage>,
     pub(in crate::platforms::plugins::renderer) total_height: u32,
     pub(in crate::platforms::plugins::renderer) vertical_padding: u32,
     pub(in crate::platforms::plugins::renderer) inset_left: u32,
@@ -80,12 +82,56 @@ pub(in crate::platforms::plugins::renderer) fn layout_block(
     palette: Palette,
     fonts: &ResolvedFonts,
 ) -> Result<LayoutBlock> {
+    let mut block = block;
+    if block.kind == BlockKind::Image {
+        // 光栅化放在这儿而不是解析阶段:底色要取**页面主题**的纸面色,调色盘
+        // 只有到这一步才拿得到(用户 09-22:正文米色、图纯白,一眼看出是贴上去的)。
+        let source = block
+            .spans
+            .iter()
+            .map(|span| span.text.as_str())
+            .collect::<String>();
+        let decoded = crate::render::mermaid::render_png_in_box(
+            &source,
+            COLUMN_WIDTH,
+            super::MAX_DIAGRAM_HEIGHT,
+            palette.background,
+        )
+        .and_then(|png| image::load_from_memory(&png).ok())
+        .map(|decoded| decoded.to_rgba8());
+        match decoded {
+            Some(decoded) => {
+                // `boundaries` 只有末尾一个 = 整块不可切:图中间切一刀就废了。
+                let height = decoded.height();
+                return Ok(LayoutBlock {
+                    kind: BlockKind::Image,
+                    buffer: None,
+                    table: None,
+                    task: None,
+                    image: Some(decoded),
+                    total_height: height,
+                    vertical_padding: 0,
+                    inset_left: 0,
+                    boundaries: vec![height],
+                    margin_before: 24,
+                    margin_after: 24,
+                    default_color: color(palette.text),
+                    inline_code_background: palette.code_background,
+                });
+            }
+            // 画不出来(语法错、图型不支持)就当回普通代码块:源码还在 spans 里,
+            // 她至少看得见自己写了什么。与终端「认不出就退回代码块」同一条规矩。
+            None => block.kind = BlockKind::Code,
+        }
+    }
+
     if block.kind == BlockKind::Rule {
         return Ok(LayoutBlock {
             kind: block.kind,
             buffer: None,
             table: None,
             task: None,
+            image: None,
             total_height: 28,
             vertical_padding: 0,
             inset_left: 0,
@@ -185,6 +231,7 @@ pub(in crate::platforms::plugins::renderer) fn layout_block(
         palette.text
     };
     Ok(LayoutBlock {
+        image: None,
         kind: block.kind,
         buffer: Some(buffer),
         table: None,
@@ -288,6 +335,7 @@ pub(in crate::platforms::plugins::renderer) fn layout_table(
     Ok(LayoutBlock {
         kind: BlockKind::Table,
         buffer: None,
+        image: None,
         table: Some(LayoutTable {
             rows,
             header_height,
@@ -708,6 +756,8 @@ pub(in crate::platforms::plugins::renderer) fn block_margins(
         BlockKind::Heading(1) => (font_size, font_size / 2),
         BlockKind::Heading(_) => (font_size / 2, small),
         BlockKind::Code | BlockKind::Table => (font_size / 2, font_size / 2),
+        // 图自带白底,上下留足才不会贴着正文
+        BlockKind::Image => (font_size / 2, font_size / 2),
         BlockKind::Rule => (font_size / 2, font_size / 2),
         BlockKind::Quote => (small, small),
         BlockKind::ListItem { .. } => (small / 2, small / 2),

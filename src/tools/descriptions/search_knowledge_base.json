@@ -1,13 +1,13 @@
 {
   "name": "search_knowledge_base",
   "display_name": "搜索知识库",
-  "description": "Search the local knowledge base. by=content (default) searches file contents; by=name finds files by name, directory, extension, or path fragment. Content search returns paths plus snippets. When snippets are not enough, read the file with read using its kb: path. Mention paths only when useful or asked.",
+  "description": "Search the local knowledge base. by=content (default) searches contents and returns paths plus snippets; by=name finds files by name, directory, extension or path fragment. When a snippet is not enough, read the file with read using its kb: path. Mention paths only when useful or asked.",
   "parameters": {
     "type": "object",
     "properties": {
       "query": {
         "type": "string",
-        "description": "Search terms, the user's question, or — with by=name — a file name, directory, extension, or path fragment."
+        "description": "Search terms or the user's question; with by=name, a name, directory, extension or path fragment."
       },
       "by": {
         "type": "string",
@@ -15,11 +15,10 @@
           "content",
           "name"
         ],
-        "description": "content searches contents, name searches paths. Defaults to content."
+        "description": "Default content."
       },
       "max_results": {
-        "type": "integer",
-        "description": "Optional limit on the number of results."
+        "type": "integer"
       }
     },
     "required": [

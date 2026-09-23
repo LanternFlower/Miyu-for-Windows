@@ -137,6 +137,9 @@ class Handler(BaseHTTPRequestHandler):
         # 后台子代理：派出去那条的 prompt 里带 `BGSUB-SENT`，历史里认得出来，
         # 免得每轮再派一条。
         wants_bg_subagent = b"STUB_SUBBG" in body and b"BGSUB-SENT" not in body
+        # 消息里带 `STUB_USAGE` 就去查一次本会话用量，不看阶段表——阶段表是
+        # 一轮内跑完的，而「这个会话烧了多少」要等**上一轮**落库才有数。
+        wants_usage = b"STUB_USAGE" in body and b"Token \xe6\xb6\x88\xe8\x80\x97" not in body
         inside_subagent = (
             SUBAGENT_MARK.encode() in body and MAIN_MARK.encode() not in body
         )
@@ -146,6 +149,8 @@ class Handler(BaseHTTPRequestHandler):
             stage = "tool" if done < rounds else None
         elif wants_bg_subagent:
             stage = "background_subagent"
+        elif wants_usage:
+            stage = "usage"
         elif wants_background:
             stage = "background2"
         else:
@@ -257,6 +262,9 @@ class Handler(BaseHTTPRequestHandler):
                     "background": True,
                     "title": "走查后台任务",
                 }, ensure_ascii=False)
+            elif stage == "usage":
+                name = "query_session_token_usage"
+                arguments = "{}"
             elif stage == "background2":
                 # 第二条：命令里带 `BG2` 当"已经派过"的记号，免得每轮再派一条。
                 name = "run_command"
@@ -307,10 +315,13 @@ class Handler(BaseHTTPRequestHandler):
             # 带工具调用的那一轮也报 usage。真供应商都报，而子代理跑到一半时
             # 面板标题与状态行上的词元数就是从这儿来的——不报的话那两个数一路
             # 是 0，测具看着"有数"其实什么都没验到。
+            tool_prompt = 120
+            if os.environ.get("STUB_USAGE_BY_SIZE"):
+                tool_prompt += len(body) // 4
             self._sse({"choices": [{"index": 0, "delta": {},
                                     "finish_reason": "tool_calls"}],
-                       "usage": {"prompt_tokens": 120, "completion_tokens": 30,
-                                 "total_tokens": 150}})
+                       "usage": {"prompt_tokens": tool_prompt, "completion_tokens": 30,
+                                 "total_tokens": tool_prompt + 30}})
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
             return
@@ -331,6 +342,11 @@ class Handler(BaseHTTPRequestHandler):
         # 上下文读数才有得变，走查看得出「即时刷新」。
         user_turns = body.count(b'"role":"user"') + body.count(b'"role": "user"')
         prompt_tokens = 12 + 5 * user_turns
+        # 置 STUB_USAGE_BY_SIZE=1：prompt 用量改按**请求体积**算（≈4 字节 1 个
+        # token），像真供应商那样随上下文一起涨。默认关着——别的走查有按现在
+        # 这个小数目写的断言。
+        if os.environ.get("STUB_USAGE_BY_SIZE"):
+            prompt_tokens += len(body) // 4
         self._sse({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                    "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion,
                              "total_tokens": prompt_tokens + completion}})

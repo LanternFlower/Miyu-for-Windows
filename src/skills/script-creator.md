@@ -1,12 +1,29 @@
 ---
 name: script-creator
-description: Write and register a Miyu script tool. Use when the user wants a new command-line script that Miyu can call as a tool, or when a script fails to register or run.
+display_name: 脚本创作
+summary: 写一个命令行脚本并注册成 Miyu 的工具
+description: Write and register a Miyu script tool. Use when the user wants a new command-line script Miyu can call as a tool, or when a script fails to register or run — 写脚本、加个工具、注册脚本、脚本跑不起来。
 compatibility: Miyu built-in script authoring workflow
 ---
 
 # Script Creator
 
 A script tool is one executable file. Miyu reads the tool contract from comment lines at the top of the file, runs the file with JSON arguments, and hands stdout back to the model.
+
+## Calling manage_script
+
+`manage_script` is not on the always-loaded tool list: registering a script is a
+once-in-a-while action, so it lives behind this skill. Call it through the tool
+bridge with `run_command`:
+
+```bash
+miyu tool-call manage_script --stdin <<'JSON'
+{"action": "register", "path": "/abs/path/to/my-script"}
+JSON
+```
+
+`miyu tool-call manage_script --describe` prints the full parameter contract.
+Everything below that says "call `manage_script`" means this.
 
 ## Workflow
 

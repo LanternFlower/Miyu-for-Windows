@@ -129,10 +129,13 @@ async fn usage_query_tool_reports_platform_history() {
     let mut registry = miyu_engine::tools::ToolRegistry::new();
     register_platform_tools(&mut registry, Arc::new(context));
     let output = registry
-        .call("query_token_usage", r#"{"range":"7d"}"#)
+        .call("query_system_token_usage", r#"{"range":"7d"}"#)
         .await
         .unwrap();
-    assert!(output.contains("**Token 消耗 · 近 7 天**"), "{output}");
+    assert!(
+        output.contains("**Token 消耗 · 全局 · 近 7 天**"),
+        "{output}"
+    );
     assert!(output.contains("**QQ**"), "{output}");
     assert!(output.contains("test-model"), "{output}");
     assert!(output.contains("缓存命中率 **40%**"), "{output}");
@@ -356,4 +359,83 @@ async fn one_recall_tool_is_registered_for_every_qq_turn() {
     let mut member_tools = miyu_engine::tools::ToolRegistry::new();
     register_platform_tools(&mut member_tools, member_group);
     assert!(member_tools.get("qq_withdraw_message").is_some());
+}
+
+/// 用她自己那件发消息工具说过话之后，回合末尾的正文不再单独发一条。
+///
+/// 用户 09-21：搜图之后她先发了图文，又补一条「图片发出来了，就长这样」——
+/// QQ 里是两条。先试过只改 `search_web_images` 结果里的收尾指令（不再要求她
+/// 写最终回复），真模型 A/B 两组都照样补第二条，措辞按不住，所以改用
+/// `send_voice_message` 那条现成的结构闸。
+///
+/// 只发图/发文件时不闸：那时最终回复是配文，是有用的。
+///
+/// 夹具必须用 `built_in_*_context`：`test_turn_context` 装的
+/// `SuppressingToolPlugin` 恒置抑制位，在它上面测这个闸是空断言。
+#[tokio::test]
+async fn sending_text_with_the_tool_suppresses_the_trailing_final_reply() {
+    let (_temp, context) = built_in_admin_context(ConversationKind::Private);
+    let mut registry = miyu_engine::tools::ToolRegistry::new();
+    register_platform_tools(&mut registry, context.clone());
+
+    // 闸一开始是关着的。
+    assert_eq!(context.take_final_reply_suppression_start(7), None);
+
+    registry
+        .call(
+            "send_message_to_user",
+            &json!({ "text": "拿去，营多捞面" }).to_string(),
+        )
+        .await
+        .expect("发送该成功");
+    assert_eq!(
+        context.take_final_reply_suppression_start(7),
+        Some(7),
+        "带文字发完之后，此后的正文该被截掉"
+    );
+}
+
+/// 反面：只发图不带文字时闸不落，最终回复照发（那是配文）。
+#[tokio::test]
+async fn sending_only_an_image_leaves_the_final_reply_alone() {
+    let (temp, context) = built_in_admin_context(ConversationKind::Private);
+    assert!(context.host_tools_allowed(), "发本地图要过附件门槛");
+    let mut registry = miyu_engine::tools::ToolRegistry::new();
+    register_platform_tools(&mut registry, context.clone());
+
+    let path = temp.path().join("pic.png");
+    image::RgbaImage::from_pixel(2, 2, image::Rgba([10, 200, 10, 255]))
+        .save(&path)
+        .unwrap();
+    registry
+        .call(
+            "send_message_to_user",
+            &json!({ "images": [{ "path": path, "alt": "图" }] }).to_string(),
+        )
+        .await
+        .expect("发送该成功");
+    assert_eq!(
+        context.take_final_reply_suppression_start(7),
+        None,
+        "只发了图，最终回复是配文，不该被截"
+    );
+}
+
+/// `render_image` 必须在**常规**平台工具面上就有，不能只挂在「本回合带附件」
+/// 那个钩子上。
+///
+/// 用户 09-22 真机实录：只挂在 `register_file_reader` 上时，agy 的 MCP 桥某些
+/// 回合看不见这件工具，她只能瞎猜名字，最后撞上
+/// `unknown tool: "mcp_miyu_render_image"`。
+#[test]
+fn render_image_is_on_the_plain_platform_face() {
+    let (_temp, context, _adapter) = test_turn_context(false);
+    let mut registry = miyu_engine::tools::ToolRegistry::new();
+    register_platform_tools(&mut registry, Arc::new(context));
+    let tool = registry
+        .get("render_image")
+        .expect("常规工具面上就该有出图工具");
+    let parameters = tool.parameters.to_string();
+    assert!(parameters.contains("markdown"), "{parameters}");
+    assert!(parameters.contains("file"), "{parameters}");
 }

@@ -67,6 +67,112 @@ fn subagent_description_is_constant_and_lists_the_four_tiers() {
     );
 }
 
+/// 单件工具契约的 token 上限（发给模型的 ToolDefinition 全文，o200k）。
+///
+/// 超了不是"写得细"，是把"调用之后才用得上的知识"塞进了每回合常驻的
+/// 那一份里——那类内容该写进工具自己的输出，或者写进技能正文。
+const TOOL_TOKEN_BUDGET: usize = 550;
+
+/// 仓库自带的整个工具面（`descriptions/*.json` + 内置脚本头）的 token 上限。
+///
+/// 09-21 瘦身后实测 9994（60 件），留约 5% 余量。加一件工具就得有人从别处
+/// 腾出来，这正是这道闸的意思：工具面是一份公共预算，不是可以各自无限追加
+/// 的地方。
+const TOOL_FACE_TOKEN_BUDGET: usize = 10_500;
+
+fn definition_tokens(name: &str, description: &str, parameters: &serde_json::Value) -> usize {
+    let definition = miyu_core::llm::ToolDefinition {
+        kind: "function",
+        function: miyu_core::llm::FunctionDefinition {
+            name: name.to_string(),
+            description: description.to_string(),
+            parameters: parameters.clone(),
+        },
+    };
+    miyu_base::token_counter::count(&serde_json::to_string(&definition).unwrap())
+}
+
+/// 仓库自带工具面的 token 预算闸（量尺见 `token_diet_baseline_probe`）。
+///
+/// 读的是两处真相源本身（`src/tools/descriptions/*.json` 与内置脚本头），
+/// 不建注册表——注册表要扫本机的脚本目录，装机环境会把结果搅乱。
+/// `# Expose: skill` 的脚本不进 tools 数组，自然不占预算。
+#[test]
+fn bundled_tool_face_stays_within_its_token_budget() {
+    // 注册着、但不进 tools 数组的内置工具(`ToolSpec::with_exposed(false)`):
+    // 技能带路的配置类动作。它们不占常驻预算,所以不进这本账。
+    const SKILL_ONLY_BUILTINS: &[&str] = &["manage_script", "manage_skill"];
+    let mut rows: Vec<(String, usize)> = crate::tools::tool_descriptions::all()
+        .values()
+        .filter(|description| !SKILL_ONLY_BUILTINS.contains(&description.name.as_str()))
+        .map(|description| {
+            (
+                description.name.clone(),
+                definition_tokens(
+                    &description.name,
+                    &description.description,
+                    &description.parameters,
+                ),
+            )
+        })
+        .collect();
+
+    let scripts_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src/scripts/personas/default");
+    let entries = std::fs::read_dir(&scripts_dir)
+        .unwrap_or_else(|error| panic!("{}: {error}", scripts_dir.display()));
+    for entry in entries {
+        let path = entry.unwrap().path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(raw) = super::scripts::header::read_header(&path) else {
+            continue;
+        };
+        let metadata = super::scripts::header::extract_metadata(&raw);
+        if metadata
+            .expose
+            .is_some_and(super::scripts::header::ScriptExposure::is_skill_only)
+        {
+            continue;
+        }
+        let Some(description) = metadata.descriptions.en.as_deref() else {
+            continue;
+        };
+        let name = metadata.id.clone().unwrap_or_else(|| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+        });
+        let parameters = metadata
+            .parameters
+            .clone()
+            .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}}));
+        let tokens = definition_tokens(&name, description, &parameters);
+        rows.push((name, tokens));
+    }
+
+    rows.sort_by_key(|(_, tokens)| std::cmp::Reverse(*tokens));
+    let over: Vec<&(String, usize)> = rows
+        .iter()
+        .filter(|(_, tokens)| *tokens > TOOL_TOKEN_BUDGET)
+        .collect();
+    assert!(
+        over.is_empty(),
+        "these tool contracts are over the {TOOL_TOKEN_BUDGET} token budget: {over:?}\n\
+         move call-time knowledge into the tool's own output, or into a skill"
+    );
+    let total: usize = rows.iter().map(|(_, tokens)| tokens).sum();
+    assert!(
+        total <= TOOL_FACE_TOKEN_BUDGET,
+        "the bundled tool face costs {total} tokens, over the {TOOL_FACE_TOKEN_BUDGET} budget \
+         ({} tools). Heaviest: {:?}",
+        rows.len(),
+        &rows[..rows.len().min(5)]
+    );
+}
+
 /// 量尺：`cargo test --lib token_diet_baseline -- --ignored --nocapture`
 ///
 /// token 瘦身专项的基线：三套 registry 在 stub（默认发送形态）与 full
@@ -85,9 +191,11 @@ fn token_diet_baseline_probe() {
         ("dev", dev_registry(&config, &paths)),
         ("restricted", restricted_platform_registry(&config, &paths)),
     ] {
+        // 两档都走 `request_definitions`：量尺要量真发出去的那一份，不是
+        // 注册表里有什么(full 档 load_tools 注册着但不再发送)。
         for (variant, defs) in [
-            ("stub", registry.stub_definitions()),
-            ("full", registry.definitions()),
+            ("stub", registry.request_definitions(true)),
+            ("full", registry.request_definitions(false)),
         ] {
             let whole = serde_json::to_string(&defs).unwrap();
             let tokens = miyu_base::token_counter::count(&whole);

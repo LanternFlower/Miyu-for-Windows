@@ -470,3 +470,57 @@ fn legacy_layout_stays_put_while_the_starter_lock_is_held() {
     crate::sys::unlock(&lock);
     assert!(!legacy_daemon_is_running_at(&legacy, None));
 }
+
+/// 09-21:`home_layout_rollback_restores_the_legacy_tree` 并行跑时间歇性失败。
+///
+/// 根因不在那个测试,在 [`try_acquire_runtime_lock`] 只试一次 `LOCK_NB`:它分不清
+/// 「真 daemon 攥着」和「另一个**会改状态的探针**(`runtime_lock_is_held` 自己要
+/// 先 `LOCK_EX` 才知道拿不拿得到)攥了几微秒」。撞上后者就判 daemon 在跑,搬家
+/// 与回滚静默无操作。实测失败后隔 2ms 重试必成。
+#[test]
+fn a_momentary_holder_is_not_mistaken_for_a_running_daemon() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("starter.lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    // 拿锁走 sys 垫片：Unix 是 flock、Windows 是 LockFileEx。上游这两条测试
+    // 原本直接调 libc::flock，在 Windows 上根本编不过——而它们测的重试循环
+    // 恰恰是 Windows 侧也要守住的闸。
+    crate::sys::lock_exclusive(&lock).unwrap();
+    // 探针那样攥一小下就放:比重试窗口短得多,不该被当成 daemon。
+    let held = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        crate::sys::unlock(&lock);
+        lock
+    });
+    let acquired = try_acquire_runtime_lock(&path).unwrap();
+    held.join().unwrap();
+    assert!(
+        acquired.is_some(),
+        "短暂持有被误判成 daemon:{}",
+        path.display()
+    );
+}
+
+/// 反过来:真攥着不放的,必须照旧判成占用——重试不能把这条闸放水。
+#[test]
+fn a_holder_that_never_lets_go_is_still_reported_busy() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("starter.lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    // 同上，走 sys 垫片。
+    crate::sys::lock_exclusive(&lock).unwrap();
+    assert!(try_acquire_runtime_lock(&path).unwrap().is_none());
+    drop(lock);
+}

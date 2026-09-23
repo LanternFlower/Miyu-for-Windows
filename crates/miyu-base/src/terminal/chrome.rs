@@ -67,22 +67,34 @@ pub fn load_banner(config_dir: &std::path::Path, ascii: bool) -> BannerArt {
         .unwrap_or_else(|| BannerArt::builtin(ascii))
 }
 
-static BODY_W: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(BODY_MAX);
-/// 上一帧正文视口实际有几行。列表自己分页（并排的几列各滚各的）要按**同一个**
-/// 数来算，否则光标走到底时那一列会自己截掉几行。
-static VIEWPORT_ROWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(10);
+// 这两个量是「同一次绘制里，排版算出来的宽高传给下游渲染函数」的近路：
+// `compose` 在开头写，十来个渲染辅助函数在后面读，中间隔着好几层调用，
+// 一路透传参数会把签名污染一遍。
+//
+// 但它们**不能是进程级的**。绘制本身是单线程事件循环（生产的两个调用点
+// 都在 TUI 的 `draw()` 里，`oobe` 那处 `set_body_w` 与 `compose` 就在同一个
+// 函数体内），可测试是多线程并行的：两个用例各自用不同宽高调 `compose`，
+// 进程级变量会被对方改掉，于是断言随并行度随机翻红（2026-09-21 取证）。
+// 改成 thread_local 之后，生产那条单线程路径行为一字不变，并行用例则各看
+// 各的那一份。
+thread_local! {
+    static BODY_W: std::cell::Cell<usize> = const { std::cell::Cell::new(BODY_MAX) };
+    /// 上一帧正文视口实际有几行。列表自己分页（并排的几列各滚各的）要按
+    /// **同一个**数来算，否则光标走到底时那一列会自己截掉几行。
+    static VIEWPORT_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(10) };
+}
 
 /// 上一帧正文视口有几行。
 pub fn viewport_rows() -> usize {
-    VIEWPORT_ROWS.load(std::sync::atomic::Ordering::Relaxed)
+    VIEWPORT_ROWS.with(|rows| rows.get())
 }
 
 pub fn body_w() -> usize {
-    BODY_W.load(std::sync::atomic::Ordering::Relaxed)
+    BODY_W.with(|width| width.get())
 }
 
 pub fn set_body_w(width: usize) {
-    BODY_W.store(width, std::sync::atomic::Ordering::Relaxed);
+    BODY_W.with(|slot| slot.set(width));
 }
 
 pub fn pad(text: &str, cols: usize) -> String {
@@ -560,6 +572,11 @@ pub struct Composed {
     pub lines: Vec<Line<'static>>,
     /// 真终端光标该摆哪（输入法候选框靠它定位）。
     pub caret: Option<(u16, u16)>,
+    /// 这一次排版算出的正文可用行数，跟存进 `VIEWPORT_ROWS` 的是同一个数。
+    /// 那份 thread_local 是留给**跨帧**读的调用方的（`config_tui` 的并排列表
+    /// 要按上一帧的高度分页）；谁自己刚调完 `compose`，直接从这儿拿本次的
+    /// 结果就行，不必绕全局一圈。
+    pub viewport_rows: usize,
 }
 
 fn seg_span(seg: Seg) -> Span<'static> {
@@ -833,7 +850,7 @@ pub fn compose(
         view.body.len(),
     );
     let avail = layout.avail;
-    VIEWPORT_ROWS.store(avail, std::sync::atomic::Ordering::Relaxed);
+    VIEWPORT_ROWS.with(|rows| rows.set(avail));
     let total = view.body.len();
     if total > avail {
         if view.cursor_row < *scroll {
@@ -945,6 +962,7 @@ pub fn compose(
         return Composed {
             lines: out,
             caret: None,
+            viewport_rows: avail,
         };
     }
     let gap = 2usize;
@@ -994,7 +1012,11 @@ pub fn compose(
         }
     }
 
-    Composed { lines: out, caret }
+    Composed {
+        lines: out,
+        caret,
+        viewport_rows: avail,
+    }
 }
 
 #[cfg(test)]
@@ -1087,8 +1109,14 @@ mod tests {
                 cursor_row: cursor,
                 ..View::default()
             };
-            compose(110, 36, &chrome, &view, &mut scroll);
-            let avail = viewport_rows();
+            // 从**自己这一次**的排版结果里拿可用行数。原来读的是
+            // `viewport_rows()`，那时它背后是个进程级 atomic：同一个测试
+            // 二进制里并行跑的其它用例只要也调 `compose` 就会把它改掉，这条
+            // 断言于是随并行度随机翻红（2026-09-21 取证：单跑 miyu-base
+            // 342/0，跟另外两个 crate 一起跑就 341/1，与被测代码无关）。
+            // 那个变量现在已经是 thread_local，这里读返回值是第二道：不碰
+            // 共享状态的写法，本就比"写进某处再读回来"更难出错。
+            let avail = compose(110, 36, &chrome, &view, &mut scroll).viewport_rows;
             assert!(
                 scroll <= cursor && cursor < scroll + avail,
                 "光标 {cursor} 不在视口 {scroll}..{} 里",

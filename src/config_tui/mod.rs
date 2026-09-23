@@ -9,7 +9,6 @@ mod platforms;
 mod plugin_settings;
 mod plugins;
 mod providers;
-mod quota;
 mod real_context;
 mod scheduled_messages;
 mod settings;
@@ -28,7 +27,6 @@ use platforms::*;
 use plugin_settings::*;
 use plugins::*;
 use providers::*;
-use quota::*;
 use real_context::*;
 use scheduled_messages::*;
 use settings::*;
@@ -44,15 +42,15 @@ use crossterm::execute;
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use miyu_base::config::{
     merge_group_join_approval_settings, merge_real_context_settings, ActiveProviderModelConfig,
-    ApiQuotaAccountConfig, ApiQuotaProviderConfig, AppConfig, PlatformCommandPermission,
-    PlatformConversationConfig, PlatformConversationKind, PlatformModelPoolInheritance,
-    PlatformModelRoute, PlatformPersonaOverride, PlatformRateLimit, PlatformSessionLimits,
-    ProviderConfig, QqGroupJoinApprovalGroupConfig, QqGroupJoinApprovalPluginSettings,
-    QqMemeCollectorPluginSettings, QqMessageHistoryPluginSettings, RealContextIdentityMapping,
-    RealContextPluginSettings, MAX_COMMAND_OUTPUT_LINES, MAX_PLATFORM_COMMAND_PREFIX_CHARS,
-    MAX_PLATFORM_SESSION_QUEUED, MAX_PLATFORM_SESSION_RUNNING, MAX_REPL_REPLAY_TURNS,
-    MAX_THINKING_SCROLL_LINES, QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID, QQ_MEME_COLLECTOR_PLUGIN_ID,
-    QQ_MESSAGE_HISTORY_PLUGIN_ID, REAL_CONTEXT_PLUGIN_ID,
+    AppConfig, PlatformCommandPermission, PlatformConversationConfig, PlatformConversationKind,
+    PlatformModelPoolInheritance, PlatformModelRoute, PlatformPersonaOverride, PlatformRateLimit,
+    PlatformSessionLimits, ProviderConfig, QqGroupJoinApprovalGroupConfig,
+    QqGroupJoinApprovalPluginSettings, QqMemeCollectorPluginSettings,
+    QqMessageHistoryPluginSettings, RealContextIdentityMapping, RealContextPluginSettings,
+    MAX_COMMAND_OUTPUT_LINES, MAX_PLATFORM_COMMAND_PREFIX_CHARS, MAX_PLATFORM_SESSION_QUEUED,
+    MAX_PLATFORM_SESSION_RUNNING, MAX_REPL_REPLAY_TURNS, MAX_THINKING_SCROLL_LINES,
+    QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID, QQ_MEME_COLLECTOR_PLUGIN_ID, QQ_MESSAGE_HISTORY_PLUGIN_ID,
+    REAL_CONTEXT_PLUGIN_ID,
 };
 use miyu_base::default_models::{OPENCODE_DEFAULT_VISION_MODEL, OPENCODE_PROVIDER_ID};
 use miyu_base::i18n::{is_zh, text as t};

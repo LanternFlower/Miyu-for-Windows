@@ -199,6 +199,11 @@ impl StateStore {
         self.conv_db.load_turn_generation(session_id)
     }
 
+    /// 见 `ConversationDb::latest_context_end_tokens`：含正在跑的这一轮。
+    pub fn latest_context_end_tokens(&self) -> Result<Option<u64>> {
+        self.conv_db.latest_context_end_tokens(&self.session())
+    }
+
     pub fn load_context_anchor(&self) -> Result<Option<crate::state::ContextAnchor>> {
         self.conv_db.load_context_anchor(&self.session())
     }

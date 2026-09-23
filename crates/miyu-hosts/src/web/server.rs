@@ -734,13 +734,38 @@ pub(in crate::web) async fn theme_css(State(state): State<DaemonState>) -> Respo
     }
 }
 
-/// ```mermaid 围栏 → SVG。WebUI 的卡片把源码 POST 过来,拿渲染好的图回去。
+/// mermaid 围栏 → SVG。WebUI 的卡片把源码 POST 过来,拿渲染好的图回去。
 ///
 /// 图在服务端渲染(与终端同一个 `render::mermaid`),而不是在前端 vendor 一份
 /// mermaid.js:终端那边本来就需要 Rust 渲染器,两边共用才不会出图不一致,
 /// 前端也省掉 800KB 脚本与那份 CPU。
 ///
 /// 画不出来回 422 + 原因,前端照常显示源码——和终端退回代码块一个规矩。
+/// 把图的配色换成 WebUI 的主题变量（用户 09-22）。
+///
+/// SVG 是内联插进页面的（`figure.innerHTML = svg`），CSS 变量能穿透进去——所以
+/// 直接填 `var(--md-sys-color-…)` 让浏览器自己解析：**切主题零成本**，前端那份
+/// 按源码做键的 `mermaidCache` 也不用加主题维度（加了就得整份失效重拉）。
+///
+/// 底填 `transparent`，露出卡片自己的底；卡片那边 `background: #fff` 也一并撤掉。
+fn theme_aware_svg(svg: &str) -> String {
+    use crate::render::mermaid as diagram;
+
+    let painted = diagram::recolour_backdrop(svg, "transparent");
+    diagram::repaint(
+        &painted,
+        &[
+            (
+                diagram::NODE_FILL,
+                "var(--md-sys-color-surface-container-high)",
+            ),
+            (diagram::NODE_STROKE, "var(--md-sys-color-outline)"),
+            (diagram::CONNECTOR, "var(--md-sys-color-on-surface-variant)"),
+            (diagram::NODE_TEXT, "var(--md-sys-color-on-surface)"),
+        ],
+    )
+}
+
 pub(in crate::web) async fn mermaid_svg(Json(body): Json<Value>) -> Response {
     let source = body
         .get("source")
@@ -755,7 +780,7 @@ pub(in crate::web) async fn mermaid_svg(Json(body): Json<Value>) -> Response {
             .into_response();
     }
     match crate::render::mermaid::render_svg(source) {
-        Ok(svg) => Json(json!({ "svg": svg })).into_response(),
+        Ok(svg) => Json(json!({ "svg": theme_aware_svg(&svg) })).into_response(),
         Err(error) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(json!({ "error": error })),
@@ -1113,5 +1138,39 @@ pub(in crate::web) async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod diagram_theme_tests {
+    use super::*;
+
+    /// WebUI 的图跟主题走：底透明、四个色换成 MD3 变量（用户 09-22）。
+    ///
+    /// 这条同时钉住「不留死色」——留一个写死的十六进制，暗色主题下就是一块
+    /// 看不清的东西。
+    #[test]
+    fn the_webui_svg_uses_theme_variables() {
+        use crate::render::mermaid as diagram;
+
+        let svg =
+            diagram::render_svg("graph TD; A[开始]-->B{判断}; B-->C[结束]").expect("该渲得出 SVG");
+        let painted = theme_aware_svg(&svg);
+
+        assert!(painted.contains("fill=\"transparent\""), "底没透明");
+        for (hex, var) in [
+            (diagram::NODE_FILL, "--md-sys-color-surface-container-high"),
+            (diagram::NODE_STROKE, "--md-sys-color-outline"),
+            (diagram::CONNECTOR, "--md-sys-color-on-surface-variant"),
+            (diagram::NODE_TEXT, "--md-sys-color-on-surface"),
+        ] {
+            assert!(painted.contains(var), "{var} 没换上");
+            assert!(!painted.contains(hex), "{hex} 还留着写死的色");
+        }
+        assert!(
+            !painted.contains("#FFFFFF"),
+            "还有纯白没处理:{}",
+            &painted[..painted.len().min(300)]
+        );
     }
 }

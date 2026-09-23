@@ -120,12 +120,21 @@ pub(in crate::config_tui) fn edit_features(
         body.push(nil());
 
         let on = items.iter().filter(|item| item.on).count();
+        // 回车做什么按当前这一行来:能配的进设置，其余的看完整说明。以前
+        // 这行文案恒定写「设置」，而脚本/技能/MCP 按下去一点反应都没有。
         let (footer, keys) = key_bar(
             &cx,
-            t(
-                "[Space]toggle [⏎]settings [↑↓ jk]move [Esc]back",
-                "[空格]开关 [⏎]设置 [↑↓ jk]移动 [Esc]返回",
-            ),
+            if items[selected].settings {
+                t(
+                    "[Space]toggle [⏎]settings [↑↓ jk]move [Esc]back",
+                    "[空格]开关 [⏎]设置 [↑↓ jk]移动 [Esc]返回",
+                )
+            } else {
+                t(
+                    "[Space]toggle [⏎]details [↑↓ jk]move [Esc]back",
+                    "[空格]开关 [⏎]详情 [↑↓ jk]移动 [Esc]返回",
+                )
+            },
         );
         ui.show(
             t(" FEATURES ", " 启用的功能 "),
@@ -152,6 +161,7 @@ pub(in crate::config_tui) fn edit_features(
             KeyCode::Enter => {
                 let item = &items[selected];
                 if !item.settings {
+                    show_details(ui, item)?;
                     continue;
                 }
                 let (id, name) = (item.id.clone(), item.name.clone());
@@ -191,6 +201,40 @@ pub(in crate::config_tui) fn edit_features(
 }
 
 /// 一件功能的「怎么配」。子系统各有各的去处，其余走插件设置表单。
+/// 一行的完整说明。表上那一列按宽度截断（说明长短不由我们定），截掉的部分
+/// 得有地方看得到——脚本与技能没有设置页，回车就落在这儿。
+fn show_details(ui: &mut Ui, item: &FeatureItem) -> Result<()> {
+    let kind = section_of(item.kind);
+    let origin = match item.kind {
+        FeatureKind::Script | FeatureKind::Skill => Some(if item.builtin {
+            t("bundled with Miyu", "Miyu 自带")
+        } else {
+            t("yours", "你自己加的")
+        }),
+        _ => None,
+    };
+    let mut text = format!("{}\n\n{}", item.name, item.hint.trim());
+    let mut tail = vec![format!("{}: {kind}", t("Kind", "类别"))];
+    if let Some(origin) = origin {
+        tail.push(format!("{}: {origin}", t("Origin", "来源")));
+    }
+    if item.id != item.name {
+        tail.push(format!("id: {}", item.id));
+    }
+    if item.on && item.machine_on == Some(false) {
+        tail.push(
+            t(
+                "This persona has it on, but the machine-wide switch is off, so it is not live.",
+                "这个人格勾着，但机器级开关关着，所以并没有生效。",
+            )
+            .to_string(),
+        );
+    }
+    text.push_str("\n\n");
+    text.push_str(&tail.join("\n"));
+    message(ui, &text)
+}
+
 fn open_settings(
     ui: &mut Ui,
     paths: &MiyuPaths,

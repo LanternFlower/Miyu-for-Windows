@@ -4,6 +4,11 @@
 # 检查范围刻意收窄到「模型会读到的提示性文案」：
 #   - src/tools/descriptions/*.json 中键名为 description / summary /
 #     stub_example 的字符串值（递归，含 parameters 嵌套）。
+#   - src/skills/**/*.md 的 frontmatter `description`：它进 load_skill 的常驻
+#     目录，是模型面。这条按「主体必须是英文句」判，不禁中文——触发词得写成
+#     用户真会说的那几个词（「去哪玩」「开播」），跟 get_exchange_rate 的
+#     "USD or 美元" 是同一类功能性中文。判据：首字符是 ASCII 字母，且 CJK
+#     占比不过半。frontmatter 的 display_name / summary 是人槽，豁免。
 # display_name 豁免（UI 用）；enum 值、示例数据等允许中文——那是数据不是提示。
 # UI 文案（i18n::text / localize）不在本门禁范围内。
 set -euo pipefail
@@ -63,7 +68,35 @@ for file in sorted(glob.glob("src/tools/descriptions/*.json")):
         for hit in hits:
             print(f"  {hit}")
 
+# ── 技能 frontmatter ──────────────────────────────────────────────
+SKILL_CJK_MAX = 0.5
+
+for file in sorted(glob.glob("src/skills/**/*.md", recursive=True)):
+    text = open(file, encoding="utf-8").read()
+    matched = re.search(r"^description:\s*(.*)$", text, re.M)
+    if not matched:
+        print(f"skill without a description: {file}")
+        failed = True
+        continue
+    description = matched.group(1).strip()
+    # 未加引号的标量里出现 ": " 会被 YAML 当成嵌套映射,整个 frontmatter 解析
+    # 失败——而内置技能是一张常量表,一个坏文件会把**全部**技能弄哑(09-21 实测)。
+    if ": " in description and not description.startswith(("'", '"')):
+        print(f"skill description has an unquoted colon (breaks YAML): {file}")
+        failed = True
+        continue
+    if not description[:1].isascii() or not description[:1].isalpha():
+        print(f"skill description must open with an English sentence: {file}")
+        print(f"  {description[:60]}")
+        failed = True
+        continue
+    ratio = len(CJK.findall(description)) / max(len(description), 1)
+    if ratio > SKILL_CJK_MAX:
+        print(f"skill description is mostly CJK ({ratio:.0%}): {file}")
+        print("  keep the sentence English; Chinese is for trigger words only")
+        failed = True
+
 if failed:
     sys.exit(1)
-print("model-facing descriptions: no CJK, all JSON valid")
+print("model-facing descriptions: English-led, all JSON valid")
 PY

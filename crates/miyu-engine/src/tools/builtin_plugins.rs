@@ -42,14 +42,6 @@ fn reg_archlinux(registry: &mut ToolRegistry, _config: &AppConfig, paths: &MiyuP
     archlinux::register(registry, paths);
 }
 
-fn reg_api_quota(registry: &mut ToolRegistry, config: &AppConfig, _paths: &MiyuPaths) {
-    api_quota::register(
-        registry,
-        config.plugins.api_quota.clone(),
-        config.providers.clone(),
-    );
-}
-
 fn reg_print_image(registry: &mut ToolRegistry, config: &AppConfig, _paths: &MiyuPaths) {
     vision::register_print(registry, config.clone());
 }
@@ -101,11 +93,6 @@ const REGISTRARS: &[BuiltinRegistrar] = &[
     BuiltinRegistrar {
         id: "archlinux",
         register: reg_archlinux,
-        after_subagent_snapshot: false,
-    },
-    BuiltinRegistrar {
-        id: "api_quota",
-        register: reg_api_quota,
         after_subagent_snapshot: false,
     },
     BuiltinRegistrar {

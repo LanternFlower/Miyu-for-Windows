@@ -368,14 +368,9 @@ impl Agent {
             return Ok(Vec::new());
         }
         let tools = self.tools.lock().unwrap();
-        Ok(
-            if tools::is_stub_loading_mode(&tools::effective_tools_loading_mode(&self.core.config))
-            {
-                tools.stub_definitions()
-            } else {
-                tools.definitions()
-            },
-        )
+        Ok(tools.request_definitions(tools::is_stub_loading_mode(
+            &tools::effective_tools_loading_mode(&self.core.config),
+        )))
     }
 
     pub(in crate::agent) fn followup_user_message(

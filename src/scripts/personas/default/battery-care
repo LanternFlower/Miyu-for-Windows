@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 显示名称：笔记本电池管理
 # Description: Show laptop battery health or set charge limits. status reports health, charge, current limit, backend and sysfs path; limit N / set --start N --stop N change the charging thresholds and reset restores full charging (writes need sudo). Send JSON on stdin or pass the subcommand as argv.
+# 描述：看笔记本电池健康度，或设置充电阈值（改阈值要 sudo）。
 
 set -u
 

@@ -2,7 +2,8 @@
 # Id: online_man
 # Display name: Online manual
 # 显示名称: 在线手册
-# Description: Online Linux manuals. action=search searches; action=read fetches a man page. Search uses Arch manual pages; read supports Arch man pages and man7.org. For normal reading set max_chars to at least 8000; lower it only for excerpts.
+# Description: Online Linux manuals. search queries the Arch manual pages; read fetches a page from Arch or man7.org. For normal reading set max_chars to at least 8000; lower it only for an excerpt.
+# 描述：在线查 Linux man 手册：搜索条目，或抓一整页正文。
 # Timeout: 90
 # Group: linux-docs
 # Permission: read-only
@@ -15,28 +16,27 @@
 #       "enum": [
 #         "search",
 #         "read"
-#       ],
-#       "description": "search to search, read to fetch a page."
+#       ]
 #     },
 #     "query": {
 #       "type": "string",
-#       "description": "Required for action=search: search terms."
+#       "description": "Required for search."
 #     },
 #     "name": {
 #       "type": "string",
-#       "description": "Required for action=read: man page name."
+#       "description": "Required for read: man page name."
 #     },
 #     "section": {
 #       "type": "string",
-#       "description": "Optional manual section number."
+#       "description": "Manual section number."
 #     },
 #     "language": {
 #       "type": "string",
-#       "description": "Optional language, default en."
+#       "description": "Default en."
 #     },
 #     "limit": {
 #       "type": "integer",
-#       "description": "search only: maximum number of results, default 10."
+#       "description": "search: default 10."
 #     },
 #     "source": {
 #       "type": "string",
@@ -45,11 +45,11 @@
 #         "arch",
 #         "man7"
 #       ],
-#       "description": "read only: source site, default auto."
+#       "description": "read: default auto."
 #     },
 #     "max_chars": {
 #       "type": "integer",
-#       "description": "read only: maximum number of characters to return."
+#       "description": "read: characters to return."
 #     }
 #   },
 #   "required": [

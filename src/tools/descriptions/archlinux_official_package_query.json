@@ -6,16 +6,15 @@
     "type": "object",
     "properties": {
       "package_name": {
-        "type": "string",
-        "description": "Package name."
+        "type": "string"
       },
       "repo": {
         "type": "string",
-        "description": "Repository for detail mode, e.g. core or extra."
+        "description": "detail mode, e.g. core or extra."
       },
       "arch": {
         "type": "string",
-        "description": "Architecture for detail mode, default x86_64."
+        "description": "detail mode, default x86_64."
       },
       "mode": {
         "type": "string",

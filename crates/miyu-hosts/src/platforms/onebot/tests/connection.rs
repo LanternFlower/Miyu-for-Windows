@@ -231,19 +231,19 @@ fn attachment_sends_wait_for_napcat_instead_of_a_size_budget() {
     let text_only = vec![text_segment("hello")];
     assert_eq!(send_timeout_for(&text_only), API_CALL_TIMEOUT);
 
-    let small_image = vec![image_segment(&vec![0u8; 64 * 1024])];
+    let small_image = vec![image_segment(&vec![0u8; 64 * 1024], false)];
     assert_eq!(send_timeout_for(&small_image), MAX_SEND_TIMEOUT);
 
     // The old boundary case: just under a megabyte used to share the
     // smallest budget with a thumbnail.
-    let boundary_image = vec![image_segment(&vec![0u8; 700 * 1024])];
+    let boundary_image = vec![image_segment(&vec![0u8; 700 * 1024], false)];
     assert_eq!(send_timeout_for(&boundary_image), MAX_SEND_TIMEOUT);
 
-    let huge_image = vec![image_segment(&vec![0u8; 19 * 1024 * 1024])];
+    let huge_image = vec![image_segment(&vec![0u8; 19 * 1024 * 1024], false)];
     assert_eq!(send_timeout_for(&huge_image), MAX_SEND_TIMEOUT);
 
     // Mixed frames follow the attachment, not the text.
-    let mixed = vec![text_segment("看图"), image_segment(&vec![0u8; 4096])];
+    let mixed = vec![text_segment("看图"), image_segment(&vec![0u8; 4096], false)];
     assert_eq!(send_timeout_for(&mixed), MAX_SEND_TIMEOUT);
 }
 

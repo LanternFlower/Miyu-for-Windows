@@ -665,16 +665,6 @@ pub(in crate::web) fn config_response(
         "plugins.image_generation.api_keys",
         &mut redacted.plugins.image_generation.api_keys,
     );
-    redact_api_quota_provider(
-        &mut secret_states,
-        "plugins.api_quota.deepseek",
-        &mut redacted.plugins.api_quota.deepseek,
-    );
-    redact_api_quota_provider(
-        &mut secret_states,
-        "plugins.api_quota.openrouter",
-        &mut redacted.plugins.api_quota.openrouter,
-    );
     let mut config_value = serde_json::to_value(&redacted).map_err(ApiError::internal)?;
     if let Value::Object(config_object) = &mut config_value {
         config_object.insert(
@@ -772,21 +762,6 @@ pub(in crate::web) fn restore_config_secrets(
         Some(SecretMutation::Clear) => String::new(),
         None => current.plugins.exchange_rate.api_key.clone(),
     };
-
-    restore_api_quota_provider(
-        &mut candidate.plugins.api_quota.deepseek,
-        &current.plugins.api_quota.deepseek,
-        mutations,
-        &mut recognized,
-        "plugins.api_quota.deepseek",
-    )?;
-    restore_api_quota_provider(
-        &mut candidate.plugins.api_quota.openrouter,
-        &current.plugins.api_quota.openrouter,
-        mutations,
-        &mut recognized,
-        "plugins.api_quota.openrouter",
-    )?;
 
     let onebot_token_key = "platforms.qq.access_token";
     recognized.insert(onebot_token_key.to_string());

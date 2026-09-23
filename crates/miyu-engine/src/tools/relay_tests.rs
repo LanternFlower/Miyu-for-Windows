@@ -1,4 +1,5 @@
-//! 三条中转线(agy / claude-code / codex)的去重名单都得是真工具。
+//! 三条中转线(agy / claude-code / codex)的去重名单、以及 Zen 的线上别名表,
+//! 都得指向真工具。
 //!
 //! 名单是纯字符串常量,工具改名不会让它报错——`read_file` / `apply_patch` 就是这么
 //! 在 08-21 三域合并里变成死条目的。断言要拿**注册表**去核,而注册表是工具层的东西;
@@ -110,6 +111,50 @@ mod codex {
             assert!(
                 registry.contains(name),
                 "去重名单里的 {name} 不是任何已注册工具"
+            );
+        }
+    }
+}
+
+mod zen {
+    use miyu_core::llm::ZEN_WIRE_ALIASES;
+
+    /// Zen 别名表的**左列**必须是真的已注册工具:去程按它改名、回程按它改回来,
+    /// 左列写错的话回程会把模型正确的调用改写成一个不存在的名字。
+    ///
+    /// 09-20 这条就是这么坏的:读文件那件写成了 `read_file`(08-21 三域合并里
+    /// 改掉的旧名),于是模型调 `read` → 回程改成 `read_file` → 回合层报
+    /// 「unknown tool: read_file (did you mean: read?)」,而模型每次都是对的,
+    /// 死循环。用户 09-21 在 opencodego 上撞到。跟三条中转线是同一个病:纯字符串
+    /// 名单,工具改名不会让它报错。
+    #[test]
+    fn every_wire_alias_names_a_real_tool() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let paths = miyu_base::paths::MiyuPaths {
+            root_dir: root.to_path_buf(),
+            config_dir: root.join("config"),
+            config_file: root.join("config/config.jsonc"),
+            skills_dir: root.join("config/skills"),
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            state_dir: root.join("state"),
+            pictures_dir: root.join("pictures"),
+            fish_hook_file: root.join("config/fish/conf.d/miyu.fish"),
+            bash_hook_file: root.join("config/shell/bash-hook.sh"),
+            zsh_hook_file: root.join("config/shell/zsh-hook.zsh"),
+            scripts_dir: root.join("config/scripts"),
+            system_scripts_dir: root.join("data/scripts"),
+        };
+        let mut config = miyu_base::config::AppConfig::default();
+        config.plugins.web.enabled = true;
+        config.skills.allow_command_execution = true;
+        let registry = crate::tools::builtin_registry(&config, &paths);
+        for (real, wire) in ZEN_WIRE_ALIASES {
+            assert!(
+                registry.contains(real),
+                "Zen 别名表把 {real} 报成 {wire},但 {real} 不是任何已注册工具\
+                 ——回程会把模型的调用改写成这个死名"
             );
         }
     }

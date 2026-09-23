@@ -227,6 +227,27 @@ impl Screen {
     ///
     /// 和正文那侧同一条规矩（`Screen::hover_at`）：提亮的是**整块**，不是一行
     /// ——一步的抬头和它露出来的几行是同一件事，只亮一行看着像断了。
+    /// 面板里有没有提亮着的一行。
+    pub(in crate::cli) fn overlay_hovered(&self) -> bool {
+        self.overlay
+            .as_ref()
+            .is_some_and(|panel| panel.hover.is_some())
+    }
+
+    /// 指针离开窗口：正文和面板的提亮一起熄掉。
+    ///
+    /// 写在这儿是因为面板那份提亮的字段只对 `overlay` 这一层可见。
+    pub(in crate::cli) fn clear_hover(&mut self) -> bool {
+        let mut changed = self.hover.take().is_some();
+        if let Some(panel) = &mut self.overlay {
+            changed |= panel.hover.take().is_some();
+        }
+        if changed {
+            self.invalidate();
+        }
+        changed
+    }
+
     pub(in crate::cli) fn overlay_hover_at(&mut self, row: u16) -> bool {
         let index = self.overlay_content_index(row);
         let Some(panel) = &mut self.overlay else {

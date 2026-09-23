@@ -79,21 +79,36 @@ async fn read(arguments: Value, state: Arc<FileReaderState>) -> Result<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .context("file is required")?;
+    let (path, name, size) = resolve_platform_file(&state.context, &state.files, raw).await?;
+    // PDF 走内联:当前模型池吃得下就把文件本体寄存给回合循环,模型直接读到
+    // 真文档,而不是一句"不支持的二进制"。吃不下时报路径——原生文件工具
+    // (claude-code 的 Read / agy 的 view_file)和 run_command 都还能用它。
+    if miyu_engine::tools::vision::pdf_mime(&name).is_some() {
+        return Ok(inline_platform_pdf(&state, &path, &name, size));
+    }
+    read_platform_text(&path, &name, size)
+}
 
-    let downloaded = if let Some(file_ref) = state.files.iter().find(|file| file.id == raw) {
+/// 把 `file` 参数解析成本地文件:聊天记录里的文件 id(要下载)，或者
+/// `platform_files` 缓存下的绝对路径。
+///
+/// 抽出来是给 `render_image` 共用的(用户 09-22:给 .md 文件直接出图，内容不必
+/// 先进上下文再传回来)。安全边界只此一份——两处各写一套迟早漂。
+pub(in crate::platforms) async fn resolve_platform_file(
+    context: &Arc<PlatformTurnContext>,
+    files: &[PlatformContextFileRef],
+    raw: &str,
+) -> Result<(PathBuf, String, u64)> {
+    let downloaded = if let Some(file_ref) = files.iter().find(|file| file.id == raw) {
         // 视频/图片不下载:这条工具只出文本,下了也读不了。直接指到看图工具,
         // 省一次最长 200MB 的下载。PDF 不在此列——它要下载,下面按能力决定
         // 是内联给模型本人还是只报路径。
         if let Some(hint) = visual_file_hint(&file_ref.file_name, raw) {
             bail!(hint)
         }
-        Some(state.context.fetch_platform_file(file_ref).await?)
+        Some(context.fetch_platform_file(file_ref).await?)
     } else if raw.starts_with("file_") {
-        let available = state
-            .files
-            .iter()
-            .map(|file| file.id.clone())
-            .collect::<Vec<_>>();
+        let available = files.iter().map(|file| file.id.clone()).collect::<Vec<_>>();
         if available.is_empty() {
             bail!("this turn has no platform file ids; use an absolute path under platform_files")
         }
@@ -101,8 +116,7 @@ async fn read(arguments: Value, state: Arc<FileReaderState>) -> Result<String> {
             "file id `{raw}` is not attached to the current platform turn; available: {}",
             available.join(", ")
         )
-    } else if state.context.conversation.kind == miyu_base::platform_types::ConversationKind::Group
-    {
+    } else if context.conversation.kind == miyu_base::platform_types::ConversationKind::Group {
         bail!("group files must be referenced by their file_... id from chat history")
     } else {
         None
@@ -110,12 +124,12 @@ async fn read(arguments: Value, state: Arc<FileReaderState>) -> Result<String> {
 
     let (path, name, size) = match downloaded {
         Some(file) => {
-            let path = validate_cached_path(&file.path, &state.context.paths.cache_dir)?;
+            let path = validate_cached_path(&file.path, &context.paths.cache_dir)?;
             (path, file.name, file.size)
         }
         None => {
             let path = expand_home(Path::new(raw));
-            let path = validate_cached_path(&path, &state.context.paths.cache_dir)?;
+            let path = validate_cached_path(&path, &context.paths.cache_dir)?;
             let name = path
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -127,13 +141,7 @@ async fn read(arguments: Value, state: Arc<FileReaderState>) -> Result<String> {
             (path, name, size)
         }
     };
-    // PDF 走内联:当前模型池吃得下就把文件本体寄存给回合循环,模型直接读到
-    // 真文档,而不是一句"不支持的二进制"。吃不下时报路径——原生文件工具
-    // (claude-code 的 Read / agy 的 view_file)和 run_command 都还能用它。
-    if miyu_engine::tools::vision::pdf_mime(&name).is_some() {
-        return Ok(inline_platform_pdf(&state, &path, &name, size));
-    }
-    read_platform_text(&path, &name, size)
+    Ok((path, name, size))
 }
 
 /// QQ 侧 PDF 的两条出路。返回给模型的文本,不 bail——PDF 读不成不是错误,
@@ -169,7 +177,7 @@ fn validate_cached_path(path: &Path, cache_dir: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn expand_home(path: &Path) -> PathBuf {
+pub(in crate::platforms) fn expand_home(path: &Path) -> PathBuf {
     let Some(raw) = path.to_str() else {
         return path.to_path_buf();
     };
@@ -200,7 +208,11 @@ fn visual_file_hint(name: &str, reference: &str) -> Option<String> {
     ))
 }
 
-fn read_platform_text(path: &Path, name: &str, size: u64) -> Result<String> {
+pub(in crate::platforms) fn read_platform_text(
+    path: &Path,
+    name: &str,
+    size: u64,
+) -> Result<String> {
     if let Some(hint) = visual_file_hint(name, &path.display().to_string()) {
         bail!(hint)
     }

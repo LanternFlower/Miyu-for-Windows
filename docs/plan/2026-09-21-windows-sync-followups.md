@@ -52,6 +52,25 @@
   （`CreateToolhelp32Snapshot` 或 `NtQueryInformationProcess`），让 `parent_pid` /
   `process_name` 走垫片；随后再把 `"powershell"` 补进 `is_known_shell`。
 
+### 4. 「API 额度查询」退役后，余额查询要不要以脚本形态回来（v0.6.2 同步时定）
+
+- 背景：上游 `4976a460`（工具面 token 瘦身 26%）把内置插件 `api_quota` 整个退役，理由写在
+  `crates/miyu-base/src/config/persona_manifest.rs` 的 `RETIRED_PLUGIN_IDS` 注释里——
+  「只会查 DeepSeek 与 OpenRouter 两家，一件脚本工具就能替代，不值一个内置插件加一份常驻
+  工具契约」。配置（`ApiQuotaPluginConfig` / `ApiQuotaProviderConfig` / `ApiQuotaAccountConfig`）、
+  注册表项、测试文件一并删掉，而且**没有留余额查询的替代**：新增的 `provider-status` 技能只管
+  「供应商挂没挂」（查官方 status 页），不是余额。
+- fork 侧：`api_quota.rs` 有 fork 自己的改进（多账号 + 从 provider 配置读密钥与查询地址），
+  本次同步按上游退役。**那份实现没丢**，在合并前的 main 里：
+  `git show 60b6d49c:crates/miyu-engine/src/tools/api_quota.rs`。
+- 要做回来的话，按上游新政策（AGENTS.md §2.1.1）走**脚本 + `# Expose: skill`**，别复活插件：
+  照 `src/scripts/personas/default/query_deepseek_status` 的样子写（它示范了「注册、可经工具桥
+  调用，但不进 tools 数组，由技能正文带路」这条路），密钥从 provider 配置读；两个端点分别是
+  `https://api.deepseek.com/user/balance` 与 `https://openrouter.ai/api/v1/key`；再补一份技能
+  md 并登记进 `miyu_core::skills::BUILTIN_SKILLS`（漏登记=谁都加载不到，§2.1.2）。
+  收益：能力保住、不占常驻工具面、也不再与上游的配置管道冲突。
+- 决定：本轮**跟上游退役**（用户 2026-09-23 拍板），先只记待办。
+
 ## 复核方法（下次同步复用）
 
 三把尺子，都是纯 git、可脚本化：

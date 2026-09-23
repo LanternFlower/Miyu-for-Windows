@@ -1,17 +1,17 @@
 {
   "name": "recall_memories",
   "display_name": "召回记忆",
-  "description": "Search remembered knowledge and past events. Fetch full text with recall_memories id=<id>. Use include_forgotten to include forgotten memories when needed.",
+  "description": "Search remembered knowledge and past events. Fetch one in full with id=<id>.",
   "parameters": {
     "type": "object",
     "properties": {
       "query": {
         "type": "string",
-        "description": "Search keywords or a question. May be omitted only when fetching directly by id."
+        "description": "Keywords or a question. Omit only when fetching by id."
       },
       "id": {
         "type": "integer",
-        "description": "Fetch the full text of a single memory directly by id."
+        "description": "Fetch the full text of one memory."
       },
       "scope": {
         "type": "string",
@@ -19,15 +19,14 @@
           "all",
           "episode"
         ],
-        "description": "all searches knowledge points and events (default); episode searches only past events."
+        "description": "Default all (knowledge plus events); episode is events only."
       },
       "max_results": {
-        "type": "integer",
-        "description": "Optional limit on the number of results."
+        "type": "integer"
       },
       "include_forgotten": {
         "type": "boolean",
-        "description": "Whether to include forgotten memories."
+        "description": "Include forgotten memories."
       }
     }
   },
