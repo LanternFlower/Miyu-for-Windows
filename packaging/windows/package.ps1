@@ -138,9 +138,20 @@ if ($SkipRipgrep) {
     } catch {
         throw "拿不到 $asset.sha256（这个版本可能没发校验文件）：$($_.Exception.Message)`n换个 -RipgrepVersion，或用 -RipgrepPath 指本地 rg.exe。"
     }
-    # 去掉可能的 BOM：.NET 的 Trim() 不认 U+FEFF，留着会被下面的形状检查拦下。
-    $expected = ((Get-Content $shaFile -Raw) -replace "^\uFEFF", "").Trim().Split(' ')[0]
-    if ($expected -notmatch '^[0-9a-fA-F]{64}$') { throw "校验文件内容不像 sha256：$expected" }
+    # 去掉可能的 BOM：.NET 的 Trim() 不认 U+FEFF。
+    #
+    # 校验文件的格式各家不统一：GNU 的 `<hash>  <file>`、BSD 的
+    # `SHA256 (file) = <hash>`、或者一份含全部资产的 SHA256SUMS。所以别假设格式，
+    # 按「行里含 64 位十六进制」取，并优先挑点名了本资产的那一行。
+    # （ripgrep 14.1.1 就是 BSD 风格——2026-09-23 CI 上按两空格解析拿到的是 "SHA256"。）
+    $shaText = (Get-Content $shaFile -Raw) -replace "^\uFEFF", ""
+    $candidates = @($shaText -split "\r?\n" | Where-Object { $_ -match '[0-9a-fA-F]{64}' })
+    $line = @($candidates | Where-Object { $_ -match [regex]::Escape($asset) } | Select-Object -First 1)
+    if ($line.Count -eq 0) { $line = @($candidates | Select-Object -First 1) }
+    if ($line.Count -eq 0) {
+        throw "校验文件里找不到 64 位 sha256，原文是：$($shaText.Trim())`n换个 -RipgrepVersion，或用 -RipgrepPath 指本地 rg.exe。"
+    }
+    $expected = [regex]::Match($line[0], '[0-9a-fA-F]{64}').Value
     $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
     if ($actual -ne $expected.ToLower()) {
         throw "ripgrep 校验失败：期望 $expected，实际 $actual"
